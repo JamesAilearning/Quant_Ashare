@@ -323,7 +323,10 @@ entries:
       prereg_plan_commit: "ab75cbf2c3ae1b363f3cefef337026a80c49d450"
       source_git: "8a598438f4da"
       source_git_dirty: false
-      treatment_pool_identity: "pv001_2789e60e|expr=cs_demean(abs($turnover_rate))|pool_sha256=334428512b4151986a1ffec696b06e1f71b6112f9d49e188b7e9429612bf18bd|expressions_sha256=f49aa8340cb49e79f6231356d78918158c20694fcb77889697b8b063ce50c682|verdict_sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51|ledger=E007+E008|pit_content_hash=sha256:12c62cf58ff5789d7f6a81b0bb82c5a1a89872c8fe937d4bfa07dd70b32a3137|registry_sha256=43b21cd85a3486f315eb1672009df79280e02d8ca1b13707f172963e9705fccd"
+      # 逐字节照抄 treatment run report 的 config.mined_factor_pool_identity
+      # （codex #424：初版漏抄 pit= 分量，而正文声称七分量齐全——签署级
+      # 条目的证据串必须与报告逐字相同，output/ 不入 git，这是唯一提交态证据）
+      treatment_pool_identity: 'pv001_2789e60e|expr=cs_demean(abs($turnover_rate))|pool_sha256=334428512b4151986a1ffec696b06e1f71b6112f9d49e188b7e9429612bf18bd|expressions_sha256=f49aa8340cb49e79f6231356d78918158c20694fcb77889697b8b063ce50c682|verdict_sha256=195c21bc78f6f968e8d0ff7e7ac4a17aea5f039900e718036b8776579dd80b51|ledger=E007+E008|pit=d:\qlib_data\my_cn_data_pit_2015|pit_content_hash=sha256:12c62cf58ff5789d7f6a81b0bb82c5a1a89872c8fe937d4bfa07dd70b32a3137|registry_sha256=43b21cd85a3486f315eb1672009df79280e02d8ca1b13707f172963e9705fccd'
     numbers:
       verdict: INDISTINGUISHABLE
       promoted: false

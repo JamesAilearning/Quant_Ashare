@@ -202,6 +202,41 @@ class PairedPresetPins(unittest.TestCase):
             "fewer in-repo ledger fingerprints were validated than the "
             "ledger carries — the matcher stopped recognising one.")
 
+    def test_ledger_result_stamp_carries_every_registered_component(self) -> None:
+        # codex #424: E009's prose claims the treatment arm passed its
+        # identity gate with all plan-required components present, but
+        # the copied stamp had dropped `pit=`. The run reports live
+        # under gitignored output/, so this ledger copy is the ONLY
+        # committed evidence of that gate — a stamp missing a component
+        # cannot substantiate the claim it sits next to. (My own 18-item
+        # number check missed it: it verified NUMBERS, not this string.)
+        ledger = yaml.safe_load(
+            (_PROJECT_ROOT / "docs" / "prereg"
+             / "pv_incremental_ledger.yaml").read_text(encoding="utf-8"))
+        results = [e for e in ledger["entries"]
+                   if (e.get("provenance") or {}).get(
+                       "treatment_pool_identity")]
+        self.assertTrue(results, "no ledger entry records a treatment "
+                                 "identity stamp — this pin would be vacuous")
+        req = _load(_PLAN)["arm_requirements"]["treatment"][
+            "mined_factor_pool_identity"]
+        for entry in results:
+            stamp = entry["provenance"]["treatment_pool_identity"]
+            with self.subTest(entry=entry["id"]):
+                self.assertTrue(
+                    stamp.startswith(req["prefix"]),
+                    f"{entry['id']}: recorded stamp does not carry the "
+                    "plan's registered prefix.")
+                fields = {p.split("=", 1)[0]: p.split("=", 1)[1]
+                          for p in stamp.split("|") if "=" in p}
+                missing = [c for c in req["components"]
+                           if not str(fields.get(c, "")).strip()]
+                self.assertEqual(
+                    [], missing,
+                    f"{entry['id']}: recorded stamp is missing plan-required "
+                    f"component(s) {missing} — copy the run report's "
+                    "config.mined_factor_pool_identity verbatim.")
+
     def test_both_engines_carry_the_identity_key(self) -> None:
         # AGENTS.md "Two engines, one schema": adding the stamp to
         # WalkForwardConfig alone would make walk_forward_report.json and
