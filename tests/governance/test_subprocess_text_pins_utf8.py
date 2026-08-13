@@ -142,7 +142,14 @@ _GIT_DIFF_CAPABLE = frozenset({
     "blame", "annotate", "range-diff", "diff-tree", "diff-index",
     "diff-files", "stash",
 })
-_GIT_DIFF_DRIVER_OFF = ("--no-ext-diff", "--no-textconv")
+# Each driver is a LAST-ONE-WINS toggle, not a one-way switch
+# (codex P2 r29 on #410; verified: ``--no-ext-diff --ext-diff`` runs the
+# external helper, the reverse order does not), so the option region is
+# replayed in order and only the effective final state counts.
+_GIT_DRIVER_TOGGLES = {
+    "--no-ext-diff": ("ext", True), "--ext-diff": ("ext", False),
+    "--no-textconv": ("textconv", True), "--textconv": ("textconv", False),
+}
 # git GLOBAL options (pre-subcommand). Value-taking ones consume the next
 # element; the value itself may be opaque (a path) without harm.
 _GIT_GLOBAL_VALUE_OPTS = frozenset({"-c", "-C", "--git-dir", "--work-tree",
@@ -589,12 +596,15 @@ def _git_output_safe(call: ast.Call) -> bool:
             # have satisfied a whole-argv membership test while the
             # driver stayed live. The region ends at a literal ``--`` —
             # or at the first opaque element, which could BE one.
-            options = []
+            disabled = {"ext": False, "textconv": False}
             for later in argv[i + 1:]:
                 if later is None or later == "--":
                     break
-                options.append(later)
-            return all(flag in options for flag in _GIT_DIFF_DRIVER_OFF)
+                toggle = _GIT_DRIVER_TOGGLES.get(later)
+                if toggle is not None:
+                    driver, off = toggle
+                    disabled[driver] = off
+            return all(disabled.values())
         return True
     return False  # options only, no subcommand — not a real invocation
 
@@ -1380,6 +1390,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("flags before -- are real options",
      'subprocess.run(["git", "diff", "--no-ext-diff", "--no-textconv",'
      ' "--", path], text=True, encoding="utf-8")', False),
+    # each driver is a last-one-wins toggle (verified: --no-ext-diff
+    # --ext-diff runs the helper; the reverse order does not).
+    ("a later --ext-diff re-enables the external driver",
+     'subprocess.run(["git", "diff", "--no-ext-diff", "--no-textconv",'
+     ' "--ext-diff"], text=True, encoding="utf-8")', True),
+    ("a later --textconv re-enables the filter",
+     'subprocess.run(["git", "diff", "--no-ext-diff", "--no-textconv",'
+     ' "--textconv"], text=True, encoding="utf-8")', True),
+    ("a later disable wins over an earlier enable",
+     'subprocess.run(["git", "diff", "--ext-diff", "--textconv",'
+     ' "--no-ext-diff", "--no-textconv"], text=True, encoding="utf-8")',
+     False),
     # reflective access reaches the spawners without naming them
     ("__dict__ access to a spawner fails closed",
      'subprocess.__dict__["run"](["git", "status"], text=True)', True),
