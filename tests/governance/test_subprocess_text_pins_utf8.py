@@ -146,6 +146,12 @@ _GIT_DIFF_CAPABLE = frozenset({
 # (codex P2 r29 on #410; verified: ``--no-ext-diff --ext-diff`` runs the
 # external helper, the reverse order does not), so the option region is
 # replayed in order and only the effective final state counts.
+# A subcommand this gate does not KNOW is refused outright, pin or not
+# (codex P2 r31 on #410): a ``!``-prefixed alias runs an arbitrary shell
+# command whose bytes neither the encoding pin nor the diff-driver flags
+# govern (verified: ``alias.raw='!printf "ÿ"'`` emits 0xff through a
+# fully pinned invocation). Built-ins cannot be shadowed by an alias
+# (verified), so the two known sets below are exactly what is provable.
 _GIT_DRIVER_TOGGLES = {
     "--no-ext-diff": ("ext", True), "--ext-diff": ("ext", False),
     "--no-textconv": ("textconv", True), "--textconv": ("textconv", False),
@@ -587,9 +593,11 @@ def _git_output_safe(call: ast.Call) -> bool:
         # them off). An UNKNOWN subcommand may be an alias for either,
         # so it needs both.
         known_text_free = el in _GIT_COMMIT_TEXT_FREE
+        if not known_text_free and el not in _GIT_DIFF_CAPABLE:
+            return False  # unknown subcommand: may be a shell alias
         if not known_text_free and not pin_seen:
             return False
-        if el in _GIT_DIFF_CAPABLE or not known_text_free:
+        if el in _GIT_DIFF_CAPABLE:
             # The flags count only in the subcommand's OPTION REGION
             # (codex P2 r28 on #410): ``git diff -- --no-ext-diff`` is a
             # PATHSPEC, not an option, so a repo file by that name would
@@ -1385,10 +1393,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("unknown git subcommand fails closed",
      'subprocess.run(["git", "lg", "-1"], text=True, encoding="utf-8")',
      True),
-    ("...unless the pin AND the driver-off flags cover it",
+    ("...and not even the pin plus driver-off flags rescue it",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "lg", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
+    # a "!"-prefixed alias runs an arbitrary shell command whose bytes
+    # nothing about git governs (verified: alias.raw emits 0xff through
+    # a fully pinned call), so the known-built-in sets are the ceiling.
+    ("a shell-backed alias name is refused however pinned",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "raw", "--no-ext-diff", "--no-textconv"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a known built-in with the same shape still passes",
+     'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H"],'
+     ' text=True, encoding="utf-8")', False),
     # an operator-configured diff.external / textconv driver writes
     # whatever bytes it likes, and the encoding pin does NOT govern it
     # (verified: a CP936 helper makes plain `git diff` emit CP936).
