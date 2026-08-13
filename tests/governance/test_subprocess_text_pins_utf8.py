@@ -625,6 +625,48 @@ def _git_output_safe(call: ast.Call) -> bool:
     return False  # options only, no subcommand — not a real invocation
 
 
+def _dynamic_subprocess_calls(tree: ast.Module) -> set[int]:
+    """ids of expressions that literally EVALUATE to the module.
+
+    ``__import__("subprocess")`` and ``importlib.import_module(
+    "subprocess")`` hand back the module without any import binding for
+    the name-based discovery to find (codex P2 r32 on #410). Only
+    LITERAL module names are resolved: a fully dynamic
+    ``import_module(name)`` is indistinguishable from ordinary plugin
+    loading (this repo has three such call sites), and the gate defends
+    against honest mistakes, not obfuscation — a determined bypass has
+    unbounded spellings (exec, getattr chains, ctypes).
+    """
+    importlib_modules: set[str] = set()
+    importlib_bare: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    importlib_modules.add(alias.asname or "importlib")
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    importlib_bare.add(alias.asname or alias.name)
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and first.value == "subprocess"):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in ({"__import__"}
+                                                      | importlib_bare):
+            found.add(id(node))
+        elif (isinstance(func, ast.Attribute)
+                and func.attr == "import_module"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in importlib_modules):
+            found.add(id(node))
+    return found
+
+
 def _subprocess_names(
     tree: ast.Module,
 ) -> tuple[set[str], set[str], set[str]]:
@@ -661,6 +703,17 @@ def _subprocess_names(
                     bare.add(alias.asname or alias.name)
                 elif alias.name in _TEXT_ONLY_HELPERS:
                     helpers.add(alias.asname or alias.name)
+    return _propagate_aliases(tree, modules, bare, helpers)
+
+
+def _propagate_aliases(
+    tree: ast.Module, modules: set[str], bare: set[str], helpers: set[str],
+) -> tuple[set[str], set[str], set[str]]:
+    """Grow the three pools over assignment aliases, to a fixpoint.
+
+    Shared by import discovery and the dynamic-import seeding so both
+    reach ``sp2 = sp`` and ``runner = sp.run`` by the same rule.
+    """
     grew = True
     while grew:
         grew = False
@@ -754,7 +807,21 @@ def offending_lines(source: str) -> list[int]:
     except SyntaxError:  # not this gate's job to report
         return []
     modules, bare, text_helpers = _subprocess_names(tree)
-    if not modules and not bare and not text_helpers:
+    dynamic = _dynamic_subprocess_calls(tree)
+    if dynamic:
+        # ``sp = __import__("subprocess")`` binds the module under an
+        # ordinary name; the same fixpoint that tracks ``sp = subprocess``
+        # then carries it (and its aliases) forward.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if node.value is not None and id(node.value) in dynamic:
+                    modules.update(x.id for x in targets
+                                   if isinstance(x, ast.Name))
+        modules, bare, text_helpers = _propagate_aliases(
+            tree, modules, bare, text_helpers)
+    if not modules and not bare and not text_helpers and not dynamic:
         return []
     sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
     # A sanctioned name is trusted only when the file binds it EXACTLY
@@ -791,11 +858,12 @@ def offending_lines(source: str) -> list[int]:
 
     spawn_attrs = _SPAWNERS | _TEXT_ONLY_HELPERS
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)):
+        is_module_expr = id(node) in dynamic
+        if not (is_module_expr or (isinstance(node, ast.Name)
+                                   and isinstance(node.ctx, ast.Load))):
             continue
         parent = parents.get(node)
-        if node.id in modules:
+        if is_module_expr or node.id in modules:
             if isinstance(parent, ast.Attribute) and parent.value is node:
                 if parent.attr in _SUBPROCESS_INERT_ATTRS:
                     continue  # PIPE / DEVNULL / exceptions: cannot spawn
@@ -829,11 +897,12 @@ def offending_lines(source: str) -> list[int]:
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
-            is_spawn = (
-                func.attr in _SPAWNERS
-                and isinstance(func.value, ast.Name)
-                and func.value.id in modules
+            base_is_module = (
+                (isinstance(func.value, ast.Name)
+                 and func.value.id in modules)
+                or id(func.value) in dynamic
             )
+            is_spawn = func.attr in _SPAWNERS and base_is_module
         elif isinstance(func, ast.Name):
             is_spawn = func.id in bare
         else:
@@ -846,8 +915,9 @@ def offending_lines(source: str) -> list[int]:
         is_text_helper = (
             isinstance(func, ast.Attribute)
             and func.attr in _TEXT_ONLY_HELPERS
-            and isinstance(func.value, ast.Name)
-            and func.value.id in modules
+            and ((isinstance(func.value, ast.Name)
+                  and func.value.id in modules)
+                 or id(func.value) in dynamic)
         ) or (isinstance(func, ast.Name) and func.id in text_helpers)
         if is_text_helper:
             hits.append(node.lineno)
@@ -1404,6 +1474,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "raw", "--no-ext-diff", "--no-textconv"], text=True,'
      ' encoding="utf-8")', True),
+    # a LITERAL dynamic import hands back the module with no import
+    # binding for name-based discovery to find.
+    ("__import__ chain spawns are recognized",
+     '__import__("subprocess").run(["git", "status"], text=True)', True),
+    ("__import__ alias spawns are recognized",
+     'sp = __import__("subprocess")\n'
+     'sp.run(["git", "status"], text=True)', True),
+    ("importlib.import_module chain is recognized",
+     "import importlib\n"
+     'importlib.import_module("subprocess").run(["git", "status"],'
+     " text=True)", True),
+    ("from-imported import_module is recognized",
+     "from importlib import import_module\n"
+     'import_module("subprocess").run(["git", "status"], text=True)', True),
+    ("a dynamically imported module forwarded fails closed",
+     'helper(__import__("subprocess"))', True),
+    ("a properly pinned dynamic-import spawn passes",
+     'sp = __import__("subprocess")\n'
+     'sp.run(["git", "status"], text=True, encoding="utf-8")', False),
+    ("a dynamic import of another module is untouched",
+     '__import__("json").dumps({})', False),
     ("a known built-in with the same shape still passes",
      'subprocess.run(["git", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H"],'
