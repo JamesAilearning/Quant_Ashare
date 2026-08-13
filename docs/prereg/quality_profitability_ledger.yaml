@@ -305,6 +305,32 @@ entries:
       工件 output/gate4a/fwer_20260716T011428Z。verdict 输入=干净
       阴性,交操作人按冻结三态规则终裁;绝不 auto-pivot。
 
+  - id: E029
+    date: 2026-08-13
+    type: data_manifest_superseded
+    ref: E007
+    status: recorded
+    note: >-
+      基本面新方向的 CSI800 财报 ingest 向同一 store
+      (D:/qlib_data/financial_pit_raw) 追加了 1515 个新 ticker
+      (income +147373/bs +134804/cf +127092 行, changed=0, holes=1
+      = 600927.SH bs 真歧义 fail-loud), 文件数 1880 -> 6415
+      (income 2140/bs 2138/cf 2137), 新 aggregate
+      sha256=6aae97b2ad88ac73…。**后果**: E007 冻结件的
+      gate3_store_manifest.py --verify 从此 REFUSE —— 其比对是
+      recorded∪actual 并集, 新增文件必然报 recorded=None。
+      **但**: ingest 前后各做一次核验, 动手前 MANIFEST OK
+      (1880 files, aggregate=4560e853…), 动手后逐文件复核 E007 记录的
+      1880 个 sha256 —— 0 不符 0 丢失, 老文件字节级零改动
+      (只写新 ticker 的新 parquet, 从不触碰既存文件)。故 Gate-4A
+      的数据版本审计能力实质保留: 按 E007 的 per-file 哈希做子集核验
+      永久有效, 失效的只是全量 --verify 这一形态。
+      **为何可接受**: 本家族已于 E028 裁决 CLEAN_NEGATIVE(全批 FWER,
+      九 trial 全负)并有效排除, holdout_unblinded 仍为 false 且
+      不可反悔, 此后不再有任何决策级 run 需要 --verify 通过。
+      本条不改 E007(append-only), 仅登记其 verify 形态失效的事实与边界。
+      新宇宙的冻结件属于新家族的新预注册包, 不复用本包。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。
