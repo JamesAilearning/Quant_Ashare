@@ -84,6 +84,21 @@ QUARTER_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
 # Gate-1 memo §4 pooled row-level table (full CSI300-ever incl. financials) —
 # embedded so the report auto-computes the deviation column. "~" values in the
 # memo are recorded at their stated midpoint.
+#
+# The baseline is BOUND TO THE MEMBERSHIP IT WAS MEASURED ON. Gate-1 measured a
+# CSI300-ever set of 627 names; the instruments file has since been rebuilt and
+# the same label now resolves to 949. Differencing against a baseline from a
+# different member set mixes membership composition into a column that claims
+# to isolate "as-of vs pooled" — and it shows: on the 949-name set several
+# deltas come out POSITIVE, contradicting the as-of <= pooled expectation the
+# column is read under (codex #425 r10).
+#
+# The recorded size is the strongest identity available — the original 627-name
+# list was not preserved — so this is a NECESSARY, not sufficient, check: equal
+# size does not prove equal membership. It is enough to catch the drift that
+# actually happened, and it fails CLOSED (suppresses the comparison) rather
+# than printing an uninterpretable delta.
+GATE1_POOLED_EVER_COUNT = 627
 GATE1_POOLED: dict[str, dict[int, float]] = {
     "revenue":       {2018: 1.00, 2019: 1.00, 2020: 1.00, 2021: 1.00, 2022: 1.00, 2023: 1.00, 2024: 1.00, 2025: 1.00},
     "admin_exp":     {2018: 1.00, 2019: 1.00, 2020: 1.00, 2021: 1.00, 2022: 1.00, 2023: 1.00, 2024: 1.00, 2025: 1.00},
@@ -557,8 +572,11 @@ def build_report(args: argparse.Namespace) -> str:
           f"{len(res.differing)} |")
     a("")
     # Gate-1's pooled table is a CSI300-ever measurement, so every Gate-1
-    # comparison below is gated on the run's universe (codex #425 P2).
-    gate1_comparable = args.floors_universe == "csi300"
+    # comparison below is gated on the run's universe (codex #425 P2) AND on
+    # the membership it was measured on (codex #425 r10) — same label, rebuilt
+    # file, different member set.
+    gate1_comparable = (args.floors_universe == "csi300"
+                        and len(ever) == GATE1_POOLED_EVER_COUNT)
     a("## 5. 附表:"
       + ("Gate-1 可比口径" if gate1_comparable else "含金融的 anchor 分母口径")
       + f"({universe_label} 含金融,分母=当期 anchor 有披露的名字)"
@@ -572,9 +590,17 @@ def build_report(args: argparse.Namespace) -> str:
         # GATE1_POOLED is a CSI300-ever measurement; differencing another
         # universe against it compares different issuer sets and would read as
         # a coverage delta when it is a universe delta.
-        a(f"**Δ 列不适用**: Gate-1 §4 pooled 是 CSI300-ever 口径,本报告宇宙为 "
-          f"{universe_label} —— 两者 issuer 集合不同,相减得到的是宇宙差异而非覆盖差异,"
-          "故本表只列本宇宙的 as-of 值,不做 Δ 对比。")
+        if args.floors_universe != "csi300":
+            why = (f"本报告宇宙为 {universe_label},而 Gate-1 §4 pooled 是 "
+                   "CSI300-ever 口径")
+        else:
+            why = (f"宇宙标签同为 csi300,但 Gate-1 测的是 "
+                   f"**{GATE1_POOLED_EVER_COUNT} 名**的 CSI300-ever,本次成分文件"
+                   f"解析出 **{len(ever)} 名** —— 同一标签、不同成员集")
+        a(f"**Δ 列不适用**: {why} —— issuer 集合不同,相减得到的是**成分差异**而非"
+          "覆盖差异,故本表只列本宇宙的 as-of 值,不做 Δ 对比。"
+          "(成员数相等是必要非充分条件:基线原始名单未留存,故以规模作身份,"
+          "不符即**关闭**对比而非印出无法解释的 Δ。)")
     a("")
     a("| field | " + " | ".join(str(y) for y in YEARS)
       + (" | Δ vs Gate-1 (mean) |" if gate1_comparable else " |"))
@@ -649,9 +675,20 @@ def build_report(args: argparse.Namespace) -> str:
     # "not comparable" note and pass CSI300 conclusions off as this universe's
     # (codex #425 P2). So off csi300 the section reports only THIS universe's
     # measured facts.
-    a("## 7. " + ("偏离 Gate-1 memo 的意外(如实记录)" if gate1_comparable
-                  else f"{universe_label} as-of 口径要点(如实记录;"
-                       "Gate-1 memo 为 CSI300-ever 口径,本节不与之对比)"))
+    # The suppression reason must name the ACTUAL mismatch: off csi300 it is the
+    # universe, on csi300 it is the membership the baseline was measured on.
+    # Printing "Gate-1 is CSI300-ever" as the reason on a CSI300-ever run reads
+    # as a contradiction (codex #425 r10).
+    if gate1_comparable:
+        head7 = "偏离 Gate-1 memo 的意外(如实记录)"
+    elif args.floors_universe != "csi300":
+        head7 = (f"{universe_label} as-of 口径要点(如实记录;Gate-1 memo 为 "
+                 "CSI300-ever 口径,本节不与之对比)")
+    else:
+        head7 = (f"{universe_label} as-of 口径要点(如实记录;Gate-1 基线测于 "
+                 f"{GATE1_POOLED_EVER_COUNT} 名的成员集、本次为 {len(ever)} 名,"
+                 "成分不同故本节不与之对比 —— 见 §5)")
+    a("## 7. " + head7)
     a("")
     # §7 items are numbered at emission, not hardcoded: item 5 is emitted only
     # when the Gate-1 comparison applies, so a literal "6." would leave a
@@ -698,11 +735,20 @@ def build_report(args: argparse.Namespace) -> str:
       "含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为"
       "诚信包络的已量化界。")
     if gate1_comparable:
-        # Gate-1 Δ figures are CSI300-ever measurements; off that universe the
-        # whole claim (and its fixed -5.9pp / -3.9pp numbers) belongs to a
-        # different issuer set and is therefore omitted rather than restated.
-        note("**其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
-          "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
+        # Derived from the deltas actually computed above, never hardcoded: a
+        # narrative pinned to yesterday's numbers contradicts the table printed
+        # directly above it the moment the inputs move (codex #425 r10).
+        mean_deltas = {
+            f: 100.0 * sum(cov_cmp[f][y] - GATE1_POOLED[f][y] for y in YEARS)
+            / len(YEARS)
+            for f in all_fields if f in GATE1_POOLED
+        }
+        within = sum(1 for d in mean_deltas.values() if abs(d) <= 1.0)
+        worst = sorted(mean_deltas.items(), key=lambda kv: -abs(kv[1]))[:2]
+        worst_txt = "、".join(f"{f} {d:+.1f}pp" for f, d in worst)
+        note(f"**其余字段 Gate-1 数字大体坐实**(§5 的 {len(mean_deltas)} 个可比字段中 "
+             f"{within} 个 Δ 在 ±1pp 内;偏离最大的是 {worst_txt} —— 由 2018-2020 "
+             "过渡期 as-of 滞后驱动,非数据缺失)。")
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
     note(f"**金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
       f"{len(universe_fin)} 名(全市场金融分类器 {len(fin_issuers)} 名,与本宇宙成分"

@@ -360,6 +360,14 @@ entries:
       tests/governance/test_candidate_window_fields_match_frozen_formulas.py
       回读钉住 = 冻结公式的 C1/C2/C3_FIELDS, 且钉住已发布件与生成器同步 ——
       改字段而不重跑报告会红。
+      **同轮补记(codex #425 r10)**: 成分从 627 -> 949 使 §5 的
+      "Δ vs Gate-1 pooled" 列不再可解释(基线测于 627 名成员集,相减混入成分
+      差异;实测多个 Δ 转正,与"as-of <= pooled"的读法直接矛盾)。故 Δ 对比
+      改为**同时**绑定宇宙标签与成员规模(GATE1_POOLED_EVER_COUNT=627),
+      不符即关闭对比并写明原因;§7 的 Gate-1 条目随之不再发出。原始 627 名
+      名单未留存, 规模是可得的最强身份 —— 属必要非充分, 但方向是 fail-closed。
+      §7 其余条目中原硬编码的 Δ 数字(rd_exp -5.9pp / contract_liab -3.9pp)
+      改为由实算 deltas 推出, 不再可能与紧邻其上的表自相矛盾。
 
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
