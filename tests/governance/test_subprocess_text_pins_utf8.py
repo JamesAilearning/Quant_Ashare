@@ -230,9 +230,14 @@ _GIT_DECORATION_OPTS = ("--decorate", "--source")
 # Options that make the log family print PATCH CONTENT — raw blob
 # bytes, untranscoded by any pin (codex P2 r51, reproduced).
 _GIT_PATCH_OPTS = frozenset({
-    "-p", "-u", "--patch", "--patch-with-raw", "--patch-with-stat",
+    "--patch", "--patch-with-raw", "--patch-with-stat",
     "--cc", "--unified", "--full-diff", "--first-parent-patch",
 })
+# The SHORT patch options carry an attached value (``-U1``) and bundle
+# (``-pU3``), so a whole-token match missed them (codex P2 r52 on #410,
+# reproduced with ``-U1``). Any single-dash cluster containing one of
+# these letters generates a patch.
+_GIT_PATCH_LETTERS = frozenset({"p", "u", "U"})
 _GIT_PATH_OUTPUT_OPTS = frozenset({
     "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
     "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
@@ -880,6 +885,9 @@ def _git_output_safe(call: ast.Call) -> bool:
                     return False  # explicit signature verification
                 if head_opt in _GIT_PATCH_OPTS:
                     return False  # raw patch content
+                if (later.startswith("-") and not later.startswith("--")
+                        and _GIT_PATCH_LETTERS & set(later[1:])):
+                    return False  # -p / -u / -U<n> / bundled forms
                 if head_opt == _GIT_ENCODING_OPT:
                     # Its value is the next element when separated; an
                     # opaque or non-UTF-8 codec refuses.
@@ -1764,6 +1772,15 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    ("an attached -U1 generates a patch too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-U1", "-1"], text=True, encoding="utf-8")', True),
+    ("a bundled -pU3 as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-pU3", "-1"], text=True, encoding="utf-8")', True),
+    ("a patch-free short option stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-n", "1", "--format=%H"], text=True, encoding="utf-8")', False),
     ("--patch is the same option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--patch", "-1"], text=True, encoding="utf-8")', True),
