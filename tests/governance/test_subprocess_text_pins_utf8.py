@@ -846,12 +846,19 @@ def _subprocess_names(
 
 def _propagate_aliases(
     tree: ast.Module, modules: set[str], bare: set[str], helpers: set[str],
+    dynamic: set[int] | None = None,
 ) -> tuple[set[str], set[str], set[str]]:
     """Grow the three pools over assignment aliases, to a fixpoint.
 
     Shared by import discovery and the dynamic-import seeding so both
-    reach ``sp2 = sp`` and ``runner = sp.run`` by the same rule.
+    reach ``sp2 = sp`` and ``runner = sp.run`` by the same rule. The
+    method-alias branch accepts a DYNAMIC base as well (codex P2 r42 on
+    #410): ``runner = __import__("subprocess").run`` binds the spawner
+    just as ``runner = sp.run`` does, and requiring an ``ast.Name`` base
+    left it untracked while the forwarding check exempted it as if it
+    had been.
     """
+    dynamic = dynamic or set()
     grew = True
     while grew:
         grew = False
@@ -868,8 +875,9 @@ def _propagate_aliases(
                         pool.update(names)
                         grew = True
             elif (isinstance(value, ast.Attribute)
-                    and isinstance(value.value, ast.Name)
-                    and value.value.id in modules):
+                    and ((isinstance(value.value, ast.Name)
+                          and value.value.id in modules)
+                         or id(value.value) in dynamic)):
                 # ``runner = subprocess.run`` stores the METHOD (codex P2
                 # r19 follow-up) — the alias spawns exactly like the
                 # from-imported bare name, so it joins the same pool.
@@ -958,7 +966,7 @@ def offending_lines(source: str) -> list[int]:
                     modules.update(x.id for x in targets
                                    if isinstance(x, ast.Name))
         modules, bare, text_helpers = _propagate_aliases(
-            tree, modules, bare, text_helpers)
+            tree, modules, bare, text_helpers, dynamic)
     if not modules and not bare and not text_helpers and not dynamic:
         return []
     sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
@@ -1627,6 +1635,17 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("from-imported import_module is recognized",
      "from importlib import import_module\n"
      'import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("a method alias taken from a dynamic import is tracked",
+     'runner = __import__("subprocess").run\n'
+     'runner(["git"], text=True)', True),
+    ("...the text-helper alias too",
+     'go = __import__("subprocess").getoutput\n'
+     'go("git log")', True),
+    ("...and the pinned form of that alias passes",
+     'runner = __import__("subprocess").run\n'
+     'runner(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"],'
+     ' text=True, encoding="utf-8")', False),
     ("a dynamically imported module forwarded fails closed",
      'helper(__import__("subprocess"))', True),
     ("a properly pinned dynamic-import spawn passes",
