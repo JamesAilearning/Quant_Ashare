@@ -296,7 +296,17 @@ _GIT_DRIVER_TOGGLES = {
 # git GLOBAL options (pre-subcommand). Value-taking ones consume the next
 # element; the value itself may be opaque (a path) without harm.
 _GIT_GLOBAL_VALUE_OPTS = frozenset({"-c", "-C", "--git-dir", "--work-tree",
-                                    "--namespace", "--exec-path"})
+                                    "--namespace"})
+# Global options that PRINT and exit — their output is a filesystem
+# path or a version string that no pin governs, and a bare
+# ``--exec-path`` swallows the next argv element only in appearance
+# (codex P2 r57 on #410; verified: it prints the exec path and never
+# reaches the subcommand). The ``--exec-path=<path>`` value form is an
+# ordinary global option and stays allowed.
+_GIT_TERMINAL_OUTPUT_OPTS = frozenset({
+    "--exec-path", "--man-path", "--html-path", "--info-path",
+    "--version", "-v", "--help", "-h",
+})
 _GIT_GLOBAL_FLAG_OPTS = frozenset({"-p", "--paginate", "--no-pager",
                                    "--bare", "--no-replace-objects",
                                    "--literal-pathspecs",
@@ -741,6 +751,8 @@ def _git_output_safe(call: ast.Call) -> bool:
             # later -c that overrides any pin seen so far, or BE the
             # subcommand. Unprovable either way.
             return False
+        if el in _GIT_TERMINAL_OUTPUT_OPTS:
+            return False  # prints a path/version and exits
         if el in _GIT_GLOBAL_VALUE_OPTS:
             value = argv[i + 1] if i + 1 < len(argv) else None
             if el == "-c":
@@ -1818,6 +1830,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # bare printing globals never reach a subcommand (verified).
+    ("a bare --exec-path prints a path and exits",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path", "ignored", "rev-parse",'
+     ' "HEAD"], text=True, encoding="utf-8")', True),
+    ("--version is the same shape",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--version"], text=True, encoding="utf-8")',
+     True),
+    ("...while the --exec-path=<path> value form stays allowed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path=/opt/git", "rev-parse", "HEAD"],'
+     ' text=True, encoding="utf-8")', False),
     # check-ignore -v prints the matching .gitignore PATTERN, which
     # quotePath does not escape (reproduced).
     ("check-ignore is refused in text mode",
