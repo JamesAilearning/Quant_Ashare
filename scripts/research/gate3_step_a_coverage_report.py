@@ -40,6 +40,7 @@ Outputs (all in ONE markdown report):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -93,12 +94,18 @@ QUARTER_ENDS = ((3, 31), (6, 30), (9, 30), (12, 31))
 # deltas come out POSITIVE, contradicting the as-of <= pooled expectation the
 # column is read under (codex #425 r10).
 #
-# The recorded size is the strongest identity available — the original 627-name
-# list was not preserved — so this is a NECESSARY, not sufficient, check: equal
-# size does not prove equal membership. It is enough to catch the drift that
-# actually happened, and it fails CLOSED (suppresses the comparison) rather
-# than printing an uninterpretable delta.
-GATE1_POOLED_EVER_COUNT = 627
+# Enabling the comparison requires a VERIFIABLE membership identity, and size is
+# not one: any csi300.txt that happens to hold 627 distinct issuers would re-open
+# the comparison over a different member set, which is the very defect the check
+# was added for (codex #425 r13). The original 627-name list was NOT preserved,
+# so no fingerprint can be recorded today and the comparison stays OFF.
+#
+# This is deliberately left as a recordable slot rather than deleted: whoever
+# recovers the Gate-1 membership list records its fingerprint here and the
+# comparison re-enables itself, with the equality check doing real work. Until
+# then `None` means "no identity" — never "skip the check".
+GATE1_POOLED_MEMBERSHIP_SHA256: str | None = None
+GATE1_POOLED_EVER_COUNT = 627  # recorded for the record; NOT an identity
 GATE1_POOLED: dict[str, dict[int, float]] = {
     "revenue":       {2018: 1.00, 2019: 1.00, 2020: 1.00, 2021: 1.00, 2022: 1.00, 2023: 1.00, 2024: 1.00, 2025: 1.00},
     "admin_exp":     {2018: 1.00, 2019: 1.00, 2020: 1.00, 2021: 1.00, 2022: 1.00, 2023: 1.00, 2024: 1.00, 2025: 1.00},
@@ -175,17 +182,22 @@ def gate1_delta_note(per_year: dict[str, dict[int, float]]) -> str:
             abs(v) for y, v in per_year[wf].items()
             if y <= GATE1_TRANSITION_LAST_YEAR)
         shares.append(abs_early / abs_total if abs_total > 0 else 0.0)
-    # The transition-window cause is claimed only when the early years really
-    # do carry most of the deviation for EVERY field named above.
+    # WHERE the deviation sits is measured; WHY it sits there is NOT. Early
+    # concentration is equally consistent with as-of disclosure lag, an
+    # incomplete historical store, and provider gaps in those years — and this
+    # function sees only deltas-by-year, none of the ingest / missing-file /
+    # disclosure-lag evidence that would separate them (codex #425 r13). So the
+    # concentration is REPORTED as the measurement it is, and no cause is named.
     if shares and min(shares) >= GATE1_CAUSE_CONCENTRATION:
-        cause = (f"—— 偏离的 {pct(min(shares))}+ 集中在 "
-                 f"2018-{GATE1_TRANSITION_LAST_YEAR} 过渡期(as-of 滞后),"
-                 "非数据缺失")
+        where = (f"—— 偏离的 {pct(min(shares))}+ 集中在 "
+                 f"2018-{GATE1_TRANSITION_LAST_YEAR};**成因不由本表判定**"
+                 "(as-of 滞后 / 早年 store 不全 / 提供方缺口在本表看来一模一样,"
+                 "须另引证据)")
     else:
-        cause = (f"—— 本报告**不对成因下结论**:偏离并未集中在 "
-                 f"2018-{GATE1_TRANSITION_LAST_YEAR} 过渡期,成因须另行查证")
+        where = (f"—— 偏离并未集中在 2018-{GATE1_TRANSITION_LAST_YEAR};"
+                 "**成因不由本表判定**")
     return (f"{headline}(§5 的 {len(mean_deltas)} 个可比字段中 {within} 个 Δ 在 "
-            f"±1pp 内;偏离最大的是 {worst_txt} {cause})。")
+            f"±1pp 内;偏离最大的是 {worst_txt} {where})。")
 
 
 class ReportError(RuntimeError):
@@ -622,8 +634,11 @@ def build_report(args: argparse.Namespace) -> str:
     # comparison below is gated on the run's universe (codex #425 P2) AND on
     # the membership it was measured on (codex #425 r10) — same label, rebuilt
     # file, different member set.
+    ever_fingerprint = hashlib.sha256(
+        "\n".join(sorted(ever)).encode("utf-8")).hexdigest()
     gate1_comparable = (args.floors_universe == "csi300"
-                        and len(ever) == GATE1_POOLED_EVER_COUNT)
+                        and GATE1_POOLED_MEMBERSHIP_SHA256 is not None
+                        and ever_fingerprint == GATE1_POOLED_MEMBERSHIP_SHA256)
     a("## 5. 附表:"
       + ("Gate-1 可比口径" if gate1_comparable else "含金融的 anchor 分母口径")
       + f"({universe_label} 含金融,分母=当期 anchor 有披露的名字)"
@@ -641,13 +656,14 @@ def build_report(args: argparse.Namespace) -> str:
             why = (f"本报告宇宙为 {universe_label},而 Gate-1 §4 pooled 是 "
                    "CSI300-ever 口径")
         else:
-            why = (f"宇宙标签同为 csi300,但 Gate-1 测的是 "
-                   f"**{GATE1_POOLED_EVER_COUNT} 名**的 CSI300-ever,本次成分文件"
-                   f"解析出 **{len(ever)} 名** —— 同一标签、不同成员集")
-        a(f"**Δ 列不适用**: {why} —— issuer 集合不同,相减得到的是**成分差异**而非"
-          "覆盖差异,故本表只列本宇宙的 as-of 值,不做 Δ 对比。"
-          "(成员数相等是必要非充分条件:基线原始名单未留存,故以规模作身份,"
-          "不符即**关闭**对比而非印出无法解释的 Δ。)")
+            why = ("宇宙标签同为 csi300,但**基线的成员身份无法核验** —— Gate-1 "
+                   f"测于 {GATE1_POOLED_EVER_COUNT} 名的 CSI300-ever(本次成分文件"
+                   f"解析出 {len(ever)} 名),而那份原始名单**未留存**,"
+                   "无指纹可比")
+        a(f"**Δ 列不适用**: {why} —— issuer 集合无法证明相同,相减可能混入"
+          "**成分差异**而非覆盖差异,故本表只列本宇宙的 as-of 值,不做 Δ 对比。"
+          f"(本次成员集指纹 `{ever_fingerprint[:16]}…`;补录 Gate-1 名单的指纹后"
+          "对比即自动恢复,规模相等**不**作为身份。)")
     a("")
     a("| field | " + " | ".join(str(y) for y in YEARS)
       + (" | Δ vs Gate-1 (mean) |" if gate1_comparable else " |"))
@@ -732,9 +748,8 @@ def build_report(args: argparse.Namespace) -> str:
         head7 = (f"{universe_label} as-of 口径要点(如实记录;Gate-1 memo 为 "
                  "CSI300-ever 口径,本节不与之对比)")
     else:
-        head7 = (f"{universe_label} as-of 口径要点(如实记录;Gate-1 基线测于 "
-                 f"{GATE1_POOLED_EVER_COUNT} 名的成员集、本次为 {len(ever)} 名,"
-                 "成分不同故本节不与之对比 —— 见 §5)")
+        head7 = (f"{universe_label} as-of 口径要点(如实记录;Gate-1 基线的成员名单"
+                 "未留存、身份无法核验,故本节不与之对比 —— 见 §5)")
     a("## 7. " + head7)
     a("")
     # §7 items are numbered at emission, not hardcoded: item 5 is emitted only
