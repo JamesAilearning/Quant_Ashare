@@ -814,6 +814,22 @@ def _git_output_safe(call: ast.Call) -> bool:
                 value = tail[pos + 1] if pos + 1 < len(tail) else None
                 if value is None:
                     return False  # missing or opaque format value
+            # A NAMED format (``--pretty=raw``, ``medium``, ``oneline``
+            # …) carries no placeholder for the scan below to inspect,
+            # and prints identity/message/notes fields git does not
+            # transcode (codex P2 r55 on #410; reproduced: --pretty=raw
+            # emits a non-UTF-8 author name verbatim). Only the
+            # placeholder languages are provable, so a value with no
+            # ``%`` refuses — the empty format, which prints nothing,
+            # is the one exception.
+            scan_value = value
+            for prefix in ("format:", "tformat:"):
+                if scan_value.startswith(prefix):
+                    scan_value = scan_value[len(prefix):]
+                    break
+            if scan_value and "%" not in scan_value:
+                return False  # a named format, or an unprovable literal
+            value = scan_value
             pos_v = 0
             while True:
                 pos_v = value.find("%", pos_v)
@@ -1796,6 +1812,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # NAMED formats carry no placeholder to inspect and print identity
+    # fields git does not transcode (reproduced: --pretty=raw emits a
+    # non-UTF-8 author name verbatim).
+    ("--pretty=raw is a named format, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--pretty=raw", "-1"], text=True, encoding="utf-8")', True),
+    ("--format=oneline likewise",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=oneline", "-1"], text=True, encoding="utf-8")', True),
+    ("the format: prefix keeps its placeholders provable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=format:%H", "-1"], text=True, encoding="utf-8")',
+     False),
+    ("tformat: too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=tformat:%H%n%cI", "-1"], text=True, encoding="utf-8")',
+     False),
+    ("an empty format prints nothing, so it passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=", "--name-status", "-c", "core.quotePath=true", "-1"],'
+     ' text=True, encoding="utf-8")', True),
     # only `log` stays acceptable in the diff family: the others print
     # file content or raw paths as their normal output (blame,
     # format-patch and rev-list reproduced with a tracked 0xff).
