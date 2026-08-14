@@ -944,6 +944,17 @@ def _git_output_safe(call: ast.Call) -> bool:
                     and later.split("=")[0].startswith(_GIT_DECORATION_OPTS)):
                 return False  # ref decorations print raw ref names
         if prints_paths:
+            # ``--error-unmatch`` turns an unmatched pathspec into an
+            # ERROR that echoes the path verbatim (codex P2 r63 on #410,
+            # reproduced), so with it every operand must be literal —
+            # closer or not, the "git ignores a non-matching pathspec"
+            # premise no longer holds.
+            for later in argv[i + 1:]:
+                if (later is not None
+                        and later.split("=")[0] == "--error-unmatch"):
+                    if any(x is None for x in argv[i + 1:]):
+                        return False
+                    break
             if not quotepath_on:
                 return False  # unquoted paths can be any bytes
             for later in argv[i + 1:]:
@@ -1879,6 +1890,17 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # --error-unmatch echoes an unmatched pathspec verbatim (verified),
+    # so it revokes the "pathspecs past the closer are inert" premise.
+    ("ls-files --error-unmatch with an opaque pathspec refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--error-unmatch", "--", path],'
+     ' text=True, encoding="utf-8")', True),
+    ("...literal pathspecs are still fine with it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--error-unmatch", "--",'
+     ' "CLAUDE.md"], text=True, encoding="utf-8")', False),
+    ("...and without it a dynamic pathspec stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", path], text=True,'
+     ' encoding="utf-8")', False),
     # merge-base treats everything as a REVISION, so a closer is no
     # licence there either (verified: it echoes a bad post-`--` operand).
     ("an opaque merge-base operand past -- still refuses",
