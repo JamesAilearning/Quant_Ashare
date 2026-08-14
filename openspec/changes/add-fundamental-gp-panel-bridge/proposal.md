@@ -114,6 +114,20 @@ provenance 的面板/求值参数（或明确一个在求值前把 period 帧打
 `filter_correlated` 拿不到 `periods` —— 而这条是**真正做裁决**的路径。造面板的
 adapter 与其调用方一并进 scope，并有端到端晋升测试。
 
+**而"端到端"要成立，`DataConfig` 得先记全重建面板的输入**（codex #427 r6 P1）：
+`promote_run` 只能把持久化的 `DataConfig` 交给 `build_panel_for_data`，而它今天只有
+`pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 / `fields`，
+**没有财报 store 路径、日历身份、金融排除集、基本面模式** —— 而 `FinancialPITDataView`
+这三样在构造时就要。缺了就只能靠未记录的外部/全局依赖重建，等于"晋升裁决的数据没人
+能证明与挖掘时相同"。这些输入进 run-bound 契约，并进其 load / hash / migration 范围。
+
+**生产物化这条边界，本 change 选择"拒绝"而不是"接线"**（codex #427 r6 P1）：
+`mined_factor_handler.py:213` 的 `evaluate_expression(entry.expr, resolved_panel)`
+不带 provenance，基本面池走到那里要么炸、要么在**没有终端层掩码**的情况下物化 ——
+一把尺裁决、另一把尺出厂。接线该消费者属后续 change（它还牵涉 bundle 输入），本
+change 只把边界做成**机器可执行的 fail-loud 拒绝**（含基本面终端的池写入生产目录即
+拒绝并点名后续 change），并测"纯量价池照旧放行"。文档注记不算边界。
+
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
 两者**零交集**（repo 已有 `test_namespace_mismatch_refuses` 记录）。面板必须冻结为与
@@ -176,19 +190,26 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
 
 * 新增：`src/research/fundamental_panel.py`（桥）、其测试、金丝雀测试、平移敏感性
   诊断脚本（`scripts/research/`）。
-* **修改**（初版误称零改动，codex #427 两轮更正）：
+* **修改**（初版误称零改动，codex #427 逐轮更正至此）：
   - `src/factor_mining/grammar.py` —— 注册基本面终端组 + 其类型/taint 规则；
   - `src/factor_mining/evaluator.py` —— 跨端点同期强制（见 §1b：必须在**知道表达式**
     的地方做，面板层做不到）；
   - `src/research/financial_pit_view.py` —— 增加公开的 provenance 响应，使
     `available_from_trade_date` 由唯一门给出而非被桥反推。
-  三处均不引入任何 qlib/PIT import，D5 不受影响。
   - `src/factor_mining/validator.py` —— 两条求值调用点（`_evaluate_segment` /
     `filter_correlated`）接 provenance，使验证与搜索用同一把尺；
   - `src/factor_mining/promote.py` 与其造面板 adapter `build_panel_for_data` ——
     晋升入口带 provenance，使**做裁决的那条路径**用的也是同一把尺；
+  - `src/factor_mining/miner.py` 的 `DataConfig` —— 补全重建基本面面板所需输入，
+    并纳入 load / hash / migration；
+  - `src/data/mined_factor_handler.py` —— 生产物化边界的 fail-loud 拒绝（只加拒绝，
+    不接 provenance；接线属后续 change）；
   - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
     经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
+
+  上述 `src/factor_mining/` 内的各处**均不引入任何 qlib/PIT import**（加的是终端
+  符号、类型、传参与拒绝逻辑），D5 gate 不受影响；`src/data/mined_factor_handler.py`
+  本就不在 D5 管辖内，且本 change 只给它加一条拒绝。
 * **仍然零改动**：`src/factor_mining/pit_adapter.py`、`src/data/pit/*`、canonical
   runtime。
 * **零 gate 改签**：D5 gate 与财务 PIT 隔离 gate 均保持原样并继续通过。

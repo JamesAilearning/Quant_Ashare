@@ -225,6 +225,63 @@ adjacent-period difference.
 - **THEN** the difference is NA — never imputed from a further-back period
   without saying so
 
+### Requirement: The run-bound data contract SHALL record everything needed to rebuild the panel
+
+A run's persisted data contract SHALL carry every input the fundamental panel
+is built from, so a later stage can reconstruct the SAME panel from the run
+alone. The promotion path passes only its persisted data config to the panel
+builder, while the view requires a financial store location, a calendar
+identity, and the financial-issuer exclusion set at construction — none of
+which the current contract records. Without them the panel can only be rebuilt
+through an unrecorded external or global dependency, and a promotion that
+re-derives its own inputs is adjudicating on data nobody can prove matches what
+was mined.
+
+The contract extension SHALL be covered by the same load / hash / migration
+handling as the fields already in it — a run hash that ignores the financial
+inputs would call two different panels the same run.
+
+#### Scenario: promotion rebuilds the mined panel from the run alone
+- **WHEN** promotion loads a run and rebuilds its fundamental panel
+- **THEN** every input comes from the run's own persisted contract, with no
+  ambient path, environment default, or global fallback
+
+#### Scenario: the run hash covers the fundamental inputs
+- **WHEN** two runs differ only in a fundamental panel input (store, calendar,
+  or exclusion set)
+- **THEN** their run hashes differ
+
+#### Scenario: a run missing the fundamental inputs fails loud
+- **WHEN** a fundamental run's contract lacks a required panel input
+- **THEN** loading it raises rather than filling the gap from a default
+
+### Requirement: Fundamental pools SHALL NOT reach production materialization until that path carries provenance
+
+A pool containing fundamental terminals SHALL NOT be materializable into the
+production factor directory while that path lacks provenance. The production
+materialization path evaluates a promoted pool's expressions against a qlib
+panel with no period provenance, so a fundamental pool arriving
+there would either fail on unresolvable financial terminals or — if a panel
+were injected — materialize WITHOUT the terminal-level alignment mask that
+decided its promotion. A factor adjudicated under one definition and served
+under another is the same defect class as adjudicating on a different metric.
+
+Wiring that consumer is OUT OF SCOPE for this change, which delivers the bridge
+and its defenses only. Therefore this change SHALL make the boundary a
+MACHINE-ENFORCED REFUSAL, not a documented caveat: writing a pool containing
+fundamental terminals into the production directory SHALL fail loud, naming the
+follow-up change that lifts the block. A note in a document is not a boundary —
+the refusal must be executable and tested.
+
+#### Scenario: a fundamental pool is refused at the production boundary
+- **WHEN** a pool containing fundamental terminals is written to the production
+  factor directory
+- **THEN** the write fails loud and names what must land first
+
+#### Scenario: a price-volume pool is unaffected
+- **WHEN** a pool contains no fundamental terminals
+- **THEN** production materialization proceeds exactly as today
+
 ### Requirement: The panel SHALL emit one frozen instrument namespace aligned with the GP inputs
 
 The panel's instrument labels SHALL be emitted in the SAME namespace as the GP

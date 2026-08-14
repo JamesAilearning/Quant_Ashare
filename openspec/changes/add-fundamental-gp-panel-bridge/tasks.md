@@ -76,6 +76,23 @@
       这条是**真正做裁决的路径** —— provenance 可选则晋升在未遮蔽值上裁决，必需则
       晋升直接失败。造面板的 adapter（`build_panel_for_data`）与其调用方一并进 scope，
       并有端到端晋升测试。
+- [ ] **`DataConfig` 要记全重建面板的输入**（codex #427 r6 P1）：`promote_run` 只能把
+      持久化的 `DataConfig` 交给 `build_panel_for_data`，而 `DataConfig`（`miner.py:42`）
+      只有 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 /
+      `fields` —— **没有财报 store 路径、没有日历身份、没有金融排除集、没有基本面
+      模式**，而 `FinancialPITDataView` 这三样都在构造时就要。缺了它们，晋升只能靠
+      未记录的外部/全局依赖去重建面板，"端到端晋升测试"要么用不了真 adapter、要么
+      验的是另一份数据。这些输入进 run-bound 数据契约，并进其 load / hash / migration
+      范围（hash 不覆盖 = 两份不同面板算同一个 run）。
+- [ ] **生产物化边界:机器可执行的拒绝**（codex #427 r6 P1）：
+      `src/data/mined_factor_handler.py:213` 的 `evaluate_expression(entry.expr,
+      resolved_panel)` 只吃 `FactorMiningDataView` 的 qlib 面板、不带 period
+      provenance。基本面池若走到这里，要么因财务终端无法解析而炸，要么（若注入面板）
+      **在没有终端层对齐掩码的情况下物化** —— 用一把尺裁决、用另一把尺出厂。
+      接线该消费者**不在本 change 范围**（本 change 只交付桥与防线），因此本 change
+      须把这条边界做成**机器可执行的 fail-loud 拒绝**：含基本面终端的池写入生产因子
+      目录即拒绝，并在报错里点名"要先落地哪个后续 change"。**文档注记不算边界** ——
+      拒绝必须可执行且有测试；同时测"纯量价池照旧放行"（非空性）。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
@@ -116,6 +133,8 @@
       `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
       调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
       provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
+      `miner.py` 的 `DataConfig`（补全重建面板所需输入 + hash/migration）与
+      `mined_factor_handler.py`（生产边界拒绝）**有**改动；
       `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
