@@ -198,12 +198,29 @@ and a search with no terminal restriction would be free to breed research-only
 terminals inside a legacy campaign. The default set SHALL remain exactly what it
 is today, pinned by a regression.
 
+Being opt-in is not enough on its own: the search's point-mutation
+replacement pool is built from the LEGACY terminal groups and then intersected
+with the campaign whitelist, so for a whitelist containing only fundamental
+terminals that intersection is EMPTY — and the resulting error is caught and
+the expression returned unchanged, which disables point mutation for the entire
+campaign SILENTLY. The change SHALL therefore migrate the replacement pool to
+be derived from the registered terminals of the same type rather than from the
+legacy groups alone, and SHALL cover it with a synthetic-whitelist regression.
+A search operator that degrades to a no-op without saying so is worse than one
+that fails.
+
 #### Scenario: a generated terminal resolves through the bridge to a view field
 - **WHEN** GP generates an expression referencing a registered fundamental
   terminal
 - **THEN** evaluating it against the bridged panel yields that charter field's
   as-of values — the terminal form is accepted by the evaluator and the charter
   form is what reaches the view
+
+#### Scenario: point mutation still mutates under a fundamental whitelist
+- **WHEN** a campaign whitelists only fundamental terminals and point mutation
+  targets one of them
+- **THEN** it produces a different terminal of the same type — it does not
+  silently return the expression unchanged
 
 #### Scenario: the legacy default terminal set is unchanged
 - **WHEN** a run leaves its fields unspecified, or a search runs with no
@@ -429,8 +446,9 @@ guarding test suite.
 A shift-sensitivity diagnostic SHALL rebuild the panel with every effective
 announcement date shifted later by `N` trading days and compare against the
 baseline. The hash compared SHALL cover the PROVENANCE-BEARING output — values
-AND their availability evidence together — and SHALL change unconditionally on
-any store whose shifted disclosures fall within the measured window.
+AND their availability evidence together — and SHALL change whenever at least
+one SHIFTED disclosure is actually SERVED by the requested panel on a sampled
+trade date.
 
 Hashing values alone would refuse a correct builder: a delayed filing that
 repeats the preceding period's value for the requested field, or whose field is
@@ -438,10 +456,34 @@ NA in both periods, leaves the value panel identical while its availability
 provenance moves. Including the evidence in the hash keeps the assertion
 unconditional without that false failure.
 
-An unchanged panel under a shifted announcement date SHALL be treated as proof
-that the builder does not consume the announcement date at all (e.g. it keys on
-report period) and SHALL REFUSE — a behavioural check that no amount of correct-
-looking code can substitute for.
+"Falls within the measured window" is NOT the right precondition: a shifted
+filing need not touch any requested field, endpoint, or instrument. A
+revenue-only panel correctly ignores a balance-sheet-only filing, so shifting
+that filing moves neither values nor evidence — and an unconditional rule would
+REFUSE a builder that is behaving exactly right. The diagnostic SHALL therefore
+establish RELEVANCE first: it SHALL verify that at least one shifted disclosure
+is served by the requested panel on a sampled date, and SHALL report
+INCONCLUSIVE rather than REFUSE when no such disclosure exists — an
+inconclusive diagnostic is a signal to widen the sample or use the
+deterministic fixture, not a verdict on the builder. Running the assertion on a
+deterministic relevant-record fixture satisfies this by construction.
+
+Given a relevant shifted disclosure, an unchanged panel SHALL be treated as
+proof that the builder does not consume the announcement date at all (e.g. it
+keys on report period) and SHALL REFUSE — a behavioural check that no amount of
+correct-looking code can substitute for.
+
+#### Scenario: an irrelevant shifted filing does not refuse the builder
+- **WHEN** every shifted disclosure belongs to a field, endpoint, or instrument
+  the requested panel does not serve
+- **THEN** the diagnostic reports INCONCLUSIVE rather than REFUSE — the
+  unchanged hash is expected, not evidence of an announcement-blind builder
+
+#### Scenario: a relevant shifted filing must move the hash
+- **WHEN** at least one shifted disclosure is served by the requested panel on
+  a sampled trade date
+- **THEN** the values-plus-evidence hash differs from the baseline, and an
+  unchanged hash REFUSES
 
 The IC-series assertion SHALL be required only on a DETERMINISTIC FIXTURE
 constructed so that the shift necessarily alters evaluated values or their

@@ -19,6 +19,13 @@
       `fields=()` 的存量 PIT run 会开始索取非 qlib 字段；而 `GPEngine` 的
       `_allowed_terminals` 默认 `None` = 不限制，等于让存量战役能繁殖研究专用终端。
       须加回归断言：默认 V1 面板仍是既有的十二个终端，新组 opt-in。
+      **opt-in 还不够，点变异池得一起迁移**（codex #427 r9 P2）：
+      `gp_engine._random_terminal_same_type`（`gp_engine.py:557-572`）的替换池只从
+      `FeatureRegistry.V1_SCALE_FREE` / `V1_RAW_PRICE` 取，再与白名单求交 —— 只含
+      基本面终端的白名单交出来是**空集**，`mutate_point` 又 `except GrammarError:
+      return expr`，于是整个基本面战役的点变异**静默退化为 no-op**。替换池改为按
+      **同类型的已注册终端**取（而非只认 legacy 组），并加合成白名单回归。
+      因此 `gp_engine.py` 不再只是"传参可能要动"——这条独立地把它带进 scope。
 - [ ] **终端名 ↔ charter 字段名的映射**（codex #427 r4 P1）：注册终端还不够 ——
       `evaluator` 只认 `$` 开头并按字面查面板 key（`evaluator.py:82`），而
       `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field
@@ -134,7 +141,12 @@
       builder 无法判定该谎言，若唯一路径被绕过则 builder 根本不运行 —— 它是
       **view 的不变量**，由 canonical PIT battery 守，不在面板层重述。
 - [ ] (iii) `scripts/research/fundamental_ann_shift_sensitivity.py`：公告日整体后移
-      N∈{5,10,21} 交易日重建面板。**无条件**断言**值+证据一起**的哈希必变
+      N∈{5,10,21} 交易日重建面板。**先确认相关性再断言**（codex #427 r9 P2）：
+      被平移的披露未必触及所请求的字段/端点/instrument —— 只取 revenue 的面板本就
+      该无视一份纯资产负债表申报，此时值与证据都不变，无条件规则会**误拒正确实现**。
+      须先核实"至少有一条被平移的披露确实被该面板在某个采样日服务"，否则报
+      **INCONCLUSIVE**（提示扩大采样或改用确定性 fixture），**不得**判 REFUSE。
+      确认相关性之后，断言**值+证据一起**的哈希必变
       （只哈希值会误拒：延迟的申报可能重复上期同值、或该字段两期皆 NA，
       值不变而 provenance 变 —— codex #427 r2 P2），**不变即 REFUSE**
       （报告"公告日未被消费"）。**IC 断言只挂在确定性 fixture 上**（该 fixture 构造成
@@ -155,7 +167,8 @@
       `miner.py` 的 `DataConfig`（补全重建面板所需输入 + 内容指纹 + hash/migration）、
       `promote.py`（写盘前拒绝 + 财报侧内容指纹复核）与 `mined_factor_handler.py`
       （纵深防御拒绝）**有**改动；
-      `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
+      `gp_engine.py`（点变异替换池迁移 —— 独立于 provenance 传参那条；传参通路
+      **仅当**必须经由它时才动，adapter 方案则不动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
       （**不改签**）—— 终端注册不引入 qlib/PIT import，桥仍在 `src/research/` 内。
