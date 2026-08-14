@@ -92,6 +92,17 @@
       这条是**真正做裁决的路径** —— provenance 可选则晋升在未遮蔽值上裁决，必需则
       晋升直接失败。造面板的 adapter（`build_panel_for_data`）与其调用方一并进 scope，
       并有端到端晋升测试。
+- [ ] **注入缝：面板构造器由脚本层传进来，不由 `src/factor_mining/` 导入**
+      （codex #427 r11 P1）：`build_panel_for_data` 在 `src/factor_mining/miner.py:395`，
+      挖掘与晋升都直接调它；而桥与 `FinancialPITDataView` 在 `src/research/`，
+      `test_no_canonical_src_imports_research` 拒绝 `src/` 内**任何**非 research 模块
+      导入 `src.research.*`。所以"该 adapter 自己重建基本面面板 + 闸不改签"这组要求
+      **没有可实现路径**：导入即破闸，不导入则根本造不出面板。
+      解法 = `run_mining` 与 `promote_run` 各接一个**可注入的面板工厂**（不传时行为
+      与今天完全一致），由 `scripts/research/` 的战役脚本注入 —— 那是唯一同时看得见
+      两侧、且本 change 已用于编排的层。注入的工厂**消费 run 持久化的契约**，
+      重建保证不因此打折。端到端测试必须走**真工厂**，不得用绕过缝的替身。
+      （对应用户既定治理：测试没拦住 ≠ 允许 —— 这里测试拦得住，只能走缝。）
 - [ ] **`DataConfig` 要记全重建面板的输入**（codex #427 r6 P1）：`promote_run` 只能把
       持久化的 `DataConfig` 交给 `build_panel_for_data`，而 `DataConfig`（`miner.py:42`）
       只有 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 /
@@ -169,7 +180,8 @@
       `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
       调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
       provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
-      `miner.py` 的 `DataConfig`（补全重建面板所需输入 + 内容指纹 + hash/migration）、
+      `miner.py`（`DataConfig` 补全重建面板所需输入 + 内容指纹 + hash/migration，
+      并给 `run_mining` / `build_panel_for_data` 加面板工厂注入缝）、
       `promote.py`（写盘前拒绝 + 财报侧内容指纹复核）与 `mined_factor_handler.py`
       （纵深防御拒绝）**有**改动；
       `gp_engine.py`（点变异替换池迁移 = **无条件**改动，与 adapter 方案无关；

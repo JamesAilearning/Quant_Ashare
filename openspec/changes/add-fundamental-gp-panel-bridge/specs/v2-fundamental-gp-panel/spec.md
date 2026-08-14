@@ -321,6 +321,41 @@ provenance.
 - **WHEN** a fundamental run's contract lacks a required panel input
 - **THEN** loading it raises rather than filling the gap from a default
 
+### Requirement: The fundamental panel SHALL reach mining and promotion through an injection seam
+
+The panel builder SHALL be supplied TO mining and promotion from the script
+layer, never imported by them. The panel-building adapter both paths call lives
+in the factor-mining package, while the builder and the serving view live in the
+research package, and the isolation gate rejects any import of the research
+package from `src/` outside it. Requiring that adapter to reconstruct a
+fundamental panel by itself — with the gate unchanged, as this change promises —
+therefore has NO implementable route: importing the builder breaks the gate, and
+not importing it leaves mining and promotion unable to build the panel at all.
+
+Both entry points SHALL therefore accept an injected panel factory, defaulting to
+today's behaviour when none is given, and the fundamental campaign SHALL supply
+it from `scripts/research/` — the one layer permitted to see both sides, and the
+layer this change already uses for orchestration. The injected factory SHALL
+consume the run's persisted contract, so the reconstruction guarantee above is
+preserved rather than traded away.
+
+The end-to-end test SHALL exercise this seam — mining and promoting a
+fundamental run through the real factory — not a stand-in that bypasses it.
+
+#### Scenario: mining and promotion take the builder as an argument
+- **WHEN** a fundamental campaign runs
+- **THEN** the panel factory is injected from the script layer, and neither
+  entry point imports the research package
+
+#### Scenario: the isolation gate stays green with no re-signing
+- **WHEN** the isolation gate runs over the change
+- **THEN** it passes unmodified — no `src/` module outside the research package
+  imports it
+
+#### Scenario: existing callers are unaffected
+- **WHEN** no factory is injected
+- **THEN** mining and promotion behave exactly as they do today
+
 ### Requirement: Fundamental pools SHALL NOT reach production materialization until that path carries provenance
 
 A pool containing fundamental terminals SHALL NOT be materializable into the

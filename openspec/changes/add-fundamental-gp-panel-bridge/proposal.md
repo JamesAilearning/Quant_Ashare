@@ -127,6 +127,16 @@ provenance 的面板/求值参数（或明确一个在求值前把 period 帧打
 `filter_correlated` 拿不到 `periods` —— 而这条是**真正做裁决**的路径。造面板的
 adapter 与其调用方一并进 scope，并有端到端晋升测试。
 
+**但在谈"谁记了什么"之前，先有一个可实现性问题**（codex #427 r11 P1）：
+`build_panel_for_data` 在 `src/factor_mining/miner.py:395`，挖掘与晋升都直接调它；桥与
+`FinancialPITDataView` 在 `src/research/`，而 `test_no_canonical_src_imports_research`
+拒绝 `src/` 内任何非 research 模块导入 `src.research.*`。于是"该 adapter 自己重建基本面
+面板 + 闸不改签"**没有可实现路径** —— 导入即破闸，不导入则造不出面板。解法是
+**注入缝**：`run_mining` 与 `promote_run` 各接一个可注入的面板工厂（不传时行为与今天
+完全一致），由 `scripts/research/` 的战役脚本注入 —— 那是唯一同时看得见两侧、且本
+change 已用于编排的层（`gate4a_ic_evaluator.py` 是先例）。注入的工厂**消费 run 持久化
+的契约**，所以下面的重建保证不因此打折；端到端测试走真工厂，不用绕过缝的替身。
+
 **而"端到端"要成立，`DataConfig` 得先记全重建面板的输入**（codex #427 r6 P1）：
 `promote_run` 只能把持久化的 `DataConfig` 交给 `build_panel_for_data`，而它今天只有
 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 / `fields`，
@@ -229,8 +239,9 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
     `filter_correlated`）接 provenance，使验证与搜索用同一把尺；
   - `src/factor_mining/promote.py` 与其造面板 adapter `build_panel_for_data` ——
     晋升入口带 provenance，使**做裁决的那条路径**用的也是同一把尺；
-  - `src/factor_mining/miner.py` 的 `DataConfig` —— 补全重建基本面面板所需输入，
-    并纳入 load / hash / migration；
+  - `src/factor_mining/miner.py` —— `DataConfig` 补全重建基本面面板所需输入并纳入
+    load / hash / migration；`run_mining` / `build_panel_for_data` 增加面板工厂
+    **注入缝**（不注入时行为不变），使桥不必被非 research 模块导入；
   - `src/data/mined_factor_handler.py` —— 纵深防御的 fail-loud 拒绝（只加拒绝，
     不接 provenance；接线属后续 change；**主拒绝点在 `promote.py` 的写盘前**）；
   - `src/factor_mining/gp_engine.py` —— **无条件改动**：点变异替换池必须从"同类型的
