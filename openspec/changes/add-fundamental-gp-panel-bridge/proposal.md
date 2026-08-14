@@ -54,6 +54,11 @@ pv001，加进完整策略后边际贡献为负，被纪律拦截）。战场转
   名单，而改写成 `$…` 形式仍是未知终端 —— 无论面板怎么传，GP 都长不出基本面表达式。
   本 change 因此把**基本面终端注册**（新终端组 + 其类型/taint 规则 + 对应测试）纳入
   scope。这不削弱 D5：注册的是终端符号与类型，不引入任何 qlib/PIT import。
+  **但新组必须在 `FeatureRegistry.V1` 默认集之外**（codex #427 r8 P1）：append 进 V1
+  是最自然的实现，而 `pit_adapter._default_fields()` 正是 `tuple(FeatureRegistry.V1)`
+  —— 所有 `fields=()` 的存量 PIT run 会开始索取非 qlib 字段；`GPEngine` 的
+  `_allowed_terminals` 默认为 `None`（不限制），等于让存量战役能繁殖研究专用终端。
+  新组只由基本面白名单激活，并以回归钉住"默认 V1 仍是既有十二个终端"。
   **注册还不够，另有两处名字/形状的断点**（codex #427 r4 P1）：
   ① **终端名 ↔ charter 字段名**：`evaluator` 只认 `$` 开头并按字面查面板 key，而
   `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field、只收裸名
@@ -134,6 +139,10 @@ change 只把边界做成**机器可执行的 fail-loud 拒绝**（含基本面�
 **拒绝点落在写盘方**（codex #427 r7 P1）：`promote.py:394-403` 的
 `survivor_pool.save(target_dir)` 才是往生产目录写的那一步，拒绝必须在它**之前**触发；
 只放在 handler 里太晚 —— 那时基本面池**已经写进生产目录**了。handler 侧作纵深防御保留。
+**而且要早于 `target_dir.mkdir()`**（codex #427 r8 P1）：mkdir 发生在组装 survivor pool
+之前，"在 save 前拒绝"会留下一个**空的生产版本目录**，下次尝试撞上"目录已存在"直接
+失败 —— 一次被拒的晋升就这样改动了生产并**永久吃掉那个版本号**。回归断言查的是
+**目标路径本身不存在**，而不是"没写出 pool 文件"。
 
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），

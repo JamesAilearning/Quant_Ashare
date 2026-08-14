@@ -189,12 +189,27 @@ charter names and emitting panel keys in terminal form — and SHALL test that a
 GP-GENERATED terminal resolves end to end through the bridge, not merely that
 the registry and the view each work in isolation.
 
+The fundamental terminals SHALL live OUTSIDE the legacy default feature set and
+SHALL be activated only by an explicit fundamental whitelist. Appending them to
+the legacy default is the obvious implementation and it silently changes
+existing campaigns: the PIT adapter's default field list IS that set, so every
+run that leaves its fields unspecified would start requesting non-qlib fields,
+and a search with no terminal restriction would be free to breed research-only
+terminals inside a legacy campaign. The default set SHALL remain exactly what it
+is today, pinned by a regression.
+
 #### Scenario: a generated terminal resolves through the bridge to a view field
 - **WHEN** GP generates an expression referencing a registered fundamental
   terminal
 - **THEN** evaluating it against the bridged panel yields that charter field's
   as-of values — the terminal form is accepted by the evaluator and the charter
   form is what reaches the view
+
+#### Scenario: the legacy default terminal set is unchanged
+- **WHEN** a run leaves its fields unspecified, or a search runs with no
+  terminal restriction
+- **THEN** it sees exactly the pre-existing default terminals — the fundamental
+  group is absent unless explicitly whitelisted
 
 #### Scenario: an unmapped terminal fails loud
 - **WHEN** a fundamental terminal has no charter field mapping
@@ -293,18 +308,31 @@ fundamental terminals into the production directory SHALL fail loud, naming the
 follow-up change that lifts the block. A note in a document is not a boundary —
 the refusal must be executable and tested.
 
-The refusal SHALL be enforced AT THE WRITER — the promotion path that saves the
-survivor pool into the production directory — BEFORE the write happens. Placing
-it only in the consumer is too late: promotion would still have written a
-fundamental pool into production, and the refusal would fire at some later
-materialization, if ever. A consumer-side check MAY remain as defense in depth,
-but it does not discharge this requirement.
+The refusal SHALL be enforced AT THE WRITER — the promotion path that writes
+into the production directory — BEFORE ANY part of that write, INCLUDING the
+creation of the target directory. Refusing merely before the pool is saved is
+not enough: the target directory is created before the survivor pool is
+assembled, so a refusal placed after it leaves an empty production version
+directory behind, and the next attempt then fails on the directory already
+existing — a refused promotion would have mutated production and permanently
+consumed that version label. The regression SHALL assert the target path itself
+is ABSENT after a refusal, not merely that no pool file was written.
+
+Placing the check only in the consumer is later still: promotion would have
+written a fundamental pool into production and the refusal would fire at some
+subsequent materialization, if ever. A consumer-side check MAY remain as
+defense in depth, but it does not discharge this requirement.
 
 #### Scenario: a fundamental pool is refused before the production write
-- **WHEN** promotion is about to save a survivor pool containing fundamental
+- **WHEN** promotion is about to write a survivor pool containing fundamental
   terminals into the production directory
-- **THEN** it fails loud BEFORE writing, names what must land first, and leaves
-  no fundamental pool in the production directory
+- **THEN** it fails loud and names what must land first
+
+#### Scenario: a refused promotion leaves production untouched
+- **WHEN** promotion refuses a fundamental pool
+- **THEN** the target version directory does not exist afterwards — the version
+  label is not consumed and a later retry is not blocked by a leftover
+  directory
 
 #### Scenario: a price-volume pool is unaffected
 - **WHEN** a pool contains no fundamental terminals

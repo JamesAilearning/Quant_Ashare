@@ -13,6 +13,12 @@
       现状 `FeatureRegistry.V1` 仅 12 个终端，`_random_leaf` 与 `V1_*` 取交集、
       `Terminal` 拒绝表外名字 —— 只靠参数传面板，GP **长不出**基本面表达式。
       D5 不受影响（只加终端符号与类型，不引入 qlib/PIT import），须有对应闸测试。
+      **且必须在 `FeatureRegistry.V1` 默认集之外、只由基本面白名单激活**
+      （codex #427 r8 P1）：直接 append 进 V1 是最自然的实现，但
+      `pit_adapter._default_fields()` 就是 `tuple(FeatureRegistry.V1)` —— 所有
+      `fields=()` 的存量 PIT run 会开始索取非 qlib 字段；而 `GPEngine` 的
+      `_allowed_terminals` 默认 `None` = 不限制，等于让存量战役能繁殖研究专用终端。
+      须加回归断言：默认 V1 面板仍是既有的十二个终端，新组 opt-in。
 - [ ] **终端名 ↔ charter 字段名的映射**（codex #427 r4 P1）：注册终端还不够 ——
       `evaluator` 只认 `$` 开头并按字面查面板 key（`evaluator.py:82`），而
       `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field
@@ -98,9 +104,12 @@
       须把这条边界做成**机器可执行的 fail-loud 拒绝**：含基本面终端的池写入生产因子
       目录即拒绝，并在报错里点名"要先落地哪个后续 change"。**文档注记不算边界** ——
       拒绝必须可执行且有测试；同时测"纯量价池照旧放行"（非空性）。
-      **拒绝点必须落在写盘方**（codex #427 r7 P1）：`promote.py:394-403` 的
-      `survivor_pool.save(target_dir)` 就是往生产目录写的那一步，拒绝要在它**之前**
-      触发。只放在 `mined_factor_handler` 里太晚 —— 那时晋升**已经把基本面池写进
+      **拒绝点必须落在写盘方，且早于 `target_dir.mkdir()`**（codex #427 r7/r8 P1）：
+      `promote.py:394-403` 里 `target_dir.mkdir(parents=True, exist_ok=True)` 发生在
+      组装 survivor pool **之前**，所以"在 `save` 前拒绝"仍会**留下一个空的生产版本
+      目录** —— 下一次尝试撞上"目录已存在"直接失败，等于一次被拒的晋升**改动了生产
+      并永久吃掉那个版本号**。拒绝必须早于 mkdir，回归断言要查**目标路径本身不存在**
+      （不是"没写出 pool 文件"）。只放在 `mined_factor_handler` 里太晚 —— 那时晋升**已经把基本面池写进
       生产目录了**，拒绝要等到某次物化才响、甚至永远不响。handler 侧的检查可作为
       纵深防御保留，但不能替代写盘方的拒绝。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
