@@ -205,10 +205,20 @@ _GIT_FORMAT_OPTS = ("--format", "--pretty")
 # ``%x`` writes a literal byte; ``%N`` writes the commit NOTE body,
 # which git does NOT transcode (codex P2 r45 on #410, reproduced), so a
 # note holding foreign bytes reaches the parent verbatim.
-# Case matters: ``%N`` is the note body, ``%n`` is a newline — folding
-# case would refuse every ordinary multi-line format.
-_GIT_RAW_BYTE_ESCAPE_CI = "%x"      # %xFF: a literal byte
-_GIT_RAW_BYTE_ESCAPE_CS = "%N"      # the untranscoded note body
+# Format placeholders are an ALLOW-LIST, not a blacklist (codex P2 r46
+# on #410, after %x / %N / %D each had to be added in turn — enumerating
+# the unsafe ones is unbounded). These are ASCII BY CONSTRUCTION: object
+# names, unix timestamps, strict-ISO dates, and the two literal escapes.
+# Everything else — note bodies (%N), ref decorations (%D/%d), identity
+# fields, locale-formatted dates (%ad honours --date=format:), raw byte
+# escapes (%xFF) — refuses. Longest-match, case-sensitive.
+_GIT_SAFE_FORMAT_TOKENS = (
+    "%%", "%n", "%H", "%h", "%T", "%t", "%P", "%p",
+    "%at", "%ct", "%aI", "%cI", "%m",
+)
+# Options that append ref DECORATIONS to the output, same raw-name
+# hazard as %D (verified).
+_GIT_DECORATION_OPTS = ("--decorate", "--source")
 # Options that make log/show print FILE PATHS. Paths are escaped only
 # while ``core.quotePath`` is on (reproduced with both settings), so
 # these carry the same quoting requirement as ls-files (codex P2 r45).
@@ -760,9 +770,17 @@ def _git_output_safe(call: ast.Call) -> bool:
                 value = tail[pos + 1] if pos + 1 < len(tail) else None
                 if value is None:
                     return False  # missing or opaque format value
-            if (_GIT_RAW_BYTE_ESCAPE_CI in value.lower()
-                    or _GIT_RAW_BYTE_ESCAPE_CS in value):
-                return False  # %xNN / %N write untranscoded bytes
+            pos_v = 0
+            while True:
+                pos_v = value.find("%", pos_v)
+                if pos_v < 0:
+                    break
+                token = next(
+                    (tok for tok in _GIT_SAFE_FORMAT_TOKENS
+                     if value.startswith(tok, pos_v)), None)
+                if token is None:
+                    return False  # an unproven placeholder
+                pos_v += len(token)
         if not hooks_off:
             # A hook writes arbitrary bytes into the captured streams;
             # ``core.hooksPath`` aimed at a non-directory is the one
@@ -792,6 +810,11 @@ def _git_output_safe(call: ast.Call) -> bool:
                 if later is not None and later in _GIT_PATH_OUTPUT_OPTS:
                     prints_paths = True
                     break
+        for later in argv[i + 1:]:
+            if later in ("--", "--end-of-options"):
+                break
+            if later is not None and later.startswith(_GIT_DECORATION_OPTS):
+                return False  # ref decorations print raw ref names
         if prints_paths:
             if not quotepath_on:
                 return False  # unquoted paths can be any bytes
@@ -1816,6 +1839,25 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # format placeholders are an ALLOW-LIST: %D/%d print ref names raw
+    # (reproduced), as do the decoration options.
+    ("a %D ref decoration is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%D", "-1"], text=True, encoding="utf-8")', True),
+    ("--decorate is the same hazard",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--decorate", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an identity placeholder is not proven ASCII either",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%an", "-1"], text=True, encoding="utf-8")', True),
+    ("a locale-formattable date placeholder refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%ad", "-1"], text=True, encoding="utf-8")', True),
+    ("the proven set still passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H%n%cI%n%ct", "-1"], text=True, encoding="utf-8")',
+     False),
     # %N prints the commit NOTE body untranscoded (reproduced), while
     # %n is just a newline — the check is case-sensitive there.
     ("a %N note placeholder is refused",
@@ -1855,10 +1897,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("a separated --format value is inspected, not skipped",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
      ' "--format", "%xFF"], text=True, encoding="utf-8")', True),
-    ("...and an ordinary separated format passes",
+    ("...and ls-files' own format language is not modelled, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
      ' "--format", "%(objectname)"], text=True, encoding="utf-8")',
-     False),
+     True),
     # git's format language writes raw bytes: %xFF emits 0xff even
     # through a fully pinned call (verified).
     ("a %x escape in --format is refused",
