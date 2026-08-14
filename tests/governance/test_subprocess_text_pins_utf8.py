@@ -807,13 +807,19 @@ def _git_output_safe(call: ast.Call) -> bool:
             for later in argv[i + 1:]:
                 if later in ("--", "--end-of-options"):
                     break
-                if later is not None and later in _GIT_PATH_OUTPUT_OPTS:
+                # Compare the option HEAD: git accepts value-bearing
+                # spellings like ``--stat=80`` and ``--dirstat=lines``
+                # (codex P2 r47 on #410, reproduced), which an exact
+                # match missed.
+                if (later is not None
+                        and later.split("=")[0] in _GIT_PATH_OUTPUT_OPTS):
                     prints_paths = True
                     break
         for later in argv[i + 1:]:
             if later in ("--", "--end-of-options"):
                 break
-            if later is not None and later.startswith(_GIT_DECORATION_OPTS):
+            if (later is not None
+                    and later.split("=")[0].startswith(_GIT_DECORATION_OPTS)):
                 return False  # ref decorations print raw ref names
         if prints_paths:
             if not quotepath_on:
@@ -821,7 +827,8 @@ def _git_output_safe(call: ast.Call) -> bool:
             for later in argv[i + 1:]:
                 if later in ("--", "--end-of-options"):
                     break  # options end; pathspecs cannot be -z
-                if later is None or later in _GIT_RAW_PATH_LONG_OPTS:
+                if (later is None
+                        or later.split("=")[0] in _GIT_RAW_PATH_LONG_OPTS):
                     return False  # raw output, or an opaque option
                 if (later.startswith("-") and not later.startswith("--")
                         and _GIT_RAW_PATH_LETTER in later[1:]):
@@ -1838,6 +1845,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("text-mode git diff is refused — filters have no kill switch",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # value-bearing spellings of the path-output options (reproduced
+    # with --stat=80) must be recognized by their HEAD.
+    ("--stat=80 is still path output",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--stat=80", "-1"], text=True, encoding="utf-8")', True),
+    ("--dirstat=lines too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--dirstat=lines", "-1"], text=True, encoding="utf-8")', True),
+    ("...and with the quoting pin they pass",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--stat=80", "-1"], text=True, encoding="utf-8")', False),
+    ("a value-bearing --decorate spelling refuses too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--decorate=short", "--format=%H", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # format placeholders are an ALLOW-LIST: %D/%d print ref names raw
     # (reproduced), as do the decoration options.
