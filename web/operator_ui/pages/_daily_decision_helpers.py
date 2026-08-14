@@ -79,47 +79,39 @@ class IncumbentIdentity:
         return self.kind == "ensemble"
 
 
-def _sha256_of(path: Path) -> str:
-    import hashlib
-
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def load_ensemble_manifest_identity(manifest_path: str) -> IncumbentIdentity:
-    """Read a manifest into a bannerable identity, or say why not."""
-    p = Path(manifest_path)
-    if not p.is_file():
-        return IncumbentIdentity(
-            kind="unresolvable", manifest_path=manifest_path,
-            error="文件不存在")
+    """Read a manifest into a bannerable identity, or say why not.
+
+    Delegates to the SERVING loader — the canonical validator
+    (``src.inference.ensemble_serving.load_ensemble_manifest``). A
+    hand-rolled parser here would be a second, weaker interpretation of
+    the same file: it could call a manifest "current" that the actual
+    serving path refuses (wrong schema version, wrong member count,
+    broken hash chain, bad staggering), so the banner would vouch for a
+    model production could not even load (codex #430). Reusing the
+    validator also inherits its single-read digest — the digest is of
+    the very bytes that were parsed, so a rotation mid-read cannot
+    produce old windows carrying a new sha.
+    """
+    from src.inference.ensemble_serving import (  # noqa: PLC0415
+        EnsembleServingError,
+        load_ensemble_manifest,
+    )
+
     try:
-        payload = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        members, manifest_sha = load_ensemble_manifest(manifest_path)
+    except EnsembleServingError as exc:
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path, error=str(exc))
+    except OSError as exc:  # pragma: no cover - defensive
         return IncumbentIdentity(
             kind="unresolvable", manifest_path=manifest_path,
-            error=f"不可解析({type(exc).__name__})")
-    if not isinstance(payload, dict):
-        return IncumbentIdentity(
-            kind="unresolvable", manifest_path=manifest_path,
-            error="顶层不是 JSON object")
-    raw_members = payload.get("members")
-    if not isinstance(raw_members, list) or not raw_members:
-        return IncumbentIdentity(
-            kind="unresolvable", manifest_path=manifest_path,
-            error="members 缺失或为空")
-    members: list[dict[str, str]] = []
-    for m in raw_members:
-        if not isinstance(m, dict):
-            return IncumbentIdentity(
-                kind="unresolvable", manifest_path=manifest_path,
-                error="members 内含非 object 条目")
-        members.append({
-            "fit_start": str(m.get("fit_start", "")),
-            "fit_end": str(m.get("fit_end", "")),
-        })
+            error=f"{type(exc).__name__}: {exc}")
     return IncumbentIdentity(
         kind="ensemble", manifest_path=manifest_path,
-        manifest_sha256=_sha256_of(p), members=tuple(members))
+        manifest_sha256=manifest_sha,
+        members=tuple({"fit_start": m.fit_start, "fit_end": m.fit_end}
+                      for m in members))
 
 
 def resolve_incumbent() -> IncumbentIdentity:

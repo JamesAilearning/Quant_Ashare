@@ -210,13 +210,23 @@ if _meta_status.artifact_is_ensemble:
                     f"`{str(_incumbent.manifest_sha256 or '')[:12]}…`。"
                     "它不是当前生产模型给出的建议,请勿据此下单。"
                 )
+        elif _incumbent.kind == "single":
+            # DEFINITE mismatch, not an unknown (codex #430): the pointer is
+            # deliberately unset, so the incumbent is a single model and an
+            # ensemble artifact provably did not come from it. Saying
+            # "could not determine" here would hide a known governance state.
+            st.warning(
+                "⚠ 该工件由 **ensemble(manifest)** 生成(sha256 "
+                f"`{_art_sha[:12]}…`),而**现任是单模型形态**"
+                "(QUANT_ENSEMBLE_MANIFEST 未设)。"
+                "它不是当前生产模型给出的建议,请勿据此下单。"
+            )
         else:
-            # No incumbent to compare against — say so rather than let the
-            # absence of a warning read as "checked and fine".
+            # Pointer set but unreadable — genuinely unknown. Say so rather
+            # than let the absence of a warning read as "checked and fine".
             st.warning(
                 "⚠ 该工件由 **ensemble(manifest)** 生成:sha256 "
-                f"`{_art_sha[:12]}…`,但**未能确定现任 manifest**"
-                "(QUANT_ENSEMBLE_MANIFEST 未设或不可解析),"
+                f"`{_art_sha[:12]}…`,但**现任 manifest 不可解析**,"
                 "无法核对它是否出自当前生产模型。"
             )
     else:
@@ -224,6 +234,19 @@ if _meta_status.artifact_is_ensemble:
             "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "
             "manifest_sha256——无法绑定其身份,请核对工件来源。"
         )
+elif _incumbent.is_ensemble:
+    # SHAPE mismatch — the artifact is single-model-shaped while production
+    # serves an ensemble. This must be caught BEFORE the legacy sidecar
+    # comparison below (codex #430): that comparison is against the RETIRED
+    # single model, so a matching sha there would emit no warning at all and
+    # present a non-incumbent artifact as safe — the precise failure this
+    # page exists to prevent.
+    st.warning(
+        "⚠ 该工件是**单模型形态**,而现任生产是 **ensemble**"
+        f"(`{Path(str(_incumbent.manifest_path)).name}`)。"
+        "无论其 sidecar 是否匹配某个旧模型,它都不是当前生产模型给出的"
+        "建议,请勿据此下单。"
+    )
 elif _meta_status.artifact_is_v1:
     st.warning(
         "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"

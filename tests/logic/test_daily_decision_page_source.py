@@ -414,6 +414,22 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
 
     # --- runtime: the three incumbent states -------------------------------
 
+    # A manifest the CANONICAL serving validator accepts. Windows are the
+    # real production ones (92d stagger, ~24m spans); identity fields differ
+    # per member because the validator refuses repeated members.
+    _GOOD = {
+        "schema_version": "csi800_n5_ensemble_manifest_v1",
+        "members": [
+            {"pkl_path": f"/m{i}.pkl", "pkl_sha256": str(i) * 64,
+             "meta_path": f"/m{i}.pkl.meta.json", "meta_sha256": f"{i}a" * 32,
+             "fit_start": fs, "fit_end": fe}
+            for i, (fs, fe) in enumerate(
+                [("2023-09-28", "2025-09-29"),
+                 ("2023-12-29", "2025-12-30"),
+                 ("2024-04-01", "2026-04-01")], start=1)
+        ],
+    }
+
     def _identity(self, payload, *, name="m.json"):
         import json
         import tempfile
@@ -428,16 +444,40 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
             return load_ensemble_manifest_identity(str(p))
 
     def test_readable_manifest_yields_ensemble_identity(self) -> None:
-        ident = self._identity({"schema_version": "csi800_n5_ensemble_manifest_v1",
-                                "members": [
-                                    {"fit_start": "2023-09-28", "fit_end": "2025-09-29"},
-                                    {"fit_start": "2023-12-29", "fit_end": "2025-12-30"},
-                                    {"fit_start": "2024-04-01", "fit_end": "2026-04-01"}]})
+        ident = self._identity(self._GOOD)
         self.assertEqual("ensemble", ident.kind)
         self.assertTrue(ident.is_ensemble)
         self.assertEqual(3, len(ident.members))
         self.assertEqual(64, len(str(ident.manifest_sha256)))
         self.assertEqual("2026-04-01", ident.members[-1]["fit_end"])
+
+    def test_identity_delegates_to_the_canonical_serving_validator(self) -> None:
+        # codex #430: a hand-rolled parser here would be a SECOND, weaker
+        # reading of the same file — it could vouch for a manifest the real
+        # serving path refuses. These shapes are exactly what the weaker
+        # parser accepted and the canonical validator rejects.
+        import copy
+
+        cases = {
+            "wrong schema": {**self._GOOD, "schema_version": "vX"},
+            "two members": {**self._GOOD,
+                            "members": self._GOOD["members"][:2]},
+            "missing identity field": None,     # filled below
+            "duplicate member": None,
+            "bad stagger": None,
+        }
+        m = copy.deepcopy(self._GOOD)
+        del m["members"][0]["pkl_sha256"]
+        cases["missing identity field"] = m
+        m = copy.deepcopy(self._GOOD)
+        m["members"][1] = copy.deepcopy(m["members"][0])
+        cases["duplicate member"] = m
+        m = copy.deepcopy(self._GOOD)
+        m["members"][1]["fit_end"] = "2025-10-01"   # 2d gap, not quarterly
+        cases["bad stagger"] = m
+        for label, payload in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual("unresolvable", self._identity(payload).kind)
 
     def test_unreadable_or_malformed_manifest_is_unresolvable(self) -> None:
         # Every malformed shape must land in "unresolvable", NEVER degrade to
@@ -491,7 +531,8 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # ...replaced by a real three-way comparison.
         self.assertIn("_art_sha == _incumbent.manifest_sha256", self.page)
         self.assertIn("另一份 manifest", self.page)
-        self.assertIn("未能确定现任 manifest", self.page)
+        self.assertIn("现任是单模型形态", self.page)
+        self.assertIn("现任 manifest 不可解析", self.page)
 
     # --- the read-side-only asymmetry --------------------------------------
 
@@ -509,3 +550,38 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         m = re.search(r'"--ensemble-manifest",\s*default=([^,\)]+)', cli)
         self.assertIsNotNone(m, "--ensemble-manifest 的 default 未找到")
         self.assertEqual("None", m.group(1).strip())
+
+
+class IncumbentShapeMismatchTests(unittest.TestCase):
+    """codex #430: the shape matrix (incumbent × artifact) must have no hole
+    that falls through to the RETIRED single model's sidecar comparison."""
+
+    def setUp(self) -> None:
+        self.page = _PAGE.read_text(encoding="utf-8")
+
+    def test_single_shaped_artifact_under_ensemble_incumbent_is_rejected(self) -> None:
+        # A single-model artifact whose sha happens to match the old sidecar
+        # would otherwise emit NO warning at all — presenting a
+        # non-incumbent artifact as safe.
+        #
+        # Anchor inside the CROSS-CHECK block, not by bare string: the banner
+        # above also branches on `_incumbent.is_ensemble`, so a naive
+        # assertIn/index would be satisfied by the banner and pass even with
+        # this guard deleted (caught by mutation testing on this very pin).
+        _xcheck = self.page[self.page.index("if _meta_status.artifact_is_ensemble:"):]
+        self.assertIn("elif _incumbent.is_ensemble:", _xcheck)
+        self.assertIn("该工件是**单模型形态**", _xcheck)
+        # ...and it must sit BEFORE the legacy sidecar comparison.
+        i_shape = _xcheck.index("elif _incumbent.is_ensemble:")
+        i_legacy = _xcheck.index("elif _meta_status.sha_mismatch is True:")
+        self.assertLess(
+            i_shape, i_legacy,
+            "形态不符必须在落回旧单模型 sidecar 比对之前拦下")
+
+    def test_ensemble_artifact_under_single_incumbent_is_a_known_mismatch(self) -> None:
+        # An unset pointer is a DEFINITE single-model incumbent, not an
+        # unknown — the page must say "do not use", not "cannot determine".
+        self.assertIn('elif _incumbent.kind == "single":', self.page)
+        i_known = self.page.index('elif _incumbent.kind == "single":')
+        i_unknown = self.page.index("现任 manifest 不可解析")
+        self.assertLess(i_known, i_unknown)
