@@ -33,8 +33,20 @@ from web.operator_ui.decision_journal import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    VERDICT_ENSEMBLE_SHA_MISSING,
+    VERDICT_ENSEMBLE_UNDER_SINGLE,
+    VERDICT_INCUMBENT_UNRESOLVED,
+    VERDICT_MATCHES_INCUMBENT,
+    VERDICT_OTHER_MANIFEST,
+    VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE,
+    VERDICT_SINGLE_SHA_MISMATCH,
+    VERDICT_SINGLE_SHA_OK,
+    VERDICT_SINGLE_SHA_UNKNOWN,
+    VERDICT_V1_UNKNOWN,
+    artifact_kind_of,
     artifact_meta_status,
     banner_status,
+    classify_provenance,
     hold_state,
     journal_model_id,
     list_recommendation_artifacts,
@@ -190,83 +202,94 @@ if _meta_status.artifact_is_corrupt_v2:
         f"非 object。文件可能损坏或非本系统产物:{_selected_path}"
     )
     st.stop()
-if _meta_status.artifact_is_ensemble:
-    # Ensemble artifact (PR-A'):identity = manifest sha256,单模型
-    # sidecar 交叉核对是类别错误(codex #390 r3)——不误报"其他模型",
-    # 如实披露形态差异;现任 manifest 交叉核对随 PR-C' 切换落地。
-    if _meta_status.artifact_ensemble_sha:
-        _art_sha = str(_meta_status.artifact_ensemble_sha)
-        if _incumbent.is_ensemble:
-            # The cross-check PR-C' promised and 2026-08-05 made possible.
-            if _art_sha == _incumbent.manifest_sha256:
-                st.info(
-                    "ℹ 该工件由 **现任 ensemble manifest** 生成:sha256 "
-                    f"`{_art_sha[:12]}…` — 与现任一致。"
-                )
-            else:
-                st.warning(
-                    "⚠ 该工件出自**另一份 manifest**(非现任):工件 "
-                    f"`{_art_sha[:12]}…` vs 现任 "
-                    f"`{str(_incumbent.manifest_sha256 or '')[:12]}…`。"
-                    "它不是当前生产模型给出的建议,请勿据此下单。"
-                )
-        elif _incumbent.kind == "single":
-            # DEFINITE mismatch, not an unknown (codex #430): the pointer is
-            # deliberately unset, so the incumbent is a single model and an
-            # ensemble artifact provably did not come from it. Saying
-            # "could not determine" here would hide a known governance state.
-            st.warning(
-                "⚠ 该工件由 **ensemble(manifest)** 生成(sha256 "
-                f"`{_art_sha[:12]}…`),而**现任是单模型形态**"
-                "(QUANT_ENSEMBLE_MANIFEST 显式设为 `none` 的 opt-out)。"
-                "它不是当前生产模型给出的建议,请勿据此下单。"
-            )
-        else:
-            # Pointer set but unreadable — genuinely unknown. Say so rather
-            # than let the absence of a warning read as "checked and fine".
-            st.warning(
-                "⚠ 该工件由 **ensemble(manifest)** 生成:sha256 "
-                f"`{_art_sha[:12]}…`,但**现任 manifest 不可解析**,"
-                "无法核对它是否出自当前生产模型。"
-            )
-    else:
-        st.warning(
-            "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "
-            "manifest_sha256——无法绑定其身份,请核对工件来源。"
-        )
-elif _meta_status.artifact_is_v1:
-    # v1 FIRST (codex #430 r2): a v1 artifact carries no meta at all, so its
-    # provenance is UNKNOWN — calling it "single-model-shaped" below would
-    # assert a fact we cannot establish, and would also make this dedicated
-    # warning unreachable under the current (ensemble) production config.
+# ---------------------------------------------------------------------------
+# 现任 × 工件 交叉核对。判定是纯函数(classify_provenance),这一段只把裁定
+# 渲染成话。四轮 codex 复审(#430 r1..r4)每一轮漏的都是同一张矩阵里的另一格
+# ——有序 elif 链在结构上保证不了格子被穷举,一张表可以,测试守着表是全的。
+# ---------------------------------------------------------------------------
+_artifact_kind = artifact_kind_of(_meta_status)
+_art_sha = str(_meta_status.artifact_ensemble_sha or "")
+_verdict = classify_provenance(
+    incumbent_kind=_incumbent.kind,
+    artifact_kind=_artifact_kind,
+    ensemble_sha_matches=(
+        bool(_incumbent.manifest_sha256)
+        and _art_sha == _incumbent.manifest_sha256
+    ),
+    single_sha_mismatch=_meta_status.sha_mismatch,
+)
+
+if _verdict == VERDICT_MATCHES_INCUMBENT:
+    st.info(
+        "ℹ 该工件由 **现任 ensemble manifest** 生成:sha256 "
+        f"`{_art_sha[:12]}…` — 与现任一致。"
+    )
+elif _verdict == VERDICT_OTHER_MANIFEST:
+    st.warning(
+        "⚠ 该工件出自**另一份 manifest**(非现任):工件 "
+        f"`{_art_sha[:12]}…` vs 现任 "
+        f"`{str(_incumbent.manifest_sha256 or '')[:12]}…`。"
+        "它不是当前生产模型给出的建议,请勿据此下单。"
+    )
+elif _verdict == VERDICT_ENSEMBLE_UNDER_SINGLE:
+    # DEFINITE mismatch, not an unknown (codex #430): the sentinel is an
+    # explicit statement that production serves ONE model, so an ensemble
+    # artifact provably did not come from it. "无法判定" would hide a
+    # governance state we actually know.
+    st.warning(
+        "⚠ 该工件由 **ensemble(manifest)** 生成(sha256 "
+        f"`{_art_sha[:12]}…`),而**现任是单模型形态**"
+        "(QUANT_ENSEMBLE_MANIFEST 显式设为 `none` 的 opt-out)。"
+        "它不是当前生产模型给出的建议,请勿据此下单。"
+    )
+elif _verdict == VERDICT_INCUMBENT_UNRESOLVED:
+    # Pointer set but unreadable — genuinely unknown, for EITHER artifact
+    # shape. The single-model shape used to fall through to the legacy
+    # sidecar comparison below (codex #430 r4); that comparison is against
+    # the RETIRED model, so a match there printed NOTHING at all and an
+    # unconfirmed artifact read as "checked and fine".
+    _shape_txt = "ensemble(manifest)" if _artifact_kind == "ensemble" else "单模型"
+    st.warning(
+        f"⚠ **现任 manifest 不可解析**(`{_incumbent.manifest_path}`),"
+        f"无法核对该工件(形态:{_shape_txt})是否出自当前生产模型。"
+        "请勿据此下单,直到现任身份可确认。"
+    )
+elif _verdict == VERDICT_ENSEMBLE_SHA_MISSING:
+    st.warning(
+        "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "
+        "manifest_sha256——无法绑定其身份,请核对工件来源。"
+    )
+elif _verdict == VERDICT_V1_UNKNOWN:
+    # A v1 artifact carries no meta at all, so its provenance is UNKNOWN —
+    # calling it "单模型形态" would assert a fact we cannot establish
+    # (codex #430 r2).
     st.warning(
         "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
         "重跑 scripts/daily_recommend.py 可产出自描述的 v2 工件。"
     )
-elif _incumbent.is_ensemble:
-    # SHAPE mismatch — a SELF-DESCRIBING v2 artifact that is single-model
-    # shaped while production serves an ensemble. Caught BEFORE the legacy
-    # sidecar comparison below: that comparison is against the RETIRED
-    # single model, so a matching sha there would emit no warning at all and
-    # present a non-incumbent artifact as safe — the precise failure this
-    # page exists to prevent.
+elif _verdict == VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE:
     st.warning(
         "⚠ 该工件是**单模型形态**,而现任生产是 **ensemble**"
         f"(`{Path(str(_incumbent.manifest_path)).name}`)。"
         "无论其 sidecar 是否匹配某个旧模型,它都不是当前生产模型给出的"
         "建议,请勿据此下单。"
     )
-elif _meta_status.sha_mismatch is True:
+elif _verdict == VERDICT_SINGLE_SHA_MISMATCH:
     st.warning(
         "⚠ 该工件由**其他模型**生成:工件 meta.model_pkl_sha256 "
         f"(`{str(_meta_status.artifact_model_sha)[:12]}…`) ≠ 当前模型 sidecar 的 "
         f"pkl_sha256(`{str(_meta_status.current_model_sha)[:12]}…`)。"
         "决策前请确认你看的是想要的模型输出。"
     )
-elif _meta_status.sha_mismatch is None:
+elif _verdict == VERDICT_SINGLE_SHA_UNKNOWN:
     st.warning(
         "⚠ 无法交叉核对工件↔模型(缺 trainer sidecar 的 pkl_sha256 或工件 meta 的 sha)。"
     )
+elif _verdict != VERDICT_SINGLE_SHA_OK:
+    # classify_provenance is total over the matrix, so an unrendered verdict
+    # is a code defect — and SILENCE is exactly how a non-incumbent artifact
+    # gets presented as safe. Fail loud rather than say nothing.
+    st.error(f"⚠ 内部错误:未渲染的来源裁定 `{_verdict}`,请勿据此下单。")
 
 # ---------------------------------------------------------------------------
 # HOLD 日语义(cadence-aware,PR-A of csi800-n5-production-promotion):

@@ -18,9 +18,17 @@
 - [x] 删除「当前生产为单模型形态…随 PR-C' 落地」的过期陈述  ← test_incumbent_cross_check_replaces_the_expired_claim
 - [x] 保留单模型侧既有告警文案（「其他模型」「旧版工件」钉守）  ← 既有 test_stale_artifact_cross_check_present 仍绿
 
+## W4 判定穷举（codex #430 r4 后的裁决：抽成纯函数，而非再补一个分支）
+- [x] 判定从页面 elif 链抽成纯函数 `classify_provenance()`  ← helpers,3 态 × 4 形
+- [x] 形态分类 `artifact_kind_of()`：meta 标志 → 唯一工件形态  ← 与 ARTIFACT_KINDS 一一对应
+- [x] 页面只做裁定→文案的分发；未渲染裁定 → 醒目 st.error  ← 不留 `else: pass`
+- [x] 补上 r4 漏格：现任不可解析 × 单模型工件不再回落旧 sidecar 比对  ← 该路径 sha 相符时静默
+- [x] 表驱动测试：12 格全覆盖 + 表自身完整性 + 未知输入抛错  ← 表与 KINDS 双向对齐
+
 ## 验证
 - [x] 既有 26 个 daily_decision 钉全绿（改动不得破坏既有契约）  ← 26 passed
 - [x] 新增钉：三态横幅 / 三态交叉核对 / CLI 无默认值  ← +10 钉,合计 36 passed
 - [x] 关键守卫突变验证（每次先自检突变真落地）  ← 四处咬住(M3 首轮分隔符撞车致假绿,已重做)
-- [x] 全量快速套件 + ruff + mypy(CI 对齐)  ← 4113 passed;ruff/mypy 零问题;openspec 44/44
+- [x] 矩阵抽取后重做突变验证  ← M1..M6 六处全落地全咬红(含"复活 r4 漏格"与"新增裁定无渲染")
+- [x] 全量快速套件 + ruff + mypy(CI 对齐)  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

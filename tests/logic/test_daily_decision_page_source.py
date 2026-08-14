@@ -217,10 +217,10 @@ class HelpersRuntimeTests(unittest.TestCase):
         single = artifact_meta_status(
             {"meta": {"model_pkl_sha256": "aa"}}, "aa")
         self.assertFalse(single.artifact_is_ensemble)
-        # Page renders the dedicated ensemble branch before the v1 /
-        # mismatch branches.
+        # The page classifies the artifact's SHAPE through the pure matrix
+        # helper rather than re-deriving the flags inline.
         page = _PAGE.read_text(encoding="utf-8")
-        self.assertIn("artifact_is_ensemble", page)
+        self.assertIn("artifact_kind_of(_meta_status)", page)
         self.assertIn("ensemble(manifest)", page)
 
     def test_journal_model_id_ensemble_prefix(self) -> None:
@@ -584,67 +584,188 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         self.assertEqual("None", m.group(1).strip())
 
 
-class IncumbentShapeMismatchTests(unittest.TestCase):
-    """codex #430: the shape matrix (incumbent × artifact) must have no hole
-    that falls through to the RETIRED single model's sidecar comparison."""
+class ProvenanceMatrixTotalityTests(unittest.TestCase):
+    """codex #430 r1..r4 each found ANOTHER cell of the same incumbent ×
+    artifact matrix, because an ordered elif chain offers no structural
+    guarantee that the cells are exhausted — a hole just falls through to
+    whatever branch happens to be next (r4's hole fell through to the
+    RETIRED model's sidecar compare, where a matching sha printed nothing).
 
-    def setUp(self) -> None:
-        self.page = _PAGE.read_text(encoding="utf-8")
+    The matrix is now a pure function, and this table is the whole of it.
+    """
 
-    def test_single_shaped_artifact_under_ensemble_incumbent_is_rejected(self) -> None:
-        # A single-model artifact whose sha happens to match the old sidecar
-        # would otherwise emit NO warning at all — presenting a
-        # non-incumbent artifact as safe.
-        #
-        # Anchor inside the CROSS-CHECK block, not by bare string: the banner
-        # above also branches on `_incumbent.is_ensemble`, so a naive
-        # assertIn/index would be satisfied by the banner and pass even with
-        # this guard deleted (caught by mutation testing on this very pin).
-        _xcheck = self.page[self.page.index("if _meta_status.artifact_is_ensemble:"):]
-        self.assertIn("elif _incumbent.is_ensemble:", _xcheck)
-        self.assertIn("该工件是**单模型形态**", _xcheck)
-        # ...and it must sit BEFORE the legacy sidecar comparison.
-        i_shape = _xcheck.index("elif _incumbent.is_ensemble:")
-        i_legacy = _xcheck.index("elif _meta_status.sha_mismatch is True:")
-        self.assertLess(
-            i_shape, i_legacy,
-            "形态不符必须在落回旧单模型 sidecar 比对之前拦下")
+    # Every (incumbent, artifact) pair, with the sub-parameter settings that
+    # can change the answer. Each row is a claim about what is TRUE for that
+    # pair — not a restatement of the implementation's branch order.
+    CELLS: dict[tuple[str, str], tuple[tuple[dict[str, object], str], ...]] = {
+        # ---- incumbent = ensemble (production shape since 2026-08-05) ----
+        ("ensemble", "ensemble"): (
+            ({"ensemble_sha_matches": True}, "matches_incumbent"),
+            ({"ensemble_sha_matches": False}, "other_manifest"),
+        ),
+        ("ensemble", "ensemble_no_sha"): (({}, "ensemble_sha_missing"),),
+        ("ensemble", "v1"): (({}, "v1_unknown_provenance"),),
+        # r1: a single-model artifact must be stopped here, NOT handed to the
+        # retired model's sidecar compare.
+        ("ensemble", "single"): (
+            ({"single_sha_mismatch": False}, "shape_single_under_ensemble"),
+            ({"single_sha_mismatch": True}, "shape_single_under_ensemble"),
+            ({"single_sha_mismatch": None}, "shape_single_under_ensemble"),
+        ),
+        # ---- incumbent = single (reached ONLY via the explicit opt-out) ----
+        ("single", "ensemble"): (({}, "ensemble_under_single"),),
+        ("single", "ensemble_no_sha"): (({}, "ensemble_sha_missing"),),
+        ("single", "v1"): (({}, "v1_unknown_provenance"),),
+        ("single", "single"): (
+            ({"single_sha_mismatch": True}, "single_sha_mismatch"),
+            ({"single_sha_mismatch": None}, "single_sha_unknown"),
+            ({"single_sha_mismatch": False}, "single_sha_ok"),
+        ),
+        # ---- incumbent = unresolvable (pointer set, validator refused) ----
+        ("unresolvable", "ensemble"): (
+            ({"ensemble_sha_matches": False}, "incumbent_unresolved"),
+        ),
+        ("unresolvable", "ensemble_no_sha"): (({}, "ensemble_sha_missing"),),
+        ("unresolvable", "v1"): (({}, "v1_unknown_provenance"),),
+        # r4: this cell had no branch of its own and fell through to the
+        # legacy sidecar compare against the RETIRED model — where a matching
+        # sha emitted NO warning at all and the artifact read as verified.
+        ("unresolvable", "single"): (
+            ({"single_sha_mismatch": False}, "incumbent_unresolved"),
+            ({"single_sha_mismatch": True}, "incumbent_unresolved"),
+            ({"single_sha_mismatch": None}, "incumbent_unresolved"),
+        ),
+    }
 
-    def test_ensemble_artifact_under_single_incumbent_is_a_known_mismatch(self) -> None:
-        # An unset pointer is a DEFINITE single-model incumbent, not an
-        # unknown — the page must say "do not use", not "cannot determine".
-        self.assertIn('elif _incumbent.kind == "single":', self.page)
-        i_known = self.page.index('elif _incumbent.kind == "single":')
-        i_unknown = self.page.index("现任 manifest 不可解析")
-        self.assertLess(i_known, i_unknown)
+    def test_the_table_itself_covers_every_cell(self) -> None:
+        # Guards the TEST, not the code: a table that quietly omits a pair
+        # would pass every assertion below while checking nothing about it.
+        from web.operator_ui.pages import _daily_decision_helpers as h
+        want = {(i, a) for i in h.INCUMBENT_KINDS for a in h.ARTIFACT_KINDS}
+        self.assertEqual(want, set(self.CELLS), "矩阵有格子没写进表")
+        self.assertEqual(12, len(want), "现任 3 态 × 工件 4 形 = 12 格")
+
+    def test_every_cell_resolves_to_the_expected_verdict(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            classify_provenance,
+        )
+        for (inc, art), cases in self.CELLS.items():
+            for kwargs, want in cases:
+                with self.subTest(incumbent=inc, artifact=art, **kwargs):
+                    got = classify_provenance(
+                        incumbent_kind=inc, artifact_kind=art, **kwargs)
+                    self.assertEqual(want, got)
+
+    def test_only_one_cell_is_allowed_to_say_nothing(self) -> None:
+        # Silence is exactly how a non-incumbent artifact gets presented as
+        # safe. Exactly ONE pair may be silent: the incumbent is a single
+        # model AND the artifact's sidecar sha equals it.
+        silent = {cell for cell, cases in self.CELLS.items()
+                  for _kw, want in cases if want == "single_sha_ok"}
+        self.assertEqual({("single", "single")}, silent)
+
+    def test_unknown_inputs_raise_instead_of_falling_through(self) -> None:
+        # A future shape (say a third serving topology) must break loudly,
+        # not silently land in whichever cell the code happens to check last.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            classify_provenance,
+        )
+        with self.assertRaises(ValueError):
+            classify_provenance(incumbent_kind="nope", artifact_kind="v1")
+        with self.assertRaises(ValueError):
+            classify_provenance(incumbent_kind="ensemble", artifact_kind="nope")
+
+    def test_artifact_kind_of_maps_each_shape_to_exactly_one_kind(self) -> None:
+        # The matrix is only total if the shape classifier is ONTO it.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            ARTIFACT_KINDS,
+            artifact_kind_of,
+            artifact_meta_status,
+        )
+        payloads = {
+            "ensemble": {"meta": {"ensemble": {"manifest_sha256": "cc" * 32}}},
+            "ensemble_no_sha": {"meta": {"ensemble": {}}},
+            "v1": {"picks": []},
+            "single": {"meta": {"model_pkl_sha256": "aa"}},
+        }
+        self.assertEqual(set(ARTIFACT_KINDS), set(payloads))
+        for want, payload in payloads.items():
+            with self.subTest(kind=want):
+                got = artifact_kind_of(artifact_meta_status(payload, "aa"))
+                self.assertEqual(want, got)
 
 
-class ShapeMatrixOrderingTests(unittest.TestCase):
-    """codex #430 r2: the branch ORDER is load-bearing — each earlier branch
-    silently swallows the cases a later one exists to describe."""
+class ProvenanceRenderingTests(unittest.TestCase):
+    """The page's only remaining job here is turning a verdict into words —
+    so every verdict must have words, and an unrendered one must be loud."""
 
     def setUp(self) -> None:
         self.page = _PAGE.read_text(encoding="utf-8")
         self.xcheck = self.page[
-            self.page.index("if _meta_status.artifact_is_ensemble:"):]
+            self.page.index("_verdict = classify_provenance("):]
 
-    def test_v1_is_classified_before_the_shape_check(self) -> None:
-        # A v1 artifact has NO meta at all — its provenance is unknown, so
-        # calling it "single-model-shaped" asserts a fact we cannot
-        # establish, and (under an ensemble incumbent) makes the dedicated
-        # v1 warning unreachable.
-        i_v1 = self.xcheck.index("elif _meta_status.artifact_is_v1:")
-        i_shape = self.xcheck.index("elif _incumbent.is_ensemble:")
-        self.assertLess(
-            i_v1, i_shape,
-            "v1(无 meta)必须先于形态判定——否则会断言无法确认的出处")
+    def test_page_renders_every_verdict_the_helper_can_return(self) -> None:
+        # Adding a verdict without a renderer would make that cell silent —
+        # the same failure the matrix was extracted to end.
+        from web.operator_ui.pages import _daily_decision_helpers as h
+        names = [n for n in dir(h) if n.startswith("VERDICT_")]
+        self.assertGreaterEqual(len(names), 10)
+        for name in names:
+            with self.subTest(verdict=name):
+                self.assertIn(name, self.xcheck)
+
+    def test_an_unrendered_verdict_fails_loud(self) -> None:
+        # The dispatch must not end in a bare `else: pass`: "no message" is
+        # indistinguishable from "checked and fine".
+        self.assertIn("elif _verdict != VERDICT_SINGLE_SHA_OK:", self.xcheck)
+        self.assertIn("未渲染的来源裁定", self.xcheck)
+
+    def test_unresolvable_incumbent_never_reaches_legacy_compare(self) -> None:
+        # r4: the legacy sidecar compare is against the RETIRED single model.
+        # It may only run when the incumbent is a CONFIRMED single model.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_INCUMBENT_UNRESOLVED,
+            classify_provenance,
+        )
+        for mismatch in (True, False, None):
+            with self.subTest(sha_mismatch=mismatch):
+                self.assertEqual(
+                    VERDICT_INCUMBENT_UNRESOLVED,
+                    classify_provenance(
+                        incumbent_kind="unresolvable", artifact_kind="single",
+                        single_sha_mismatch=mismatch))
+        self.assertIn("现任 manifest 不可解析", self.xcheck)
+
+    def test_ensemble_artifact_under_single_incumbent_is_known(self) -> None:
+        # An explicit `none` opt-out is a DEFINITE single-model incumbent, so
+        # an ensemble artifact provably did not come from it — the page must
+        # say 请勿据此下单, not 无法判定.
+        i_known = self.xcheck.index("VERDICT_ENSEMBLE_UNDER_SINGLE")
+        i_unknown = self.xcheck.index("VERDICT_INCUMBENT_UNRESOLVED")
+        self.assertLess(i_known, i_unknown)
+        self.assertIn("现任是单模型形态", self.xcheck)
 
     def test_single_incumbent_message_names_the_explicit_opt_out(self) -> None:
         # After the default-manifest change, `single` is reachable ONLY via
-        # the explicit sentinel; telling operators "变量未设" would send them
+        # the explicit sentinel; telling operators 变量未设 would send them
         # troubleshooting in the opposite direction.
         self.assertIn("显式设为 `none`", self.xcheck)
         self.assertNotIn("(QUANT_ENSEMBLE_MANIFEST 未设)", self.xcheck)
+
+    def test_v1_artifact_is_not_called_single_model_shaped(self) -> None:
+        # r2: a v1 artifact carries no meta at all — its provenance is
+        # unknown, so the matrix gives it its own verdict under EVERY
+        # incumbent rather than folding it into the shape check.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            INCUMBENT_KINDS,
+            VERDICT_V1_UNKNOWN,
+            classify_provenance,
+        )
+        for inc in INCUMBENT_KINDS:
+            with self.subTest(incumbent=inc):
+                self.assertEqual(
+                    VERDICT_V1_UNKNOWN,
+                    classify_provenance(incumbent_kind=inc, artifact_kind="v1"))
 
 
 class ProposalConsistencyTests(unittest.TestCase):

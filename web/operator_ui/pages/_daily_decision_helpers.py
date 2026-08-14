@@ -442,3 +442,91 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
     nxt_str = str(nxt) if isinstance(nxt, str) and nxt else None
     return HoldState(is_hold=(raw is False), next_rebalance_date=nxt_str,
                      malformed=None)
+
+
+# ---------------------------------------------------------------------------
+# Provenance verdict — the incumbent × artifact matrix as DATA, not as a
+# chain of elifs (codex #430 r1..r3 leaked four different cells of it: a
+# single-model artifact under an ensemble incumbent, an unset pointer read as
+# "single", a v1 artifact called "single-model shaped", and an unresolvable
+# incumbent falling through to the retired model's sidecar). Ordered branches
+# give no structural guarantee that every combination is covered; a table
+# does, and the test asserts the table is total.
+# ---------------------------------------------------------------------------
+
+# Artifact shapes, as classified by ``artifact_meta_status``.
+ARTIFACT_KINDS: tuple[str, ...] = (
+    "ensemble",          # v2, meta.ensemble carries manifest_sha256
+    "ensemble_no_sha",   # v2, marked ensemble but manifest_sha256 missing
+    "v1",                # no meta block at all — provenance unknown
+    "single",            # v2, self-describing single-model
+)
+INCUMBENT_KINDS: tuple[str, ...] = ("ensemble", "single", "unresolvable")
+
+# Verdicts the page renders. Each is one message; none means "say nothing".
+VERDICT_MATCHES_INCUMBENT = "matches_incumbent"
+VERDICT_OTHER_MANIFEST = "other_manifest"
+VERDICT_ENSEMBLE_SHA_MISSING = "ensemble_sha_missing"
+VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE = "shape_single_under_ensemble"
+VERDICT_ENSEMBLE_UNDER_SINGLE = "ensemble_under_single"
+VERDICT_V1_UNKNOWN = "v1_unknown_provenance"
+VERDICT_INCUMBENT_UNRESOLVED = "incumbent_unresolved"
+VERDICT_SINGLE_SHA_MISMATCH = "single_sha_mismatch"
+VERDICT_SINGLE_SHA_UNKNOWN = "single_sha_unknown"
+VERDICT_SINGLE_SHA_OK = "single_sha_ok"
+
+
+def classify_provenance(
+    *,
+    incumbent_kind: str,
+    artifact_kind: str,
+    ensemble_sha_matches: bool | None = None,
+    single_sha_mismatch: bool | None = None,
+) -> str:
+    """Which provenance statement is TRUE for this (incumbent, artifact) pair.
+
+    Pure and total over ``INCUMBENT_KINDS × ARTIFACT_KINDS`` — an unknown
+    combination raises rather than silently returning "nothing to say",
+    because "no warning" is exactly how a non-incumbent artifact gets
+    presented as safe.
+    """
+    if incumbent_kind not in INCUMBENT_KINDS:
+        raise ValueError(f"unknown incumbent kind: {incumbent_kind!r}")
+    if artifact_kind not in ARTIFACT_KINDS:
+        raise ValueError(f"unknown artifact kind: {artifact_kind!r}")
+
+    # Shape-independent of the incumbent: these two say what they say no
+    # matter what production serves.
+    if artifact_kind == "ensemble_no_sha":
+        return VERDICT_ENSEMBLE_SHA_MISSING
+    if artifact_kind == "v1":
+        return VERDICT_V1_UNKNOWN
+
+    # An incumbent we could not confirm cannot vouch for — or against —
+    # anything. It must never fall through to the retired model's sidecar.
+    if incumbent_kind == "unresolvable":
+        return VERDICT_INCUMBENT_UNRESOLVED
+
+    if incumbent_kind == "ensemble":
+        if artifact_kind == "single":
+            return VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE
+        return (VERDICT_MATCHES_INCUMBENT if ensemble_sha_matches
+                else VERDICT_OTHER_MANIFEST)
+
+    # incumbent_kind == "single" (the explicit opt-out)
+    if artifact_kind == "ensemble":
+        return VERDICT_ENSEMBLE_UNDER_SINGLE
+    if single_sha_mismatch is True:
+        return VERDICT_SINGLE_SHA_MISMATCH
+    if single_sha_mismatch is None:
+        return VERDICT_SINGLE_SHA_UNKNOWN
+    return VERDICT_SINGLE_SHA_OK
+
+
+def artifact_kind_of(status: ArtifactMetaStatus) -> str:
+    """Map the meta-status flags onto exactly one ``ARTIFACT_KINDS`` value."""
+    if status.artifact_is_ensemble:
+        return "ensemble" if status.artifact_ensemble_sha else "ensemble_no_sha"
+    if status.artifact_is_v1:
+        return "v1"
+    return "single"
