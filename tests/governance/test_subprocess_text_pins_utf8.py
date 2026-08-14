@@ -244,7 +244,10 @@ _GIT_PATCH_OPTS = frozenset({
 # (``-pU3``), so a whole-token match missed them (codex P2 r52 on #410,
 # reproduced with ``-U1``). Any single-dash cluster containing one of
 # these letters generates a patch.
-_GIT_PATCH_LETTERS = frozenset({"p", "u", "U"})
+# ``-L <range:file>`` (line log) emits a patch with no patch letter of
+# its own (codex P2 r62 on #410, reproduced), so it joins the letters
+# rather than being handled as a separate option.
+_GIT_PATCH_LETTERS = frozenset({"p", "u", "U", "L"})
 # Without an explicit format the log family prints attached NOTES,
 # which git does not transcode (codex P2 r53 on #410; reproduced — the
 # default output carries the note bytes, while ``--format=%H`` and
@@ -1997,6 +2000,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("an explicit --notes refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "--notes", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("a -L line log emits a patch as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-L", "1,1:x"], text=True, encoding="utf-8")',
      True),
     ("an attached -U1 generates a patch too",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
