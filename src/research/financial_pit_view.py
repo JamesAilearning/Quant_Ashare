@@ -198,6 +198,7 @@ class FinancialPITDataView:
         *,
         include_report_periods: bool = False,
         include_prior_period: bool = False,
+        include_availability: bool = False,
     ) -> pd.DataFrame:
         """PIT-correct financial values as-of ``trade_date``.
 
@@ -226,6 +227,23 @@ class FinancialPITDataView:
         trade date; a hole at the adjacent period (or an unavailable
         record) yields NA — never a silent diff across a skipped quarter.
         The default (False) output is unchanged.
+
+        ``include_availability=True`` additionally emits, per queried endpoint,
+        ``_available_from__<endpoint>`` — the ``available_from_trade_date`` of
+        the record actually served — and, alongside ``include_prior_period``,
+        ``_available_from_prior__<endpoint>``. This is the view's PUBLIC
+        provenance response: a consumer that must PROVE its panel is
+        announcement-gated gets availability from the SAME call that yields the
+        value, instead of re-reading the store or inferring dates from sampled
+        value changes — inference is exactly what such evidence has to exclude.
+
+        The evidence records WHICH DISCLOSURE WAS SERVED, not whether its value
+        is present: a served record whose requested field is NA still carries
+        its availability date. The evidence is NA exactly where NO RECORD IS
+        SERVED — i.e. no period is available yet. "Announced" is NOT the test:
+        availability starts strictly AFTER the announcement, so on the
+        announcement day itself a record exists yet nothing is served, and the
+        evidence is NA there too. The default (False) output is unchanged.
         """
         _require_collection(fields, "fields")
         _require_collection(instruments, "instruments")
@@ -246,6 +264,11 @@ class FinancialPITDataView:
             out_columns += [f"{f}__prior" for f in fields]
             out_columns += [f"_report_period_prior__{e}"
                             for e in sorted(by_endpoint)]
+        if include_availability:
+            out_columns += [f"_available_from__{e}" for e in sorted(by_endpoint)]
+            if include_prior_period:
+                out_columns += [f"_available_from_prior__{e}"
+                                for e in sorted(by_endpoint)]
 
         rows: dict[str, dict[str, Any]] = {}
         for raw_ts in instruments:
@@ -267,6 +290,16 @@ class FinancialPITDataView:
                         pd.NA if (period is None or pd.isna(period))
                         else str(period)
                     )
+                if include_availability:
+                    # Keyed on WHICH RECORD WAS SERVED, never on whether its
+                    # value is present: a served record whose requested field
+                    # is NA still carries its availability date, and the
+                    # evidence is NA exactly where nothing was served. Any
+                    # other rule would let a consumer's "available_from <= T"
+                    # assertion skip precisely the NA-valued cells.
+                    row[f"_available_from__{endpoint}"] = (
+                        pd.NA if latest is None
+                        else self._as_of_evidence(latest))
                 if include_prior_period:
                     prior: pd.Series | None = None
                     prev_period: date | None = None
@@ -285,6 +318,10 @@ class FinancialPITDataView:
                     row[f"_report_period_prior__{endpoint}"] = (
                         pd.NA if (prior is None or prev_period is None)
                         else prev_period.strftime("%Y%m%d"))
+                    if include_availability:
+                        row[f"_available_from_prior__{endpoint}"] = (
+                            pd.NA if prior is None
+                            else self._as_of_evidence(prior))
             rows[ts] = row
         if not rows:
             # every requested instrument was financial-excluded (or the list was
@@ -348,6 +385,25 @@ class FinancialPITDataView:
             )
 
     # ---------------------------------------------------------------- internal
+
+    @staticmethod
+    def _as_of_evidence(record: pd.Series) -> Any:
+        """The availability date of a SERVED record, as the public evidence.
+
+        Rendered as ``YYYYMMDD`` so the evidence frame is comparable and
+        hashable the same way ``_report_period__*`` already is. A served record
+        always has this column (the store contract guarantees it); a served
+        record with a NULL availability would mean the store itself lost the
+        gate, so fail loud rather than emit evidence that cannot be checked.
+        """
+        value = record.get(AVAILABLE_FROM)
+        if value is None or pd.isna(value):
+            raise FinancialPITViewError(
+                f"served record for period {record.get(REPORT_PERIOD)!r} has no "
+                f"{AVAILABLE_FROM} — the store lost its availability gate; "
+                "refusing to emit unverifiable provenance."
+            )
+        return value.strftime("%Y%m%d")
 
     def _latest_as_of(
         self, ts_code: str, endpoint: str, td: date, fields: Sequence[str],
