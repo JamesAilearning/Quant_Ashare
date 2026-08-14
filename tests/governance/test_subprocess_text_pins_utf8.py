@@ -185,6 +185,14 @@ _GIT_PATH_PRODUCING = frozenset({"ls-files", "ls-tree", "check-ignore"})
 # clusters are parsed letter-by-letter rather than compared whole.
 _GIT_RAW_PATH_LONG_OPTS = frozenset({"--null"})
 _GIT_RAW_PATH_LETTER = "z"
+# git's format language emits arbitrary bytes: ``--format=%xFF`` writes
+# 0xff verbatim (verified through a fully pinned log). No encoding
+# setting normalizes them, so ANY format/pretty option on an accepted
+# call must be a literal whose value carries no ``%x`` escape — and an
+# opaque one refuses, since its value cannot be read (codex P2 r43 on
+# #410).
+_GIT_FORMAT_OPTS = ("--format", "--pretty")
+_GIT_RAW_BYTE_ESCAPE = "%x"
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
 _GIT_DIFF_CAPABLE = frozenset({
@@ -430,6 +438,20 @@ def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
     return None
 
 
+def _call_argv_node(call: ast.Call, kwargs: dict[str, ast.expr] | None = None):
+    """The argv expression, positional or ``args=`` keyword.
+
+    ``subprocess.run(args=[...], ...)`` is the documented keyword form
+    and runs normally (verified), so reading only ``call.args[0]``
+    reported a compliant call (codex P2 r43 on #410).
+    """
+    if call.args:
+        return call.args[0]
+    if kwargs is None:
+        kwargs, _ = _collect_kwargs(call)
+    return kwargs.get("args")
+
+
 def _argv_strings(call: ast.Call) -> list[str | None] | None:
     """The call's argv elements, classified for option scanning.
 
@@ -446,13 +468,14 @@ def _argv_strings(call: ast.Call) -> list[str | None] | None:
     ends CPython option parsing; ``python -- -E`` opens a FILE named
     ``-E``, while ``-E`` before ``--`` stays active).
     """
-    if not call.args or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+    argv = _call_argv_node(call)
+    if not isinstance(argv, (ast.List, ast.Tuple)):
         return None  # a literal tuple argv is as provable as a list
     return [
         elt.value
         if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
         else None
-        for elt in call.args[0].elts
+        for elt in argv.elts
     ]
 
 
@@ -601,9 +624,7 @@ def _python_child(
         isinstance(executable, ast.Constant) and executable.value is None
     ):
         return _program_is_python(executable, sys_names)
-    if not call.args:
-        return None
-    argv = call.args[0]
+    argv = _call_argv_node(call, kwargs)
     if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
         return None  # tuple argv is judged exactly like a list (codex r21)
     return _program_is_python(argv.elts[0], sys_names)
@@ -700,6 +721,17 @@ def _git_output_safe(call: ast.Call) -> bool:
         # so it needs both.
         if el in _GIT_FILTER_CAPABLE or el in _GIT_RAW_VALUE_SUBCOMMANDS:
             return False  # filters / raw stored bytes: no suppression
+        for later in argv[i + 1:]:
+            if later in ("--", "--end-of-options"):
+                break  # past the closer nothing is an option
+            if later is None:
+                continue  # opacity is judged by the per-family rules
+            head, _, value = later.partition("=")
+            if head in _GIT_FORMAT_OPTS:
+                if _GIT_RAW_BYTE_ESCAPE in value.lower():
+                    return False  # %xNN writes raw bytes
+            elif later in _GIT_FORMAT_OPTS:
+                return False  # separated value: unreadable from here
         if not hooks_off:
             # A hook writes arbitrary bytes into the captured streams;
             # ``core.hooksPath`` aimed at a non-directory is the one
@@ -1730,6 +1762,30 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("text-mode git diff is refused — filters have no kill switch",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # git's format language writes raw bytes: %xFF emits 0xff even
+    # through a fully pinned call (verified).
+    ("a %x escape in --format is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%xFF", "-1"], text=True, encoding="utf-8")', True),
+    ("--pretty carries the same escape",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--pretty=%xff%H", "-1"], text=True, encoding="utf-8")', True),
+    ("an ordinary format stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-1"], text=True, encoding="utf-8")', False),
+    ("a separated format value cannot be read, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format", fmt, "-1"], text=True, encoding="utf-8")', True),
+    # argv may arrive as the documented ``args=`` keyword.
+    ("keyword argv proves the python child",
+     'subprocess.run(args=[sys.executable, "-c", code], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("keyword argv is scanned for env-ignoring flags too",
+     'subprocess.run(args=[sys.executable, "-E", "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("keyword argv naming git obeys the git rules",
+     'subprocess.run(args=["git", "rev-parse", "HEAD"], text=True,'
      ' encoding="utf-8")', True),
     # the codec is last-one-wins too (verified on the key itself).
     ("a later utf-8 override rescues an earlier GBK",
