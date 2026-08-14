@@ -101,18 +101,28 @@ GATE1_POOLED: dict[str, dict[int, float]] = {
 # coverage is at or above this (C3's adv/contract judged by their coalesce).
 CANDIDATE_WINDOW_THRESHOLD = 0.85
 
+# These MUST equal the frozen formulas' inputs (gate4a_ic_evaluator's
+# C1/C2/C3_FIELDS), and a governance test pins that equality — a window derived
+# from fields the adjudicated formula does not read is a window for a different
+# factor (codex #425 r8).
+#
+# This REVERSES codex #347 r3, which asked for rd_exp on the authority of the
+# signed charter's "…− 销售管理费用 + 研发…". The charter is superseded on this
+# point by the frozen erratum (docs/prereg/quality_profitability.yaml, decisions
+# ⑤ and ①, 2026-07-13): the OMIT formulation never deducts single-line R&D, so
+# "rd_exp 不再是任何候选的输入" — MOOT, explicitly. The implemented formulas
+# agree. rd_exp's 2018 cliff stays MEASURED and REPORTED (§3), it just cannot
+# delay a window for a factor that never reads it. Same for n_cashflow_act: the
+# adjudicated C3 is the pure-balance-sheet accrual. Do not re-add either without
+# first changing the frozen plan.
 CANDIDATE_FIELDS: dict[str, tuple[str, ...]] = {
     "C1 GPA": ("revenue", "oper_cost", "total_assets"),
-    "C2 PROF": ("revenue", "oper_cost", "sell_exp", "admin_exp", "rd_exp",
+    "C2 PROF": ("revenue", "oper_cost", "sell_exp", "admin_exp",
                 "fin_exp", "total_hldr_eqy_inc_min_int"),
-    # rd_exp included: the signed charter's C3 numerator ADDS BACK R&D
-    # (charter §2 C3 "…− 销售管理费用 + 研发…"; Gate-1 memo marks rd_exp as a
-    # C2/C3 field) — omitting it would hide the 2018 rd_exp cliff from the C3
-    # window (codex #347 r3).
-    "C3 cash-OP": ("revenue", "oper_cost", "sell_exp", "admin_exp", "rd_exp",
+    "C3 cash-OP": ("revenue", "oper_cost", "sell_exp", "admin_exp",
                    "accounts_receiv", "inventories", "prepayment",
                    "accounts_pay", "adv_receipts", "contract_liab",
-                   "n_cashflow_act", "total_assets"),
+                   "total_assets"),
 }
 
 
@@ -523,7 +533,12 @@ def build_report(args: argparse.Namespace) -> str:
     for year, tot, fin, exfin in breadth_rows:
         a(f"| {year} | {tot} | {fin} | {exfin} |")
     a("")
-    a("## 3. rd_exp 季度末 as-of 细分(C2 窗口判定)")
+    a("## 3. rd_exp 季度末 as-of 细分(记录在案的数据事实)")
+    a("")
+    a("**注意口径**: 冻结勘误(`docs/prereg/quality_profitability.yaml` 决策⑤/①)"
+      "把 C2/C3 定为 **OMIT 式**(单列研发不扣除)—— rd_exp **不是任何候选的输入**"
+      "(原文:『OMIT 式下 rd_exp 不再是任何候选的输入』),已实现的冻结公式亦不读它。"
+      "因此本节是**数据事实的记录**,不再是候选窗口的判据;窗口见 §6。")
     a("")
     a("| year | 03-31 | 06-30 | 09-30 | 12-31 |")
     a("|---|---|---|---|---|")
@@ -604,8 +619,19 @@ def build_report(args: argparse.Namespace) -> str:
         a(f"| {cand} | " + " | ".join(pct(mins[y]) for y in YEARS)
           + f" | **{earliest if earliest else 'NONE'}** |")
     a("")
-    a("注: C3 需两期(Δ应计)→ 有效首个横截面比起始年再晚一个报告期;C2 缺 rd_exp "
-      "的处理(不可算 vs 视 0)按 charter 仍须在 Gate-3 预注册中显式冻结。")
+    a("注: C3 需两期(Δ应计)→ 有效首个横截面比起始年再晚一个报告期。输入字段取自"
+      "**冻结公式**(OMIT 式:rd_exp 与 n_cashflow_act 均非候选输入),由治理测试"
+      "钉住与 `gate4a_ic_evaluator` 的 C1/C2/C3_FIELDS 逐字段相等 —— 用公式不读的"
+      "字段推出来的窗口,是另一个因子的窗口。")
+    a("")
+    # The table answers "when is the DATA good enough", which is not the
+    # same question as "when may the experiment start". Reading the former
+    # as the latter would silently reopen a frozen decision, so both are
+    # stated here, where the number is actually read off.
+    a("**本表只回答『数据何时够用』,不回答『实验何时可以开始』**: 主检验窗口由"
+      "冻结勘误②统一定为 **2019 起**(理由是会计口径 regime 一致性 —— 2018 前"
+      "多数名 admin_exp 内含研发,属混合 regime),与本表推出的数据可用年"
+      "**各自独立**。本表出现 2018 不构成从 2018 起跑的依据。")
     a("")
     # §7's frame is "deviations from the Gate-1 memo", and Gate-1 is a
     # CSI300-ever measurement. Off that universe, every Gate-1-derived number
@@ -639,13 +665,16 @@ def build_report(args: argparse.Namespace) -> str:
       "歧义 fail-loud 拒写、提供方返回空数据(ingest 视为成功且不写文件)、以及"
       "ingest 未跑完/中断/被裁剪/该名字根本没抓过。定性须查该次 ingest 的 "
       "manifest / hole 计数 / 日志,本表做不到;详见 §8。")
-    note("**rd_exp 的 2018 年 as-of 断崖**: "
+    note("**rd_exp 的 2018 年 as-of 断崖(已记录,但不再驱动任何窗口)**: "
       + ("行级 pooled 显示 2018=55%,但 " if gate1_comparable else "")
       + f"as-of 横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
       f"{pct(rd_quarters[2018][2])}、Q4 {pct(rd_quarters[2018][3])} —— 单列研发"
-      "费用自 2018 Q3 报告才开始批量披露。**C2 最早可靠期 = 2019**"
+      "费用自 2018 Q3 报告才开始批量披露"
       + ("(Gate-1 的『2018 早窗弱』在 as-of 口径下更硬)" if gate1_comparable else "")
-      + "。2019+ 无季报缺失效应(§3)。")
+      + "。**但冻结勘误的 OMIT 式下 rd_exp 不是任何候选的输入**,因此这条断崖"
+      "既不能推迟也不能否决 C2/C3 的可用窗口;各候选窗口一律由 §6 按冻结公式的"
+      "输入字段推出。主检验窗口统一 2019 起的理由在勘误②(会计口径 regime 一致性),"
+      "不是 rd_exp 覆盖率。")
     int_rng = [cov_exfin["int_exp"][y] for y in YEARS]
     fin_rng = [cov_exfin["fin_exp"][y] for y in YEARS]
     note(f"**int_exp as-of 覆盖 {pct(min(int_rng))}-{pct(max(int_rng))}**"
