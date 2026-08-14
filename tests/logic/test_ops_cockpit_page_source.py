@@ -200,7 +200,12 @@ class ResolvedCommandTests(unittest.TestCase):
         # verified empirically that PowerShell errors on the next line
         # ("Missing expression after unary operator '--'"). The whole value
         # of this page is commands that can be pasted, so they are rendered
-        # single-line: correct in PowerShell, cmd AND a POSIX shell.
+        # single-line: correct in PowerShell AND a POSIX shell.
+        # NOT cmd.exe — it does not treat single quotes as argument
+        # delimiters, so a space-bearing path splits (verified:
+        # ARGV= ['--provider-dir', "'D:/qlib", "bundles/live'"]).
+        # The operator's documented shell is PowerShell, so the
+        # scope is honest rather than reduced (codex #431 r16).
         from web.operator_ui.incumbent import IncumbentIdentity
         from web.operator_ui.pages._ops_cockpit_helpers import (
             data_update_command,
@@ -222,6 +227,21 @@ class ResolvedCommandTests(unittest.TestCase):
             with self.subTest(cmd=cmd.title):
                 self.assertNotIn("\\", cmd.command, "不得有 POSIX 续行符")
                 self.assertNotIn("\n", cmd.command, "命令本体必须单行")
+
+    def test_the_supported_shells_are_stated_and_not_overclaimed(self) -> None:
+        # codex #431 r16: I verified PowerShell empirically and then wrote
+        # "cmd too" without testing it. cmd.exe does NOT treat single quotes
+        # as argument delimiters — the same space-bearing path splits. The
+        # scope must say what was verified, no more.
+        spec = (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit"
+                / "specs" / "v2-ops-cockpit-page"
+                / "spec.md").read_text(encoding="utf-8")
+        self.assertIn("PowerShell 与 POSIX shell", spec)
+        self.assertIn("MUST NOT 声称支持 `cmd.exe`", spec)
+        for text in (spec, _HELPERS.read_text(encoding="utf-8")):
+            with self.subTest(where=text[:20]):
+                self.assertNotIn("PowerShell、cmd", text)
+                self.assertNotIn("PowerShell, cmd", text)
 
     def test_a_single_quote_in_a_path_is_refused_not_faked(self) -> None:
         # POSIX and PowerShell escape an embedded single quote differently

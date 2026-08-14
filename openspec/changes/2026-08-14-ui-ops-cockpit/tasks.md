@@ -139,10 +139,16 @@
 - [x] 内嵌单引号 → 明说无法跨 shell 表达,不输出静默出错的命令  ← C52 咬住
 - [x] 六处变异锚点随之重锚(C15/C16/C17/C21/C27/C49)
 
+## W22 codex #431 r16（P2，属实；我验了 PowerShell 却顺口写上 cmd）
+- [x] 实证 cmd.exe:单引号被当字面量,含空格路径被切成两个参数
+      `ARGV= ['--provider-dir', "'D:/qlib", "bundles/live'"]`
+- [x] 声称范围收窄为 **PowerShell + POSIX**,并显式写明不支持 cmd.exe  ← C53 咬住
+- [x] 规格/docstring/测试注释三处同步
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C52:51 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C53:52 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

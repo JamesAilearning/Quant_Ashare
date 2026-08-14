@@ -74,7 +74,9 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **GIVEN** 本仓库文档化的平台是 Windows / PowerShell
 - **THEN** 生成的命令 MUST NOT 使用 POSIX 续行符 `\`——PowerShell 不认它，
   会把下一行当独立语句并报错
-- **AND** 命令 MUST 以在 PowerShell、cmd 与 POSIX shell 中都可粘贴的形式呈现
+- **AND** 命令 MUST 以在 **PowerShell 与 POSIX shell** 中都可粘贴的形式呈现
+- **AND** 页面 MUST NOT 声称支持 `cmd.exe`——它不把单引号当参数分隔符，
+  含空格的路径会被切成多个参数（实测 `ARGV= ['--provider-dir', "'D:/qlib", "bundles/live'"]`）
 
 #### Scenario: 无法跨 shell 表达的路径必须明说
 

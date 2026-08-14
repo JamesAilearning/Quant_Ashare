@@ -818,11 +818,18 @@ def _arg(value: object) -> str:
     silently run against something else, or a metacharacter would execute
     as shell syntax (codex #431 r3).
 
-    Single-quoting is used because BOTH shells this page must serve accept
-    it: the operator runs PowerShell (this repo's documented platform) and
-    the runbook is written POSIX. Verified by executing a generated command
+    Single-quoting is used because BOTH shells this page serves accept it:
+    the operator runs PowerShell (this repo's documented platform) and the
+    runbook is written POSIX. Verified by executing a generated command
     through ``powershell.exe`` — a space-bearing path arrives as one argv
     entry. Ordinary paths come back unchanged.
+
+    ``cmd.exe`` is explicitly NOT in scope and must not be claimed: it does
+    not treat single quotes as argument delimiters, so the same path splits
+    (verified through ``shell=True``:
+    ``ARGV= ['--provider-dir', "'D:/qlib", "bundles/live'"]``). Saying
+    "works in cmd too" costs nothing to write and is exactly the kind of
+    unverified claim this page exists to avoid (codex #431 r16).
 
     The one form that cannot be rendered for both is an embedded single
     quote: POSIX closes and re-opens (``'"'"'``), PowerShell doubles
