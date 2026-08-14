@@ -634,11 +634,11 @@ def build_report(args: argparse.Namespace) -> str:
       "两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec "
       "`fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日"
       "(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,"
-      "record = 最早披露。**缺文件有两类成因,本报告无法从'文件不在'本身区分**:"
-      "①ingest 对真歧义 fail-loud 拒写(同一有效公告日双内容,例如同日双 comp_type "
-      "报表);②提供方对该 instrument/endpoint 返回空数据 —— ingest 视为成功且不写"
-      "文件(如早年退市、非股票代码)。判定成因须看该次 ingest 的 hole 计数/日志。"
-      "两类在覆盖率分母中一律**保留并计为未覆盖**(诚实方向);具体名单见 §8。")
+      "record = 最早披露。**但缺文件的成因本报告一律不定性** —— 它只观测到"
+      "'store 里没有这个 parquet',而多种互斥成因留下的观测量完全相同:ingest 对真"
+      "歧义 fail-loud 拒写、提供方返回空数据(ingest 视为成功且不写文件)、以及"
+      "ingest 未跑完/中断/被裁剪/该名字根本没抓过。定性须查该次 ingest 的 "
+      "manifest / hole 计数 / 日志,本表做不到;详见 §8。")
     note("**rd_exp 的 2018 年 as-of 断崖**: "
       + ("行级 pooled 显示 2018=55%,但 " if gate1_comparable else "")
       + f"as-of 横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
@@ -674,15 +674,38 @@ def build_report(args: argparse.Namespace) -> str:
     a("")
     a("## 8. 缺失的 store 文件(显式列出,绝不静默)")
     a("")
-    a("缺文件 = 该 (instrument, endpoint) 在 store 中没有 parquet。成因有两类,"
-      "**从文件缺失本身无法区分**:①ingest fail-loud 拒写(提供方同一 logical key "
-      "双内容的歧义重复);②提供方返回空数据 —— ingest 视为成功、不写文件。"
-      "无论哪类,这些名字在覆盖率分母中**保留并计为未覆盖**(诚实方向:压低而非抬高"
-      "覆盖率)。要判定成因,查该次 ingest 的 hole 计数/日志,而非本表。")
+    # This section reports an OBSERVATION (no parquet), never a diagnosis: the
+    # ingestor writes nothing both when it fail-loud refuses a true ambiguity
+    # AND when the provider legitimately returns an empty frame, and a partial /
+    # interrupted / pruned / never-attempted ingest leaves the very same trace.
+    # Only the ingest run's own manifest can tell them apart (codex #425 r7).
+    a("缺文件 = 该 (instrument, endpoint) 在 store 中没有 parquet。**本表只报告这个"
+      "观测事实,不对成因定性** —— 多种互斥成因留下的痕迹完全相同:①ingest 对真歧义 "
+      "fail-loud 拒写;②提供方返回空数据,ingest 视为成功、不写文件;③ingest 未跑完"
+      "/中断/store 被裁剪/该名字根本没抓过。要定性,查该次 ingest 的 manifest / "
+      "hole 计数 / 日志,而非本表。")
+    a("")
+    # The coverage tables' denominator is the EX-FINANCIAL members in force at
+    # each snapshot, while this list spans the whole -ever universe. A missing
+    # name that is financial never enters that denominator, so claiming every
+    # missing name depresses reported coverage is false for those (codex #425
+    # r7). The split is therefore computed and stated, not asserted.
+    miss_all = sorted({n for info in residuals.values() for n in info.missing_names})
+    # Same namespace on both sides (ts_code) — cf. the `set(ever) & set(
+    # fin_issuers)` intersection above; no conversion, and no conversion that
+    # could silently miss.
+    miss_fin = [n for n in miss_all if n in fin_issuers]
+    a(f"**与覆盖率分母的关系**:覆盖率主表分母 = 各快照日**在册 ex-金融**成员,"
+      f"而本表覆盖整个 {universe_label} 宇宙。因此只有**非金融且当日在册**的缺失名字"
+      f"才真正压低所报覆盖率(诚实方向:压低而非抬高);金融名字与当日不在册的名字"
+      f"根本不进分母,列出它们是为审计完整性,不影响覆盖率数字。本次 {len(miss_all)} "
+      f"个缺失 instrument 中金融 {len(miss_fin)} 个"
+      + (f"({', '.join(miss_fin)})" if miss_fin else "") + "。")
     a("")
     for endpoint, info in residuals.items():
         names = info.missing_names
-        shown = ", ".join(names[:30]) + (" …" if len(names) > 30 else "")
+        marked = [f"{n}(金融)" if n in miss_fin else n for n in names]
+        shown = ", ".join(marked[:30]) + (" …" if len(marked) > 30 else "")
         a(f"- **{endpoint}**: {len(names)} missing — {shown if names else '(none)'}")
     a("")
     return "\n".join(lines) + "\n"
