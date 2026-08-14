@@ -162,8 +162,11 @@ def gate1_delta_note(per_year: dict[str, dict[int, float]]) -> str:
     within = sum(1 for d in mean_deltas.values() if abs(d) <= 1.0)
     worst = sorted(mean_deltas.items(), key=lambda kv: -abs(kv[1]))[:2]
     worst_txt = "、".join(f"{f} {d:+.1f}pp" for f, d in worst)
+    # STRICT majority: a 50/50 split is not "多数" (codex #425 r12), and the
+    # tie must fall to the weaker claim — the report never rounds an even split
+    # up into a confirmation.
     headline = ("**其余字段 Gate-1 数字大体坐实**"
-                if within * 2 >= len(mean_deltas)
+                if within * 2 > len(mean_deltas)
                 else "**其余字段与 Gate-1 的偏离已不算小**")
     shares: list[float] = []
     for wf, _ in worst:

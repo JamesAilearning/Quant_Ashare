@@ -43,6 +43,30 @@ class Gate1DeltaNoteIsDerived(unittest.TestCase):
         self.assertNotIn("大体坐实", note)
         self.assertIn("偏离已不算小", note)
 
+    def test_an_exact_tie_does_not_read_as_confirmed(self) -> None:
+        """50/50 is not a majority — the tie falls to the weaker claim.
+
+        `>=` would round an even split up into a confirmation (codex #425 r12).
+        """
+        fields: dict[str, dict[int, float]] = {
+            f"in{i}": _flat(0.3) for i in range(3)
+        }
+        fields.update({f"out{i}": _flat(4.0) for i in range(3)})
+        note = gate1_delta_note(fields)
+        self.assertIn("6 个可比字段中 3 个", note)
+        self.assertNotIn("大体坐实", note)
+        self.assertIn("偏离已不算小", note)
+
+    def test_one_over_half_does_read_as_confirmed(self) -> None:
+        """Non-vacuity for the tie fix: a true majority still confirms."""
+        fields: dict[str, dict[int, float]] = {
+            f"in{i}": _flat(0.3) for i in range(4)
+        }
+        fields.update({f"out{i}": _flat(4.0) for i in range(3)})
+        note = gate1_delta_note(fields)
+        self.assertIn("7 个可比字段中 4 个", note)
+        self.assertIn("大体坐实", note)
+
     def test_transition_cause_is_claimed_only_when_concentrated_early(self) -> None:
         note = gate1_delta_note({
             "rd_exp": _early_only(-8.0),
