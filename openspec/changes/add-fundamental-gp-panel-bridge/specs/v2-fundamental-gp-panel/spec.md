@@ -339,8 +339,20 @@ layer this change already uses for orchestration. The injected factory SHALL
 consume the run's persisted contract, so the reconstruction guarantee above is
 preserved rather than traded away.
 
+The seam SHALL NOT become an unverifiable degree of freedom. Injection means
+the two entry points can receive DIFFERENT callables while every recorded config
+value, data digest, and store/calendar content fingerprint still matches — so
+promotion could rebuild a semantically different panel and nothing would
+notice. The run SHALL therefore record an identity for the factory actually
+used (its identifier and version digest), and promotion SHALL verify it against
+the factory it is given, refusing on mismatch and refusing a run that predates
+factory-identity recording — the same treatment the data fingerprints get,
+because a builder swap moves the panel exactly as a data swap does.
+
 The end-to-end test SHALL exercise this seam — mining and promoting a
 fundamental run through the real factory — not a stand-in that bypasses it.
+Exercising one factory in one test does not constrain the callable either entry
+point receives in a real run; only the recorded identity does.
 
 #### Scenario: mining and promotion take the builder as an argument
 - **WHEN** a fundamental campaign runs
@@ -351,6 +363,16 @@ fundamental run through the real factory — not a stand-in that bypasses it.
 - **WHEN** the isolation gate runs over the change
 - **THEN** it passes unmodified — no `src/` module outside the research package
   imports it
+
+#### Scenario: a swapped factory is caught at promotion
+- **WHEN** promotion is given a panel factory whose identity differs from the
+  one recorded at mining time
+- **THEN** it refuses rather than adjudicating on a panel built by a different
+  builder
+
+#### Scenario: a run with no recorded factory identity is refused
+- **WHEN** a fundamental run predates factory-identity recording
+- **THEN** promotion refuses rather than assuming the builder is unchanged
 
 #### Scenario: existing callers are unaffected
 - **WHEN** no factory is injected
@@ -403,6 +425,30 @@ defense in depth, but it does not discharge this requirement.
 #### Scenario: a price-volume pool is unaffected
 - **WHEN** a pool contains no fundamental terminals
 - **THEN** production materialization proceeds exactly as today
+
+### Requirement: The universe mask SHALL apply the same financial exclusion as the panel
+
+The membership mask that defines the coverage denominator SHALL exclude exactly
+the issuers the fundamental panel excludes. The view omits every configured
+financial issuer, while the mask is built independently from the qlib
+membership frame, which still marks those issuers as members. Their cells then
+sit in the denominator as permanently uncovered, depressing measured coverage —
+which feeds candidate admission and fitness. A candidate would be judged on a
+denominator that counts issuers its own data source refuses to serve.
+
+The exclusion applied SHALL be the run's PERSISTED exclusion set, not one
+re-derived at mask-construction time, so the mask and the panel cannot drift
+apart between mining and promotion.
+
+#### Scenario: excluded issuers leave the coverage denominator
+- **WHEN** coverage is measured for a fundamental run whose view excludes
+  financial issuers
+- **THEN** those issuers' cells are outside the denominator — not counted as
+  uncovered members
+
+#### Scenario: a price-volume run's denominator is unchanged
+- **WHEN** a run has no financial exclusion configured
+- **THEN** the mask is exactly what it is today
 
 ### Requirement: The panel SHALL emit one frozen instrument namespace aligned with the GP inputs
 

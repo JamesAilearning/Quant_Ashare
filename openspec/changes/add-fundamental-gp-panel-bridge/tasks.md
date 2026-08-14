@@ -103,6 +103,17 @@
       两侧、且本 change 已用于编排的层。注入的工厂**消费 run 持久化的契约**，
       重建保证不因此打折。端到端测试必须走**真工厂**，不得用绕过缝的替身。
       （对应用户既定治理：测试没拦住 ≠ 允许 —— 这里测试拦得住，只能走缝。）
+      **缝不能变成不可核验的自由度**（codex #427 r12 P1）：注入意味着挖掘与晋升
+      可以拿到**不同的 callable**，而配置值、data digest、store/日历内容指纹**全都
+      对得上** —— 晋升照样能在另一份语义不同的面板上裁决。故 run 里要记**工厂身份**
+      （标识 + 版本摘要），晋升时与拿到的工厂核对，不符即拒，并拒绝工厂身份记录
+      之前的老 run（换 builder 与换数据一样会移动面板，待遇必须一致）。
+- [ ] **金融排除要一并进宇宙掩码**（codex #427 r12 P1）：`run_mining` 另行取
+      `build_universe_mask(config)`（`miner.py:423/526`），其底座是 qlib membership
+      帧，**照样把金融 issuer 标记为成员**；而 view 已把它们全部剔除。于是这些名字
+      的 cell 留在 `evaluator._coverage` 的**分母**里、永远算作未覆盖，压低覆盖率 ——
+      而覆盖率喂给候选准入与适应度。必须用 run **持久化的**排除集（而非造掩码时
+      重新推导，否则挖掘与晋升会漂移）同样地裁掉，并测覆盖率分母。
 - [ ] **`DataConfig` 要记全重建面板的输入**（codex #427 r6 P1）：`promote_run` 只能把
       持久化的 `DataConfig` 交给 `build_panel_for_data`，而 `DataConfig`（`miner.py:42`）
       只有 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 /
@@ -180,8 +191,9 @@
       `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
       调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
       provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
-      `miner.py`（`DataConfig` 补全重建面板所需输入 + 内容指纹 + hash/migration，
-      并给 `run_mining` / `build_panel_for_data` 加面板工厂注入缝）、
+      `miner.py`（`DataConfig` 补全重建面板所需输入 + 内容指纹 + 工厂身份 +
+      hash/migration，给 `run_mining` / `build_panel_for_data` 加面板工厂注入缝，
+      并让 `build_universe_mask` 套用持久化的金融排除集）、
       `promote.py`（写盘前拒绝 + 财报侧内容指纹复核）与 `mined_factor_handler.py`
       （纵深防御拒绝）**有**改动；
       `gp_engine.py`（点变异替换池迁移 = **无条件**改动，与 adapter 方案无关；

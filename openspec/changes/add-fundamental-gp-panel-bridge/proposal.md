@@ -136,6 +136,16 @@ adapter 与其调用方一并进 scope，并有端到端晋升测试。
 完全一致），由 `scripts/research/` 的战役脚本注入 —— 那是唯一同时看得见两侧、且本
 change 已用于编排的层（`gate4a_ic_evaluator.py` 是先例）。注入的工厂**消费 run 持久化
 的契约**，所以下面的重建保证不因此打折；端到端测试走真工厂，不用绕过缝的替身。
+**但缝本身要可核验**（codex #427 r12 P1）：注入意味着挖掘与晋升可以拿到**不同的
+callable**，而配置值、data digest、store/日历指纹全都对得上 —— 晋升照样能在另一份
+语义不同的面板上裁决。故 run 里记**工厂身份**（标识 + 版本摘要），晋升时核对、不符
+即拒，并拒绝身份记录之前的老 run。换 builder 与换数据一样会移动面板，待遇必须一致。
+
+**另有一处口径必须同步**（同轮 P1）：`run_mining` 另行取 `build_universe_mask(config)`，
+其底座是 qlib membership 帧，**照样把金融 issuer 当成员**，而 view 已把它们剔除 ——
+这些 cell 就留在 `evaluator._coverage` 的**分母**里永远算未覆盖，压低覆盖率，而覆盖率
+喂给候选准入与适应度：候选会被一个「把它数据源拒绝服务的名字也算进去」的分母评判。
+掩码须套用 run **持久化的**排除集（不是造掩码时重推，否则挖掘与晋升会漂移）。
 
 **而"端到端"要成立，`DataConfig` 得先记全重建面板的输入**（codex #427 r6 P1）：
 `promote_run` 只能把持久化的 `DataConfig` 交给 `build_panel_for_data`，而它今天只有
