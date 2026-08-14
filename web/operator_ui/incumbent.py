@@ -25,22 +25,43 @@ PROJECT_ROOT = _rotate.PROJECT_ROOT
 
 
 def _is_absolute_under_either_convention(path: str) -> bool:
-    """Absolute as Windows OR as POSIX reads it.
-
-    ``os.path.isabs`` answers for the HOST, and this repository's documented
-    defaults are Windows paths (``D:/qlib_data/…``) while CI runs on Linux.
-    Asking only the host makes ``D:/qlib_data/my_cn_data_pit`` look RELATIVE
-    on Linux, and anchoring would then manufacture
-    ``/checkout/D:/qlib_data/my_cn_data_pit`` — a path that exists nowhere,
-    from a value that was never ambiguous (codex #431 r28).
-
-    A path that is absolute under either convention is left alone. On the
-    wrong host it will simply fail to read, and the page reports that — which
-    is the truth, unlike a rewritten path that hides where the value came
-    from.
-    """
+    """Absolute as Windows OR as POSIX reads it."""
     return (PureWindowsPath(path).is_absolute()
             or PurePosixPath(path).is_absolute())
+
+
+# Message shown when a spelling names nothing resolvable on THIS host.
+FOREIGN_ABSOLUTE_REASON = (
+    "该路径是**另一套约定**下的绝对路径(如 Windows 的 `D:/…` 出现在 POSIX 主机上)"
+    "——本机的读取器会把它当相对路径,按各自的工作目录解析成不同位置,"
+    "本页无法让它只指一处"
+)
+
+
+def foreign_absolute_reason(path: str) -> str | None:
+    """Why this spelling cannot be made to mean one place here — or None.
+
+    ``os.path.isabs`` answers for the HOST. A value like
+    ``D:/qlib_data/my_cn_data_pit`` is absolute to Windows and **relative** to
+    POSIX, so on Linux it does not "simply fail to read" (what r28 claimed):
+    it silently resolves against whatever directory the reader happens to be
+    in. Measured — Streamlit started in ``/tmp`` reads
+    ``/tmp/D:/qlib_data/…`` while the command, run from the instructed
+    repository root, reads ``<checkout>/D:/qlib_data/…``. That is exactly the
+    page-says-one-bundle / command-runs-another split r27 was about, wearing
+    a different spelling (codex #431 r30).
+
+    Anchoring it would make the two agree on a nonsense location and send the
+    operator chasing a missing bundle; passing it through keeps them
+    disagreeing. Neither is usable, so this is reported and the value is
+    refused rather than silently used.
+    """
+    if not path.strip():
+        return None
+    if os.path.isabs(path):
+        return None
+    return (FOREIGN_ABSOLUTE_REASON
+            if _is_absolute_under_either_convention(path) else None)
 
 
 def anchored_to_repo(path: str) -> str:
@@ -69,6 +90,11 @@ def anchored_to_repo(path: str) -> str:
     normalization the CLI does not share is the mistake r23 and r24 were
     about. A blank value is likewise untouched — the command boundary
     refuses it (r21).
+
+    A FOREIGN absolute (``D:/…`` on POSIX) is also returned untouched, but it
+    is NOT usable: see :func:`foreign_absolute_reason`. It keeps the
+    operator's own spelling so the refusal can quote what they configured
+    (codex #431 r30).
     """
     if not path.strip():
         return path
@@ -77,7 +103,9 @@ def anchored_to_repo(path: str) -> str:
         # expanduser could not resolve it (no HOME, or `~unknownuser`). Do
         # not guess and do not anchor a `~` as if it were a directory name.
         return path
-    if _is_absolute_under_either_convention(expanded):
+    if foreign_absolute_reason(expanded) is not None:
+        return expanded
+    if os.path.isabs(expanded):
         return expanded
     return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
 

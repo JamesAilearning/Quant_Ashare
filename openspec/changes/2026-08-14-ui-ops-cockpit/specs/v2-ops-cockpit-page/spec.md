@@ -341,6 +341,18 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 - **AND** 在错误的宿主上，该路径 MUST 直接读不到并如实报出，MUST NOT 被改写成
   一个掩盖来源的新路径
 
+#### Scenario: 另一套约定下的绝对路径必须被拒绝
+
+- **GIVEN** `provider_uri` 写作 `D:/qlib_data/…`，而本机是 POSIX
+- **AND** POSIX 没有盘符，读取器于是把它当**相对**路径按各自工作目录解析
+  （实测：Streamlit 起于 `/tmp` 读 `/tmp/D:/qlib_data/…`，命令起于仓库根读
+  `<checkout>/D:/qlib_data/…`）
+- **THEN** 本页 MUST 明说该路径在本机不可用并拒绝为其生成命令，
+  MUST NOT 照原样使用
+- **AND** MUST NOT 把它锚到仓库根——那样页面与命令确实一致了，却一致地指向
+  一个不存在的位置，会把操作人引去查「bundle 丢了」而不是「路径配错了」
+- **AND** 在该写法本就成立的宿主上（Windows），一切 MUST 保持不变
+
 #### Scenario: `~` 必须展开后再同时用于读与印
 
 - **GIVEN** `QUANT_MODEL_PATH=~/model.pkl`

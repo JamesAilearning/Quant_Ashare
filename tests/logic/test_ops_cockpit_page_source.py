@@ -732,6 +732,63 @@ class RepoAnchoredPathTests(unittest.TestCase):
                 self.assertFalse(
                     _is_absolute_under_either_convention(relative))
 
+    def test_a_foreign_absolute_is_refused_not_silently_used(self) -> None:
+        # codex #431 r30 (P1): my r28 note claimed a `D:/…` path on POSIX
+        # "will simply fail to read". It does not — POSIX has no drive
+        # letters, so the readers treat it as RELATIVE and resolve it against
+        # whatever directory they happen to be in. Measured: Streamlit
+        # started in /tmp reads `/tmp/D:/qlib_data/…` while the command, run
+        # from the instructed repo root, reads `<checkout>/D:/qlib_data/…` —
+        # the same page-says-one-bundle / command-runs-another split as r27.
+        import posixpath
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+            data_update_command,
+            recommender_integrity_check,
+        )
+        value = "D:/qlib_data/my_cn_data_pit"
+        # On the documented platform this is a perfectly good absolute path
+        # and nothing may change.
+        with patch.object(inc.os.path, "isabs", lambda p: True):
+            self.assertIsNone(inc.foreign_absolute_reason(value))
+            ok = data_update_command(provider_uri=value, delisted_registry="R")
+            self.assertNotIn("无法生成可粘贴命令", ok.title)
+        # …on a host where the spelling is foreign, every surface refuses.
+        with patch.object(inc.os.path, "isabs", posixpath.isabs):
+            reason = inc.foreign_absolute_reason(value)
+            self.assertIsNotNone(reason)
+            cmd = data_update_command(provider_uri=value,
+                                      delisted_registry="R")
+            self.assertIn("无法生成可粘贴命令", cmd.title)
+            self.assertNotIn(value, cmd.command)
+            self.assertIn(str(reason), cmd.note or "")
+            self.assertFalse(bundle_calendar_tail(value).known)
+            self.assertEqual(reason, bundle_calendar_tail(value).reason)
+            integrity = recommender_integrity_check(value)
+            self.assertFalse(integrity.known)
+            self.assertIsNone(integrity.accepted)
+
+    def test_a_foreign_absolute_is_never_anchored_into_nonsense(self) -> None:
+        # The other wrong repair: anchoring makes page and command agree on a
+        # location that exists nowhere, and sends the operator chasing a
+        # missing bundle instead of a misconfigured path (r30).
+        import posixpath
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+        value = "D:/qlib_data/my_cn_data_pit"
+        with patch.object(inc.os.path, "isabs", posixpath.isabs):
+            self.assertEqual(value, inc.anchored_to_repo(value))
+
+    def test_the_page_names_a_foreign_provider_as_the_cause(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn(
+            "elif foreign_absolute_reason(_provider) is not None:", page)
+        self.assertIn("provider 路径在本机不可用", page)
+
     def test_the_absoluteness_test_is_not_asked_of_the_host(self) -> None:
         # A SOURCE pin, deliberately, because no behavioural one is possible
         # here: on Windows `os.path.isabs` agrees with the dual-convention

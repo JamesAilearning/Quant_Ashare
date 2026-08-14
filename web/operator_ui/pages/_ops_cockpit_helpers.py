@@ -52,6 +52,9 @@ from web.operator_ui.config_forms import (
 from web.operator_ui.incumbent import PROJECT_ROOT as _INCUMBENT_ROOT
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.incumbent import anchored_to_repo as anchored_to_repo
+from web.operator_ui.incumbent import (
+    foreign_absolute_reason as foreign_absolute_reason,
+)
 
 # The checkout — reused, not derived a second time (r23/r26/r27).
 PROJECT_ROOT = Path(_INCUMBENT_ROOT)
@@ -575,6 +578,11 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
         # the true fault is upstream: no provider path was resolved at all
         # (codex #431 r21).
         return CalendarTail(known=False, reason=UNRESOLVED_PROVIDER_REASON)
+    _foreign = foreign_absolute_reason(provider_uri)
+    if _foreign is not None:
+        # Reading it would answer about `<cwd>/D:/…` — a location that
+        # depends on who is asking, not on the deployment (codex #431 r30).
+        return CalendarTail(known=False, reason=_foreign)
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
         # BYTES, not read_text(): universal-newline decoding silently folds a
@@ -666,6 +674,11 @@ def recommender_integrity_check(
         read_bundle_integrity,
     )
 
+    _foreign = foreign_absolute_reason(provider_uri)
+    if _foreign is not None:
+        # Same rule as the calendar reader: a spelling this host resolves
+        # against its own CWD names no single bundle (codex #431 r30).
+        return BundleIntegrityCheck(known=False, reason=_foreign)
     if not provider_uri.strip():
         # Without this, the normalizer turns "" into the CWD and the reader
         # finds no stamp there — returning `known=True, accepted=False`, i.e.
@@ -996,6 +1009,12 @@ def _arg(value: object) -> str:
         # Verified locally: the file was created. A refusal that executes
         # the thing it refuses is worse than no refusal (codex #431 r20).
         raise _UnusableArgument(text, _WHY_UNRENDERABLE)
+    foreign = foreign_absolute_reason(text)
+    if foreign is not None:
+        # Quotes fine, reads fine — and means a DIFFERENT place depending on
+        # who resolves it. Refused at the same boundary as the other two, so
+        # no builder has to remember (codex #431 r30).
+        raise _UnusableArgument(text, foreign)
     # UNCONDITIONAL, not shlex.quote's "does this need quoting?" judgement —
     # that judgement is POSIX's. A path named ``@bundle`` needs no quoting in
     # POSIX, so shlex returns it bare, and PowerShell then reads a leading
