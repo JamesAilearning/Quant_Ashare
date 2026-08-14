@@ -334,6 +334,7 @@ def _git(*args: str) -> str:
         # late ``--ext-diff`` as "must come before non-option
         # arguments").
         out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
+                              "-c", "core.quotePath=true",
                               "-C", str(_REPO), "show",
                               "--no-ext-diff", "--no-textconv",
                               "--end-of-options", *rest],
@@ -348,6 +349,7 @@ def _git(*args: str) -> str:
         raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
                               "-c", "core.hooksPath=/dev/null",
                               "-c", "i18n.logOutputEncoding=utf-8",
+                              "-c", "core.quotePath=true",
                               "-C", str(_REPO), "diff",
                               "--no-ext-diff", "--no-textconv",
                               "--name-status", "-M50%",

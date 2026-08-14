@@ -47,6 +47,7 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
         status = subprocess.run(
             ["git", "-c", "core.fsmonitor=false",
              "-c", "core.hooksPath=/dev/null",
+             "-c", "core.quotePath=true",
              "-C", str(_REPO_ROOT), "status", "--porcelain"],
             capture_output=True, timeout=5, check=True,
         ).stdout.decode("utf-8", errors="replace")

@@ -94,6 +94,7 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
             raw = subprocess.run(
                 ["git", "-c", "core.fsmonitor=false",
                  "-c", "core.hooksPath=/dev/null",
+                 "-c", "core.quotePath=true",
                  "status", *rest], cwd=str(cwd),
                 capture_output=True, timeout=10, check=False,
             )
