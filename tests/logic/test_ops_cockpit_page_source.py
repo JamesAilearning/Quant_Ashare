@@ -1397,7 +1397,23 @@ class BundleFreshnessTests(unittest.TestCase):
 
 
 class SpecSelfConsistencyTests(unittest.TestCase):
-    """codex #431 r12: the requirement body still mandated
+    """Regression pin for KNOWN contradictory wordings — not a general
+    contradiction detector.
+
+    Worth stating plainly, because five rounds of review have now hardened
+    this one guard (r12 / r17 / r18 / r19×2) and every round found a
+    phrasing the previous version could not see: an English MUST, a Chinese
+    必须, a mandate split across clauses, a stray negation elsewhere in the
+    statement. Keyword matching over prose does not converge — each fix
+    buys the exact shape it was given.
+
+    So: green here means "none of the wordings we have already been burned
+    by is present". It does NOT mean the governance artifacts agree. What
+    actually protects the operator is the IMPLEMENTATION pin
+    (``test_the_page_feeds_freshness_the_calendar_tail``) plus review; this
+    guard only stops a known regression walking back in.
+
+    codex #431 r12: the requirement body still mandated
     ``summarise_bundle_health()`` as the tail source while a scenario below
     it forbade exactly that. A spec carrying both cannot be satisfied — and
     worse, it lets a future implementation revert the corrected behaviour
@@ -1422,8 +1438,10 @@ class SpecSelfConsistencyTests(unittest.TestCase):
     # identity tail"), GIVEN clauses describing the divergence, and history
     # notes are all legitimate mentions — the guard must not force the
     # documents to stop explaining themselves.
-    MANDATE_MARKERS = ("MUST", "SHALL", "读自", "取自")
-    NEGATION_MARKERS = ("MUST NOT", "不用", "不得", "非出单侧", "推翻", "冲突")
+    MANDATE_MARKERS = ("MUST", "SHALL", "必须", "应当", "须", "读自",
+                       "取自", "使用", "采用", "来自", "给")
+    NEGATION_MARKERS = ("MUST NOT", "不用", "不得", "不再", "非出单侧",
+                        "推翻", "已改", "冲突", "MUST NOT")
 
     def _spec(self) -> str:
         # EVERY governance artifact of the change, not just spec.md. r12's
@@ -1477,22 +1495,23 @@ class SpecSelfConsistencyTests(unittest.TestCase):
         documents explain themselves; flagging those would trade one kind
         of damage for another.
         """
-        def hit(fragment: str) -> bool:
-            return (any(t in fragment for t in self.TAIL_TERMS)
-                    and any(x in fragment for x in self.REJECTED_SOURCE_TERMS)
-                    and any(m in fragment for m in self.MANDATE_MARKERS))
-
         bad: list[str] = []
         for statement in self._statements(text):
-            negated = any(n in statement for n in self.NEGATION_MARKERS)
-            if hit(statement) and not negated:
-                bad.append(statement.strip()[:80])
+            clauses = self._split_clauses(statement)
+            naming = [c for c in clauses
+                      if any(x in c for x in self.REJECTED_SOURCE_TERMS)]
+            if not naming:
                 continue
-            bad.extend(
-                clause.strip()[:80]
-                for clause in self._split_clauses(statement)
-                if hit(clause)
-                and not any(n in clause for n in self.NEGATION_MARKERS))
+            # Negation binds to the clause that NAMES the rejected source,
+            # not to the statement. A negation anywhere else — a history
+            # note, an unrelated MUST NOT — says nothing about whether this
+            # source is being mandated (codex #431 r19).
+            if all(any(n in c for n in self.NEGATION_MARKERS) for c in naming):
+                continue
+            mandated = any(m in statement for m in self.MANDATE_MARKERS)
+            about_the_tail = any(t in statement for t in self.TAIL_TERMS)
+            if mandated and about_the_tail:
+                bad.append(statement.strip()[:80])
         return bad
 
     def test_the_other_tail_source_only_ever_appears_as_a_prohibition(self) -> None:
@@ -1577,6 +1596,27 @@ class SpecSelfConsistencyTests(unittest.TestCase):
             ("r12 paragraph shape (mandate + unrelated negation)",
              "页面 MUST 用 `summarise_bundle_health()` 取 bundle 尾部日期，"
              "MUST NOT 新造第二个阈值。"),
+            # r19: a Chinese imperative. The marker list only knew MUST /
+            # SHALL / 读自 / 取自, so the most natural phrasing of all
+            # walked straight through.
+            ("r19 Chinese imperative",
+             "尾部日期必须使用 provider 元数据。"),
+            # r19: the two shapes C57/C58 test separately, COMBINED — a
+            # cross-clause mandate plus an unrelated negation. Statement
+            # scope was suppressed by the stray 冲突; clause scope could not
+            # see across the clause boundary. Negation now binds to the
+            # clause that names the source, so neither escape works.
+            ("r19 cross-clause mandate + unrelated negation",
+             "`summarise_bundle_health()` 给 tail_date；尾部日期取自它；"
+             "旧稿与此冲突。"),
+            # Isolates WHY the mandate is looked for across the statement
+            # rather than inside the naming clause: here the naming clause
+            # carries no imperative at all, and the mandate lands in the
+            # next clause. Restricting the search to the naming clause lets
+            # this through (mutation C61 on this pin).
+            ("mandate in a different clause from the source",
+             "`summarise_bundle_health()` 的 identity tail；"
+             "尾部日期 MUST 取自该处。"),
         ):
             with self.subTest(offending=name):
                 self.assertTrue(offends(text), "这种写法必须被判为违规")
