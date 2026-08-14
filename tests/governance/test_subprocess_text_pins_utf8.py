@@ -233,6 +233,10 @@ _GIT_PATH_OUTPUT_OPTS = frozenset({
 _GIT_SIGNATURE_KEY = "log.showsignature"
 _GIT_SIGNATURE_OFF_VALUES = frozenset({"false", "0", "off", ""})
 _GIT_SIGNATURE_OPTS = ("--show-signature",)
+# The log family's own ``--encoding=<codec>`` overrides the config pin
+# (codex P2 r50 on #410, reproduced: ``--encoding=GBK`` emits GBK
+# through a fully pinned call). Only the UTF-8 spellings are accepted.
+_GIT_ENCODING_OPT = "--encoding"
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
 _GIT_DIFF_CAPABLE = frozenset({
@@ -803,11 +807,14 @@ def _git_output_safe(call: ast.Call) -> bool:
             # ``-c core.fsmonitor=false`` is the one uniform cure.
             return False
         if el == "rev-parse":
+            # ``--`` does NOT make the rest safe here: rev-parse echoes
+            # its path operands verbatim (codex P2 r50, reproduced), so
+            # the whole tail is scanned, closer or not.
             for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    break
                 if later is None:
-                    return False  # could be --show-toplevel
+                    return False  # an operand or a printing option
+                if later in ("--", "--end-of-options"):
+                    continue  # a closer, not a licence
                 if (later.startswith("-")
                         and later.split("=")[0] not in _GIT_REVPARSE_SAFE_OPTS):
                     return False  # name/path-printing option
@@ -855,9 +862,19 @@ def _git_output_safe(call: ast.Call) -> bool:
             for later in argv[i + 1:]:
                 if later in ("--", "--end-of-options"):
                     break
-                if (later is not None
-                        and later.split("=")[0] in _GIT_SIGNATURE_OPTS):
+                if later is None:
+                    continue
+                head_opt, eq_opt, val_opt = later.partition("=")
+                if head_opt in _GIT_SIGNATURE_OPTS:
                     return False  # explicit signature verification
+                if head_opt == _GIT_ENCODING_OPT:
+                    # Its value is the next element when separated; an
+                    # opaque or non-UTF-8 codec refuses.
+                    if not eq_opt:
+                        return False  # unreadable separated value
+                    if (val_opt.strip().lower()
+                            not in _GIT_ENCODING_PIN_VALUES):
+                        return False
             # The flags count only in the subcommand's OPTION REGION
             # (codex P2 r28 on #410): ``git diff -- --no-ext-diff`` is a
             # PATHSPEC, not an option, so a repo file by that name would
@@ -1738,9 +1755,9 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("an opaque rev-parse arg could be --show-toplevel",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", *args],'
      ' text=True, encoding="utf-8")', True),
-    ("literal plumbing subcommand with a trailing splice past --",
+    ("rev-parse echoes path operands, so a splice past -- refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", "--", *args],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("opaque -C value is fine, it cannot be re-read as an option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse"], text=True,'
      ' encoding="utf-8")', False),
@@ -1878,6 +1895,24 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("text-mode git diff is refused — filters have no kill switch",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # the log family's own --encoding overrides the config pin
+    # (reproduced: --encoding=GBK emits GBK through a pinned call).
+    ("--encoding=GBK overrides the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--encoding=GBK", "-1"], text=True, encoding="utf-8")', True),
+    ("--encoding=utf-8 is redundant but harmless",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--encoding=utf-8", "-1"], text=True, encoding="utf-8")', False),
+    ("a separated --encoding value cannot be read",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--encoding", enc, "-1"], text=True, encoding="utf-8")', True),
+    # rev-parse echoes its operands verbatim, so `--` is no licence.
+    ("a literal rev operand stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
+     ' encoding="utf-8")', False),
+    ("an opaque operand past -- refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--", path], text=True,'
      ' encoding="utf-8")', True),
     # log.showSignature=true runs gpg.program, whose bytes reach the
     # captured stream (reproduced with a verifier emitting 0xff).
