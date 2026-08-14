@@ -403,18 +403,21 @@ dates the mining run never covered, and a digest recomputed over the ORIGINAL
 window says nothing about them: a swapped callable could reproduce the mining
 window's values, evidence, and periods exactly, pass, and then diverge on the
 added out-of-sample dates — the very dates the extension exists to adjudicate.
-An extended promotion SHALL therefore REQUIRE the implementation/dependency
-digest. The output-digest option is NOT available there, because on the extended
-window it has nothing trustworthy to compare against: `validation_end_date`
-arrives only at promotion, so mining can only ever have persisted a digest for
-its ORIGINAL window. Comparing an effective-window digest against that recorded
-one necessarily differs, and hashing the promoted factory's own effective output
-lets the swapped callable AUTHENTICATE ITSELF — a self-issued certificate.
+An extended promotion SHALL therefore be bound by ONE of exactly two things:
 
-The only other admissible route is to persist the extension AND its expected
-effective-window output digest through an independently trusted process BEFORE
-promotion runs, so the comparison again has a baseline promotion did not
-produce.
+- the implementation/dependency digest; or
+- a baseline persisted BEFORE promotion runs by an independently trusted
+  process — the extension together with its EXPECTED effective-window output
+  digest.
+
+What is excluded is the third thing, and it is the one the mining-window digest
+degrades into: a baseline the promoted factory itself produced.
+`validation_end_date` arrives only at promotion, so mining can only ever have
+persisted a digest for its ORIGINAL window — comparing an effective-window
+digest against that one necessarily differs, and hashing the promoted factory's
+own effective output lets the swapped callable AUTHENTICATE ITSELF, a
+self-issued certificate. Either admissible route works because its baseline
+comes from somewhere promotion did not produce.
 
 The end-to-end test SHALL exercise this seam — mining and promoting a
 fundamental run through the real factory — not a stand-in that bypasses it.
@@ -444,10 +447,17 @@ point receives in a real run; only the recorded identity does.
   implementation or from the rebuilt provenance-bearing output, not from what
   the factory says about itself
 
-#### Scenario: an extended promotion requires the implementation digest
-- **WHEN** promotion runs with a validation-window extension
+#### Scenario: an extended promotion needs one of the two admissible bindings
+- **WHEN** promotion runs with a validation-window extension and no
+  pre-authorized baseline exists
 - **THEN** the factory is bound by its implementation/dependency digest — a
   match on the mining window's output digest alone does not pass
+
+#### Scenario: a pre-authorized baseline is sufficient on its own
+- **WHEN** an independently trusted process persisted the extension and its
+  expected effective-window output digest before promotion ran
+- **THEN** promotion may verify against that baseline without an
+  implementation/dependency digest
 
 #### Scenario: a factory cannot certify its own extended output
 - **WHEN** the only evidence offered for an extended promotion is a digest of
