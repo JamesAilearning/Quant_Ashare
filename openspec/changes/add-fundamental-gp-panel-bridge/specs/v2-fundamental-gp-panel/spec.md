@@ -209,6 +209,13 @@ legacy groups alone, and SHALL cover it with a synthetic-whitelist regression.
 A search operator that degrades to a no-op without saying so is worse than one
 that fails.
 
+A whitelist MAY legitimately admit only ONE terminal of a type, in which case no
+replacement exists and no mutation is possible. That case SHALL be
+DISTINGUISHED from the defect above and SHALL be OBSERVABLE — recorded and
+reported as "no replacement available under this whitelist" — never an
+indistinguishable silent no-op. The mutation requirement therefore applies when
+the whitelist admits at least two terminals of the target type.
+
 #### Scenario: a generated terminal resolves through the bridge to a view field
 - **WHEN** GP generates an expression referencing a registered fundamental
   terminal
@@ -217,10 +224,17 @@ that fails.
   form is what reaches the view
 
 #### Scenario: point mutation still mutates under a fundamental whitelist
-- **WHEN** a campaign whitelists only fundamental terminals and point mutation
-  targets one of them
-- **THEN** it produces a different terminal of the same type — it does not
-  silently return the expression unchanged
+- **WHEN** a campaign whitelists at least two fundamental terminals of a type
+  and point mutation targets one of them
+- **THEN** it produces a different whitelisted terminal of the same type — it
+  does not silently return the expression unchanged
+
+#### Scenario: a single-terminal whitelist reports the no-op instead of hiding it
+- **WHEN** the whitelist admits only one terminal of the target type, so no
+  replacement exists
+- **THEN** the engine records and reports that no replacement was available
+  under this whitelist, rather than returning the expression unchanged
+  indistinguishably from a successful mutation
 
 #### Scenario: the legacy default terminal set is unchanged
 - **WHEN** a run leaves its fields unspecified, or a search runs with no
@@ -495,16 +509,18 @@ refuse valid implementations.
 
 #### Scenario: shifting announcements changes the panel
 - **WHEN** the panel is rebuilt with effective announcement dates shifted by
-  `N` trading days
+  `N` trading days AND at least one shifted disclosure is served by the
+  requested panel on a sampled date
 - **THEN** the hash of the values-plus-evidence output differs from the baseline
 
 #### Scenario: an announcement-insensitive builder is refused
-- **WHEN** a shifted rebuild produces identical values AND identical evidence
+- **WHEN** a shifted rebuild whose relevance is established produces identical
+  values AND identical evidence
 - **THEN** the diagnostic REFUSES, reporting that the announcement date is unused
 
 #### Scenario: an unchanged value with moved evidence is not a failure
-- **WHEN** a delayed filing repeats the previous period's value (or the field is
-  NA in both), leaving values identical while the evidence moves
+- **WHEN** a served, delayed filing repeats the previous period's value (or the
+  field is NA in both), leaving values identical while the evidence moves
 - **THEN** the hash still differs and the diagnostic does not refuse
 
 #### Scenario: IC movement is asserted on a fixture built to move it

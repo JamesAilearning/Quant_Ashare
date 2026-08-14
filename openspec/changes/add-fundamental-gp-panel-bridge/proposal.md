@@ -63,8 +63,10 @@ pv001，加进完整策略后边际贡献为负，被纪律拦截）。战场转
   只从 `V1_SCALE_FREE` / `V1_RAW_PRICE` 取再与白名单求交，只含基本面终端的白名单交出
   **空集**，而 `mutate_point` 把 `GrammarError` 吞掉返回原表达式 —— 整个基本面战役的
   点变异**静默退化为 no-op**（一个不出声就失效的搜索算子，比会报错的更坏）。替换池改
-  为按**同类型的已注册终端**取，并加合成白名单回归；这条独立地把 `gp_engine.py` 带进
-  scope。
+  为按**同类型的已注册终端**取，并加合成白名单回归；这条独立、**无条件**地把
+  `gp_engine.py` 带进 scope。白名单合法地只含某类型**一个**终端时确实无从替换 ——
+  那属于另一回事，须**可见地记录并报告**"该白名单下无可替换"，不得与成功变异
+  不可区分地静默返回原式（codex #427 r10 P2）。
   **注册还不够，另有两处名字/形状的断点**（codex #427 r4 P1）：
   ① **终端名 ↔ charter 字段名**：`evaluator` 只认 `$` 开头并按字面查面板 key，而
   `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field、只收裸名
@@ -231,8 +233,11 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
     并纳入 load / hash / migration；
   - `src/data/mined_factor_handler.py` —— 纵深防御的 fail-loud 拒绝（只加拒绝，
     不接 provenance；接线属后续 change；**主拒绝点在 `promote.py` 的写盘前**）；
-  - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
-    经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
+  - `src/factor_mining/gp_engine.py` —— **无条件改动**：点变异替换池必须从"同类型的
+    已注册终端"取（`_random_terminal_same_type`），否则基本面白名单下点变异静默失效
+    （codex #427 r10 P2：这条与 adapter 方案无关，任何实现都得改）。**此外**，period
+    provenance 的传参通路**仅当**必须经由它时才一并改（见 §1b 末段）；若 adapter 方案
+    足够，改动就只有替换池这一处。
 
   上述 `src/factor_mining/` 内的各处**均不引入任何 qlib/PIT import**（加的是终端
   符号、类型、传参与拒绝逻辑），D5 gate 不受影响；`src/data/mined_factor_handler.py`
