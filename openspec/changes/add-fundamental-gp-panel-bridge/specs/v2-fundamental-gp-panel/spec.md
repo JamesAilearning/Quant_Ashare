@@ -297,12 +297,21 @@ predates fingerprint recording rather than promoting on unverifiable
 provenance.
 
 One fingerprint plus a promotion-time recheck is not sufficient. The
-fingerprints SHALL be taken BEFORE any panel read and taken AGAIN after mining,
-and the run SHALL refuse BEFORE persisting any artifact if they differ — the
-mining path already does exactly this for the PIT inputs, for exactly this
-reason. A refresh DURING the panel build would otherwise let the run record the
-NEW bytes' identity for a pool mined on the OLD (or mixed) reads, after which
-every specified check passes while promotion rebuilds a different panel.
+fingerprints SHALL be taken BEFORE any panel read and taken AGAIN after the work
+that reads it, and the path SHALL refuse BEFORE persisting any artifact if they
+differ — the mining path already does exactly this for the PIT inputs, for
+exactly this reason. A refresh DURING the panel build would otherwise let the
+run record the NEW bytes' identity for a pool mined on the OLD (or mixed) reads,
+after which every specified check passes while promotion rebuilds a different
+panel.
+
+This two-snapshot rule SHALL apply to PROMOTION as well, not to mining alone: a
+single recheck on entry leaves promotion's own rebuild-and-evaluate window
+unprotected, so a refresh during it yields results derived from mixed or
+refreshed bytes while the recorded identity still matches. Promotion SHALL
+fingerprint immediately before its panel read and again after evaluation and
+BEFORE it creates the production directory, refusing on any difference — the
+refusal must land before production is touched at all.
 
 #### Scenario: promotion rebuilds the mined panel from the run alone
 - **WHEN** promotion loads a run and rebuilds its fundamental panel
@@ -313,6 +322,12 @@ every specified check passes while promotion rebuilds a different panel.
 - **WHEN** two runs differ only in a fundamental panel input (store, calendar,
   or exclusion set)
 - **THEN** their run hashes differ
+
+#### Scenario: a refresh during promotion's own read refuses before production
+- **WHEN** the financial store or calendar changes while promotion is
+  rebuilding or evaluating the panel
+- **THEN** promotion refuses before creating the production directory — nothing
+  derived from mixed bytes is written and no version label is consumed
 
 #### Scenario: a refresh during the panel build refuses before any artifact
 - **WHEN** the financial store or calendar changes between the pre-build
@@ -382,6 +397,16 @@ The output digest is the stronger of the two because it binds BEHAVIOUR rather
 than a claim about behaviour; where both are recorded, a mismatch in either
 SHALL refuse.
 
+The output digest alone is NOT sufficient when promotion runs on an EXTENDED
+window. The governed `validation_end_date` extension lets promotion evaluate
+dates the mining run never covered, and a digest recomputed over the ORIGINAL
+window says nothing about them: a swapped callable could reproduce the mining
+window's values, evidence, and periods exactly, pass, and then diverge on the
+added out-of-sample dates — the very dates the extension exists to adjudicate.
+An extended promotion SHALL therefore be bound by the implementation/dependency
+digest, or by an output digest computed over the EFFECTIVE window it actually
+evaluates.
+
 The end-to-end test SHALL exercise this seam — mining and promoting a
 fundamental run through the real factory — not a stand-in that bypasses it.
 Exercising one factory in one test does not constrain the callable either entry
@@ -409,6 +434,12 @@ point receives in a real run; only the recorded identity does.
 - **THEN** promotion still refuses — the identity is derived from the frozen
   implementation or from the rebuilt provenance-bearing output, not from what
   the factory says about itself
+
+#### Scenario: an extended promotion is not bound by the mining window alone
+- **WHEN** promotion runs with a validation-window extension
+- **THEN** the factory is bound by its implementation digest or by an output
+  digest over the effective window — a factory that matches only on the
+  original window does not pass
 
 #### Scenario: a run with no recorded factory identity is refused
 - **WHEN** a fundamental run predates factory-identity recording
