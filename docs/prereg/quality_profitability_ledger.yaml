@@ -331,6 +331,36 @@ entries:
       本条不改 E007(append-only), 仅登记其 verify 形态失效的事实与边界。
       新宇宙的冻结件属于新家族的新预注册包, 不复用本包。
 
+  - id: E030
+    date: 2026-08-14
+    type: published_artifact_restated
+    ref: E029
+    status: recorded
+    note: >-
+      docs/research/gate3_step_a_pit_coverage_report.md 已用同一生成器重跑并
+      整体重述(codex #425 r9)。**触发原因**: §6 候选窗口原按报告自带的
+      CANDIDATE_FIELDS 推出, 其 C2/C3 含 rd_exp、C3 含 n_cashflow_act, 而冻结
+      勘误(本 plan 决策⑤/①)的 OMIT 式下 rd_exp "不再是任何候选的输入",
+      已实现的冻结公式(gate4a_ic_evaluator 的 C2_FIELDS/C3_FIELDS)也确实不读
+      它们 —— 用公式不读的字段推出来的窗口, 是另一个因子的窗口。
+      **本次重述包含三类变化, 分别登记**:
+      (1) 口径修正(本 PR 的意图): C2/C3 输入对齐冻结公式;
+      C2/C3 earliest reliable 由 2019 -> 2018(2018 覆盖率 27.3% -> 98.5%/96.5%),
+      旧值完全由 rd_exp 驱动。**主检验窗口不受影响** —— 勘误②的 2019 起
+      是会计口径 regime 一致性所定, 与数据可用年各自独立, 报告已就地写明。
+      (2) 宇宙口径刷新(非本 PR 意图, 随 store/instruments 更新而来):
+      CSI300-ever n=627 -> 949, stock_basic rows 5865 -> 5882。
+      (3) 金融排除计数修正: 原印 120(全市场金融分类器规模), 现印 85
+      (= 与 CSI300-ever 成分求交后的真实排除数), 分母口径本身未变。
+      **对冻结件的影响 = 无**: 重跑后 "Coverage-floor 检查: PASS
+      (universe=csi300)" —— 冻结的 CSI300 COVERAGE_FLOORS 在新测量下
+      **逐年逐字段仍全部成立**, 故本条只重述证据文档, 不触碰任何冻结数值。
+      floors 本身在本 PR 中未改(CSI800 是另注册的新 bundle)。
+      **防复发**: 报告现打印每候选的输入字段, 由
+      tests/governance/test_candidate_window_fields_match_frozen_formulas.py
+      回读钉住 = 冻结公式的 C1/C2/C3_FIELDS, 且钉住已发布件与生成器同步 ——
+      改字段而不重跑报告会红。
+
 # ---- Gate-4 起的追加纪律 ---------------------------------------------------
 #   Gate-4A/4B/4C 每个决策级 run: run 前登记(计划) + run 后登记(结果原样,
 #   含阴性),绝不漏报失败者。

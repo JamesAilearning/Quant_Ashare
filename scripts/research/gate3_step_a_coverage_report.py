@@ -599,6 +599,16 @@ def build_report(args: argparse.Namespace) -> str:
       f"contract_liab 以 coalesce 计);最早可靠年 = 自该年起所有已测年份都 ≥ "
       f"{pct(CANDIDATE_WINDOW_THRESHOLD)} 的最早年份。")
     a("")
+    # The input list is PRINTED, not just used: the published artifact is what
+    # most readers consume, and a window whose inputs are invisible cannot be
+    # checked against the frozen formulas by anyone reading it. A governance
+    # test parses these lines back and pins them to CANDIDATE_FIELDS, so the
+    # checked-in report cannot drift from the generator (codex #425 r9).
+    a("输入字段(取自冻结公式,由治理测试钉住):")
+    a("")
+    for cand, fields in CANDIDATE_FIELDS.items():
+        a(f"- `{cand}`: " + ", ".join(f"`{f}`" for f in sorted(fields)))
+    a("")
     a("| candidate | " + " | ".join(str(y) for y in YEARS) + " | earliest reliable |")
     a("|---" * (len(YEARS) + 2) + "|")
     for cand, fields in CANDIDATE_FIELDS.items():
