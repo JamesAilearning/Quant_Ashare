@@ -40,6 +40,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     data_update_command,
     gate_card_status,
     morning_command,
+    provider_is_resolved,
     read_gate_cards,
     recommender_integrity_check,
     resolve_delisted_registry,
@@ -77,6 +78,17 @@ _incumbent = resolve_incumbent()
 # Resolved once, up front: section ④'s gate commands must name the SAME
 # bundle section ⑤ reports on — two resolutions could disagree.
 _provider = resolve_default_provider_uri()
+if not provider_is_resolved(_provider):
+    # Said ONCE, here, rather than left for the operator to infer from four
+    # separate 无法判定 cards further down. The resolver returns "" for a
+    # missing/broken config.yaml, and "" is not a harmless blank: it reads as
+    # the working directory everywhere it is used (codex #431 r21).
+    st.error(
+        "⚠ **未解析出 provider 路径**——`config.yaml` 缺失、无法解析,或没有 "
+        "`provider_uri` 字段。下方 ⑤ 的两道门无法判定,④/⑤ 的命令一律不生成:"
+        "空路径在下游会被读成**当前工作目录**(`Path('')` 即 `Path('.')`),"
+        "照跑会作用在错误的数据上。请先修好 `config.yaml` 再回本页。"
+    )
 if _incumbent.kind == "unresolvable":
     st.error(
         "⚠ 现任 manifest 无法解析(本页绝不退回单模型形态顶替):"
@@ -302,7 +314,10 @@ _fresh = bundle_freshness(
     # The integrity precondition is evaluated by the RECOMMENDER's own
     # reader — summarise_bundle_health swallows a missing/corrupt stamp and
     # would let a refused bundle read green (codex #431 r6).
-    integrity_accepted=_integrity.accepted,
+    # `None`, not `False`, when the check could not run: the page's own
+    # "前置校验未通过" wording would otherwise report a refusal verdict on a
+    # bundle nothing examined (codex #431 r21).
+    integrity_accepted=_integrity.accepted if _integrity.known else None,
     integrity_reason=_integrity.reason,
 )
 if not _fresh.known:

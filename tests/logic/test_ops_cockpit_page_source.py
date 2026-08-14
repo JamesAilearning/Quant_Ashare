@@ -313,6 +313,58 @@ class ResolvedCommandTests(unittest.TestCase):
         self.assertNotIn("rm -rf", cmd.command)
         self.assertIn("无法生成可粘贴命令", cmd.title)
 
+    def test_an_unresolved_path_never_becomes_an_empty_argument(self) -> None:
+        # codex #431 r21 (P2): `resolve_default_provider_uri()` returns "" for
+        # a missing/unparsable/provider_uri-less config.yaml. `''` quotes
+        # perfectly and reads as a legitimate flag value — which is the
+        # danger, because `Path("")` IS `Path(".")`. `--provider-dir ''`
+        # therefore retargets daily_update at the operator's WORKING
+        # DIRECTORY. A command that silently runs against the wrong bundle is
+        # worse than no command.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+            morning_command,
+            rotation_commands,
+        )
+        ens = IncumbentIdentity(
+            kind="ensemble", manifest_path="M.json",
+            members=({"fit_start": "2024-01-01", "fit_end": "2026-04-01"},))
+        for blank in ("", "   ", "\t"):
+            for label, cmd in (
+                ("morning", morning_command(
+                    ens, model_path="M", provider_uri=blank,
+                    delisted_registry="R", name_source="N",
+                    bundle_max_age_days=14)),
+                ("data update", data_update_command(
+                    provider_uri=blank, delisted_registry="R")),
+                ("rotation", rotation_commands(
+                    "M.json", provider_uri=blank, namechange_path="N")[0]),
+            ):
+                with self.subTest(command=label, blank=repr(blank)):
+                    self.assertIn("无法生成可粘贴命令", cmd.title)
+                    for line in cmd.command.splitlines():
+                        if line.strip():
+                            self.assertTrue(line.lstrip().startswith("#"))
+                    # the empty-argument spelling must not survive anywhere
+                    self.assertNotIn("''", cmd.command)
+                    self.assertNotIn("python ", cmd.command)
+                    # ...and the note must name THIS cause, not the r20 one
+                    self.assertIn("为空", cmd.note or "")
+
+    def test_the_two_refusal_causes_are_told_apart(self) -> None:
+        # Two different repairs: "fix config.yaml" vs "rename the path".
+        # One shared refusal text would send the operator to the wrong one.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+        )
+        blank = data_update_command(provider_uri="", delisted_registry="R")
+        quoted = data_update_command(
+            provider_uri="a'b", delisted_registry="R")
+        self.assertIn("为空", blank.note or "")
+        self.assertNotIn("为空", quoted.note or "")
+        self.assertIn("单引号", quoted.note or "")
+
     def test_both_gate_commands_name_the_resolved_data_paths(self) -> None:
         # codex #431 r2 (P1): retrain_gate.py has hardcoded
         # --provider/--namechange defaults that BOTH scopes consume, and the
@@ -1368,6 +1420,58 @@ class BundleFreshnessTests(unittest.TestCase):
         with self.subTest(case="clean"):
             self.assertTrue(recommender_integrity_check(str(stamp(clean))).accepted)
 
+    def test_an_unresolved_provider_yields_no_verdict_at_all(self) -> None:
+        # codex #431 r21 (P2): with provider_uri="", the normalizer turns ""
+        # into the CWD and both readers answer about the REPO instead of the
+        # deployment. Measured before the fix: integrity returned
+        # `known=True, accepted=False` — a confident refusal verdict about a
+        # bundle it never located; the calendar reader blamed a missing
+        # `calendars/day.txt` that was never the operator's bundle. Both are
+        # the exact failure this page exists to prevent, so both must answer
+        # "unknown", and the reason must name the REAL cause.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            UNRESOLVED_PROVIDER_REASON,
+            bundle_calendar_tail,
+            recommender_integrity_check,
+        )
+        for blank in ("", "   "):
+            with self.subTest(blank=repr(blank)):
+                tail = bundle_calendar_tail(blank)
+                self.assertFalse(tail.known)
+                self.assertIsNone(tail.tail)
+                self.assertEqual(UNRESOLVED_PROVIDER_REASON, tail.reason)
+                integrity = recommender_integrity_check(blank)
+                self.assertFalse(
+                    integrity.known,
+                    "未定位到 bundle 就不得给出 accepted/refused 的裁定")
+                self.assertEqual(UNRESOLVED_PROVIDER_REASON, integrity.reason)
+
+    def test_an_unresolved_provider_does_not_read_the_working_directory(
+            self) -> None:
+        # The pin above could be satisfied by reading the CWD and then
+        # relabelling the answer. It must not read at all: create a *valid*
+        # calendar in the CWD and the reader must STILL say it does not know
+        # (otherwise a repo that happens to contain calendars/day.txt would
+        # get a confident tail for a bundle nobody named).
+        import os
+        import tempfile
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cal = Path(tmp) / "calendars"
+            cal.mkdir()
+            (cal / "day.txt").write_bytes(b"2026-08-01\n2026-08-03\n")
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                # sanity: the bytes ARE readable when the path is named
+                self.assertTrue(bundle_calendar_tail(tmp).known)
+                self.assertFalse(bundle_calendar_tail("").known)
+            finally:
+                os.chdir(cwd)
+
     def test_a_refused_stamp_is_never_usable_however_fresh(self) -> None:
         from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
         for accepted in (False, None):
@@ -1383,7 +1487,18 @@ class BundleFreshnessTests(unittest.TestCase):
     def test_the_page_evaluates_integrity_with_the_recommenders_reader(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
         self.assertIn("_integrity = recommender_integrity_check(_provider)", page)
-        self.assertIn("integrity_accepted=_integrity.accepted", page)
+        # `None` when the check could not run — passing `False` would make the
+        # page's own 前置校验未通过 wording a verdict on nothing (r21).
+        self.assertIn(
+            "integrity_accepted=_integrity.accepted if _integrity.known else None",
+            page)
+
+    def test_the_page_says_once_that_the_provider_is_unresolved(self) -> None:
+        # codex #431 r21: without a single up-front statement the operator has
+        # to infer the cause from four separate 无法判定 cards.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("if not provider_is_resolved(_provider):", page)
+        self.assertIn("未解析出 provider 路径", page)
 
     def test_a_health_warning_is_never_rendered_as_usable(self) -> None:
         # codex #431 r5: the recommender runs further preconditions AFTER the

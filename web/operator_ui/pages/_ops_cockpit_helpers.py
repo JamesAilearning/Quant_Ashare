@@ -47,6 +47,22 @@ from web.operator_ui.incumbent import IncumbentIdentity
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+# `resolve_default_provider_uri()` is deliberately lenient — a missing,
+# unparsable, or provider_uri-less config.yaml yields "" so the rest of the
+# operator UI keeps working. For THIS page that empty string is not a usable
+# input but a silently WRONG one: `Path("")` is `Path(".")`, so every reader
+# and every rendered command would quietly retarget the operator's working
+# directory. Nothing here may treat it as a bundle location (codex #431 r21).
+UNRESOLVED_PROVIDER_REASON = (
+    "本页没有解析出 provider 路径(config.yaml 缺失 / 无法解析 / 无 provider_uri)"
+    "——未去读任何 bundle,故无结论可报"
+)
+
+
+def provider_is_resolved(provider_uri: str | None) -> bool:
+    """Whether a provider path was actually resolved (not blank)."""
+    return bool((provider_uri or "").strip())
+
 # The tracked record of WHICH gate artifacts authorized the 2026-08-05
 # cutover, and what their bytes were. The artifacts themselves live under the
 # gitignored output/ tree (mutable, deletable); this file is in git, so it —
@@ -543,6 +559,13 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     the rule is: **validate what is actually in the file, never a
     normalization of it.**
     """
+    if not provider_uri.strip():
+        # `Path("") / "calendars" / "day.txt"` is `./calendars/day.txt` — the
+        # WORKING DIRECTORY's, not the deployment's. Reading it would report
+        # 读不到交易日历, blaming a bundle this function never located, when
+        # the true fault is upstream: no provider path was resolved at all
+        # (codex #431 r21).
+        return CalendarTail(known=False, reason=UNRESOLVED_PROVIDER_REASON)
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
         # BYTES, not read_text(): universal-newline decoding silently folds a
@@ -633,6 +656,15 @@ def recommender_integrity_check(
         BundleIntegrityError,
         read_bundle_integrity,
     )
+
+    if not provider_uri.strip():
+        # Without this, the normalizer turns "" into the CWD and the reader
+        # finds no stamp there — returning `known=True, accepted=False`, i.e.
+        # a CONFIDENT refusal verdict about a bundle that was never located.
+        # Claiming a verdict on something you did not examine is the exact
+        # failure this page exists to prevent (codex #431 r21).
+        return BundleIntegrityCheck(
+            known=False, accepted=False, reason=UNRESOLVED_PROVIDER_REASON)
 
     # The gate normalizes the URI before reading (expanduser/abspath/realpath/
     # normcase) — a `~/…` or whitespaced URI would otherwise read a
@@ -814,39 +846,48 @@ def resolve_namechange_path() -> str:
 # break (which would end the single-line command and start a new one).
 _UNRENDERABLE_CHARS = ("'", "\n", "\r")
 
+# Why a resolved value cannot become a command argument. Two distinct causes,
+# kept apart so the refusal the operator reads names the ACTUAL problem: a
+# path this page could not resolve at all is a different repair than a path
+# whose spelling no single command text can carry.
+_WHY_UNRENDERABLE = "含无法跨 shell 安全表达的字符(单引号或换行)"
+_WHY_UNRESOLVED = "为空——本页根本没有解析出这条路径"
 
-class _UnrenderablePath(ValueError):
-    """A resolved value that cannot be put into a cross-shell command.
 
-    Carries the value for the page to DISPLAY (as text, never as command
-    bytes) so the operator can still see which path is the problem.
+class _UnusableArgument(ValueError):
+    """A resolved value that must not be put into a cross-shell command.
+
+    Carries the value and the reason for the page to DISPLAY (as text, never
+    as command bytes) so the operator can still see which path is the problem
+    and what would fix it.
     """
 
-    def __init__(self, value: str) -> None:
+    def __init__(self, value: str, why: str) -> None:
         super().__init__(value)
         self.value = value
+        self.why = why
 
 
-def _refuses_unrenderable(fn: Any) -> Any:
-    """Turn an unrenderable path into a comment-only stand-in.
+def _refuses_unusable(fn: Any) -> Any:
+    """Turn an unusable argument into a comment-only stand-in.
 
     Applied at the BOUNDARY so no builder has to remember: refusing is a
-    property of "this page will not print an unsafe command", not of any
-    single command's construction.
+    property of "this page will not print an unsafe or wrong command", not
+    of any single command's construction.
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
-        except _UnrenderablePath as exc:
-            refusal = _refused(fn.__name__, "某个已解析路径", exc.value)
+        except _UnusableArgument as exc:
+            refusal = _refused(fn.__name__, "某个已解析路径", exc.value, exc.why)
             # rotation_commands returns a tuple; the others a single command.
             returns_many = "tuple" in str(fn.__annotations__.get("return", ""))
             return (refusal,) if returns_many else refusal
     return wrapper
 
 
-def _refused(title: str, what: str, value: str) -> OpsCommand:
+def _refused(title: str, what: str, value: str, why: str) -> OpsCommand:
     """A wholly non-runnable stand-in for a command we will not render.
 
     Every line is a comment in both PowerShell and POSIX, and the offending
@@ -855,11 +896,11 @@ def _refused(title: str, what: str, value: str) -> OpsCommand:
     """
     return OpsCommand(
         title=f"{title}（无法生成可粘贴命令）",
-        command=("# 本页拒绝为该部署渲染命令:某个已解析路径含无法跨 shell 安全\n"
-                 "# 表达的字符(单引号或换行)。该路径**未**写入命令文本——把它\n"
-                 "# 放进来会让这段「拒绝」本身可执行。请见下方说明。"),
-        note=(f"{what} 的取值无法安全渲染:{value!r}。"
-              "请改用不含单引号/换行的路径,或手工构造该命令。"),
+        command=("# 本页拒绝为该部署渲染命令:某个已解析路径无法作为命令参数。\n"
+                 "# 该路径**未**写入命令文本——把它放进来会让这段「拒绝」本身\n"
+                 "# 可执行。原因与修法见下方说明。"),
+        note=(f"{what} 的取值无法安全渲染({why}):{value!r}。"
+              "请修好该路径后重开本页,或手工构造该命令。"),
     )
 
 
@@ -891,6 +932,15 @@ def _arg(value: object) -> str:
     wrong in the other, say so (codex #431 r15).
     """
     text = str(value)
+    if not text.strip():
+        # An UNRESOLVED path is not a renderable argument. `''` quotes
+        # perfectly and reads as a legitimate flag value, which is exactly
+        # the danger: `Path("")` is `Path(".")`, so `--provider-dir ''`
+        # silently retargets the tool at the operator's WORKING DIRECTORY
+        # instead of the deployment (verified: `Path("") == WindowsPath(".")`).
+        # A command that runs against the wrong bundle is worse than no
+        # command (codex #431 r21).
+        raise _UnusableArgument(text, _WHY_UNRESOLVED)
     if any(ch in text for ch in _UNRENDERABLE_CHARS):
         # NEVER describe the offending value inside the command. The first
         # attempt did — `<路径含单引号…：{text}>` — and that text is itself
@@ -898,7 +948,7 @@ def _arg(value: object) -> str:
         # quote, runs the command after `;`, and comments out the rest.
         # Verified locally: the file was created. A refusal that executes
         # the thing it refuses is worse than no refusal (codex #431 r20).
-        raise _UnrenderablePath(text)
+        raise _UnusableArgument(text, _WHY_UNRENDERABLE)
     # UNCONDITIONAL, not shlex.quote's "does this need quoting?" judgement —
     # that judgement is POSIX's. A path named ``@bundle`` needs no quoting in
     # POSIX, so shlex returns it bare, and PowerShell then reads a leading
@@ -909,7 +959,7 @@ def _arg(value: object) -> str:
     return f"'{text}'"
 
 
-@_refuses_unrenderable
+@_refuses_unusable
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
     provider_uri: str, delisted_registry: str, name_source: str,
@@ -965,7 +1015,7 @@ def morning_command(
     )
 
 
-@_refuses_unrenderable
+@_refuses_unusable
 def data_update_command(
     *, provider_uri: str, delisted_registry: str,
     tushare_dir: str = TUSHARE_DIR_PLACEHOLDER,
@@ -991,7 +1041,7 @@ def data_update_command(
     )
 
 
-@_refuses_unrenderable
+@_refuses_unusable
 def rotation_commands(
     manifest_path: str | None, *, provider_uri: str, namechange_path: str,
 ) -> tuple[OpsCommand, ...]:

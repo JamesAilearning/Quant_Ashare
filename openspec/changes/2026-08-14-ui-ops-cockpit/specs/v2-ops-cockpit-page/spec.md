@@ -102,6 +102,35 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** 原值只 MAY 出现在命令文本之外的说明字段里（操作人仍要看见是哪条
   路径出了问题）
 
+#### Scenario: 未解析出的路径不得渲染成空参数
+
+- **GIVEN** `config.yaml` 缺失、无法解析，或没有 `provider_uri` 字段——
+  `resolve_default_provider_uri()` 于是返回空串
+- **THEN** 页面 MUST 走同一道拒绝路径，MUST NOT 渲染 `--provider-uri ''` /
+  `--provider ''` / `--provider-dir ''`
+- **AND** 理由不是「引不了」而是**引得太好**:`''` 是一个合法参数值，而
+  `Path("")` 即 `Path(".")`（实测 `Path("") == WindowsPath(".")`），照跑会把
+  工具**静默指向操作人的当前工作目录**而不是部署
+- **AND** 两种拒绝的说明 MUST 可区分——「修 config.yaml」与「换个不含单引号
+  的路径」是两种不同的修法，共用一段文字会把操作人指错方向
+
+#### Scenario: 够不到的东西不得给出裁定
+
+- **GIVEN** provider 路径未解析
+- **THEN** 完整性这一道 MUST 报「无法判定」，MUST NOT 报 accepted/refused
+  ——改前它返回 `known=True, accepted=False`，即对一份从未定位到的 bundle
+  给出了确信的拒绝裁定
+- **AND** 日历尾部这一道 MUST 报同一原因，MUST NOT 报「读不到
+  `calendars/day.txt`」——那句话在指责一份本页从未找到的 bundle
+- **AND** 两道门 MUST NOT 去读当前工作目录:即使 CWD 下恰好存在一份合法的
+  `calendars/day.txt`，答案仍 MUST 是「不知道」
+
+#### Scenario: 未解析状态必须一次说清
+
+- **GIVEN** provider 路径未解析
+- **THEN** 页面 MUST 在顶部一次性说明原因与后果，MUST NOT 只留下若干张各自
+  写着「无法判定」的卡片让操作人自己拼出病因
+
 #### Scenario: 不可表达的字符必须封闭列举
 
 - **GIVEN** 某路径含换行或回车（而非单引号）

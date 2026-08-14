@@ -180,10 +180,25 @@
 - [x] 不可渲染字符封闭列举为 `("'", "\n", "\r")`  ← C64 咬住
       换行会把一条命令变成两条,与单引号同属「无法安全渲染」
 
+## W27 codex #431 r21（P2，属实；空 provider 是「引得太好」而非引不了）
+- [x] 实证:`resolve_default_provider_uri()` 对缺失/坏掉/无字段的 config.yaml 返回 `""`;
+      `Path("") == WindowsPath(".")` —— `--provider-dir ''` 会把 daily_update 指向 CWD
+- [x] `_arg` 的边界从「无法渲染」扩到「不可用」:空/纯空白同样抛,三个构造器
+      经既有装饰器自动拒绝  ← C65 咬住;修的是边界不是某个调用点
+- [x] 两种拒绝原因**分开命名**(`_WHY_UNRESOLVED` / `_WHY_UNRENDERABLE`)  ← C69 咬住
+      修法不同:一个是「修 config.yaml」,一个是「换路径」
+- [x] `recommender_integrity_check("")` 由 `known=True, accepted=False`(对没找到的
+      bundle 给确信裁定)改为 `known=False`  ← C67 咬住
+- [x] `bundle_calendar_tail("")` 不再报「读不到 calendars/day.txt」(指责一份从未
+      找到的 bundle),改报真实病因  ← C66 咬住
+- [x] 两道门**不得读 CWD**:CWD 下放一份合法日历,答案仍须是「不知道」  ← 单独钉
+- [x] 页面顶部一次性说明,不让操作人从四张「无法判定」卡里拼病因  ← C70 咬住
+- [x] `integrity_accepted` 传 `None` 而非 `False`  ← C68 咬住
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C64(C57/C58 随重构作废):60 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C70(C57/C58 随重构作废):66 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
