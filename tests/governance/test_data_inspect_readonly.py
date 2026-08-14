@@ -67,6 +67,26 @@ class DataInspectReadOnlyTests(unittest.TestCase):
                     f"does not build or ingest bundles (U3). Line: {ln!r}",
                 )
 
+    def test_page_does_not_run_the_validator_in_process(self) -> None:
+        # 2026-08-14-data-inspect-pit-subprocess: the 06 PIT validator runs in
+        # a SUBPROCESS — qlib is a per-process singleton, so an in-process
+        # validation hard-fails as soon as the UI session has initialized qlib
+        # for a different provider. Pin the architecture: the page must not
+        # import the validator or the qlib runtime directly, only the
+        # subprocess runner's parsed result.
+        import_lines = [
+            ln for ln in self.source.splitlines()
+            if re.match(r"\s*(import|from)\s", ln)
+        ]
+        for name in ("PITValidator", "qlib_runtime"):
+            for ln in import_lines:
+                self.assertNotIn(
+                    name, ln,
+                    f"inspector page must not import {name!r} — the 06 "
+                    f"validator runs in a subprocess (qlib is a per-process "
+                    f"singleton). Line: {ln!r}",
+                )
+
     def test_page_is_registered_in_navigation(self) -> None:
         app = (PROJECT_ROOT / "web" / "operator_ui" / "app.py").read_text(
             encoding="utf-8",
