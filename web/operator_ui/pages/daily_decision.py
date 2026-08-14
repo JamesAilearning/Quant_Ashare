@@ -46,13 +46,13 @@ from web.operator_ui.pages._daily_decision_helpers import (
     artifact_kind_of,
     artifact_meta_status,
     banner_status,
-    classify_provenance,
     hold_state,
     journal_model_id,
     list_recommendation_artifacts,
     load_promotion_meta,
     load_trainer_sidecar_sha,
     picks_table_rows,
+    provenance_verdict,
     resolve_incumbent,
     resolve_model_path,
 )
@@ -203,21 +203,16 @@ if _meta_status.artifact_is_corrupt_v2:
     )
     st.stop()
 # ---------------------------------------------------------------------------
-# 现任 × 工件 交叉核对。判定是纯函数(classify_provenance),这一段只把裁定
-# 渲染成话。四轮 codex 复审(#430 r1..r4)每一轮漏的都是同一张矩阵里的另一格
-# ——有序 elif 链在结构上保证不了格子被穷举,一张表可以,测试守着表是全的。
+# 现任 × 工件 交叉核对。判定与接线都是纯函数(provenance_verdict),这一段
+# 只把裁定渲染成话。四轮 codex 复审(#430 r1..r4)每一轮漏的都是同一张矩阵里
+# 的另一格——有序 elif 链在结构上保证不了格子被穷举,一张表可以;而接线留在
+# 页面里同样保证不了对——源码级钉子分不出 `incumbent.kind` 和一个看着也对的
+# `"ensemble" if incumbent.is_ensemble else "single"`,后者会把 unresolvable
+# 悄悄并进 single,r4 那格原样复活。所以接线也搬进 helpers,由行为测试驱动。
 # ---------------------------------------------------------------------------
 _artifact_kind = artifact_kind_of(_meta_status)
 _art_sha = str(_meta_status.artifact_ensemble_sha or "")
-_verdict = classify_provenance(
-    incumbent_kind=_incumbent.kind,
-    artifact_kind=_artifact_kind,
-    ensemble_sha_matches=(
-        bool(_incumbent.manifest_sha256)
-        and _art_sha == _incumbent.manifest_sha256
-    ),
-    single_sha_mismatch=_meta_status.sha_mismatch,
-)
+_verdict = provenance_verdict(_incumbent, _meta_status)
 
 if _verdict == VERDICT_MATCHES_INCUMBENT:
     st.info(

@@ -568,3 +568,38 @@ def artifact_kind_of(status: ArtifactMetaStatus) -> str:
     if status.artifact_is_v1:
         return "v1"
     return "single"
+
+
+def provenance_verdict(
+    incumbent: IncumbentIdentity, status: ArtifactMetaStatus,
+) -> str:
+    """The verdict for a resolved incumbent and a selected artifact.
+
+    The wiring lives here rather than in the page because a source-level
+    pin cannot tell ``incumbent_kind=incumbent.kind`` from a plausible
+    miswiring like ``"ensemble" if incumbent.is_ensemble else "single"`` —
+    which silently collapses ``unresolvable`` into ``single`` and revives
+    the r4 failure (the page then compares against the RETIRED model and
+    says nothing when the digests happen to agree). As a function it is
+    driven by real ``IncumbentIdentity``/``ArtifactMetaStatus`` values in
+    the tests, so a miswiring fails behaviourally instead of surviving
+    because the page still contains the right words somewhere.
+    """
+    art_sha = str(status.artifact_ensemble_sha or "")
+    inc_sha = str(incumbent.manifest_sha256 or "")
+    return classify_provenance(
+        incumbent_kind=incumbent.kind,
+        artifact_kind=artifact_kind_of(status),
+        # An incumbent with no digest can confirm nothing — never let two
+        # empty strings compare equal into a green "与现任一致".
+        #
+        # Belt-and-braces today: ``artifact_kind_of`` routes every
+        # digest-less ensemble artifact to ``ensemble_no_sha``, which the
+        # matrix answers before any comparison, so ``art_sha`` is non-empty
+        # by the time this is read. That invariant is what makes the guard
+        # redundant, so it is pinned directly
+        # (test_a_bindable_digest_is_a_precondition_of_the_comparison) —
+        # break the routing and this guard becomes load-bearing again.
+        ensemble_sha_matches=bool(inc_sha) and art_sha == inc_sha,
+        single_sha_mismatch=status.sha_mismatch,
+    )

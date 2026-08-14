@@ -560,8 +560,11 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # The false statement and the come-due TODO must be gone...
         self.assertNotIn("当前生产为单模型形态", self.page)
         self.assertNotIn("随生产切换(PR-C')落地", self.page)
-        # ...replaced by a real three-way comparison.
-        self.assertIn("_art_sha == _incumbent.manifest_sha256", self.page)
+        # ...replaced by a real comparison. The digest comparison itself now
+        # lives in provenance_verdict (behaviourally tested by
+        # ProvenanceWiringTests) rather than as page source, so pin it where
+        # it runs instead of where it used to be written.
+        self.assertIn("art_sha == inc_sha", _HELPERS.read_text(encoding="utf-8"))
         self.assertIn("另一份 manifest", self.page)
         self.assertIn("现任是单模型形态", self.page)
         self.assertIn("现任 manifest 不可解析", self.page)
@@ -738,24 +741,205 @@ class ProvenanceMatrixTotalityTests(unittest.TestCase):
                 self.assertEqual(want, got)
 
 
+def _dispatch_segments(page: str) -> dict[str, str]:
+    """Split the page's verdict dispatch into one source segment per verdict.
+
+    Slicing by verdict beats a fixed-size window: a window that runs past its
+    branch starts passing on the NEIGHBOUR's words (the previous window had
+    193 characters of margin before it reached another branch carrying the
+    same token), and a window that is only asked whether two tokens co-occur
+    cannot tell which arm of a conditional each one belongs to.
+    """
+    import re
+    block = page[page.index("_verdict = provenance_verdict("):]
+    # Bound the LAST branch at the fail-loud tail — otherwise its "segment"
+    # runs to end of file and picks up every st.* call on the page.
+    block = block[:block.index("elif _verdict != VERDICT_SINGLE_SHA_OK:")]
+    parts = re.split(r"^(?:if|elif) _verdict == (VERDICT_\w+):$", block, flags=re.M)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+
+
+class ProvenanceWiringTests(unittest.TestCase):
+    """After the matrix moved to a pure function, the page's LAST piece of
+    logic was the four call-site arguments — and a source-level pin cannot
+    tell `incumbent_kind=incumbent.kind` from a plausible-looking
+    `"ensemble" if incumbent.is_ensemble else "single"`. So the wiring is a
+    function too, and these tests drive it with real dataclass values."""
+
+    def _identity(self, **kw: object) -> object:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            IncumbentIdentity,
+        )
+        return IncumbentIdentity(**kw)  # type: ignore[arg-type]
+
+    def _status(self, payload: dict, current_sha: str | None = None) -> object:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            artifact_meta_status,
+        )
+        return artifact_meta_status(payload, current_sha)
+
+    def test_page_delegates_the_whole_wiring(self) -> None:
+        # If the page ever calls classify_provenance directly again, the four
+        # arguments come back into un-runnable source-only territory.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn(
+            "_verdict = provenance_verdict(_incumbent, _meta_status)", page)
+        self.assertNotIn("classify_provenance(", page)
+
+    def test_unresolvable_incumbent_is_not_collapsed_into_single(self) -> None:
+        # THE r4 miswiring, as behaviour: an unconfirmed incumbent plus an old
+        # single-model artifact whose sidecar sha happens to MATCH the retired
+        # model. Collapse unresolvable→single here and the verdict becomes the
+        # one silent cell — the page says nothing and the artifact reads as
+        # verified.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_INCUMBENT_UNRESOLVED,
+            VERDICT_SINGLE_SHA_OK,
+            provenance_verdict,
+        )
+        inc = self._identity(
+            kind="unresolvable", manifest_path="Z:/broken.json", error="boom")
+        status = self._status({"meta": {"model_pkl_sha256": "aa"}}, "aa")
+        got = provenance_verdict(inc, status)  # type: ignore[arg-type]
+        self.assertNotEqual(VERDICT_SINGLE_SHA_OK, got, "静默 = 读起来像已核对")
+        self.assertEqual(VERDICT_INCUMBENT_UNRESOLVED, got)
+
+    def test_sidecar_comparison_is_really_forwarded(self) -> None:
+        # The other uncovered argument: hard-wire single_sha_mismatch and a
+        # stale artifact under an explicit single-model incumbent goes silent.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_SINGLE_SHA_MISMATCH,
+            VERDICT_SINGLE_SHA_OK,
+            VERDICT_SINGLE_SHA_UNKNOWN,
+            provenance_verdict,
+        )
+        inc = self._identity(kind="single")
+        payload = {"meta": {"model_pkl_sha256": "aa"}}
+        for current, want in (
+            ("bb", VERDICT_SINGLE_SHA_MISMATCH),
+            ("aa", VERDICT_SINGLE_SHA_OK),
+            (None, VERDICT_SINGLE_SHA_UNKNOWN),
+        ):
+            with self.subTest(current_model_sha=current):
+                self.assertEqual(
+                    want,
+                    provenance_verdict(  # type: ignore[arg-type]
+                        inc, self._status(payload, current)))
+
+    def test_manifest_digests_are_compared_not_assumed(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_MATCHES_INCUMBENT,
+            VERDICT_OTHER_MANIFEST,
+            provenance_verdict,
+        )
+        inc = self._identity(
+            kind="ensemble", manifest_path="m.json", manifest_sha256="cc" * 32)
+        for art_sha, want in (("cc" * 32, VERDICT_MATCHES_INCUMBENT),
+                              ("dd" * 32, VERDICT_OTHER_MANIFEST)):
+            with self.subTest(artifact_sha=art_sha[:4]):
+                status = self._status(
+                    {"meta": {"ensemble": {"manifest_sha256": art_sha}}})
+                self.assertEqual(
+                    want, provenance_verdict(inc, status))  # type: ignore[arg-type]
+
+    def test_a_bindable_digest_is_a_precondition_of_the_comparison(self) -> None:
+        # provenance_verdict guards against two empty digests comparing equal
+        # into the page's only green light. That guard is REDUNDANT today for
+        # exactly one reason: artifact_kind_of routes every digest-less
+        # ensemble artifact to `ensemble_no_sha`, which the matrix answers
+        # before any comparison happens. Pin that routing — it is what makes
+        # the guard redundant, and if it breaks the guard becomes the only
+        # thing standing between an empty digest and a green "与现任一致".
+        from web.operator_ui.pages._daily_decision_helpers import (
+            ArtifactMetaStatus,
+            artifact_kind_of,
+        )
+        for empty in ("", None):
+            with self.subTest(artifact_ensemble_sha=empty):
+                status = ArtifactMetaStatus(
+                    artifact_is_v1=False, artifact_is_corrupt_v2=False,
+                    artifact_model_sha=None, current_model_sha=None,
+                    sha_mismatch=None, artifact_is_ensemble=True,
+                    artifact_ensemble_sha=empty)
+                self.assertEqual("ensemble_no_sha", artifact_kind_of(status))
+
+    def test_an_incumbent_without_a_digest_never_reads_as_a_match(self) -> None:
+        # Defensive: two empty digests comparing equal would hand out the
+        # page's ONLY green light on no evidence at all.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_MATCHES_INCUMBENT,
+            provenance_verdict,
+        )
+        inc = self._identity(
+            kind="ensemble", manifest_path="m.json", manifest_sha256=None)
+        status = self._status(
+            {"meta": {"ensemble": {"manifest_sha256": "cc" * 32}}})
+        self.assertNotEqual(
+            VERDICT_MATCHES_INCUMBENT,
+            provenance_verdict(inc, status))  # type: ignore[arg-type]
+
+
 class ProvenanceRenderingTests(unittest.TestCase):
-    """The page's only remaining job here is turning a verdict into words —
-    so every verdict must have words, and an unrendered one must be loud."""
+    """The page's only remaining job is turning a verdict into words. Pinning
+    the CONSTANT NAME is not enough — a branch gutted to
+    ``st.caption("提示。")`` keeps its name and loses the refusal."""
+
+    # One phrase per verdict that must appear in ITS branch and in NO other.
+    DISTINCTIVE = {
+        "VERDICT_MATCHES_INCUMBENT": "与现任一致",
+        "VERDICT_OTHER_MANIFEST": "出自**另一份 manifest**",
+        "VERDICT_ENSEMBLE_UNDER_SINGLE": "现任是单模型形态",
+        "VERDICT_INCUMBENT_UNRESOLVED": "现任 manifest 不可解析",
+        "VERDICT_ENSEMBLE_SHA_MISSING": "请核对工件来源",
+        "VERDICT_V1_UNKNOWN": "旧版工件",
+        "VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE": "该工件是**单模型形态**",
+        "VERDICT_SINGLE_SHA_MISMATCH": "由**其他模型**生成",
+        "VERDICT_SINGLE_SHA_UNKNOWN": "无法交叉核对工件↔模型",
+    }
+    # Verdicts that are DEFINITE refusals: the artifact is provably not the
+    # incumbent's output, or its provenance cannot be confirmed at all.
+    REFUSALS = (
+        "VERDICT_OTHER_MANIFEST",
+        "VERDICT_ENSEMBLE_UNDER_SINGLE",
+        "VERDICT_INCUMBENT_UNRESOLVED",
+        "VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE",
+    )
 
     def setUp(self) -> None:
         self.page = _PAGE.read_text(encoding="utf-8")
         self.xcheck = self.page[
-            self.page.index("_verdict = classify_provenance("):]
+            self.page.index("_verdict = provenance_verdict("):]
+        self.seg = _dispatch_segments(self.page)
 
-    def test_page_renders_every_verdict_the_helper_can_return(self) -> None:
-        # Adding a verdict without a renderer would make that cell silent —
-        # the same failure the matrix was extracted to end.
+    def test_every_verdict_has_its_own_branch(self) -> None:
+        # Every verdict the helper can return is dispatched — except the one
+        # that is deliberately silent, which the fail-loud tail handles.
         from web.operator_ui.pages import _daily_decision_helpers as h
-        names = [n for n in dir(h) if n.startswith("VERDICT_")]
-        self.assertGreaterEqual(len(names), 10)
-        for name in names:
+        names = {n for n in dir(h) if n.startswith("VERDICT_")}
+        self.assertEqual(names - {"VERDICT_SINGLE_SHA_OK"}, set(self.seg))
+
+    def test_each_branch_says_its_own_words(self) -> None:
+        # ...and only its own: a phrase that also appears next door would let
+        # a gutted branch pass on the neighbour's text.
+        self.assertEqual(set(self.DISTINCTIVE), set(self.seg))
+        for name, phrase in self.DISTINCTIVE.items():
             with self.subTest(verdict=name):
-                self.assertIn(name, self.xcheck)
+                self.assertIn(phrase, self.seg[name])
+                elsewhere = [o for o, body in self.seg.items()
+                             if o != name and phrase in body]
+                self.assertEqual([], elsewhere, f"{phrase} 不该出现在别的分支")
+
+    def test_definite_refusals_are_warnings_that_forbid_trading(self) -> None:
+        # spec.md writes 请勿据此下单 as a MUST; before this test every one of
+        # the page's five occurrences could be deleted with the suite green.
+        for name in self.REFUSALS:
+            with self.subTest(verdict=name):
+                self.assertIn("st.warning(", self.seg[name])
+                self.assertIn("请勿据此下单", self.seg[name])
+
+    def test_the_only_green_light_is_the_incumbent_match(self) -> None:
+        infos = [n for n, body in self.seg.items() if "st.info(" in body]
+        self.assertEqual(["VERDICT_MATCHES_INCUMBENT"], infos)
 
     def test_an_unrendered_verdict_fails_loud(self) -> None:
         # The dispatch must not end in a bare `else: pass`: "no message" is
@@ -763,7 +947,32 @@ class ProvenanceRenderingTests(unittest.TestCase):
         self.assertIn("elif _verdict != VERDICT_SINGLE_SHA_OK:", self.xcheck)
         self.assertIn("未渲染的来源裁定", self.xcheck)
 
-    def test_unresolvable_incumbent_never_reaches_legacy_compare(self) -> None:
+    def test_the_digest_text_is_bound_to_the_arm_that_has_a_digest(self) -> None:
+        # r5 made this branch reachable with an EMPTY _art_sha. Asserting only
+        # that both strings occur somewhere nearby cannot tell the two arms
+        # apart — swap them and the page prints a digest that does not exist
+        # for the artifact that lacks one, and denies the digest of the one
+        # that has it. Pin the conditional itself.
+        seg = self.seg["VERDICT_ENSEMBLE_UNDER_SINGLE"]
+        self.assertIn('f"(sha256 `{_art_sha[:12]}…`)" if _art_sha', seg)
+        self.assertIn('else "(meta.ensemble 缺 manifest_sha256', seg)
+
+    def test_ensemble_artifact_under_single_incumbent_is_known(self) -> None:
+        # An explicit `none` opt-out is a DEFINITE single-model incumbent, so
+        # an ensemble artifact provably did not come from it.
+        i_known = self.xcheck.index("VERDICT_ENSEMBLE_UNDER_SINGLE")
+        i_unknown = self.xcheck.index("VERDICT_INCUMBENT_UNRESOLVED")
+        self.assertLess(i_known, i_unknown)
+
+    def test_single_incumbent_message_names_the_explicit_opt_out(self) -> None:
+        # After the default-manifest change, `single` is reachable ONLY via
+        # the explicit sentinel; telling operators 变量未设 would send them
+        # troubleshooting in the opposite direction.
+        seg = self.seg["VERDICT_ENSEMBLE_UNDER_SINGLE"]
+        self.assertIn("显式设为 `none`", seg)
+        self.assertNotIn("(QUANT_ENSEMBLE_MANIFEST 未设)", self.xcheck)
+
+    def test_unresolvable_incumbent_never_reaches_the_legacy_compare(self) -> None:
         # r4: the legacy sidecar compare is against the RETIRED single model.
         # It may only run when the incumbent is a CONFIRMED single model.
         from web.operator_ui.pages._daily_decision_helpers import (
@@ -777,31 +986,6 @@ class ProvenanceRenderingTests(unittest.TestCase):
                     classify_provenance(
                         incumbent_kind="unresolvable", artifact_kind="single",
                         single_sha_mismatch=mismatch))
-        self.assertIn("现任 manifest 不可解析", self.xcheck)
-
-    def test_ensemble_artifact_under_single_incumbent_is_known(self) -> None:
-        # An explicit `none` opt-out is a DEFINITE single-model incumbent, so
-        # an ensemble artifact provably did not come from it — the page must
-        # say 请勿据此下单, not 无法判定.
-        i_known = self.xcheck.index("VERDICT_ENSEMBLE_UNDER_SINGLE")
-        i_unknown = self.xcheck.index("VERDICT_INCUMBENT_UNRESOLVED")
-        self.assertLess(i_known, i_unknown)
-        self.assertIn("现任是单模型形态", self.xcheck)
-
-    def test_ensemble_under_single_message_survives_a_missing_digest(self) -> None:
-        # r5 made this branch reachable with an EMPTY _art_sha; rendering
-        # "(sha256 `…`)" for it would print a digest that does not exist.
-        i = self.xcheck.index("VERDICT_ENSEMBLE_UNDER_SINGLE")
-        seg = self.xcheck[i:i + 1400]
-        self.assertIn('if _art_sha', seg)
-        self.assertIn("缺 manifest_sha256", seg)
-
-    def test_single_incumbent_message_names_the_explicit_opt_out(self) -> None:
-        # After the default-manifest change, `single` is reachable ONLY via
-        # the explicit sentinel; telling operators 变量未设 would send them
-        # troubleshooting in the opposite direction.
-        self.assertIn("显式设为 `none`", self.xcheck)
-        self.assertNotIn("(QUANT_ENSEMBLE_MANIFEST 未设)", self.xcheck)
 
     def test_v1_artifact_is_not_called_single_model_shaped(self) -> None:
         # r2: a v1 artifact carries no meta at all — its provenance is
