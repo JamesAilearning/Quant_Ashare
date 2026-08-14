@@ -252,6 +252,10 @@ _GIT_PATCH_LETTERS = frozenset({"p", "u", "U"})
 # and an explicit ``--notes`` refuses outright.
 _GIT_NOTES_OFF_OPT = "--no-notes"
 _GIT_NOTES_ON_OPT = "--notes"
+# ``--stdin`` reads revisions from the inherited stdin and echoes bad
+# ones back in its diagnostics, which no pin normalizes (codex P2 r58
+# on #410, reproduced by piping 0xff into a fully pinned log).
+_GIT_STDIN_OPT = "--stdin"
 _GIT_PATH_OUTPUT_OPTS = frozenset({
     "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
     "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
@@ -929,6 +933,8 @@ def _git_output_safe(call: ast.Call) -> bool:
                 if later is None:
                     continue
                 head_opt, eq_opt, val_opt = later.partition("=")
+                if head_opt == _GIT_STDIN_OPT:
+                    return False  # ungoverned revision bytes echo back
                 if head_opt == _GIT_NOTES_OFF_OPT:
                     notes_suppressed = True
                 elif head_opt == _GIT_NOTES_ON_OPT:
@@ -998,8 +1004,14 @@ def _dynamic_subprocess_calls(tree: ast.Module) -> set[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "importlib":
-                    importlib_modules.add(alias.asname or "importlib")
+                # ``import importlib.util`` binds ``importlib`` (codex
+                # P2 r58 on #410) — a dotted import without ``as``
+                # binds its TOP-LEVEL package, not the full path.
+                if alias.asname:
+                    if alias.name == "importlib":
+                        importlib_modules.add(alias.asname)
+                elif alias.name.split(".")[0] == "importlib":
+                    importlib_modules.add("importlib")
         elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
             for alias in node.names:
                 if alias.name == "import_module":
@@ -1830,6 +1842,19 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # --stdin reads revisions from the inherited stdin and echoes bad
+    # ones back in its diagnostics (reproduced with a piped 0xff).
+    ("log --stdin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "--stdin"], text=True, encoding="utf-8")', True),
+    # a dotted importlib import binds the top-level package name.
+    ("import importlib.util still binds importlib",
+     "import importlib.util\n"
+     'importlib.import_module("subprocess").run(["git"], text=True)',
+     True),
+    ("...and the aliased dotted form is unaffected",
+     "import importlib.util as iu\n"
+     'iu.import_module("subprocess").run(["git"], text=True)', False),
     # bare printing globals never reach a subcommand (verified).
     ("a bare --exec-path prints a path and exits",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path", "ignored", "rev-parse",'

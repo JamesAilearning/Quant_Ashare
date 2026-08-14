@@ -82,9 +82,13 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
                  "rev-parse", *rest], cwd=str(cwd),
                 capture_output=True, timeout=10, check=False,
             )
+            # ``surrogateescape`` on stdout, not ``replace``: this is a
+            # filesystem PATH and a non-UTF-8 byte must survive the round
+            # trip so ``Path(...).relative_to`` still matches (#410 r58).
+            # stderr is diagnostics only, so lossy is fine there.
             completed = subprocess.CompletedProcess(
                 raw.args, raw.returncode,
-                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stdout.decode("utf-8", errors="surrogateescape"),
                 raw.stderr.decode("utf-8", errors="replace"),
             )
         elif sub == "status":
