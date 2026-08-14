@@ -35,6 +35,7 @@ from typing import Any
 from scripts.retrain_gate_lib import (
     GATE_PROFILE,
     GATE_SCHEMA_VERSION,
+    PASS,
     expected_gates,
 )
 from src.inference.ensemble_serving import (
@@ -119,6 +120,52 @@ class GateCard:
     subject: dict[str, Any] | None = None
     window: dict[str, Any] | None = None
     error: str | None = None
+
+
+# What the operator should SEE for a card. Kept out of the page because the
+# page threw the transcribed verdict away when it picked a colour: an
+# artifact reporting `overall: FAIL` with no missing gates rendered as a
+# GREEN success — and, with a tight metric, as a yellow banner whose text
+# said 通过 (codex #431 r4). Transcribing a verdict faithfully into the data
+# and then contradicting it in the presentation is worse than not showing it.
+GATE_STATUS_BROKEN = "evidence_broken"     # cannot be tied to the authorization
+GATE_STATUS_MISSING = "missing_gates"      # a required gate has no verdict
+GATE_STATUS_FAILED = "verdict_not_pass"    # the artifact itself says not-PASS
+GATE_STATUS_TIGHT = "pass_tight_margin"    # PASS, but something is near a limit
+GATE_STATUS_OK = "pass"
+
+GATE_STATUSES: tuple[str, ...] = (
+    GATE_STATUS_BROKEN, GATE_STATUS_MISSING, GATE_STATUS_FAILED,
+    GATE_STATUS_TIGHT, GATE_STATUS_OK,
+)
+
+
+def gate_card_status(card: GateCard) -> str:
+    """The single status the card must be rendered as.
+
+    Precedence, stated rather than left to branch order:
+
+    1. evidence that cannot be bound to the authorization outranks every
+       claim the artifact makes about itself;
+    2. a missing gate outranks the summary verdict — an absent judgement is
+       not a passing one;
+    3. **any** non-PASS verdict — the summary's or a named gate's — outranks
+       a tight margin. ``overall`` absent counts as not-PASS: an artifact
+       that declines to state a verdict has not passed;
+    4. only an all-PASS card may be shown as passing, and then a tight
+       margin still downgrades it from green.
+    """
+    if not card.evidence_intact:
+        return GATE_STATUS_BROKEN
+    if card.missing_gates:
+        return GATE_STATUS_MISSING
+    if card.overall != PASS:
+        return GATE_STATUS_FAILED
+    if any(gate.verdict != PASS for gate in card.gates):
+        return GATE_STATUS_FAILED
+    if any(m.is_tight for gate in card.gates for m in gate.metrics):
+        return GATE_STATUS_TIGHT
+    return GATE_STATUS_OK
 
 
 def _metrics_of(block: dict[str, Any]) -> tuple[GateMetric, ...]:

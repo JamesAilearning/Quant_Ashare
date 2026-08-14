@@ -108,6 +108,13 @@ MUST NOT 显示 PASS。
 - **THEN** 每个候选文件 MUST 只读取一次，摘要与解析 MUST 取自同一块 buffer
 - **AND** MUST NOT 出现「摘要按旧字节通过、结论来自新字节」的状态
 
+#### Scenario: 非 PASS 的裁定不得被渲染成通过
+
+- **GIVEN** 某份摘要已授权的工件其 `overall` 为 `FAIL`（或缺失），且不缺门
+- **THEN** 该卡片 MUST 呈现为未通过，MUST NOT 呈现为成功或「通过」
+- **AND** 任一具名门的 verdict 非 PASS 时同样 MUST 呈现为未通过——
+  即使 `overall` 自称通过
+
 #### Scenario: 贴边余量必须可见
 
 - **WHEN** `serving_veto` 的任一指标接近其阈值

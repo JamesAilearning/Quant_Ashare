@@ -59,10 +59,16 @@
 - [x] 所有已解析路径经 `shlex.quote`,构成单个 shell 参数  ← C21 咬住(含空格/分号路径)
 - [x] 重训窗保留 CN 时钟并写明理由（下游无「今天」判定，属展示量）
 
+## W10 codex #431 r4（P2，属实）
+- [x] 卡片状态抽成纯函数 `gate_card_status`（五态，优先级写进 docstring）  ← 判断不再留在页面里
+- [x] `overall` 非 PASS（含缺失）→ 未通过；任一具名门非 PASS 同样  ← C23/C24 咬住
+- [x] 页面只在 `GATE_STATUS_OK` 时上绿；旧的按序分支删除  ← C25 咬住
+- [x] PASS 复用 `retrain_gate_lib.PASS`，不复述字面量  ← C26 咬住
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C22 二十二处全落地全咬红(C11/C20 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C26 二十六处全落地全咬红(C11/C20 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

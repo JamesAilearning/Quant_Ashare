@@ -482,6 +482,105 @@ class GateCardTests(unittest.TestCase):
             self.assertNotIn(literal, helpers, literal)
 
 
+class GateCardStatusTests(unittest.TestCase):
+    """codex #431 r4: the page transcribed the verdict into the data and then
+    contradicted it when picking a colour — an artifact whose own `overall`
+    was FAIL rendered as a GREEN success, and with a tight metric as a yellow
+    banner reading 通过. The status is now a pure function over the card."""
+
+    def _card(self, **over: object) -> object:
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            GateCard,
+            GateMetric,
+            NamedGate,
+        )
+        base: dict[str, object] = {
+            "key": "ensemble", "authorized_sha256": "a" * 64,
+            "authorized_path": "p.json", "evidence_intact": True,
+            "overall": "PASS",
+            "gates": (NamedGate(name="degeneracy", verdict="PASS",
+                                metrics=(GateMetric(name="w", value=0.1,
+                                                    limit=1.0,
+                                                    exclusive=False),)),),
+            "missing_gates": (),
+        }
+        base.update(over)
+        return GateCard(**base)  # type: ignore[arg-type]
+
+    def _tight_gate(self) -> object:
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            GateMetric,
+            NamedGate,
+        )
+        return NamedGate(
+            name="serving_veto", verdict="PASS",
+            metrics=(GateMetric(name="csi500_weight", value=0.7484,
+                                limit=0.75, exclusive=False),))
+
+    def test_every_status_is_reachable_and_correct(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            GATE_STATUS_BROKEN,
+            GATE_STATUS_FAILED,
+            GATE_STATUS_MISSING,
+            GATE_STATUS_OK,
+            GATE_STATUS_TIGHT,
+            GATE_STATUSES,
+            NamedGate,
+            gate_card_status,
+        )
+        cases = {
+            GATE_STATUS_BROKEN: self._card(evidence_intact=False,
+                                           overall="PASS"),
+            GATE_STATUS_MISSING: self._card(missing_gates=("ic_direction",)),
+            GATE_STATUS_FAILED: self._card(overall="FAIL"),
+            GATE_STATUS_TIGHT: self._card(gates=(self._tight_gate(),)),
+            GATE_STATUS_OK: self._card(),
+        }
+        self.assertEqual(set(GATE_STATUSES), set(cases), "五态必须都被覆盖")
+        for want, card in cases.items():
+            with self.subTest(status=want):
+                self.assertEqual(want, gate_card_status(card))  # type: ignore[arg-type]
+        # ...and a named gate that did not pass fails the card even when the
+        # summary claims otherwise.
+        self.assertEqual(GATE_STATUS_FAILED, gate_card_status(  # type: ignore[arg-type]
+            self._card(gates=(NamedGate(name="x", verdict="FAIL"),))))
+
+    def test_a_failing_verdict_is_never_shown_as_passing(self) -> None:
+        # The exact defect: FAIL + a tight metric previously rendered yellow
+        # with the word 通过 in it.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            GATE_STATUS_FAILED,
+            gate_card_status,
+        )
+        for overall in ("FAIL", None, "", "pass", "UNKNOWN"):
+            with self.subTest(overall=overall):
+                self.assertEqual(GATE_STATUS_FAILED, gate_card_status(
+                    self._card(overall=overall,  # type: ignore[arg-type]
+                               gates=(self._tight_gate(),))))
+
+    def test_pass_is_the_gate_libs_own_constant(self) -> None:
+        # Not a restated "PASS" literal that could drift from the producer.
+        from scripts.retrain_gate_lib import PASS
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            GATE_STATUS_OK,
+            gate_card_status,
+        )
+        self.assertEqual(GATE_STATUS_OK,
+                         gate_card_status(self._card(overall=PASS)))  # type: ignore[arg-type]
+
+    def test_the_page_shows_green_only_for_the_passing_status(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        block = page[page.index("_status = gate_card_status(_card)"):
+                     page.index("with st.expander(")]
+        self.assertIn("elif _status == GATE_STATUS_OK:\n            st.success(",
+                      block)
+        self.assertEqual(1, block.count("st.success("), "只有一处绿色")
+        self.assertIn("GATE_STATUS_FAILED", block)
+        self.assertIn("未通过", block)
+        # The old order-based branching must be gone.
+        self.assertNotIn("if _card.missing_gates:", block)
+
+
 class RecertProbeTests(unittest.TestCase):
     """The certification clock comes from the executor's own functions, read
     under ONE pinned mainline rev."""

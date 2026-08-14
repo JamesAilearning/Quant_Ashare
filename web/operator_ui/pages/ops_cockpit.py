@@ -21,6 +21,7 @@ from typing import Any
 
 import streamlit as st
 
+from scripts.retrain_gate_lib import PASS as GATE_PASS
 from web.operator_ui.bundle_health import (
     resolve_default_provider_uri,
     summarise_bundle_health,
@@ -29,9 +30,14 @@ from web.operator_ui.formatting import cn_today
 from web.operator_ui.incumbent import resolve_incumbent, resolve_model_path
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._ops_cockpit_helpers import (
+    GATE_STATUS_FAILED,
+    GATE_STATUS_MISSING,
+    GATE_STATUS_OK,
+    GATE_STATUS_TIGHT,
     OpsCommand,
     bundle_freshness,
     data_update_command,
+    gate_card_status,
     morning_command,
     read_gate_cards,
     resolve_delisted_registry,
@@ -126,15 +132,29 @@ else:
                 for _m in _g.metrics if _m.is_tight
             )
         _head = f"**{_card.key}** — overall `{_card.overall}`"
-        if _card.missing_gates:
+        # The status is decided by gate_card_status, not by whichever branch
+        # happens to be checked first: this block previously showed a green
+        # success for an artifact whose own overall was FAIL (codex #431 r4).
+        _status = gate_card_status(_card)
+        if _status == GATE_STATUS_MISSING:
             st.error(
                 f"⚠ {_head}，但**缺门**:{'、'.join(_card.missing_gates)}。"
                 "缺门的工件不构成通过。"
             )
-        elif _tight:
+        elif _status == GATE_STATUS_FAILED:
+            _bad = [f"{_g.name}=`{_g.verdict}`" for _g in _card.gates
+                    if _g.verdict != GATE_PASS]
+            st.error(
+                f"⛔ {_head} — **未通过**"
+                + (f"（{'、'.join(_bad)}）" if _bad else "")
+                + "。该工件不授权任何轮换,请勿据此推进。"
+            )
+        elif _status == GATE_STATUS_TIGHT:
             st.warning(f"⚠ {_head}(通过,但有贴边指标):{'；'.join(_tight)}")
-        else:
+        elif _status == GATE_STATUS_OK:
             st.success(f"✅ {_head}")
+        else:  # pragma: no cover — evidence_intact is handled above
+            st.error(f"⚠ {_head} — 未识别的门状态 `{_status}`,请勿据此推进。")
         with st.expander(f"{_card.key} 逐门明细", expanded=False):
             st.caption(
                 f"scope `{_card.scope}` · 读取自 `{_card.resolved_path}` · "
