@@ -250,7 +250,10 @@ _GIT_PATCH_OPTS = frozenset({
 # ``-L <range:file>`` (line log) emits a patch with no patch letter of
 # its own (codex P2 r62 on #410, reproduced), so it joins the letters
 # rather than being handled as a separate option.
-_GIT_PATCH_LETTERS = frozenset({"p", "u", "U", "L"})
+# ``-c`` here is the SUBCOMMAND's combined-diff option (the global
+# ``-c key=value`` sits before the subcommand and is parsed separately),
+# and it prints a patch (codex P2 r65 on #410, reproduced).
+_GIT_PATCH_LETTERS = frozenset({"p", "u", "U", "L", "c"})
 # Without an explicit format the log family prints attached NOTES,
 # which git does not transcode (codex P2 r53 on #410; reproduced — the
 # default output carries the note bytes, while ``--format=%H`` and
@@ -2037,6 +2040,12 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "--binary", "-1"], text=True, encoding="utf-8")',
      True),
+    ("a combined-diff -c prints a patch",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-c", "-3"], text=True, encoding="utf-8")', True),
+    ("...while the GLOBAL -c before the subcommand is config",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-3"], text=True, encoding="utf-8")', False),
     ("a -L line log emits a patch as well",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "-L", "1,1:x"], text=True, encoding="utf-8")',
