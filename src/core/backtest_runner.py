@@ -21,6 +21,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Any
 
+from src.contracts import _shared_validators as _sv
 from src.contracts.benchmark_data_contract import validate_benchmark_values
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
@@ -283,6 +284,121 @@ class BacktestRunner:
                 f"Underlying import failure: {exc!r}"
             ) from exc
 
+        # Calendar tail boundary (issue #213 — the fold-22 class, at the
+        # runner level). qlib represents each trading step as a CLOSED
+        # interval: ``get_step_time`` reads ``calendar[idx + 1]`` as the
+        # right-endpoint TIMESTAMP unconditionally
+        # (qlib/backtest/utils.py:131) — a time bound, not a data bar —
+        # so an ``evaluation_end`` that locates onto the execution
+        # calendar's final entry always dies deep in the engine with a
+        # raw ``index N is out of bounds for axis 0 with size N``. The
+        # walk-forward engine refuses to EMIT such folds (#327); this
+        # guard covers every OTHER caller (single-fold pipeline, replay
+        # scripts, retrain gate) at the point they all converge, and
+        # names the last usable day instead of a raw overflow.
+        #
+        # The mirror-image hole is refused too: an ``evaluation_end``
+        # BEFORE the calendar's first entry makes qlib's
+        # ``locate_index`` compute ``bisect_right(...) - 1 == -1``,
+        # which numpy wraps to ``calendar[-1]`` — the requested window
+        # would silently be read as the ENTIRE calendar. That is the
+        # implicit-fallback semantics the canonical contract forbids.
+        #
+        # ``_load_execution_calendar`` mirrors TradeCalendarManager's
+        # own load (future=True, exchange freq) so the guard condition
+        # equals the crash condition BY CONSTRUCTION; the stamp-tax
+        # calendar below (future=False, start/end-trimmed) must NOT be
+        # reused here.
+        import bisect
+
+        import pandas as pd
+
+        try:
+            execution_calendar = cls._load_execution_calendar(
+                freq=request.exchange_config.freq)
+        except Exception as exc:
+            # Hard-fail with a NAMED error rather than let a raw
+            # qlib exception escape — same rule as the stamp-tax
+            # calendar fetch below: a canonical-runtime data failure
+            # must neither pass silently nor skip the guard.
+            raise BacktestRunnerError(
+                "BacktestRunner.run: failed to load the execution "
+                f"calendar (freq={request.exchange_config.freq!r}, "
+                f"future=True) for the tail-boundary guard "
+                f"({type(exc).__name__}: {exc}). Refusing rather than "
+                "running unguarded."
+            ) from exc
+        if len(execution_calendar) == 0:
+            # Defence in depth, NOT the live path for a missing/empty
+            # bundle calendar: qlib's ``CalendarProvider.calendar``
+            # evaluates ``start_time = _calendar[0]`` when called with
+            # no bounds (as the seam does), so an empty calendar raises
+            # INSIDE the seam and surfaces through the wrap above. This
+            # branch catches a provider that returns empty instead of
+            # raising, so the guard can never silently index into
+            # nothing.
+            raise BacktestRunnerError(
+                "BacktestRunner.run: the execution calendar "
+                f"(freq={request.exchange_config.freq!r}, future=True) is "
+                "empty — the bundle has no calendar to backtest against. "
+                "Refusing (issue #213 boundary guard)."
+            )
+        # Re-parse through the CONTRACT'S OWN parser — the very
+        # function ``CanonicalBacktestContract.validate_input`` already
+        # ran this string through — so anything the contract accepted,
+        # the guard accepts identically. Two near-misses make this a
+        # real requirement rather than style:
+        #
+        #   * ``pd.Timestamp(raw)`` rejects ISO WEEK dates that
+        #     ``date.fromisoformat`` accepts on 3.11+ ("2026-W01-1"),
+        #   * bare ``date.fromisoformat(raw)`` rejects the SURROUNDING
+        #     WHITESPACE that ``parse_iso_date`` strips before parsing.
+        #
+        # Either mismatch lets a contract-VALID request escape ``run()``
+        # as a raw ``ValueError``/``DateParseError`` — precisely the
+        # unnamed escape this guard forbids everywhere else. Before this
+        # guard existed, such a string's first parse happened inside the
+        # stamp-tax ``D.calendar`` fetch, whose except-block named it.
+        # ``error_cls`` is wired to ``BacktestRunnerError`` so even a
+        # future divergence surfaces named.
+        _end_date = _sv.parse_iso_date(
+            request.evaluation_end, error_cls=BacktestRunnerError)
+        if _end_date is None:
+            raise BacktestRunnerError(
+                "BacktestRunner.run: evaluation_end parsed to nothing "
+                f"({request.evaluation_end!r}); the canonical contract "
+                "requires a non-empty ISO date. Refusing (issue #213 "
+                "boundary guard)."
+            )
+        _end_idx = bisect.bisect_right(
+            execution_calendar, pd.Timestamp(_end_date)) - 1
+        if _end_idx < 0:
+            raise BacktestRunnerError(
+                f"evaluation_end={request.evaluation_end} predates the "
+                "execution calendar's first session "
+                f"({pd.Timestamp(execution_calendar[0]).date().isoformat()}). "
+                "qlib's locate_index would wrap the end bound to the "
+                "calendar's LAST entry and silently backtest the entire "
+                "calendar. Refusing (issue #213 boundary guard)."
+            )
+        if _end_idx + 1 >= len(execution_calendar):
+            _cal_last = pd.Timestamp(
+                execution_calendar[-1]).date().isoformat()
+            _last_usable = (
+                pd.Timestamp(execution_calendar[-2]).date().isoformat()
+                if len(execution_calendar) >= 2
+                else "none — the calendar has fewer than two sessions"
+            )
+            raise BacktestRunnerError(
+                f"evaluation_end={request.evaluation_end} locates onto the "
+                f"execution calendar's final bar ({_cal_last}). qlib "
+                "represents trading steps as closed intervals and reads the "
+                "NEXT calendar entry as the right-endpoint timestamp, so "
+                "the backtest would overflow at the final bar (issue #213). "
+                f"Last usable evaluation_end: {_last_usable}. The "
+                "walk-forward engine auto-skips such tail folds (#327); "
+                "single-fold callers must shorten the window explicitly."
+            )
         # Official risk metrics must go through the governance-anchored helper,
         # not a direct import — this keeps the runtime path aligned with the
         # path that governance locks (see tests/governance/test_no_alt_backtest_path.py).
@@ -1440,6 +1556,29 @@ class BacktestRunner:
                 "Re-init qlib with the PIT-corrected provider before "
                 "passing pit_provider to BacktestRunner.run()."
             )
+
+    @classmethod
+    def _load_execution_calendar(cls, *, freq: str) -> Any:
+        """The trading calendar qlib's executor will actually step
+        through — ``future=True``, exchange freq — mirroring
+        ``TradeCalendarManager.reset`` parameter-for-parameter
+        (qlib/backtest/utils.py: ``Cal.calendar(freq=freq,
+        future=True)``). The tail-boundary guard in :meth:`run` must
+        judge against THIS calendar: with a ``day_future.txt`` present
+        the future calendar can extend past the data calendar, and
+        judging against the data calendar would refuse runnable
+        windows. Without one, qlib falls back to the data calendar
+        (with its own warning) — the guard inherits that fallback by
+        construction rather than second-guessing it.
+
+        Isolated behind a method so tests inject a synthetic calendar
+        by patching this seam (the ``WalkForwardEngine.
+        _load_trading_calendar`` idiom) instead of mocking
+        ``qlib.data.D`` — the anti-pattern this repo is moving away
+        from (PR7).
+        """
+        from qlib.data import D
+        return D.calendar(freq=freq, future=True)
 
     @staticmethod
     def _validate_cadence(
