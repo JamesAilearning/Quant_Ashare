@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -481,6 +482,11 @@ class BundleFreshness:
                 and not self.health_warnings)
 
 
+# The bundle producer writes canonical YYYY-MM-DD rows. Shape-check BEFORE
+# parsing: date.fromisoformat is far more permissive than the file contract.
+_CANONICAL_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
 @dataclass(frozen=True)
 class CalendarTail:
     """The bundle's last trading day, or an honest refusal to name one."""
@@ -512,7 +518,13 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     for an informational banner, wrong for a refusal prediction.
 
     This is SOUND, not exact: it may answer "unknown" where qlib would be
-    fine. It must never do the reverse.
+    fine. It must never do the reverse — which is why rows must match the
+    CANONICAL ``YYYY-MM-DD`` spelling the bundle producer writes, not merely
+    be something ``date.fromisoformat`` will swallow. That function also
+    accepts ``2026-W32-1`` and ``20260803`` (both → 2026-08-03), and qlib's
+    calendar parser need not; accepting them here would hand out a
+    confident tail for bytes ``D.calendar()`` rejects, breaking the very
+    guarantee this docstring makes (codex #431 r8).
     """
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
@@ -531,6 +543,11 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
             return CalendarTail(
                 known=False,
                 reason=f"交易日历第 {index} 行为空行,内容有歧义,不据此判定")
+        if not _CANONICAL_DAY_RE.fullmatch(value):
+            return CalendarTail(
+                known=False,
+                reason=(f"交易日历第 {index} 行不是规范的 YYYY-MM-DD 写法"
+                        f"({value!r});本页不猜测 qlib 会如何解读它"))
         try:
             parsed.append(date.fromisoformat(value))
         except ValueError:

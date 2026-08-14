@@ -1018,12 +1018,42 @@ class BundleFreshnessTests(unittest.TestCase):
             ("duplicate", "2026-07-30\n2026-08-03\n2026-08-03\n"),
             ("out of order", "2026-08-03\n2026-07-30\n"),
             ("empty file", "\n\n"),
+            # codex #431 r8: date.fromisoformat swallows these (both parse to
+            # 2026-08-03), but the producer writes canonical YYYY-MM-DD and
+            # qlib's calendar parser need not accept them. Answering
+            # known=True here would break the sound-not-exact guarantee this
+            # reader makes — a confident tail for bytes D.calendar() rejects.
+            ("ISO week spelling", "2026-07-30\n2026-W32-1\n"),
+            ("compact spelling", "2026-07-30\n20260803\n"),
+            ("trailing junk on a row", "2026-07-30\n2026-08-03x\n"),
+            # Shape-valid but not a real date — the branch behind the shape
+            # check, reachable only through rows like this.
+            ("impossible date", "2026-07-30\n2026-13-45\n"),
+            ("impossible day-of-month", "2026-07-30\n2026-02-30\n"),
         ):
             with self.subTest(case=name):
                 got = bundle_calendar_tail(self._calendar(body))
                 self.assertFalse(got.known, "有歧义就必须说不知道")
                 self.assertIsNone(got.tail)
                 self.assertTrue(got.reason)
+
+    def test_non_canonical_spellings_parse_but_are_still_refused(self) -> None:
+        # Guards the REASON the shape check exists: these strings are valid
+        # inputs to date.fromisoformat, so a parse-only reader accepts them.
+        from datetime import date as _date
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        for spelling in ("2026-W32-1", "20260803"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(_date(2026, 8, 3),
+                                 _date.fromisoformat(spelling),
+                                 "前提:这些拼写确实能被解析")
+                got = bundle_calendar_tail(
+                    self._calendar(f"2026-07-30\n{spelling}\n"))
+                self.assertFalse(got.known)
+                self.assertIn("规范", got.reason)
 
     def test_the_page_does_not_claim_to_be_the_recommenders_parser(self) -> None:
         # The wording matters: same FILE, different PARSER.
