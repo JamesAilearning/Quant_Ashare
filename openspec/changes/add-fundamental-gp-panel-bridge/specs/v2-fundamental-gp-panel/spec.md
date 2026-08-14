@@ -403,9 +403,18 @@ dates the mining run never covered, and a digest recomputed over the ORIGINAL
 window says nothing about them: a swapped callable could reproduce the mining
 window's values, evidence, and periods exactly, pass, and then diverge on the
 added out-of-sample dates — the very dates the extension exists to adjudicate.
-An extended promotion SHALL therefore be bound by the implementation/dependency
-digest, or by an output digest computed over the EFFECTIVE window it actually
-evaluates.
+An extended promotion SHALL therefore REQUIRE the implementation/dependency
+digest. The output-digest option is NOT available there, because on the extended
+window it has nothing trustworthy to compare against: `validation_end_date`
+arrives only at promotion, so mining can only ever have persisted a digest for
+its ORIGINAL window. Comparing an effective-window digest against that recorded
+one necessarily differs, and hashing the promoted factory's own effective output
+lets the swapped callable AUTHENTICATE ITSELF — a self-issued certificate.
+
+The only other admissible route is to persist the extension AND its expected
+effective-window output digest through an independently trusted process BEFORE
+promotion runs, so the comparison again has a baseline promotion did not
+produce.
 
 The end-to-end test SHALL exercise this seam — mining and promoting a
 fundamental run through the real factory — not a stand-in that bypasses it.
@@ -435,11 +444,16 @@ point receives in a real run; only the recorded identity does.
   implementation or from the rebuilt provenance-bearing output, not from what
   the factory says about itself
 
-#### Scenario: an extended promotion is not bound by the mining window alone
+#### Scenario: an extended promotion requires the implementation digest
 - **WHEN** promotion runs with a validation-window extension
-- **THEN** the factory is bound by its implementation digest or by an output
-  digest over the effective window — a factory that matches only on the
-  original window does not pass
+- **THEN** the factory is bound by its implementation/dependency digest — a
+  match on the mining window's output digest alone does not pass
+
+#### Scenario: a factory cannot certify its own extended output
+- **WHEN** the only evidence offered for an extended promotion is a digest of
+  the promoted factory's own effective-window output
+- **THEN** promotion refuses — the baseline must come from mining or from an
+  independently trusted process, never from the factory being checked
 
 #### Scenario: a run with no recorded factory identity is refused
 - **WHEN** a fundamental run predates factory-identity recording
