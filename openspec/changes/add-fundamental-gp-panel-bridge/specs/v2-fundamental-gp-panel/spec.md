@@ -296,6 +296,14 @@ the PIT inputs already get, and refusing likewise a fundamental run that
 predates fingerprint recording rather than promoting on unverifiable
 provenance.
 
+One fingerprint plus a promotion-time recheck is not sufficient. The
+fingerprints SHALL be taken BEFORE any panel read and taken AGAIN after mining,
+and the run SHALL refuse BEFORE persisting any artifact if they differ — the
+mining path already does exactly this for the PIT inputs, for exactly this
+reason. A refresh DURING the panel build would otherwise let the run record the
+NEW bytes' identity for a pool mined on the OLD (or mixed) reads, after which
+every specified check passes while promotion rebuilds a different panel.
+
 #### Scenario: promotion rebuilds the mined panel from the run alone
 - **WHEN** promotion loads a run and rebuilds its fundamental panel
 - **THEN** every input comes from the run's own persisted contract, with no
@@ -305,6 +313,12 @@ provenance.
 - **WHEN** two runs differ only in a fundamental panel input (store, calendar,
   or exclusion set)
 - **THEN** their run hashes differ
+
+#### Scenario: a refresh during the panel build refuses before any artifact
+- **WHEN** the financial store or calendar changes between the pre-build
+  fingerprint and the post-mining one
+- **THEN** mining refuses before persisting anything — neither identity would
+  describe the pool that was mined
 
 #### Scenario: an in-place refresh of the store is caught at promotion
 - **WHEN** the financial store or the calendar artifact is refreshed in place
@@ -344,10 +358,25 @@ the two entry points can receive DIFFERENT callables while every recorded config
 value, data digest, and store/calendar content fingerprint still matches — so
 promotion could rebuild a semantically different panel and nothing would
 notice. The run SHALL therefore record an identity for the factory actually
-used (its identifier and version digest), and promotion SHALL verify it against
-the factory it is given, refusing on mismatch and refusing a run that predates
-factory-identity recording — the same treatment the data fingerprints get,
-because a builder swap moves the panel exactly as a data swap does.
+used, and promotion SHALL verify it against the factory it is given, refusing
+on mismatch and refusing a run that predates factory-identity recording — the
+same treatment the data fingerprints get, because a builder swap moves the
+panel exactly as a data swap does.
+
+That identity SHALL NOT be self-declared metadata. A name plus a version string
+is advertised BY the factory, so two semantically different factories can
+announce the same pair and pass — which recreates precisely the undetectable
+swap this exists to close. The identity SHALL instead be either:
+
+- a digest computed by TRUSTED code (not the factory) over the factory's frozen
+  implementation and its behaviour-affecting dependencies; or
+- the digest of the factory's deterministic PROVENANCE-BEARING OUTPUT — panel
+  values plus availability evidence — recomputed at promotion from the run's
+  recorded inputs and compared.
+
+The output digest is the stronger of the two because it binds BEHAVIOUR rather
+than a claim about behaviour; where both are recorded, a mismatch in either
+SHALL refuse.
 
 The end-to-end test SHALL exercise this seam — mining and promoting a
 fundamental run through the real factory — not a stand-in that bypasses it.
@@ -369,6 +398,13 @@ point receives in a real run; only the recorded identity does.
   one recorded at mining time
 - **THEN** it refuses rather than adjudicating on a panel built by a different
   builder
+
+#### Scenario: a factory cannot pass by declaring the right name
+- **WHEN** a different factory implementation advertises the same identifier
+  and version as the recorded one
+- **THEN** promotion still refuses — the identity is derived from the frozen
+  implementation or from the rebuilt provenance-bearing output, not from what
+  the factory says about itself
 
 #### Scenario: a run with no recorded factory identity is refused
 - **WHEN** a fundamental run predates factory-identity recording
