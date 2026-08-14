@@ -1092,12 +1092,12 @@ class BundleFreshnessTests(unittest.TestCase):
     def test_non_canonical_spellings_parse_but_are_still_refused(self) -> None:
         # Guards the REASON the shape check exists: these strings are valid
         # inputs to date.fromisoformat, so a parse-only reader accepts them.
+        import sys
         from datetime import date as _date
 
         from web.operator_ui.pages._ops_cockpit_helpers import (
             bundle_calendar_tail,
         )
-        import sys
         for spelling in ("2026-W32-1", "20260803"):
             with self.subTest(spelling=spelling):
                 if sys.version_info >= (3, 11):
