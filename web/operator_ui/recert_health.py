@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from scripts import rotate_ensemble_member as _rotate
 from scripts.rotation_lib import (
     RECERT_STATUS_PATH,
     VALIDITY_MONTHS,
@@ -41,6 +42,15 @@ from scripts.rotation_lib import (
 )
 
 _PROBE_TIMEOUT_S = 5.0
+
+# The repository the probe must interrogate — the executor's OWN constant,
+# not a second derivation. `_git(cmd, repo)` in scripts/rotate_ensemble_member
+# passes `cwd=repo` (default PROJECT_ROOT); this probe used to inherit
+# whatever directory Streamlit happened to be launched from, so
+# `streamlit run /checkout/web/operator_ui/app.py` started from a service
+# working directory made every certification read fail and the cockpit
+# report "unknown" on a perfectly healthy deployment (codex #431 r26).
+_EXECUTOR_REPO = _rotate.PROJECT_ROOT
 
 # Returns stdout on success, raises on ANY failure (missing executable,
 # non-zero exit, timeout). Injectable so tests never touch a real repo.
@@ -55,6 +65,11 @@ def _default_runner(cmd: list[str]) -> str:
     try:
         completed = subprocess.run(  # noqa: S603 — fixed argv, shell=False
             cmd,
+            # Same repository the executor reads, named EXPLICITLY. Inheriting
+            # the process CWD makes the answer depend on where Streamlit was
+            # launched from, which is not a property of the deployment being
+            # described (codex #431 r26).
+            cwd=_EXECUTOR_REPO,
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -970,6 +970,52 @@ class RecertProbeTests(unittest.TestCase):
     """The certification clock comes from the executor's own functions, read
     under ONE pinned mainline rev."""
 
+    def test_the_probe_runs_in_the_executors_repository(self) -> None:
+        # codex #431 r26: the probe used to inherit the process CWD, so
+        # `streamlit run /checkout/web/operator_ui/app.py` launched from a
+        # service working directory made every certification read fail and
+        # the cockpit report "unknown" on a healthy deployment. Where the UI
+        # was started is not a property of the deployment being described.
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from scripts import rotate_ensemble_member
+        from web.operator_ui import recert_health
+
+        # Same repo the executor reads — its own constant, not a second
+        # derivation that could point somewhere else.
+        self.assertEqual(rotate_ensemble_member.PROJECT_ROOT,
+                         recert_health._EXECUTOR_REPO)
+
+        seen: dict[str, object] = {}
+        real_run = recert_health.subprocess.run
+
+        def spy(cmd, **kwargs):        # type: ignore[no-untyped-def]
+            seen["cwd"] = kwargs.get("cwd")
+            return real_run(cmd, **kwargs)
+
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                with patch.object(recert_health.subprocess, "run", spy):
+                    health = recert_health.probe_recert_health()
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(rotate_ensemble_member.PROJECT_ROOT, seen.get("cwd"))
+        # …and the answer survives being started from elsewhere
+        self.assertTrue(
+            health.known,
+            f"从别处启动就答不出认证状态:{health.reason}")
+
+    def test_the_page_says_where_the_commands_must_be_run(self) -> None:
+        # The commands name scripts by repo-relative path, so they only
+        # resolve from the checkout root — the one CWD dependency the page
+        # cannot fix for the operator, so it states it (r26).
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("下方所有命令请在**仓库根目录**执行", page)
+
     def _runner(self, mapping: dict[str, str]) -> object:
         def run(cmd: list[str]) -> str:
             key = " ".join(cmd)

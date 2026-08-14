@@ -34,6 +34,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     GATE_STATUS_MISSING,
     GATE_STATUS_OK,
     GATE_STATUS_TIGHT,
+    PROJECT_ROOT,
     OpsCommand,
     bundle_calendar_tail,
     bundle_freshness,
@@ -56,6 +57,17 @@ render_page_header(
     "生产运维",
     "只读检视生产栈的五项状态 + 给出对应的运维命令文本。"
     "本页不执行任何命令、不触发作业/训练/轮换、不写任何文件——命令请自行在终端执行。",
+)
+# The commands name scripts by repo-relative path (`python scripts/…`), so
+# they only resolve from the checkout root. Data paths are absolute and
+# unaffected; this is about where the operator stands, not about what the
+# page resolved. Stated once, because the page cannot control the terminal
+# it is copied into (codex #431 r26 — the sibling of the probe's own CWD
+# dependency, which was fixed rather than documented because that one the
+# page CAN control).
+st.caption(
+    f"下方所有命令请在**仓库根目录**执行(`{PROJECT_ROOT}`)——命令以 "
+    "`scripts/…` 这样的仓库相对路径命名脚本。数据路径则一律是绝对路径,不受影响。"
 )
 
 

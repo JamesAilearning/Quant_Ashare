@@ -308,6 +308,23 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 - **THEN** MUST 使用同一 UTC 时钟，MUST NOT 传入本地时区瞬时——
   否则在到期日边界上，页面会与执行器给出相反的结论
 
+#### Scenario: 探针必须在执行器的那个仓库里跑
+
+- **GIVEN** Streamlit 从 checkout 之外启动（例如以某服务工作目录运行
+  `streamlit run /checkout/web/operator_ui/app.py`）
+- **THEN** 探针 MUST 显式指定执行器读取的那个仓库，MUST NOT 继承进程的当前
+  工作目录——**UI 从哪里启动**不是被描述的那个部署的属性
+- **AND** 该仓库 MUST 复用执行器自己的常量，MUST NOT 另推一次
+- **AND** 若不指定，健康的部署会一路报「无法判定」——一个本可作答却答不出的
+  「不知道」，和一个错误答案一样是缺陷
+
+#### Scenario: 命令的工作目录依赖必须说明
+
+- **GIVEN** 生成的命令以 `scripts/…` 这样的仓库相对路径命名脚本
+- **THEN** 页面 MUST 写明须在仓库根目录执行，MUST NOT 默认操作人已经站对
+  地方——这是页面**控制不了**的那一个工作目录依赖，故只能声明
+  （数据路径一律绝对，不受影响）
+
 #### Scenario: git 探针不可用
 
 - **GIVEN** 本机 `origin/main` 不可解析或 git 探针失败
