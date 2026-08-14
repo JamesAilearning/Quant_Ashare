@@ -125,6 +125,26 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** 两道门 MUST NOT 去读当前工作目录:即使 CWD 下恰好存在一份合法的
   `calendars/day.txt`，答案仍 MUST 是「不知道」
 
+#### Scenario: 没有 ensemble 就没有轮换流程
+
+- **GIVEN** 现任是单模型（`QUANT_ENSEMBLE_MANIFEST=none`），或其 manifest
+  无法解析
+- **THEN** 季度轮换卡 MUST 整卡拒绝，MUST NOT 拿占位串顶替 manifest 后照常
+  渲染两道门与**不可逆**的 `execute` 一步
+- **AND** 理由:④ 已经说明轮换在此不适用，再把完整可跑流程印出来是页面自相
+  矛盾——把不适用的流程展示成适用的，比缺一个流程更糟
+- **AND** 「没有 manifest」的空串写法 MUST 与 `None` 同样处理，不得因类型
+  不同而落回占位串
+
+#### Scenario: 「没看过」与「看过是坏的」必须写法不同
+
+- **GIVEN** 完整性这一道无法评定（provider 未解析）
+- **THEN** `accepted` MUST 保持未评定（`None`），MUST NOT 写成 `False`
+- **AND** 该不变式 MUST 由读取器自己保证，MUST NOT 由某个调用点就地修补
+  ——修在调用点等于让其余消费者继续拿到错误值
+- **AND** 对照:stamp **存在但字节不可用**是**已知**的拒绝（`known=True,
+  accepted=False`）。「我看了，是坏的」与「我根本没看」不得写成同一个值
+
 #### Scenario: 未解析状态必须一次说清
 
 - **GIVEN** provider 路径未解析

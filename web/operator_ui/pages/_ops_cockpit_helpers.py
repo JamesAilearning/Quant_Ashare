@@ -663,8 +663,13 @@ def recommender_integrity_check(
         # a CONFIDENT refusal verdict about a bundle that was never located.
         # Claiming a verdict on something you did not examine is the exact
         # failure this page exists to prevent (codex #431 r21).
+        # `accepted` stays None — this type's own spelling for "not
+        # evaluated". Writing False here would hand a direct consumer a
+        # definite refusal for a bundle nothing inspected, which is the very
+        # thing this branch exists to stop; the sibling `known=False` branch
+        # below already leaves it unset (codex #431 r22).
         return BundleIntegrityCheck(
-            known=False, accepted=False, reason=UNRESOLVED_PROVIDER_REASON)
+            known=False, reason=UNRESOLVED_PROVIDER_REASON)
 
     # The gate normalizes the URI before reading (expanduser/abspath/realpath/
     # normcase) — a `~/…` or whitespaced URI would otherwise read a
@@ -887,20 +892,26 @@ def _refuses_unusable(fn: Any) -> Any:
     return wrapper
 
 
-def _refused(title: str, what: str, value: str, why: str) -> OpsCommand:
+def _refused(
+    title: str, what: str, value: str | None, why: str,
+) -> OpsCommand:
     """A wholly non-runnable stand-in for a command we will not render.
 
     Every line is a comment in both PowerShell and POSIX, and the offending
-    value appears only in ``note`` — rendered as page text, never as
-    something the operator could paste into a shell.
+    value (when there is one) appears only in ``note`` — rendered as page
+    text, never as something the operator could paste into a shell.
+
+    ``value=None`` is for refusals with nothing to show: the input was
+    absent, not malformed.
     """
+    shown = f":{value!r}" if value is not None else ""
     return OpsCommand(
         title=f"{title}（无法生成可粘贴命令）",
-        command=("# 本页拒绝为该部署渲染命令:某个已解析路径无法作为命令参数。\n"
-                 "# 该路径**未**写入命令文本——把它放进来会让这段「拒绝」本身\n"
-                 "# 可执行。原因与修法见下方说明。"),
-        note=(f"{what} 的取值无法安全渲染({why}):{value!r}。"
-              "请修好该路径后重开本页,或手工构造该命令。"),
+        command=("# 本页拒绝为该部署渲染命令。命令文本里**不含**任何已解析\n"
+                 "# 取值——把有问题的取值放进来会让这段「拒绝」本身可执行。\n"
+                 "# 原因与修法见下方说明。"),
+        note=(f"{what}:{why}{shown}。"
+              "请先修好这一项再回本页,或手工构造该命令。"),
     )
 
 
@@ -1055,8 +1066,24 @@ def rotation_commands(
     describing — and the resulting PASS artifact can later authorize a
     production rotation with nothing downstream able to detect the mismatch
     (codex #431 r2). Print both flags explicitly.
+
+    Without a resolved ensemble manifest there is no rotation to describe, so
+    the whole card is refused rather than rendered around a placeholder — see
+    below.
     """
-    target = manifest_path or "<现任 manifest（当前不可解析）>"
+    if manifest_path is None:
+        # Previously this substituted the literal `<现任 manifest（当前不可
+        # 解析）>` and went on to render both gate commands AND the
+        # irreversible `execute` step. Section ④ says overhead that quarterly
+        # ensemble rotation does not apply here, and the page then printed the
+        # workflow anyway — a single-model or unknown-incumbent operator got a
+        # complete, runnable-looking rotation procedure for an ensemble that
+        # does not exist. An inapplicable procedure shown as applicable is a
+        # worse failure than a missing one (codex #431 r22).
+        return (_refused(
+            "rotation_commands", "现任 ensemble manifest 未解析", None,
+            "现任不是 ensemble,或其 manifest 无法解析——季度轮换的前提不成立"),)
+    target = manifest_path
     data_flags = (f"--provider {_arg(provider_uri)} "
                   f"--namechange {_arg(namechange_path)} ")
     return (

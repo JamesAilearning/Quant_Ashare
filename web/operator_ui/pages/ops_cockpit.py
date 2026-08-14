@@ -314,10 +314,11 @@ _fresh = bundle_freshness(
     # The integrity precondition is evaluated by the RECOMMENDER's own
     # reader — summarise_bundle_health swallows a missing/corrupt stamp and
     # would let a refused bundle read green (codex #431 r6).
-    # `None`, not `False`, when the check could not run: the page's own
-    # "前置校验未通过" wording would otherwise report a refusal verdict on a
-    # bundle nothing examined (codex #431 r21).
-    integrity_accepted=_integrity.accepted if _integrity.known else None,
+    # Passed through as-is: the helper's own invariant is that `accepted`
+    # is None whenever `known` is False, so repairing it here would put the
+    # rule in the wrong place — one call site, silently diverging from every
+    # other consumer of the same function (codex #431 r21/r22).
+    integrity_accepted=_integrity.accepted,
     integrity_reason=_integrity.reason,
 )
 if not _fresh.known:

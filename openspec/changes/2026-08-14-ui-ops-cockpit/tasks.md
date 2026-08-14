@@ -195,10 +195,24 @@
 - [x] 页面顶部一次性说明,不让操作人从四张「无法判定」卡里拼病因  ← C70 咬住
 - [x] `integrity_accepted` 传 `None` 而非 `False`  ← C68 咬住
 
+## W28 codex #431 r22（两 P2，均属实；第二条是我 r21 修法自己的破绽）
+- [x] 无 ensemble 时整卡拒绝,不再拿 `<现任 manifest（当前不可解析）>` 顶替后
+      照常渲染两道门 + **不可逆** execute  ← C71 咬住
+      ④ 已说轮换不适用,再把完整可跑流程印出来是页面自相矛盾
+- [x] 空串 manifest 与 `None` 同等处理  ← C72 首轮**存活**:`or` 占位符在
+      `manifest_path=""` 时仍会渲染。同一缺陷换了个类型穿回来
+- [x] `recommender_integrity_check` 未评定时 `accepted` 保持 `None`  ← C73 咬住
+      r21 我写了 `accepted=False` + `known=False` —— 正是该分支要制止的
+      「对没看过的东西下确信裁定」,同函数的兄弟分支本来就没写
+- [x] 不变式**修在读取器**,不修在调用点;页面改回直传  ← C34 重锚
+      修在调用点 = 其余消费者继续拿错值;C68 因此作废(判断已不在页面)
+- [x] 补源码级钉:该函数任何 `known=False` 的返回都不得写 `accepted=`
+- [x] 「看过是坏的」(`known=True, accepted=False`)与「没看过」对照钉
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C70(C57/C58 随重构作废):66 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C73(C57/C58/C68 随重构作废):69 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

@@ -313,6 +313,80 @@ class ResolvedCommandTests(unittest.TestCase):
         self.assertNotIn("rm -rf", cmd.command)
         self.assertIn("无法生成可粘贴命令", cmd.title)
 
+    def test_no_ensemble_means_no_rotation_workflow_at_all(self) -> None:
+        # codex #431 r22 (P2): with a single-model or unresolvable incumbent
+        # the page substituted the literal `<现任 manifest（当前不可解析）>`
+        # and still rendered BOTH gate commands and the irreversible
+        # `execute` step — a complete, runnable-looking rotation procedure
+        # for an ensemble that does not exist. Section ④ says rotation is
+        # inapplicable; printing the workflow anyway contradicts it.
+        from web.operator_ui.pages._ops_cockpit_helpers import rotation_commands
+        # `None` and `""` are both "no manifest". They must not diverge: an
+        # empty string used to fall through the `or` onto the placeholder and
+        # render it as a quoted argument, which is the same defect wearing a
+        # different type.
+        for absent in (None, ""):
+            with self.subTest(manifest=repr(absent)):
+                cmds = rotation_commands(absent, provider_uri="P",
+                                         namechange_path="N")
+                self.assertEqual(1, len(cmds), "无 ensemble 时只应有一条拒绝")
+                only = cmds[0]
+                self.assertIn("无法生成可粘贴命令", only.title)
+                self.assertFalse(only.irreversible)
+                for line in only.command.splitlines():
+                    if line.strip():
+                        self.assertTrue(line.lstrip().startswith("#"))
+                for forbidden in ("rotate_ensemble_member", "retrain_gate",
+                                  "execute", "python ", "<现任 manifest"):
+                    self.assertNotIn(forbidden, only.command)
+        # and the resolved case must still render the full card
+        full = rotation_commands("M.json", provider_uri="P",
+                                 namechange_path="N")
+        self.assertGreater(len(full), 1)
+        self.assertTrue(any(c.irreversible for c in full))
+
+    def test_an_unknown_integrity_leaves_acceptance_unset(self) -> None:
+        # codex #431 r22 (P2): `BundleIntegrityCheck.accepted` is `bool | None`
+        # and None IS its spelling for "not evaluated". The r21 branch wrote
+        # `accepted=False` alongside `known=False`, so a direct consumer got a
+        # definite refusal for a bundle nothing inspected — the exact thing
+        # that branch was added to stop. The invariant belongs to the helper,
+        # not to one call site that happens to repair it.
+        import tempfile
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            recommender_integrity_check,
+        )
+        for label, uri in (("unresolved", ""), ("blank", "   ")):
+            with self.subTest(case=label):
+                got = recommender_integrity_check(uri)
+                self.assertFalse(got.known, f"{label} 不该是已知状态")
+                self.assertIsNone(
+                    got.accepted,
+                    "known=False 时 accepted 必须是 None(未评定),不是 False")
+
+        # Contrast — an UNREADABLE stamp is a *known* refusal, not an unknown
+        # one: the file is there, its bytes are unusable, and the recommender
+        # refuses that unconditionally. `accepted=False` is correct here, and
+        # the distinction is the whole point: "I looked and it is bad" must
+        # not be spelled the same way as "I never looked".
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "_fetch_integrity.json").mkdir()   # dir, not a file
+            corrupt = recommender_integrity_check(tmp)
+        self.assertTrue(corrupt.known)
+        self.assertIs(False, corrupt.accepted)
+
+        # …and the rule is stated once, in the helper: no `known=False`
+        # return anywhere in that function may pin `accepted`.
+        src = _HELPERS.read_text(encoding="utf-8")
+        body = src.split("def recommender_integrity_check(", 1)[1]
+        body = body.split("\ndef ", 1)[0]
+        for chunk in body.split("known=False")[1:]:
+            head = chunk.split(")")[0]
+            self.assertNotIn(
+                "accepted=", head,
+                f"known=False 的返回里不得写 accepted:{head!r}")
+
     def test_an_unresolved_path_never_becomes_an_empty_argument(self) -> None:
         # codex #431 r21 (P2): `resolve_default_provider_uri()` returns "" for
         # a missing/unparsable/provider_uri-less config.yaml. `''` quotes
@@ -1487,11 +1561,10 @@ class BundleFreshnessTests(unittest.TestCase):
     def test_the_page_evaluates_integrity_with_the_recommenders_reader(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
         self.assertIn("_integrity = recommender_integrity_check(_provider)", page)
-        # `None` when the check could not run — passing `False` would make the
-        # page's own 前置校验未通过 wording a verdict on nothing (r21).
-        self.assertIn(
-            "integrity_accepted=_integrity.accepted if _integrity.known else None",
-            page)
+        # Passed through as-is: `known=False ⟹ accepted is None` is the
+        # HELPER's invariant (pinned above), so repairing it here would put
+        # the rule at one call site instead of at its source (r21/r22).
+        self.assertIn("integrity_accepted=_integrity.accepted,", page)
 
     def test_the_page_says_once_that_the_provider_is_unresolved(self) -> None:
         # codex #431 r21: without a single up-front statement the operator has
