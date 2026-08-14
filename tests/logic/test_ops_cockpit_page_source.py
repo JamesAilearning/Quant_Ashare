@@ -88,7 +88,8 @@ class IrreversibleCommandTests(unittest.TestCase):
             IncumbentIdentity(kind="ensemble", manifest_path="m.json",
                               manifest_sha256="a" * 64),
             model_path="x.pkl", provider_uri="P",
-            delisted_registry="R", name_source="N").irreversible)
+            delisted_registry="R", name_source="N",
+            bundle_max_age_days=14).irreversible)
 
     def test_the_page_renders_the_irreversible_marker(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
@@ -124,15 +125,15 @@ class ResolvedCommandTests(unittest.TestCase):
         commands = [
             morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet"),  # type: ignore[arg-type]
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14),  # type: ignore[arg-type]
             morning_command(IncumbentIdentity(kind="single"),
                             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet"),
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14),
             morning_command(IncumbentIdentity(kind="unresolvable", error="x"),
                             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet"),
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14),
             data_update_command(provider_uri="/srv/bundle",
                                 delisted_registry="/srv/reg.parquet"),
             *rotation_commands("/srv/prod_manifest.json",
@@ -148,7 +149,7 @@ class ResolvedCommandTests(unittest.TestCase):
         from web.operator_ui.pages._ops_cockpit_helpers import morning_command
         cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet")  # type: ignore[arg-type]
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14)  # type: ignore[arg-type]
         self.assertIn("--ensemble-manifest /srv/prod_manifest.json", cmd.command)
 
     def test_single_model_deployment_gets_a_single_model_command(self) -> None:
@@ -159,7 +160,7 @@ class ResolvedCommandTests(unittest.TestCase):
         cmd = morning_command(
             IncumbentIdentity(kind="single"), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet")
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14)
         self.assertIn("--model /srv/m.pkl", cmd.command)
         self.assertNotIn("--ensemble-manifest", cmd.command)
         self.assertNotIn("none", cmd.command)
@@ -174,7 +175,7 @@ class ResolvedCommandTests(unittest.TestCase):
                               manifest_path="/srv/broken.json", error="boom"),
             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet")
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14)
         self.assertTrue(cmd.command.lstrip().startswith("#"))
         self.assertNotIn("/srv/broken.json", cmd.command)
         self.assertNotIn("daily_recommend.py --", cmd.command)
@@ -253,10 +254,11 @@ class ResolvedCommandTests(unittest.TestCase):
                                   manifest_sha256="a" * 64),
                 model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet"), "--ensemble-manifest", hostile_file),
+                            name_source="/srv/ns.parquet", bundle_max_age_days=14), "--ensemble-manifest", hostile_file),
             (morning_command(IncumbentIdentity(kind="single"),
                              model_path=hostile_file, provider_uri="/p",
-                             delisted_registry="/r", name_source="/n"),
+                             delisted_registry="/r", name_source="/n",
+                             bundle_max_age_days=14),
              "--model", hostile_file),
             (data_update_command(provider_uri=hostile_dir,
                                  delisted_registry=hostile_file),
@@ -297,10 +299,30 @@ class ResolvedCommandTests(unittest.TestCase):
                     incumbent, model_path="/srv/x.pkl",
                     provider_uri="/srv/bundle",
                     delisted_registry="/srv/reg.parquet",
-                    name_source="/srv/ns.parquet")
+                    name_source="/srv/ns.parquet", bundle_max_age_days=14)
                 self.assertIn("--provider-uri /srv/bundle", cmd.command)
                 self.assertIn("--delisted-registry /srv/reg.parquet", cmd.command)
                 self.assertIn("--name-source /srv/ns.parquet", cmd.command)
+
+    def test_the_morning_command_carries_the_predicted_threshold(self) -> None:
+        # codex #431 r14: scripts/daily_recommend.py has its OWN argparse
+        # default for --bundle-max-age-days (a literal 14), independent of
+        # RecommendationConfig.bundle_max_age_days that section ⑤ reads. Omit
+        # the flag and the page predicts a refusal against one number while
+        # the pasted command applies another.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        cmd = morning_command(
+            IncumbentIdentity(kind="ensemble", manifest_path="/m.json",
+                              manifest_sha256="a" * 64),
+            model_path="/x.pkl", provider_uri="/b",
+            delisted_registry="/r", name_source="/n",
+            bundle_max_age_days=21)
+        self.assertIn("--bundle-max-age-days 21", cmd.command)
+
+    def test_the_page_feeds_the_command_the_threshold_it_predicts_with(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("bundle_max_age_days=serving_bundle_max_age_days()", page)
 
     def test_the_page_feeds_the_morning_command_the_same_bundle(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
@@ -1328,7 +1350,12 @@ class SpecSelfConsistencyTests(unittest.TestCase):
         import re
         out: list[str] = []
         for block in re.split(r"\n\s*\n", text):
-            for statement in re.split(r"\n(?=\s*[-*#])", block):
+            # Every Markdown list marker starts a new statement: `-`, `*`,
+            # `+`, ordered `1.`/`1)`, and headings. Recognising only `-*#`
+            # let a positive mandate merge with an unrelated MUST NOT item
+            # once the spec was reformatted as an ordered list (codex r14).
+            for statement in re.split(
+                    r"\n(?=\s*(?:[-*+#]|\d+[.)]))", block):
                 joined = " ".join(
                     line.strip() for line in statement.split("\n"))
                 out.extend(re.split(r"[。；，]", joined))
@@ -1361,6 +1388,15 @@ class SpecSelfConsistencyTests(unittest.TestCase):
             "尾部日期 MUST 使用 `summarise_bundle_health()`。",
             "尾部日期 MUST 使用\n`summarise_bundle_health()`。",
             "- **THEN** 尾部日期 MUST 使用\n  `summarise_bundle_health()`。",
+            # Valid list syntax the first boundary regex did not recognise —
+            # the mandate merged with the next item's unrelated MUST NOT and
+            # the guard fell silent (codex #431 r14).
+            "1. 尾部日期 MUST 使用 `summarise_bundle_health()`\n"
+            "2. 其它路径 MUST NOT 使用",
+            "+ 尾部日期 MUST 使用 `summarise_bundle_health()`\n"
+            "+ 其它路径 MUST NOT 使用",
+            "1) 尾部日期 MUST 使用 `summarise_bundle_health()`\n"
+            "2) 其它路径 MUST NOT 使用",
             "页面 MUST 用 `summarise_bundle_health()` 取 bundle 尾部日期，\n"
             "MUST NOT 新造第二个阈值。",
         )

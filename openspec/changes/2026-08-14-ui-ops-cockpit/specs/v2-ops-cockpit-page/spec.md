@@ -270,6 +270,14 @@ tail——后者在此**仅**用于健康信号（它只能收回「可用」，
 - **THEN** 页面 MUST NOT 呈现为成功——出单侧在年龄检查之后还有其它前置校验
 - **AND** MUST 显示该健康告警本身
 
+#### Scenario: 生成的命令必须携带被预测的那个阈值
+
+- **GIVEN** `scripts/daily_recommend.py` 的 `--bundle-max-age-days` 有它
+  **自己的** argparse 默认值，与 `RecommendationConfig.bundle_max_age_days`
+  相互独立
+- **THEN** 晨跑命令 MUST 显式携带页面预测所用的那个阈值——否则页面按一个数
+  判定「会不会被拒」，而粘贴出去的命令按另一个数执行
+
 #### Scenario: 阈值不得硬编码
 
 - **WHEN** 检查页面与其 helper 源码

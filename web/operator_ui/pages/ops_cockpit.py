@@ -47,6 +47,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     resolve_namechange_path,
     retrain_window,
     rotation_commands,
+    serving_bundle_max_age_days,
 )
 from web.operator_ui.recert_health import probe_recert_health
 
@@ -106,7 +107,10 @@ _render_command(morning_command(
     model_path=resolve_model_path(),
     provider_uri=_provider,
     delisted_registry=resolve_delisted_registry(),
-    name_source=resolve_name_source()))
+    name_source=resolve_name_source(),
+    # Bind the SAME threshold section ⑤ predicts against — the CLI's own
+    # argparse default is independent of it (codex #431 r14).
+    bundle_max_age_days=serving_bundle_max_age_days()))
 
 # ---------------------------------------------------------------------------
 # ② 授权门工件 — 权威是入库 baseline 的摘要,页面只做转录

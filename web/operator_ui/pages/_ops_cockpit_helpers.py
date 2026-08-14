@@ -826,6 +826,7 @@ def _arg(value: object) -> str:
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
     provider_uri: str, delisted_registry: str, name_source: str,
+    bundle_max_age_days: int,
 ) -> OpsCommand:
     """The morning list command for THIS deployment's actual shape.
 
@@ -837,9 +838,15 @@ def morning_command(
     — and then the copyable command scores a LIVE list from a different
     bundle than sections ④/⑤ just reported on (codex #431 r5).
     """
+    # The staleness threshold too: scripts/daily_recommend.py carries its OWN
+    # argparse default (a literal 14) independent of the
+    # RecommendationConfig.bundle_max_age_days that section ⑤ reads. Omit the
+    # flag and the page predicts a refusal against one number while the pasted
+    # command applies another (codex #431 r14).
     data_flags = (f" \\\n  --provider-uri {_arg(provider_uri)}"
                   f" \\\n  --delisted-registry {_arg(delisted_registry)}"
-                  f" \\\n  --name-source {_arg(name_source)}")
+                  f" \\\n  --name-source {_arg(name_source)}"
+                  f" \\\n  --bundle-max-age-days {bundle_max_age_days}")
     if incumbent.kind == "single":
         return OpsCommand(
             title="晨跑出单（每交易日早晨，手动）",

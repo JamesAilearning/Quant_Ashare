@@ -125,10 +125,18 @@
       逐一驱动 `_clauses`  ← C48 咬住(变异解析器即红)
 - [x] 折行形态的规格变异  ← C47 咬住
 
+## W20 codex #431 r14（两 P2，均属实）
+- [x] 晨跑命令显式携带 `--bundle-max-age-days <页面预测所用阈值>`  ← C49 咬住
+      （CLI 有自己独立的 argparse 默认 14,与 config 字段不同源）
+- [ ] **越界项已登记为独立任务**:让 CLI 的默认值改读 config 字段(单一事实源)
+      —— 本 change 边界写明「不改 CLI」,故不在此处做
+- [x] 规格守卫认全部 markdown 列表标记（`-` `*` `+` 有序 `1.`/`1)` 与标题）  ← C50 咬住
+- [x] 三种列表写法入解析器钉
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C48:47 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C50:49 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
