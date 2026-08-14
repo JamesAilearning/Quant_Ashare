@@ -175,7 +175,8 @@ _GIT_FILTER_CAPABLE = frozenset({
     # blob for ``REF:PATH`` — and git never transcodes content (codex
     # P2 r51 on #410, reproduced with a tracked 0xff). Capture binary
     # and decode explicitly if you know your files' encoding.
-    "show",
+    "show", "blame", "annotate", "whatchanged", "format-patch",
+    "rev-list", "range-diff", "diff-tree", "diff-index", "diff-files",
     # ``status`` too (codex P2 r37 on #410; reproduced): when stat info
     # cannot settle a comparison — same size, racy mtime — git compares
     # CONTENT, which runs the clean filter and puts its stderr in the
@@ -262,11 +263,16 @@ _GIT_SIGNATURE_OPTS = ("--show-signature",)
 _GIT_ENCODING_OPT = "--encoding"
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
-_GIT_DIFF_CAPABLE = frozenset({
-    "diff", "show", "log", "whatchanged", "format-patch", "rev-list",
-    "blame", "annotate", "range-diff", "diff-tree", "diff-index",
-    "diff-files", "stash",
-})
+# ``log`` is the ONLY diff-capable subcommand this gate can accept: it
+# has an explicit, provable option surface (format placeholders, notes,
+# patch, path output, signature) that the rules below cover. Every other
+# member of the family prints FILE CONTENT or raw paths as its normal
+# output — blame/annotate echo the blamed lines, format-patch and
+# range-diff print patches, rev-list --objects prints paths,
+# diff-tree/index/files print paths (codex P2 r54 on #410; blame,
+# format-patch and rev-list reproduced with a tracked 0xff) — so they
+# join the refuse set rather than being pinned option-by-option.
+_GIT_DIFF_CAPABLE = frozenset({"log"})
 # Each driver is a LAST-ONE-WINS toggle, not a one-way switch
 # (codex P2 r29 on #410; verified: ``--no-ext-diff --ext-diff`` runs the
 # external helper, the reverse order does not), so the option region is
@@ -1790,6 +1796,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # only `log` stays acceptable in the diff family: the others print
+    # file content or raw paths as their normal output (blame,
+    # format-patch and rev-list reproduced with a tracked 0xff).
+    ("blame echoes file content, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "blame", "--no-ext-diff", "x"], text=True,'
+     ' encoding="utf-8")', True),
+    ("annotate is the same command",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "annotate", "x"], text=True,'
+     ' encoding="utf-8")', True),
+    ("format-patch prints patches",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "format-patch", "-1", "--stdout"],'
+     ' text=True, encoding="utf-8")', True),
+    ("rev-list --objects prints paths",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-list", "--objects", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("diff-tree prints paths too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff-tree", "-r", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("...while binary capture is untouched",
+     'subprocess.run(["git", "blame", "x"], capture_output=True)',
+     False),
     # without an explicit format the default output prints NOTES, which
     # git does not transcode (reproduced).
     ("default log output carries notes, so refuses",
