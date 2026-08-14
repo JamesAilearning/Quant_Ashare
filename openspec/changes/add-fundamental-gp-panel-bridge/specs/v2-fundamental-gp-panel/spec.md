@@ -35,11 +35,19 @@ not serving a genuinely available one.
   where the period is itself the winner — i.e. no LATER report period is already
   available; otherwise the existing winner keeps being served
 
-#### Scenario: a cell is NA only when nothing has become available yet
+#### Scenario: no served record means both value and evidence are NA
 - **WHEN** an instrument has no report period whose `available_from_trade_date`
   is on or before trade date `T`
-- **THEN** the panel value at `T` is NA — a filing being pending never blanks a
-  cell that an already-available period can still serve
+- **THEN** nothing is served at `T`: the panel value AND its evidence are both
+  NA — and a filing merely being pending never blanks a cell that an
+  already-available period can still serve
+
+#### Scenario: a served winner with a missing field is still NA
+- **WHEN** the winning available period simply has no value for the requested
+  field
+- **THEN** the panel value is NA while its evidence is that record's
+  availability date — an NA value is NOT evidence that nothing was served, and
+  it SHALL NOT be imputed
 
 #### Scenario: a late-arriving older period does not displace a newer one
 - **WHEN** an older report period becomes available AFTER a newer report period
@@ -76,8 +84,12 @@ SHALL expose availability as part of its public as-of response.
 
 Evidence records WHICH DISCLOSURE WAS SERVED, not whether its value is present:
 when a served record carries NA for the requested field, its availability date
-SHALL still be recorded. Evidence is NA only where NO record has been announced
-yet. Collapsing "served but the field is NA" into "no evidence" would also break
+SHALL still be recorded. Evidence is NA exactly where NO RECORD IS SERVED at
+that date — i.e. no period is yet AVAILABLE. "Announced" is the wrong test:
+availability starts strictly after the announcement, so on the announcement day
+itself a record exists and is announced yet nothing is served, and evidence must
+be NA there too — anything else would either invent future-dated evidence (which
+the check below rejects) or contradict the announcement-day rule. Collapsing "served but the field is NA" into "no evidence" would also break
 the shift diagnostic — a field NA in both periods would then move neither values
 nor evidence, and a correct announcement-aware builder would be refused.
 
