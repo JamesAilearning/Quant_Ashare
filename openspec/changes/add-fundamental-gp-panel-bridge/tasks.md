@@ -84,6 +84,11 @@
       未记录的外部/全局依赖去重建面板，"端到端晋升测试"要么用不了真 adapter、要么
       验的是另一份数据。这些输入进 run-bound 数据契约，并进其 load / hash / migration
       范围（hash 不覆盖 = 两份不同面板算同一个 run）。
+- [ ] **内容指纹，不只是配置值**（codex #427 r7 P1）：store / 日历 artifact 被
+      **就地刷新**时路径与身份都不变，只哈希扩展后的 `DataConfig` 仍会把两份不同面板
+      算作同一个 run。照 PIT 侧既有做法办 —— `promote._verify_pit_binding`
+      （`promote.py:259`）在挖掘时记内容指纹、晋升时按当前路径重算并拒绝漂移，且拒绝
+      指纹记录之前的老 run。财报 store 与日历要有等价的内容指纹与复核。
 - [ ] **生产物化边界:机器可执行的拒绝**（codex #427 r6 P1）：
       `src/data/mined_factor_handler.py:213` 的 `evaluate_expression(entry.expr,
       resolved_panel)` 只吃 `FactorMiningDataView` 的 qlib 面板、不带 period
@@ -93,6 +98,11 @@
       须把这条边界做成**机器可执行的 fail-loud 拒绝**：含基本面终端的池写入生产因子
       目录即拒绝，并在报错里点名"要先落地哪个后续 change"。**文档注记不算边界** ——
       拒绝必须可执行且有测试；同时测"纯量价池照旧放行"（非空性）。
+      **拒绝点必须落在写盘方**（codex #427 r7 P1）：`promote.py:394-403` 的
+      `survivor_pool.save(target_dir)` 就是往生产目录写的那一步，拒绝要在它**之前**
+      触发。只放在 `mined_factor_handler` 里太晚 —— 那时晋升**已经把基本面池写进
+      生产目录了**，拒绝要等到某次物化才响、甚至永远不响。handler 侧的检查可作为
+      纵深防御保留，但不能替代写盘方的拒绝。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
@@ -133,8 +143,9 @@
       `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
       调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
       provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
-      `miner.py` 的 `DataConfig`（补全重建面板所需输入 + hash/migration）与
-      `mined_factor_handler.py`（生产边界拒绝）**有**改动；
+      `miner.py` 的 `DataConfig`（补全重建面板所需输入 + 内容指纹 + hash/migration）、
+      `promote.py`（写盘前拒绝 + 财报侧内容指纹复核）与 `mined_factor_handler.py`
+      （纵深防御拒绝）**有**改动；
       `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过

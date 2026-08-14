@@ -119,7 +119,11 @@ adapter 与其调用方一并进 scope，并有端到端晋升测试。
 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 / `fields`，
 **没有财报 store 路径、日历身份、金融排除集、基本面模式** —— 而 `FinancialPITDataView`
 这三样在构造时就要。缺了就只能靠未记录的外部/全局依赖重建，等于"晋升裁决的数据没人
-能证明与挖掘时相同"。这些输入进 run-bound 契约，并进其 load / hash / migration 范围。
+能证明与挖掘时相同"。这些输入进 run-bound 契约，并进其 load / hash / migration 范围。**而且光记值不够**
+（codex #427 r7 P1）：store 或日历 artifact **就地刷新**时路径与身份都不变，只哈希配置
+仍会把两份不同面板算作同一个 run。PIT 侧早有对策 —— `promote._verify_pit_binding`
+挖掘时记内容指纹、晋升时按当前路径重算并拒绝漂移，且拒绝指纹记录之前的老 run；财报
+store 与日历要有**等价的内容指纹与复核**。
 
 **生产物化这条边界，本 change 选择"拒绝"而不是"接线"**（codex #427 r6 P1）：
 `mined_factor_handler.py:213` 的 `evaluate_expression(entry.expr, resolved_panel)`
@@ -127,6 +131,9 @@ adapter 与其调用方一并进 scope，并有端到端晋升测试。
 一把尺裁决、另一把尺出厂。接线该消费者属后续 change（它还牵涉 bundle 输入），本
 change 只把边界做成**机器可执行的 fail-loud 拒绝**（含基本面终端的池写入生产目录即
 拒绝并点名后续 change），并测"纯量价池照旧放行"。文档注记不算边界。
+**拒绝点落在写盘方**（codex #427 r7 P1）：`promote.py:394-403` 的
+`survivor_pool.save(target_dir)` 才是往生产目录写的那一步，拒绝必须在它**之前**触发；
+只放在 handler 里太晚 —— 那时基本面池**已经写进生产目录**了。handler 侧作纵深防御保留。
 
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
@@ -202,8 +209,8 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
     晋升入口带 provenance，使**做裁决的那条路径**用的也是同一把尺；
   - `src/factor_mining/miner.py` 的 `DataConfig` —— 补全重建基本面面板所需输入，
     并纳入 load / hash / migration；
-  - `src/data/mined_factor_handler.py` —— 生产物化边界的 fail-loud 拒绝（只加拒绝，
-    不接 provenance；接线属后续 change）；
+  - `src/data/mined_factor_handler.py` —— 纵深防御的 fail-loud 拒绝（只加拒绝，
+    不接 provenance；接线属后续 change；**主拒绝点在 `promote.py` 的写盘前**）；
   - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
     经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
 

@@ -241,6 +241,15 @@ The contract extension SHALL be covered by the same load / hash / migration
 handling as the fields already in it — a run hash that ignores the financial
 inputs would call two different panels the same run.
 
+Recording the VALUES is not enough: paths and identities survive an in-place
+refresh of the store or the calendar artifact unchanged, so a config-only hash
+still calls two different panels the same run. The change SHALL therefore
+record CONTENT fingerprints of the financial store and the calendar at mining
+time and re-verify them at promotion, refusing on drift — the same treatment
+the PIT inputs already get, and refusing likewise a fundamental run that
+predates fingerprint recording rather than promoting on unverifiable
+provenance.
+
 #### Scenario: promotion rebuilds the mined panel from the run alone
 - **WHEN** promotion loads a run and rebuilds its fundamental panel
 - **THEN** every input comes from the run's own persisted contract, with no
@@ -250,6 +259,17 @@ inputs would call two different panels the same run.
 - **WHEN** two runs differ only in a fundamental panel input (store, calendar,
   or exclusion set)
 - **THEN** their run hashes differ
+
+#### Scenario: an in-place refresh of the store is caught at promotion
+- **WHEN** the financial store or the calendar artifact is refreshed in place
+  between mining and promotion, leaving every recorded path and identity
+  unchanged
+- **THEN** promotion refuses — the re-verified content fingerprint no longer
+  matches the one recorded at mining time
+
+#### Scenario: a run with no recorded fingerprints is refused
+- **WHEN** a fundamental run predates fingerprint recording
+- **THEN** promotion refuses rather than proceeding on unverifiable provenance
 
 #### Scenario: a run missing the fundamental inputs fails loud
 - **WHEN** a fundamental run's contract lacks a required panel input
@@ -273,10 +293,18 @@ fundamental terminals into the production directory SHALL fail loud, naming the
 follow-up change that lifts the block. A note in a document is not a boundary —
 the refusal must be executable and tested.
 
-#### Scenario: a fundamental pool is refused at the production boundary
-- **WHEN** a pool containing fundamental terminals is written to the production
-  factor directory
-- **THEN** the write fails loud and names what must land first
+The refusal SHALL be enforced AT THE WRITER — the promotion path that saves the
+survivor pool into the production directory — BEFORE the write happens. Placing
+it only in the consumer is too late: promotion would still have written a
+fundamental pool into production, and the refusal would fire at some later
+materialization, if ever. A consumer-side check MAY remain as defense in depth,
+but it does not discharge this requirement.
+
+#### Scenario: a fundamental pool is refused before the production write
+- **WHEN** promotion is about to save a survivor pool containing fundamental
+  terminals into the production directory
+- **THEN** it fails loud BEFORE writing, names what must land first, and leaves
+  no fundamental pool in the production directory
 
 #### Scenario: a price-volume pool is unaffected
 - **WHEN** a pool contains no fundamental terminals
