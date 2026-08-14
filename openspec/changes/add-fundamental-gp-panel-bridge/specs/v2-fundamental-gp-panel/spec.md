@@ -370,9 +370,13 @@ swap this exists to close. The identity SHALL instead be either:
 
 - a digest computed by TRUSTED code (not the factory) over the factory's frozen
   implementation and its behaviour-affecting dependencies; or
-- the digest of the factory's deterministic PROVENANCE-BEARING OUTPUT — panel
-  values plus availability evidence — recomputed at promotion from the run's
-  recorded inputs and compared.
+- the digest of the factory's deterministic PROVENANCE-BEARING OUTPUT,
+  recomputed at promotion from the run's recorded inputs and compared. That
+  digest SHALL cover EVERY behaviour-affecting output — values, availability
+  evidence, AND the report-period provenance (current and prior). Omitting the
+  periods would let two factories agree on values and evidence yet return
+  different period frames, pass the identity check, and adjudicate the same
+  expressions under DIFFERENT terminal-level alignment masks.
 
 The output digest is the stronger of the two because it binds BEHAVIOUR rather
 than a claim about behaviour; where both are recorded, a mismatch in either
