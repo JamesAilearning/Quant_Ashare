@@ -216,6 +216,18 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** 页面 MUST 直接指明是该环境变量为空，MUST NOT 只留一条数据源为空的
   「元信息缺失」告警让操作人自己反推
 
+#### Scenario: 与本部署无关的取值不得被报成故障
+
+- **GIVEN** 现任是 ensemble，而 `QUANT_MODEL_PATH` 被设为空串
+- **AND** ensemble 模式下 CLI 与 `--ensemble-manifest` **互斥地拒绝**
+  `--model`，根本不读该默认值
+- **THEN** 页面 MUST NOT 因此报错——那是在生产实际运行的形态上报告一个
+  不可能发生的故障
+- **AND** 命令构造 MUST NOT 因该取值而拒绝渲染一条**根本不携带** `--model`
+  的命令
+- **AND** 单模型形态下同一取值 MUST 照常触发上述两者——判据是「该取值是否
+  进入这条命令」，不是「该取值本身好不好」
+
 #### Scenario: 没有 owner 可复用的默认值必须被机器锁住
 
 - **GIVEN** 某路径默认值在仓库中没有单一 owner 可复用

@@ -374,10 +374,41 @@ class HelpersRuntimeTests(unittest.TestCase):
 
     def test_the_page_names_an_empty_model_path_env_as_the_cause(self) -> None:
         # Otherwise the operator sees only "元信息缺失" with an empty
-        # backtick where the data source should be (r24).
+        # backtick where the data source should be (r24) — but ONLY under a
+        # single-model incumbent: in ensemble mode the CLI refuses `--model`
+        # outright (mutually exclusive with `--ensemble-manifest`) and never
+        # reads _DEFAULT_MODEL, so an empty override changes nothing and a
+        # red banner would report an impossible failure on the deployment
+        # production actually runs (codex #431 r25).
         page = _PAGE.read_text(encoding="utf-8")
-        self.assertIn("if not _model_path.strip():", page)
+        self.assertIn(
+            'if _incumbent.kind == "single" and not _model_path.strip():',
+            page)
         self.assertIn("`QUANT_MODEL_PATH` 被设为空值", page)
+        # the guard must sit AFTER the incumbent is resolved
+        self.assertLess(page.index("_incumbent = resolve_incumbent()"),
+                        page.index("`QUANT_MODEL_PATH` 被设为空值"))
+
+    def test_an_irrelevant_model_override_does_not_block_the_ensemble_command(
+            self) -> None:
+        # The same rule on the cockpit side: an empty QUANT_MODEL_PATH must
+        # not refuse a command that never carries `--model` (r25).
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        ens = IncumbentIdentity(
+            kind="ensemble", manifest_path="M.json",
+            members=({"fit_start": "2024-01-01", "fit_end": "2026-04-01"},))
+        cmd = morning_command(
+            ens, model_path="", provider_uri="P", delisted_registry="R",
+            name_source="N", bundle_max_age_days=14)
+        self.assertNotIn("无法生成可粘贴命令", cmd.title)
+        self.assertIn("--ensemble-manifest", cmd.command)
+        self.assertNotIn("--model", cmd.command)
+        # …while the single-model deployment, where it DOES matter, refuses
+        single = morning_command(
+            IncumbentIdentity(kind="single"), model_path="", provider_uri="P",
+            delisted_registry="R", name_source="N", bundle_max_age_days=14)
+        self.assertIn("无法生成可粘贴命令", single.title)
 
     def test_picks_shape_violation_raises_not_empty(self) -> None:
         # codex P2 on #330: missing/non-list picks is a corrupt artifact —

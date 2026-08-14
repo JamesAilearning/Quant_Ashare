@@ -241,10 +241,19 @@
 - [x] `config_forms.resolve_namechange_path` **不动**:它的消费者是 YAML 的
       `${VAR:-default}` 与 UI 作业写入,不是这个 CLI;归属别的模块与别的测试
 
+## W31 codex #431 r25（P2，属实；r24 的告警我加得太宽）
+- [x] 空 `QUANT_MODEL_PATH` 的告警**仅在单模型现任下**触发  ← C80 咬住
+      ensemble 模式下 CLI 与 `--ensemble-manifest` 互斥地拒绝 `--model`,
+      根本不读该默认值 —— 在生产实际运行的形态上报一个不可能发生的故障
+- [x] 守卫移到 `_incumbent` 解析之后(位置本身入钉)
+- [x] 同一规则在驾驶舱侧对拍:空 model_path **不得**拒绝一条根本不带
+      `--model` 的 ensemble 晨跑命令,而单模型下必须拒绝  ← C81 咬住
+      判据是「该取值是否进入这条命令」,不是「该取值本身好不好」
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C79(C57/C58/C68 随重构作废):75 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C81(C57/C58/C68 随重构作废):77 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
