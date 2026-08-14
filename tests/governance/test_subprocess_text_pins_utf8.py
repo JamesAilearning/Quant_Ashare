@@ -130,8 +130,14 @@ _NON_PYTHON_PROGRAMS = frozenset({"git"})
 # hook, so text-mode worktree calls fail closed — the repo's own
 # worktree calls are binary-mode and unaffected.
 _GIT_COMMIT_TEXT_FREE = frozenset({
-    "rev-parse", "ls-files", "ls-tree", "merge-base", "check-ignore",
+    "rev-parse", "ls-files", "ls-tree", "merge-base",
 })
+# ``check-ignore`` is ABSENT: its ``-v`` mode prints the matching
+# .gitignore PATTERN, which ``core.quotePath`` does not escape (codex
+# P2 r56 on #410, reproduced — the pathname was escaped, the pattern
+# byte was not). The command is unused here, so the surface is dropped
+# rather than pinned option-by-option; re-adding it means proving the
+# option set, not just the pattern case.
 # ``symbolic-ref`` is ABSENT: a ref name may carry non-UTF-8 bytes on a
 # POSIX checkout and git prints it verbatim, unquoted (codex P2 r44 on
 # #410, reproduced). ``rev-parse`` has the same exposure through its
@@ -1812,6 +1818,15 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # check-ignore -v prints the matching .gitignore PATTERN, which
+    # quotePath does not escape (reproduced).
+    ("check-ignore is refused in text mode",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "check-ignore", "-v", "x"], text=True, encoding="utf-8")', True),
+    ("...while binary capture is untouched",
+     'subprocess.run(["git", "check-ignore", "-v", "x"],'
+     " capture_output=True)", False),
     # NAMED formats carry no placeholder to inspect and print identity
     # fields git does not transcode (reproduced: --pretty=raw emits a
     # non-UTF-8 author name verbatim).
