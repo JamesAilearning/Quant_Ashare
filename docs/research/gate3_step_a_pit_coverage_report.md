@@ -1,9 +1,9 @@
 # Gate-3 Step-A · canonical as-of 覆盖率报告(全量 CSI300-ever 财报 PIT store)
 
 > 生成: `scripts/research/gate3_step_a_coverage_report.py`(fail-loud,可复现)。
-> Store: `D:\qlib_data\financial_pit_raw`;universe: CSI300-ever n=627;金融排除 n=120(stock_basic rows=5865 (L+D+P; P empty (recorded)))。
+> Store: `D:\qlib_data\financial_pit_raw`;universe: CSI300-ever n=949;金融排除 n=85(全市场金融分类器 n=120;stock_basic rows=5882 (L+D+P; P empty (recorded)))。
 > 口径: **view 实际服务值**(修正后 disclosure-of-record serve-rule 的 as-of 横截面),每年 4 个季度末快照取均值 —— 不是 ingest 行级非空率。
-> Coverage-floor 检查: PASS — enforced on EVERY 2019-2025 yearly mean AND the 2025-12-31 ex-financial member snapshot, incl. the adv∪contract coalesce floor 0.96 (docs/research/gate3_step_a_pit_coverage_report.md — floor = min(yearly mean as-of coverage, 2019-2025) - 0.02, ex-financial CSI300 members, quarterly snapshots, disclosure-of-record serve-rule)。
+> Coverage-floor 检查: PASS (universe=csi300) — enforced on EVERY 2019-2025 yearly mean AND the 2025-12-31 ex-financial member snapshot, incl. the adv∪contract coalesce floor 0.96 (docs/research/gate3_step_a_pit_coverage_report.md — floor = min(yearly mean as-of coverage, 2019-2025) - 0.02, ex-financial CSI300 members, quarterly snapshots, disclosure-of-record serve-rule)。
 
 ## 1. 逐字段 as-of 覆盖率(主表:各快照日 ex-金融 在册成员)
 
@@ -42,7 +42,9 @@
 | 2024 | 300 | 48 | 252 |
 | 2025 | 300 | 51 | 249 |
 
-## 3. rd_exp 季度末 as-of 细分(C2 窗口判定)
+## 3. rd_exp 季度末 as-of 细分(记录在案的数据事实)
+
+**注意口径**: 冻结勘误(`docs/prereg/quality_profitability.yaml` 决策⑤/①)把 C2/C3 定为 **OMIT 式**(单列研发不扣除)—— rd_exp **不是任何候选的输入**(原文:『OMIT 式下 rd_exp 不再是任何候选的输入』),已实现的冻结公式亦不读它。因此本节是**数据事实的记录**,不再是候选窗口的判据;窗口见 §6。
 
 | year | 03-31 | 06-30 | 09-30 | 12-31 |
 |---|---|---|---|---|
@@ -59,61 +61,71 @@
 
 | endpoint | instruments | missing files | both-version periods | differing fraction | n differ |
 |---|---|---|---|---|---|
-| income | 627 | 0 | 8761 | 0.2987% | 172 |
-| balancesheet | 626 | 1 | 17323 | 0.4178% | 540 |
-| cashflow | 627 | 0 | 9223 | 0.1084% | 10 |
+| income | 947 | 2 | 12843 | 0.3669% | 313 |
+| balancesheet | 946 | 3 | 26304 | 0.4250% | 857 |
+| cashflow | 944 | 5 | 13710 | 0.1313% | 18 |
 
-## 5. 附表:Gate-1 可比口径(CSI300-ever 含金融,分母=当期 anchor 有披露的名字)+ Δ vs Gate-1 pooled
+## 5. 附表:含金融的 anchor 分母口径(CSI300-ever 含金融,分母=当期 anchor 有披露的名字)
 
-anchor: income→revenue / balancesheet→total_assets / cashflow→n_cashflow_act(anchor 自身行恒 100%,仅作分母定义)。Gate-1 §4 是行级 pooled,本表是 as-of横截面 — Δ 为方向参考,预期 as-of ≤ pooled。
+anchor: income→revenue / balancesheet→total_assets / cashflow→n_cashflow_act(anchor 自身行恒 100%,仅作分母定义)。
+**Δ 列不适用**: 宇宙标签同为 csi300,但**基线的成员身份无法核验** —— Gate-1 测于 627 名的 CSI300-ever(本次成分文件解析出 949 名),而那份原始名单**未留存**,无指纹可比 —— issuer 集合无法证明相同,相减可能混入**成分差异**而非覆盖差异,故本表只列本宇宙的 as-of 值,不做 Δ 对比。(本次成员集指纹 `4c2439ef4c0ab5be…`;补录 Gate-1 名单的指纹后对比即自动恢复,规模相等**不**作为身份。)
 
-| field | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 | Δ vs Gate-1 (mean) |
-|---|---|---|---|---|---|---|---|---|---|
-| revenue *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | +0.0pp |
-| total_revenue | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | n/a |
-| oper_cost | 85.9% | 86.0% | 86.6% | 87.0% | 87.4% | 87.5% | 87.6% | 87.6% | -0.8pp |
-| sell_exp | 84.1% | 84.1% | 84.5% | 84.9% | 85.3% | 85.5% | 85.5% | 85.5% | -1.0pp |
-| admin_exp | 98.3% | 98.4% | 99.1% | 99.4% | 99.7% | 99.8% | 99.9% | 99.9% | -0.7pp |
-| rd_exp | 20.5% | 77.0% | 79.9% | 82.1% | 83.1% | 83.3% | 82.3% | 82.8% | -5.9pp |
-| int_exp | 11.5% | 15.6% | 16.7% | 16.7% | 17.2% | 17.9% | 18.1% | 18.1% | -0.4pp |
-| fin_exp | 85.7% | 85.7% | 86.4% | 86.9% | 87.4% | 87.5% | 87.6% | 87.6% | -0.9pp |
-| total_assets *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | +0.0pp |
-| total_hldr_eqy_inc_min_int | 99.0% | 98.8% | 99.1% | 99.4% | 99.7% | 99.8% | 100.0% | 100.0% | n/a |
-| total_hldr_eqy_exc_min_int | 99.8% | 99.8% | 99.9% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | n/a |
-| accounts_receiv | 84.0% | 83.7% | 86.1% | 86.6% | 87.1% | 87.3% | 87.5% | 87.7% | n/a |
-| inventories | 84.5% | 84.2% | 84.7% | 85.4% | 85.9% | 85.6% | 85.9% | 86.1% | n/a |
-| prepayment | 85.4% | 85.4% | 86.1% | 86.7% | 87.3% | 87.4% | 87.6% | 87.7% | n/a |
-| accounts_pay | 85.7% | 85.8% | 86.8% | 87.0% | 85.9% | 86.8% | 87.2% | 86.1% | n/a |
-| adv_receipts | 82.5% | 78.1% | 45.9% | 33.0% | 35.4% | 37.7% | 40.5% | 43.3% | +0.8pp |
-| contract_liab | 4.9% | 14.1% | 62.2% | 89.3% | 90.1% | 91.7% | 92.8% | 91.9% | -3.9pp |
-| n_cashflow_act *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | n/a |
+| field | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 |
+|---|---|---|---|---|---|---|---|---|
+| revenue *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
+| total_revenue | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
+| oper_cost | 90.3% | 90.3% | 90.6% | 91.1% | 91.3% | 91.3% | 91.4% | 91.4% |
+| sell_exp | 87.9% | 87.6% | 87.8% | 88.5% | 88.7% | 88.8% | 88.7% | 88.7% |
+| admin_exp | 98.6% | 98.6% | 99.0% | 99.4% | 99.6% | 99.6% | 99.7% | 99.8% |
+| rd_exp | 19.1% | 74.0% | 76.9% | 79.8% | 81.0% | 81.7% | 81.3% | 81.9% |
+| int_exp | 8.7% | 11.7% | 12.5% | 12.6% | 13.1% | 13.7% | 13.8% | 13.7% |
+| fin_exp | 90.2% | 90.1% | 90.5% | 91.0% | 91.4% | 91.4% | 91.5% | 91.5% |
+| total_assets *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
+| total_hldr_eqy_inc_min_int | 98.8% | 98.7% | 98.9% | 99.3% | 99.6% | 99.6% | 99.7% | 99.7% |
+| total_hldr_eqy_exc_min_int | 99.8% | 99.9% | 99.9% | 100.0% | 100.0% | 99.9% | 99.9% | 99.9% |
+| accounts_receiv | 88.6% | 88.3% | 90.2% | 90.7% | 91.1% | 91.1% | 91.2% | 91.3% |
+| inventories | 88.4% | 88.2% | 88.7% | 89.5% | 89.9% | 89.7% | 90.0% | 90.1% |
+| prepayment | 89.4% | 89.4% | 89.9% | 90.6% | 91.0% | 91.1% | 91.3% | 91.1% |
+| accounts_pay | 88.9% | 89.0% | 89.8% | 90.2% | 89.3% | 89.8% | 90.2% | 89.2% |
+| adv_receipts | 87.0% | 83.0% | 50.4% | 38.7% | 41.4% | 43.7% | 45.9% | 48.3% |
+| contract_liab | 4.0% | 12.0% | 60.5% | 88.6% | 89.8% | 90.9% | 91.8% | 91.1% |
+| n_cashflow_act *(anchor)* | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% |
 
 ## 6. 候选最早可靠可用期(规则化推导)
 
 规则: 候选的年度可用性 = 其全部输入字段该年均值的最小值(C3 的 adv_receipts/contract_liab 以 coalesce 计);最早可靠年 = 自该年起所有已测年份都 ≥ 85.0% 的最早年份。
 
+输入字段(取自冻结公式,由治理测试钉住):
+
+- `C1 GPA`: `oper_cost`, `revenue`, `total_assets`
+- `C2 PROF`: `admin_exp`, `fin_exp`, `oper_cost`, `revenue`, `sell_exp`, `total_hldr_eqy_inc_min_int`
+- `C3 cash-OP`: `accounts_pay`, `accounts_receiv`, `admin_exp`, `adv_receipts`, `contract_liab`, `inventories`, `oper_cost`, `prepayment`, `revenue`, `sell_exp`, `total_assets`
+
 | candidate | 2018 | 2019 | 2020 | 2021 | 2022 | 2023 | 2024 | 2025 | earliest reliable |
 |---|---|---|---|---|---|---|---|---|---|
 | C1 GPA | 99.6% | 99.6% | 99.3% | 99.5% | 99.6% | 99.6% | 99.6% | 99.8% | **2018** |
-| C2 PROF | 27.3% | 92.3% | 93.7% | 96.7% | 97.8% | 98.4% | 97.1% | 97.8% | **2019** |
-| C3 cash-OP | 27.3% | 92.3% | 93.7% | 96.7% | 97.4% | 98.4% | 97.1% | 97.7% | **2019** |
+| C2 PROF | 98.5% | 98.4% | 98.0% | 98.5% | 98.3% | 98.4% | 98.1% | 98.3% | **2018** |
+| C3 cash-OP | 96.5% | 96.5% | 97.2% | 97.5% | 97.4% | 98.4% | 98.1% | 97.7% | **2018** |
 
-注: C3 需两期(Δ应计)→ 有效首个横截面比起始年再晚一个报告期;C2 缺 rd_exp 的处理(不可算 vs 视 0)按 charter 仍须在 Gate-3 预注册中显式冻结。
+注: C3 需两期(Δ应计)→ 有效首个横截面比起始年再晚一个报告期。输入字段取自**冻结公式**(OMIT 式:rd_exp 与 n_cashflow_act 均非候选输入),由治理测试钉住与 `gate4a_ic_evaluator` 的 C1/C2/C3_FIELDS 逐字段相等 —— 用公式不读的字段推出来的窗口,是另一个因子的窗口。
 
-## 7. 偏离 Gate-1 memo 的意外(如实记录)
+**本表只回答『数据何时够用』,不回答『实验何时可以开始』**: 主检验窗口由冻结勘误②统一定为 **2019 起**(理由是会计口径 regime 一致性 —— 2018 前多数名 admin_exp 内含研发,属混合 regime),与本表推出的数据可用年**各自独立**。本表出现 2018 不构成从 2018 起跑的依据。
 
-1. **提供方歧义重复(已消歧)→ 现存 1 个 ingest hole**(§8 名单)。原 27 hole 的主因 —— 同一 `(ts_code, end_date, update_flag)` 两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec `fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,如 000627.SZ 天茂同日双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖(诚实方向)。
-2. **rd_exp 的 2018 年 as-of 断崖**: 行级 pooled 显示 2018=55%,但 as-of 横截面 2018 H1 仅 0.4%、Q3 18.4%、Q4 89.8% —— 单列研发费用自 2018 Q3 报告才开始批量披露。**C2 最早可靠期 = 2019**(Gate-1 的『2018 早窗弱』在 as-of 口径下更硬)。2019+ 无季报缺失效应(§3)。
-3. **int_exp as-of 覆盖(7.3%-8.9%)显著低于 pooled(13-18%)** —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项定为 fin_exp(as-of 99.2%-99.8%)。
-4. **全宇宙重述残差非零但极小**(§4: income 0.30% / balancesheet 0.42% / cashflow 0.11%,含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为诚信包络的已量化界。
-5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。
-6. **金融排除规模**: 行业名单法(stock_basic)在 CSI300-ever 上排除 120 名,逐年在册金融 46-61 名(§2)—— 高于早前 ~35-42 的粗估,以本表为准。
+## 7. CSI300-ever as-of 口径要点(如实记录;Gate-1 基线的成员名单未留存、身份无法核验,故本节不与之对比 —— 见 §5)
 
-## 8. ingest holes(缺 store 文件的名字 — 显式列出,绝不静默)
+1. **提供方歧义重复(已消歧)+ 现存 10 个缺失 store 文件**(§8 名单)。原 27 hole 的主因 —— 同一 `(ts_code, end_date, update_flag)` 两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec `fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,record = 最早披露。**但缺文件的成因本报告一律不定性** —— 它只观测到'store 里没有这个 parquet',而多种互斥成因留下的观测量完全相同:ingest 对真歧义 fail-loud 拒写、提供方返回空数据(ingest 视为成功且不写文件)、以及ingest 未跑完/中断/被裁剪/该名字根本没抓过。定性须查该次 ingest 的 manifest / hole 计数 / 日志,本表做不到;详见 §8。
+2. **rd_exp 的 2018 年 as-of 断崖(已记录,但不再驱动任何窗口)**: as-of 横截面 2018 H1 仅 0.4%、Q3 18.4%、Q4 89.8% —— 单列研发费用自 2018 Q3 报告才开始批量披露。**但冻结勘误的 OMIT 式下 rd_exp 不是任何候选的输入**,因此这条断崖既不能推迟也不能否决 C2/C3 的可用窗口;各候选窗口一律由 §6 按冻结公式的输入字段推出。主检验窗口统一 2019 起的理由在勘误②(会计口径 regime 一致性),不是 rd_exp 覆盖率。
+3. **int_exp as-of 覆盖 7.3%-8.9%**(年报为主的稀疏科目) —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项定为 fin_exp(as-of 99.2%-99.8%)。
+4. **全宇宙重述残差非零但极小**(§4: income 0.37% / balancesheet 0.43% / cashflow 0.13%,含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为诚信包络的已量化界。
+5. **金融排除规模**: 行业名单法(stock_basic)在 CSI300-ever 上排除 85 名(全市场金融分类器 120 名,与本宇宙成分求交后为前者),逐年在册金融 46-61 名(§2)—— 以本表为准。
 
-缺文件 = ingest 对该 instrument/endpoint fail-loud 后留下的 hole(如提供方同一 logical key 双内容的歧义重复)。这些名字在覆盖率分母中**保留并计为未覆盖**(诚实方向:压低而非抬高覆盖率)。
+## 8. 缺失的 store 文件(显式列出,绝不静默)
 
-- **income**: 0 missing — (none)
-- **balancesheet**: 1 missing — 000627.SZ
-- **cashflow**: 0 missing — (none)
+缺文件 = 该 (instrument, endpoint) 在 store 中没有 parquet。**本表只报告这个观测事实,不对成因定性** —— 多种互斥成因留下的痕迹完全相同:①ingest 对真歧义 fail-loud 拒写;②提供方返回空数据,ingest 视为成功、不写文件;③ingest 未跑完/中断/store 被裁剪/该名字根本没抓过。要定性,查该次 ingest 的 manifest / hole 计数 / 日志,而非本表。
+
+**与覆盖率分母的关系**:覆盖率主表分母 = 各快照日**在册 ex-金融**成员,而本表覆盖整个 CSI300-ever 宇宙。因此只有**非金融且当日在册**的缺失名字才真正压低所报覆盖率(诚实方向:压低而非抬高);金融名字与当日不在册的名字根本不进分母,列出它们是为审计完整性,不影响覆盖率数字。本次 6 个缺失 instrument 中金融 0 个。
+
+- **income**: 2 missing — 600631.SH, 990018.SH
+- **balancesheet**: 3 missing — 000627.SZ, 600631.SH, 990018.SH
+- **cashflow**: 5 missing — 000618.SZ, 000763.SZ, 000817.SZ, 600631.SH, 990018.SH
 
