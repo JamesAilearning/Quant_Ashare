@@ -7,7 +7,7 @@ pv001，加进完整策略后边际贡献为负，被纪律拦截）。战场转
 
 勘察（2026-08-13）确认地基已就位：财报 PIT 层（版本保留 store + PIT 契约 +
 `FinancialPITDataView`）已投产，CSI800 财报已 ingest（627→2142 issuers），覆盖率
-经实测不劣于 CSI300（19 个字段 14 个 floor 更严）。
+经实测不劣于 CSI300（19 项里 16 项 floor 更严或持平，仅 3 项更松且均为已知弱字段）。
 
 **唯一缺的是把 as-of 财务值变成 GP 能吃的 date×instrument 面板的那一步 —— 它今天
 不存在，也没有任何机器检查守它。**
@@ -72,7 +72,17 @@ view 的契约明确：**各 endpoint 独立服务**，消费者须用 `include_
 者都要：GP/A 跨 income×balancesheet（比率必须同期），资产增长与 C3 应计要相邻期差分。
 
 若面板只堆当前值（初版契约），最小链路会**静默算出混季比率**，或根本算不出差分。
-因此面板契约扩展为携带这两种 provenance，并在跨端点组合处做对齐检查。
+因此面板契约扩展为携带这两种 provenance。
+
+**但同期强制不能放在面板层**（codex #427 r2 P1）：桥在表达式产生之前运行，evaluator
+又把每个终端各自解析为值帧，所以桥无从知道候选是否跨端点 —— 全局遮蔽会误杀合法的
+同端点表达式，不遮蔽则混季比率仍可达。强制点因此放在**求值路径**（按该表达式实际
+引用的终端判断），这使 `evaluator.py` 进入 scope。
+
+**另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
+（`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
+两者**零交集**（repo 已有 `test_namespace_mismatch_refuses` 记录）。面板必须冻结为与
+GP 输入同一命名空间，并以**逐列精确比对**的测试守住。
 
 ### 2. 四件套泄漏防线（与桥同一个 change 落地）
 
@@ -84,21 +94,24 @@ view 的契约明确：**各 endpoint 独立服务**，消费者须用 `include_
   的**：一个由 forward return 派生、却带着满足 `available_from <= T` 的**看似合法证据**
   的值，可用性断言无法与真实财报值区分；让 fixture 省略证据，测到的只是"拒绝无证据
   输入"，而同样的语义泄漏只要抄一份元数据就能存活。金丝雀必须腐蚀 builder **能真正
-  观察到**的不变量，因此改为三个：
-  ① **提前公告**：`ann_date > T` 的记录被服务于 T —— 违反 `available_from <= T`，
-     可直接观察；
-  ② **证据-值不同源**：某 cell 的值取自报告期 P₂ 而证据取自 P₁ —— builder 用**同一
-     次 `as_of` 调用**同时取值与 provenance（而非分别取再拼），因此值与证据必然同源，
-     该金丝雀只能由"绕过唯一门自行拼装"产生，测的正是这条禁止路径；
-  ③ **可用日单调性**：同一 instrument 的证据序列必须随交易日**非递减**（carry-forward
-     只会前进到更新的已公告期）—— 未来信息回填会打破单调性，这是纯结构不变量，无需
+  **计算出**的不变量，因此定为两个：
+  ① **提前公告**：证据 > 交易日 —— 直接违反 `available_from <= T`，可计算；
+  ② **可用日单调性**：同一 instrument 的证据序列必须随交易日**非递减**（carry-forward
+     只会前进到更新的已公告期）—— 未来信息回填会打破单调性，纯结构不变量，无需
      知道值的语义即可判定。
+  **显式排除**"证据-值不同源"金丝雀（codex #427 r2 P1）：初次修订曾把它列为第三条，
+  但 builder 没有独立的记录身份可用来识破"P₂ 的值贴着 P₁ 的 provenance"这个谎；若
+  唯一路径被完全绕过，builder 更是根本不运行。值与 provenance 的对应性是 **view 的
+  不变量**，由 canonical PIT battery 守，不在面板层重述 —— 否则那条测试只是在验证
+  自己的 mock。
   **任何金丝雀存活到 factor_pool 准入 = 红。**
 * **(iii) 公告日平移敏感性（最锋利的一把刀；断言按 codex #427 P2 分层）** — 把店内有效
   公告日整体后移 N∈{5,10,21} 交易日重建面板：
-  - **无条件断言**：面板内容哈希必须改变。**不变 ⇒ 面板化根本没消费公告日（极可能按
-    `end_date` 键入）= 泄漏在别处，直接 REFUSE。** 这条不可绕过 —— 它从**行为**上验证
-    公告日真被消费，而非验证代码"看起来"用了它。
+  - **无条件断言**：**值 + 证据一起**的哈希必须改变。**不变 ⇒ 面板化根本没消费公告日
+    （极可能按 `end_date` 键入）= 泄漏在别处，直接 REFUSE。** 这条不可绕过 —— 它从
+    **行为**上验证公告日真被消费，而非验证代码"看起来"用了它。只哈希值会误拒合法实现
+    （codex #427 r2 P2）：延迟的申报可能重复上期同值、或该字段两期皆 NA，值不变而
+    provenance 已变；把证据纳入哈希既保住无条件性，又不制造假失败。
   - **条件断言**：IC 序列的变化只在**刻意构造的确定性 fixture** 上要求（该 fixture 保
     证平移会改变被评估日的取值或横截面 rank），并明确容差。理由：一个**正确的**
     公告日感知实现也可能只改字节不改 IC —— 平移后的披露仍落在采样评估日之间、rank
@@ -125,12 +138,14 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
 
 * 新增：`src/research/fundamental_panel.py`（桥）、其测试、金丝雀测试、平移敏感性
   诊断脚本（`scripts/research/`）。
-* **修改**（初版误称零改动，codex #427 P1 更正）：
-  - `src/factor_mining/grammar.py` —— 注册基本面终端组 + 其类型/taint 规则（不引入
-    任何 qlib/PIT import，D5 不受影响）；
+* **修改**（初版误称零改动，codex #427 两轮更正）：
+  - `src/factor_mining/grammar.py` —— 注册基本面终端组 + 其类型/taint 规则；
+  - `src/factor_mining/evaluator.py` —— 跨端点同期强制（见 §1b：必须在**知道表达式**
+    的地方做，面板层做不到）；
   - `src/research/financial_pit_view.py` —— 增加公开的 provenance 响应，使
     `available_from_trade_date` 由唯一门给出而非被桥反推。
-* **仍然零改动**：`src/factor_mining/` 的 pit_adapter / gp_engine / evaluator、
+  三处均不引入任何 qlib/PIT import，D5 不受影响。
+* **仍然零改动**：`src/factor_mining/` 的 pit_adapter / gp_engine、
   `src/data/pit/*`、canonical runtime。
 * **零 gate 改签**：D5 gate 与财务 PIT 隔离 gate 均保持原样并继续通过。
 * 新 spec capability `v2-fundamental-gp-panel`：面板化的 PIT 契约 + 防线要求。

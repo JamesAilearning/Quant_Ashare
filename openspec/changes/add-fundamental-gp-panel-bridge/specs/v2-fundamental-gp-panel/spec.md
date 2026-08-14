@@ -60,27 +60,60 @@ an unverifiable panel is indistinguishable from a leaking one.
 - **WHEN** any non-NA cell's recorded `available_from` exceeds its trade date
 - **THEN** the builder raises — never silently drops or repairs the cell
 
-### Requirement: Cross-endpoint and cross-period alignment SHALL be carried as provenance
+### Requirement: Cross-endpoint period alignment SHALL be enforced where the expression is known
 
 The panel SHALL carry, per served field, the report period its value came from,
 and — for fields a factor differences across adjacent periods — the prior
-period's value with its own period and availability provenance. Any factor
-combining fields SERVED FROM DIFFERENT ENDPOINTS SHALL be computed only where
-those fields resolve to the SAME report period; a mismatched cross-section SHALL
-yield NA rather than a mixed-quarter ratio.
+period's value with its own period and availability provenance.
 
-Endpoints are served independently by the view, so without this provenance a
-ratio across income and balance-sheet fields can silently combine different
-quarters, and a difference across adjacent periods cannot be formed at all.
+Enforcement of same-period combination SHALL happen at an EXPRESSION-AWARE
+point, not in the panel builder. The builder runs before any expression exists
+and each terminal resolves to its own value frame, so the builder cannot tell
+whether a candidate combines endpoints: masking globally would discard valid
+same-endpoint expressions, and masking not at all leaves mixed-quarter ratios
+reachable. The evaluation path SHALL therefore, for the terminals a given
+expression actually references, require a common report period per
+`(trade_date, instrument)` when those terminals span endpoints, yielding NA for
+that cell otherwise. Same-endpoint expressions are unaffected.
 
-#### Scenario: a mixed-quarter ratio is refused
-- **WHEN** two fields of a ratio resolve to different report periods on a trade date
-- **THEN** that instrument's value for that factor is NA on that date
+Endpoints are served independently by the view, so without this a ratio across
+income and balance-sheet fields silently combines different quarters.
+
+#### Scenario: a mixed-quarter cross-endpoint expression yields NA
+- **WHEN** an expression references terminals from different endpoints that
+  resolve to different report periods for an instrument on a trade date
+- **THEN** that cell evaluates to NA rather than a mixed-quarter value
+
+#### Scenario: a same-endpoint expression is not masked
+- **WHEN** an expression references terminals from a single endpoint
+- **THEN** no cross-endpoint alignment masking is applied to it
 
 #### Scenario: an adjacent-period difference has its own provenance
 - **WHEN** a factor differences a field across adjacent report periods
 - **THEN** the prior period's value carries its own period and availability
   evidence, and the difference is NA when the adjacent period is absent
+
+### Requirement: The panel SHALL emit one frozen instrument namespace aligned with the GP inputs
+
+The panel's instrument labels SHALL be emitted in the SAME namespace as the GP
+panel and forward-return frames it is joined against. The view normalizes
+instruments to the store's native `ts_code` form (`600000.SH`) while the
+factor-mining panels carry qlib labels (`SH600000`); the two do not intersect,
+and the repository already treats such a mix as a hard error. A bridge that
+emits the view's namespace unchanged therefore produces a panel that silently
+fails to join.
+
+The chosen namespace SHALL be asserted by a test comparing the panel's columns
+against the forward-return frame's, exactly — not merely for non-empty overlap.
+
+#### Scenario: panel columns match the forward-return columns exactly
+- **WHEN** a fundamental panel is built for a universe
+- **THEN** its instrument labels equal the forward-return frame's labels
+
+#### Scenario: an unconverted namespace is caught by the alignment test
+- **WHEN** the panel is emitted in the view's `ts_code` namespace
+- **THEN** the alignment test fails rather than the mismatch surfacing later as
+  an empty join
 
 ### Requirement: Fundamental terminals SHALL be registered before generation
 
@@ -105,19 +138,25 @@ intact.
 
 ### Requirement: Leakage canaries SHALL corrupt invariants the builder can observe
 
-Canaries SHALL each corrupt an invariant the builder can actually observe. A
-canary that merely OMITS evidence tests only the rejection of evidence-less
-input: a value derived from the forward return but carrying copied, plausible
-evidence satisfying `available_from <= trade_date` is indistinguishable from a
-legitimate filing value by the availability assertion alone, so that canary
-would pass while the same semantic leak survives. The guarded invariants are:
+Canaries SHALL each corrupt an invariant the builder can COMPUTE from its own
+inputs. Two classes of candidate canary are explicitly excluded because the
+builder cannot decide them, and a test asserting them would only be validating
+its own mock:
 
-* **early announcement** — a record served on a trade date before its
-  announcement, violating `available_from <= trade_date`;
-* **evidence/value from different sources** — a cell whose value comes from one
-  report period while its provenance comes from another; since value and
-  provenance SHALL come from a single view response, this can only arise by
-  bypassing that path, which is what this canary catches;
+* one that merely OMITS evidence — a forward-return-derived value carrying
+  copied, plausible evidence satisfying `available_from <= trade_date` is
+  indistinguishable from a real filing by the availability assertion, so such a
+  canary passes while the same semantic leak survives;
+* one that mislabels a value with ANOTHER period's provenance — with no
+  independent record identity the builder cannot detect the lie, and if the
+  single-response path is bypassed the builder never runs at all. Value-to-
+  provenance correspondence is an invariant OF THE VIEW, guarded by the
+  canonical PIT battery, and SHALL NOT be restated as a panel-level canary.
+
+The guarded invariants are those the builder can decide:
+
+* **early announcement** — a cell whose evidence exceeds its trade date,
+  violating `available_from <= trade_date`;
 * **non-monotone availability** — an instrument whose evidence series decreases
   across trade dates; as-of carry-forward only advances to newer announced
   periods, so a decrease is a structural signature of back-filled information,
@@ -130,22 +169,29 @@ guarding test suite.
 - **WHEN** a store record is served on a date before its announcement
 - **THEN** panel construction raises
 
-#### Scenario: value and provenance from different periods is refused
-- **WHEN** a cell's value and its availability evidence originate in different
-  report periods
-- **THEN** panel construction raises
-
 #### Scenario: back-filled information breaks availability monotonicity
 - **WHEN** an instrument's availability evidence decreases from one trade date to
   the next
 - **THEN** panel construction raises
 
+#### Scenario: value-to-provenance correspondence is left to the view's battery
+- **WHEN** the panel-level canary suite is defined
+- **THEN** it does not include a mislabelled-provenance canary, which the
+  builder cannot decide
+
 ### Requirement: The panel SHALL demonstrably consume the announcement date
 
 A shift-sensitivity diagnostic SHALL rebuild the panel with every effective
 announcement date shifted later by `N` trading days and compare against the
-baseline. The PANEL CONTENT SHALL change — unconditionally, on any store whose
-shifted disclosures fall within the measured window.
+baseline. The hash compared SHALL cover the PROVENANCE-BEARING output — values
+AND their availability evidence together — and SHALL change unconditionally on
+any store whose shifted disclosures fall within the measured window.
+
+Hashing values alone would refuse a correct builder: a delayed filing that
+repeats the preceding period's value for the requested field, or whose field is
+NA in both periods, leaves the value panel identical while its availability
+provenance moves. Including the evidence in the hash keeps the assertion
+unconditional without that false failure.
 
 An unchanged panel under a shifted announcement date SHALL be treated as proof
 that the builder does not consume the announcement date at all (e.g. it keys on
@@ -163,11 +209,16 @@ refuse valid implementations.
 #### Scenario: shifting announcements changes the panel
 - **WHEN** the panel is rebuilt with effective announcement dates shifted by
   `N` trading days
-- **THEN** the panel content hash differs from the baseline
+- **THEN** the hash of the values-plus-evidence output differs from the baseline
 
 #### Scenario: an announcement-insensitive builder is refused
-- **WHEN** a shifted rebuild produces a byte-identical panel
+- **WHEN** a shifted rebuild produces identical values AND identical evidence
 - **THEN** the diagnostic REFUSES, reporting that the announcement date is unused
+
+#### Scenario: an unchanged value with moved evidence is not a failure
+- **WHEN** a delayed filing repeats the previous period's value (or the field is
+  NA in both), leaving values identical while the evidence moves
+- **THEN** the hash still differs and the diagnostic does not refuse
 
 #### Scenario: IC movement is asserted on a fixture built to move it
 - **WHEN** the shift is applied to the deterministic fixture whose evaluated
