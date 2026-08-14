@@ -202,7 +202,20 @@ _GIT_RAW_PATH_LETTER = "z"
 # opaque one refuses, since its value cannot be read (codex P2 r43 on
 # #410).
 _GIT_FORMAT_OPTS = ("--format", "--pretty")
-_GIT_RAW_BYTE_ESCAPE = "%x"
+# ``%x`` writes a literal byte; ``%N`` writes the commit NOTE body,
+# which git does NOT transcode (codex P2 r45 on #410, reproduced), so a
+# note holding foreign bytes reaches the parent verbatim.
+# Case matters: ``%N`` is the note body, ``%n`` is a newline — folding
+# case would refuse every ordinary multi-line format.
+_GIT_RAW_BYTE_ESCAPE_CI = "%x"      # %xFF: a literal byte
+_GIT_RAW_BYTE_ESCAPE_CS = "%N"      # the untranscoded note body
+# Options that make log/show print FILE PATHS. Paths are escaped only
+# while ``core.quotePath`` is on (reproduced with both settings), so
+# these carry the same quoting requirement as ls-files (codex P2 r45).
+_GIT_PATH_OUTPUT_OPTS = frozenset({
+    "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
+    "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
+})
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
 _GIT_DIFF_CAPABLE = frozenset({
@@ -747,8 +760,9 @@ def _git_output_safe(call: ast.Call) -> bool:
                 value = tail[pos + 1] if pos + 1 < len(tail) else None
                 if value is None:
                     return False  # missing or opaque format value
-            if _GIT_RAW_BYTE_ESCAPE in value.lower():
-                return False  # %xNN writes raw bytes
+            if (_GIT_RAW_BYTE_ESCAPE_CI in value.lower()
+                    or _GIT_RAW_BYTE_ESCAPE_CS in value):
+                return False  # %xNN / %N write untranscoded bytes
         if not hooks_off:
             # A hook writes arbitrary bytes into the captured streams;
             # ``core.hooksPath`` aimed at a non-directory is the one
@@ -768,7 +782,17 @@ def _git_output_safe(call: ast.Call) -> bool:
                 if (later.startswith("-")
                         and later.split("=")[0] not in _GIT_REVPARSE_SAFE_OPTS):
                     return False  # name/path-printing option
-        if el in _GIT_PATH_PRODUCING:
+        prints_paths = el in _GIT_PATH_PRODUCING
+        if not prints_paths:
+            # log/show print paths only when asked to (codex P2 r45);
+            # when they are, the quoting rule applies to them too.
+            for later in argv[i + 1:]:
+                if later in ("--", "--end-of-options"):
+                    break
+                if later is not None and later in _GIT_PATH_OUTPUT_OPTS:
+                    prints_paths = True
+                    break
+        if prints_paths:
             if not quotepath_on:
                 return False  # unquoted paths can be any bytes
             for later in argv[i + 1:]:
@@ -1792,6 +1816,28 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # %N prints the commit NOTE body untranscoded (reproduced), while
+    # %n is just a newline — the check is case-sensitive there.
+    ("a %N note placeholder is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%N", "-1"], text=True, encoding="utf-8")', True),
+    ("a %n newline stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H%n%cI", "-1"], text=True, encoding="utf-8")', False),
+    # log/show print PATHS when asked to, and paths are escaped only
+    # while core.quotePath is on (reproduced with both settings).
+    ("log --name-only without the quoting pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
+    ("...and accepted with it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--name-only", "-1"], text=True, encoding="utf-8")', False),
+    ("--stat counts as path output too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "show", "--no-ext-diff", "--no-textconv",'
+     ' "--stat", "HEAD"], text=True, encoding="utf-8")', True),
+    ("--raw as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--raw", "-1"], text=True, encoding="utf-8")', True),
     # rev-parse's name/path-printing options emit raw bytes, and
     # symbolic-ref prints a ref name verbatim (both reproduced).
     ("rev-parse --show-toplevel is refused",
