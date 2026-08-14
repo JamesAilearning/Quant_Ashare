@@ -1007,6 +1007,71 @@ class BundleFreshnessTests(unittest.TestCase):
                       block)
         self.assertNotIn("tail_date=_summary.tail_date", block)
 
+    def test_integrity_gate_matches_the_recommenders_three_rules(self) -> None:
+        # codex #431 r6: summarise_bundle_health SWALLOWS a bad stamp
+        # (training_guards: "the UI banner must not crash on a bad stamp") and
+        # falls back to validation.json/manifest.json, so a bundle whose
+        # _fetch_integrity.json is MISSING or CORRUPT can come back with no
+        # warnings at all — while _assert_bundle_fetch_complete refuses both.
+        # Drive the recommender's own reader with synthetic stamps.
+        import tempfile
+
+        from src.data.pit.bundle_integrity import INTEGRITY_FILENAME
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            recommender_integrity_check,
+        )
+
+        def stamp(body: str | None) -> Path:
+            root = Path(tempfile.mkdtemp())
+            if body is not None:
+                (root / INTEGRITY_FILENAME).write_text(body, encoding="utf-8")
+            return root
+
+        clean = json.dumps({
+            "schema_version": 1, "built_from_holey_fetch": False,
+            "built_at": "2026-08-03T00:00:00+00:00", "holes": []})
+        holey = json.dumps({
+            "schema_version": 1, "built_from_holey_fetch": True,
+            "built_at": "2026-08-03T00:00:00+00:00", "holes": []})
+
+        # 1. corrupt → refused REGARDLESS of the override
+        for override in (False, True):
+            with self.subTest(case="corrupt", allow_holey=override):
+                got = recommender_integrity_check(
+                    str(stamp("{ not json")), allow_holey=override)
+                self.assertTrue(got.known)
+                self.assertFalse(got.accepted, "损坏 stamp 无条件拒绝")
+        # 2. missing → refused unless the operator overrides
+        with self.subTest(case="missing"):
+            self.assertFalse(recommender_integrity_check(str(stamp(None))).accepted)
+            self.assertTrue(recommender_integrity_check(
+                str(stamp(None)), allow_holey=True).accepted)
+        # 3. holey → same
+        with self.subTest(case="holey"):
+            self.assertFalse(recommender_integrity_check(str(stamp(holey))).accepted)
+            self.assertTrue(recommender_integrity_check(
+                str(stamp(holey)), allow_holey=True).accepted)
+        # 4. clean → accepted
+        with self.subTest(case="clean"):
+            self.assertTrue(recommender_integrity_check(str(stamp(clean))).accepted)
+
+    def test_a_refused_stamp_is_never_usable_however_fresh(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
+        for accepted in (False, None):
+            with self.subTest(integrity_accepted=accepted):
+                fresh = bundle_freshness(
+                    today=date(2026, 8, 14), tail_date="2026-08-13",
+                    provider_uri="X", max_age_days=14,
+                    integrity_accepted=accepted,
+                    integrity_reason="stamp 问题")
+                self.assertTrue(fresh.age_ok, "年龄仍然是过的")
+                self.assertFalse(fresh.usable)
+
+    def test_the_page_evaluates_integrity_with_the_recommenders_reader(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("_integrity = recommender_integrity_check(_provider)", page)
+        self.assertIn("integrity_accepted=_integrity.accepted", page)
+
     def test_a_health_warning_is_never_rendered_as_usable(self) -> None:
         # codex #431 r5: the recommender runs further preconditions AFTER the
         # age guard — a fresh-dated bundle stamped built_from_holey_fetch is
@@ -1015,7 +1080,7 @@ class BundleFreshnessTests(unittest.TestCase):
         from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
         fresh = bundle_freshness(
             today=date(2026, 8, 14), tail_date="2026-08-13",
-            provider_uri="X", max_age_days=14)
+            provider_uri="X", max_age_days=14, integrity_accepted=True)
         self.assertTrue(fresh.age_ok)
         self.assertTrue(fresh.usable)
         for status, warns in (("warning", ()), ("error", ()),
@@ -1023,7 +1088,7 @@ class BundleFreshnessTests(unittest.TestCase):
             with self.subTest(status=status, warnings=warns):
                 flagged = bundle_freshness(
                     today=date(2026, 8, 14), tail_date="2026-08-13",
-                    provider_uri="X", max_age_days=14,
+                    provider_uri="X", max_age_days=14, integrity_accepted=True,
                     health_status=status, health_warnings=warns)
                 self.assertTrue(flagged.age_ok, "年龄仍然是过的")
                 self.assertFalse(flagged.usable, "但整体不可判为可用")

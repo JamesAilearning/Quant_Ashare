@@ -451,6 +451,10 @@ class BundleFreshness:
     # as "usable" (codex #431 r5).
     health_status: str = "ok"
     health_warnings: tuple[str, ...] = ()
+    # The recommender's OWN integrity gate (see recommender_integrity_check).
+    # None = not evaluated.
+    integrity_accepted: bool | None = None
+    integrity_reason: str = ""
 
     @property
     def age_ok(self) -> bool:
@@ -459,8 +463,22 @@ class BundleFreshness:
 
     @property
     def usable(self) -> bool:
-        """Age is fine AND bundle health raised nothing."""
-        return self.age_ok and self.health_status == "ok" and not self.health_warnings
+        """Every precondition this page can evaluate says yes.
+
+        Each contributor is evaluated by the RECOMMENDER's own predicate —
+        age by ``_bundle_is_stale``'s arithmetic on its calendar tail,
+        integrity by ``read_bundle_integrity`` under the gate's own rules.
+        The informational health summary can only withhold "usable", never
+        grant it: it is deliberately forgiving and cannot stand in for a
+        gate (codex #431 r6).
+
+        Still NOT a promise that today's run succeeds — the recommender has
+        preconditions beyond these. The page says so.
+        """
+        return (self.age_ok
+                and self.integrity_accepted is True
+                and self.health_status == "ok"
+                and not self.health_warnings)
 
 
 def recommender_calendar_tail(provider_uri: str) -> date | None:
@@ -481,6 +499,74 @@ def recommender_calendar_tail(provider_uri: str) -> date | None:
     )
     dates = _read_calendar_dates(Path(provider_uri) / "calendars" / "day.txt")
     return dates[-1] if dates else None
+
+
+@dataclass(frozen=True)
+class BundleIntegrityCheck:
+    """The recommender's fetch-integrity gate, evaluated by ITS reader.
+
+    ``summarise_bundle_health`` is informational and deliberately forgiving:
+    ``training_guards`` swallows a bad stamp (``except Exception`` — "the UI
+    banner must not crash on a bad stamp") and falls back to
+    ``validation.json``/``manifest.json``, so a bundle whose
+    ``_fetch_integrity.json`` is MISSING or CORRUPT can come back with no
+    warnings at all. ``_assert_bundle_fetch_complete`` refuses both
+    (codex #431 r6).
+
+    So this does not approximate that gate — it runs
+    ``read_bundle_integrity``, the very reader the gate uses, and applies the
+    gate's own three rules: corrupt is refused unconditionally; missing and
+    holey are refused unless the operator passes ``--allow-holey-recommend``.
+    """
+
+    known: bool
+    accepted: bool | None = None
+    reason: str = ""
+    holey: bool | None = None
+    built_at: str | None = None
+
+
+def recommender_integrity_check(
+    provider_uri: str, *, allow_holey: bool = False,
+) -> BundleIntegrityCheck:
+    """Would ``daily_recommend`` accept this bundle's integrity stamp?"""
+    from src.data.pit.bundle_integrity import (  # noqa: PLC0415
+        BundleIntegrityError,
+        read_bundle_integrity,
+    )
+
+    # The gate normalizes the URI before reading (expanduser/abspath/realpath/
+    # normcase) — a `~/…` or whitespaced URI would otherwise read a
+    # non-existent literal path and a clean bundle would look unstamped.
+    # Reuse that same normalization rather than a second one.
+    from src.inference import daily_recommend as _rec  # noqa: PLC0415
+    try:
+        stamp = read_bundle_integrity(
+            Path(_rec._normalize_provider_uri(  # type: ignore[attr-defined]
+                provider_uri)))
+    except BundleIntegrityError as exc:
+        # Refused REGARDLESS of the override — the override accepts
+        # incompleteness (a known state), never corruption.
+        return BundleIntegrityCheck(
+            known=True, accepted=False,
+            reason=f"完整性 stamp 损坏/不可读,出单侧无条件拒绝:{exc}")
+    except OSError as exc:  # pragma: no cover - defensive
+        return BundleIntegrityCheck(
+            known=False, reason=f"无法读取完整性 stamp:{type(exc).__name__}: {exc}")
+    if stamp is None:
+        return BundleIntegrityCheck(
+            known=True, accepted=allow_holey,
+            reason=("缺 _fetch_integrity.json——无法确认 bundle 建自完整 fetch;"
+                    "出单侧拒绝(除非显式 --allow-holey-recommend)"))
+    if stamp.built_from_holey_fetch:
+        return BundleIntegrityCheck(
+            known=True, accepted=allow_holey, holey=True,
+            built_at=stamp.built_at,
+            reason=("stamp 标记 built_from_holey_fetch=true;"
+                    "出单侧拒绝(除非显式 --allow-holey-recommend)"))
+    return BundleIntegrityCheck(
+        known=True, accepted=True, holey=False, built_at=stamp.built_at,
+        reason="完整性 stamp 完好且非 holey")
 
 
 def recommender_today() -> date:
@@ -524,6 +610,8 @@ def bundle_freshness(
     max_age_days: int | None = None,
     health_status: str = "ok",
     health_warnings: tuple[str, ...] = (),
+    integrity_accepted: bool | None = None,
+    integrity_reason: str = "",
 ) -> BundleFreshness:
     limit = serving_bundle_max_age_days() if max_age_days is None else max_age_days
     # Default to the recommender's clock rather than the caller's: every call
@@ -533,7 +621,9 @@ def bundle_freshness(
         return BundleFreshness(
             known=False, max_age_days=limit, provider_uri=provider_uri,
             message=message or "bundle 尾部日期不可读",
-            health_status=health_status, health_warnings=health_warnings)
+            health_status=health_status, health_warnings=health_warnings,
+            integrity_accepted=integrity_accepted,
+            integrity_reason=integrity_reason)
     try:
         tail = date.fromisoformat(str(tail_date))
     except ValueError:
@@ -541,14 +631,18 @@ def bundle_freshness(
             known=False, tail_date=str(tail_date), max_age_days=limit,
             provider_uri=provider_uri,
             message=f"bundle 尾部日期不是合法日期:{tail_date!r}",
-            health_status=health_status, health_warnings=health_warnings)
+            health_status=health_status, health_warnings=health_warnings,
+            integrity_accepted=integrity_accepted,
+            integrity_reason=integrity_reason)
     behind = (today - tail).days
     return BundleFreshness(
         known=True, tail_date=tail.isoformat(), days_behind=behind,
         max_age_days=limit, headroom_days=limit - behind,
         refuses_today=behind > limit, provider_uri=provider_uri,
         message=message, health_status=health_status,
-        health_warnings=health_warnings)
+        health_warnings=health_warnings,
+        integrity_accepted=integrity_accepted,
+        integrity_reason=integrity_reason)
 
 
 @dataclass(frozen=True)

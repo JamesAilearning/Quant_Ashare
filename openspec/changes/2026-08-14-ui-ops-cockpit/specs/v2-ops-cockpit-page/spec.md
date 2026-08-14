@@ -175,6 +175,32 @@ MUST NOT 呈现一个看起来像仓库事实的到期日。
 - **THEN** 窗口一律标注为由间距硬 pin 推导
 - **AND** 不出现任何未经推导说明的「下次重训到期日」
 
+### Requirement: 每一道被展示的前置校验必须由出单侧自己的可调用物评定
+
+页面凡是展示「出单侧会不会拒绝」这类判定，其**每一个**组成部分 MUST 由
+出单侧自己的读取器/谓词评定——年龄用 `_bundle_is_stale` 的算术与它的日历尾，
+完整性用 `read_bundle_integrity` 加该门自己的三条规则。
+
+信息性摘要（`summarise_bundle_health` 的 `status`）MUST NOT 代替任何一道门：
+它刻意宽容（`training_guards` 吞掉损坏的 stamp 并回退到 `validation.json`），
+因此只能**收回**「可用」，不能**授予**「可用」。
+
+页面 MUST 写明这些校验是出单侧前置条件的**子集**，全部通过 MUST NOT 被表述为
+「今天一定能出单」。
+
+#### Scenario: 缺失或损坏的完整性 stamp
+
+- **GIVEN** bundle 的 `_fetch_integrity.json` 缺失或损坏，而 `validation.json`
+  存在使得健康摘要不报任何告警
+- **THEN** 页面 MUST NOT 呈现为可用——出单侧对两者都拒绝
+- **AND** 损坏 MUST 被无条件拒绝（`--allow-holey-recommend` 只接受已知的
+  不完整状态，不接受不可读）
+
+#### Scenario: 子集免责
+
+- **WHEN** 页面展示这些前置校验的结论
+- **THEN** MUST 写明它们只是出单侧前置条件的子集
+
 ### Requirement: 数据新鲜度复用既有读取器与既有阈值
 
 页面 MUST 用 `bundle_health.summarise_bundle_health()` 取 bundle 尾部日期，

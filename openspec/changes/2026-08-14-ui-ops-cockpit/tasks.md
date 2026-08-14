@@ -73,10 +73,18 @@
 - [x] `BundleFreshness` 拆出 `age_ok` / `usable` 两个语义  ← 年龄过 ≠ 可用
 - [x] 修正 ⑤ 的取数说明（此前自认「两条路径不同」却仍当拒绝预测用）
 
+## W12 codex #431 r6（P2，属实；同族第 11 例 → 改为规则收口）
+- [x] 完整性门改用出单侧自己的 `read_bundle_integrity` + 该门三条规则  ← 不再用信息性摘要代替门
+- [x] 损坏 stamp 无条件拒绝；缺失/holey 仅在显式 override 下接受  ← C31/C32 咬住
+- [x] `usable` 必须 `integrity_accepted is True`；摘要只能收回不能授予  ← C33/C34 咬住
+- [x] 合成 stamp 用例（缺失/损坏/holey/干净 × override 两态）  ← codex 明确要求
+- [x] **规则入规格**：被展示的每一道前置校验必须由出单侧自己的可调用物评定
+- [x] **子集免责入页面**：两道门全绿 ≠ 今天一定能出单
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C30 三十处全落地全咬红(C11/C20 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C34 三十四处全落地全咬红(C11/C20 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

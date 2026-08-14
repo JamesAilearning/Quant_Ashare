@@ -41,6 +41,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     morning_command,
     read_gate_cards,
     recommender_calendar_tail,
+    recommender_integrity_check,
     resolve_delisted_registry,
     resolve_name_source,
     resolve_namechange_path,
@@ -275,6 +276,7 @@ st.markdown("---")
 st.subheader("⑤ 数据 bundle 新鲜度")
 _summary: Any = summarise_bundle_health(_provider)
 _cal_tail = recommender_calendar_tail(_provider)
+_integrity = recommender_integrity_check(_provider)
 _fresh = bundle_freshness(
     # No clock argument: defaults to the RECOMMENDER's own (host-local)
     # today, so this refusal prediction cannot disagree with the machine
@@ -289,6 +291,11 @@ _fresh = bundle_freshness(
     message=_summary.message,
     health_status=_summary.status,
     health_warnings=_summary.warnings,
+    # The integrity precondition is evaluated by the RECOMMENDER's own
+    # reader — summarise_bundle_health swallows a missing/corrupt stamp and
+    # would let a refused bundle read green (codex #431 r6).
+    integrity_accepted=_integrity.accepted,
+    integrity_reason=_integrity.reason,
 )
 if not _fresh.known:
     st.error(f"⚠ 无法判定 bundle 新鲜度:{_fresh.message}")
@@ -314,11 +321,14 @@ else:
         # _assert_bundle_fetch_complete on a built_from_holey_fetch stamp),
         # so a green "usable" here would promise something the machine
         # refuses (codex #431 r5).
+        _why = (_fresh.integrity_reason
+                if _fresh.integrity_accepted is not True
+                else f"status `{_fresh.health_status}`:{_fresh.message}"
+                     + ("；".join(_fresh.health_warnings)
+                        if _fresh.health_warnings else ""))
         st.error(
-            f"⛔ 日期虽新（落后 {_fresh.days_behind} 天），但 bundle 健康检查未通过"
-            f"（status `{_fresh.health_status}`）:{_fresh.message}"
-            + ("；".join(_fresh.health_warnings) if _fresh.health_warnings else "")
-            + "。出单侧在年龄检查之后还有其它前置校验,请勿据此认为可以出单。"
+            f"⛔ 日期虽新（落后 {_fresh.days_behind} 天），但**前置校验未通过**:"
+            f"{_why}。请勿据此认为今天可以出单。"
         )
     elif (_fresh.headroom_days or 0) <= 3:
         st.warning(
@@ -331,7 +341,8 @@ st.caption(
     "——与出单侧的 `calendar[-1]` 同源；bundle_health 偏好的 `_fetch_integrity` "
     "identity tail 在此仅用于其健康判定，不用于年龄比较（两者在不完整换库后会分歧）。"
     f"拒绝阈值 {_fresh.max_age_days} 天取自 RecommendationConfig,非本页字面量。"
-    "年龄只是出单侧的**其中一道**前置校验,通过不等于今天一定能出单。"
+    "本页评的两道门(年龄、完整性 stamp)均由**出单侧自己的读取器/谓词**判定;"
+    "但它们只是其前置条件的**子集**——全绿不等于今天一定能出单。"
 )
 _render_command(data_update_command(
     provider_uri=str(_fresh.provider_uri or _provider),
