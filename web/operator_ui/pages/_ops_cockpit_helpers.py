@@ -484,6 +484,18 @@ class BundleFreshness:
 
 # The bundle producer writes canonical YYYY-MM-DD rows. Shape-check BEFORE
 # parsing: date.fromisoformat is far more permissive than the file contract.
+# Characters str.splitlines() ALSO treats as line breaks. The producer writes
+# one date per LF/CRLF-terminated line; any of these would make splitlines()
+# see a different calendar than the bytes literally contain (codex #431 r11).
+_OTHER_LINE_BREAKS: tuple[tuple[str, str], ...] = (
+    ("CR(孤立回车)", "\r"),
+    ("VT(垂直制表)", "\v"),
+    ("FF(换页)", "\f"),
+    ("NEL", "\x85"),
+    ("LS(行分隔符)", "\u2028"),
+    ("PS(段分隔符)", "\u2029"),
+)
+
 _CANONICAL_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -533,7 +545,10 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     """
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
-        raw = path.read_text(encoding="utf-8")
+        # BYTES, not read_text(): universal-newline decoding silently folds a
+        # lone CR into LF, which would accept a separator this contract does
+        # not list (codex #431 r11).
+        raw = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # UnicodeDecodeError is a ValueError, NOT an OSError — corrupt or
         # partially-copied bytes would otherwise escape and take the whole
@@ -541,13 +556,19 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
         # 无法判定 state this function promises (codex #431 r10).
         return CalendarTail(
             known=False, reason=f"读不到交易日历 {path}:{type(exc).__name__}")
-    # RAW rows — no strip() before validation. Normalizing first and then
-    # checking the normalized value certifies bytes nobody validated: a row
-    # like " 2026-08-03" or "2026-08-03	" would pass the shape check while
-    # qlib's acceptance of that padding is not established (codex #431 r9).
-    # splitlines() only removes the line terminator itself.
-    rows = raw.splitlines()
-    while rows and rows[-1] == "":
+
+    # CRLF is the real production bundle's terminator; LF is the other
+    # supported one. Everything else stays and is refused below.
+    text = raw.replace("\r\n", "\n")
+    for name, char in _OTHER_LINE_BREAKS:
+        if char in text:
+            return CalendarTail(
+                known=False,
+                reason=(f"交易日历含 {name} 分隔符——本契约只支持 LF / CRLF;"
+                        "str.splitlines() 会把它也当换行,而 qlib 未必如此"))
+    rows = text.split("\n")
+    # Exactly ONE trailing newline is allowed (the file's final terminator).
+    if rows and rows[-1] == "":
         rows.pop()
     if not rows:
         return CalendarTail(known=False, reason=f"交易日历为空:{path}")

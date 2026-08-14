@@ -1063,6 +1063,52 @@ class BundleFreshnessTests(unittest.TestCase):
                 got = bundle_calendar_tail(self._calendar_bytes(body))
                 self.assertFalse(got.known, "首尾空白也不是规范写法")
 
+    def test_only_lf_and_crlf_terminate_a_calendar_row(self) -> None:
+        # codex #431 r11: str.splitlines() ALSO breaks on VT, FF, NEL, LS and
+        # PS, and folds a lone CR — so bytes the producer never writes would
+        # be read as a well-formed calendar here while qlib need not agree.
+        # The contract is now closed: LF or CRLF, nothing else.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        for name, body in (
+            ("LS", "2026-08-01 2026-08-03".encode()),
+            ("PS", "2026-08-01 2026-08-03".encode()),
+            ("VT", b"2026-08-01\x0b2026-08-03"),
+            ("FF", b"2026-08-01\x0c2026-08-03"),
+            ("NEL", "2026-08-01\x852026-08-03".encode()),
+            ("CR", b"2026-08-01\r2026-08-03"),
+        ):
+            with self.subTest(separator=name):
+                got = bundle_calendar_tail(self._calendar_bytes(body))
+                self.assertFalse(got.known, f"{name} 不是本契约支持的行终止符")
+                # ...and say WHICH separator. The canonical shape check would
+                # refuse these rows anyway, so the explicit scan exists for
+                # the DIAGNOSIS: "含 LS 分隔符" points the operator at the
+                # producer, "第 1 行不是规范写法" points them at the date.
+                self.assertIn(name.split("(")[0], got.reason)
+                self.assertIn("只支持 LF / CRLF", got.reason)
+        # ...while the two supported terminators still work, with or without
+        # a final newline.
+        for name, body in (
+            ("LF", b"2026-08-01\n2026-08-03\n"),
+            ("CRLF", b"2026-08-01\r\n2026-08-03\r\n"),
+            ("no trailing newline", b"2026-08-01\n2026-08-03"),
+        ):
+            with self.subTest(supported=name):
+                got = bundle_calendar_tail(self._calendar_bytes(body))
+                self.assertTrue(got.known, name)
+                self.assertEqual(date(2026, 8, 3), got.tail)
+
+    def test_more_than_one_trailing_newline_is_ambiguous(self) -> None:
+        # Exactly ONE final terminator is the producer's shape; extra blank
+        # rows are content this page will not interpret.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        got = bundle_calendar_tail(self._calendar_bytes(b"2026-08-01\n\n"))
+        self.assertFalse(got.known)
+
     def test_undecodable_calendar_bytes_are_unknown_not_a_traceback(self) -> None:
         # codex #431 r10: UnicodeDecodeError is a ValueError, NOT an
         # OSError. Corrupt or partially-copied bytes would escape the read

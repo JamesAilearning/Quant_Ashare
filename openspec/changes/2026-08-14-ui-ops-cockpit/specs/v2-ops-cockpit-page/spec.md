@@ -220,6 +220,15 @@ MUST NOT 呈现一个看起来像仓库事实的到期日。
 - **THEN** MUST 判为不规范并报「无法判定」——校验 MUST 作用于文件里的
   **原始行**，MUST NOT 先规范化再校验（那等于给没人校验过的字节背书）
 
+#### Scenario: 日历字节契约必须封闭列举
+
+- **WHEN** 页面读取交易日历以判定尾部日期
+- **THEN** 契约 MUST 逐条列举并全部校验:可 UTF-8 解码、行终止符只允许
+  LF 或 CRLF、至多一个末尾换行、每行恰为规范 `YYYY-MM-DD`、严格递增、非空
+- **AND** MUST NOT 依赖 `str.splitlines()` 的隐含断行集（它还会在
+  VT / FF / NEL / LS / PS 处断行），也 MUST NOT 依赖读取时的
+  universal-newline 折叠（它会把孤立 CR 折成 LF）
+
 #### Scenario: 子集免责
 
 - **WHEN** 页面展示这些前置校验的结论

@@ -104,10 +104,17 @@
       `date.fromisoformat` 宽松拼写;3.10 上必然抛。改为按版本守前提,行为断言不变
 - [x] 补不可解码字节用例(非 UTF-8)
 
+## W17 codex #431 r11（P2，属实；日历字节契约就此**封闭**）
+- [x] 不再用 `splitlines()`（它在 VT/FF/NEL/LS/PS 处也断行）  ← C43 咬住
+- [x] 不再用 `read_text` 的 universal newline（它把孤立 CR 折成 LF）  ← C41 咬住
+- [x] 显式只支持 LF/CRLF,其它断行字符逐个具名拒绝  ← C44 咬住(钉的是诊断信息)
+- [x] 至多一个末尾换行,多余空行拒绝  ← C45 咬住
+- [x] 契约六条逐条入规格,不再逐轮补丁
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C42:40 杀 + 2 已论证等价(C11/C20/C35 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C45:44 杀 + 1 已论证等价(C11/C20/C35/C44 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
