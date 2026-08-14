@@ -617,3 +617,43 @@ class IncumbentShapeMismatchTests(unittest.TestCase):
         i_known = self.page.index('elif _incumbent.kind == "single":')
         i_unknown = self.page.index("现任 manifest 不可解析")
         self.assertLess(i_known, i_unknown)
+
+
+class ShapeMatrixOrderingTests(unittest.TestCase):
+    """codex #430 r2: the branch ORDER is load-bearing — each earlier branch
+    silently swallows the cases a later one exists to describe."""
+
+    def setUp(self) -> None:
+        self.page = _PAGE.read_text(encoding="utf-8")
+        self.xcheck = self.page[
+            self.page.index("if _meta_status.artifact_is_ensemble:"):]
+
+    def test_v1_is_classified_before_the_shape_check(self) -> None:
+        # A v1 artifact has NO meta at all — its provenance is unknown, so
+        # calling it "single-model-shaped" asserts a fact we cannot
+        # establish, and (under an ensemble incumbent) makes the dedicated
+        # v1 warning unreachable.
+        i_v1 = self.xcheck.index("elif _meta_status.artifact_is_v1:")
+        i_shape = self.xcheck.index("elif _incumbent.is_ensemble:")
+        self.assertLess(
+            i_v1, i_shape,
+            "v1(无 meta)必须先于形态判定——否则会断言无法确认的出处")
+
+    def test_single_incumbent_message_names_the_explicit_opt_out(self) -> None:
+        # After the default-manifest change, `single` is reachable ONLY via
+        # the explicit sentinel; telling operators "变量未设" would send them
+        # troubleshooting in the opposite direction.
+        self.assertIn("显式设为 `none`", self.xcheck)
+        self.assertNotIn("(QUANT_ENSEMBLE_MANIFEST 未设)", self.xcheck)
+
+
+class ProposalConsistencyTests(unittest.TestCase):
+    """A change whose proposal contradicts its own spec/implementation would
+    archive contradictory governance history (codex #430 r2)."""
+
+    def test_proposal_does_not_claim_unset_means_single(self) -> None:
+        prop = (_ROOT / "openspec" / "changes"
+                / "2026-08-14-ui-incumbent-ensemble-identity"
+                / "proposal.md").read_text(encoding="utf-8")
+        self.assertIn("未设 ≠ 单模型", prop)
+        self.assertNotIn("单模型（未设该变量）", prop)

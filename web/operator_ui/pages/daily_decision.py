@@ -218,7 +218,7 @@ if _meta_status.artifact_is_ensemble:
             st.warning(
                 "⚠ 该工件由 **ensemble(manifest)** 生成(sha256 "
                 f"`{_art_sha[:12]}…`),而**现任是单模型形态**"
-                "(QUANT_ENSEMBLE_MANIFEST 未设)。"
+                "(QUANT_ENSEMBLE_MANIFEST 显式设为 `none` 的 opt-out)。"
                 "它不是当前生产模型给出的建议,请勿据此下单。"
             )
         else:
@@ -234,10 +234,19 @@ if _meta_status.artifact_is_ensemble:
             "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "
             "manifest_sha256——无法绑定其身份,请核对工件来源。"
         )
+elif _meta_status.artifact_is_v1:
+    # v1 FIRST (codex #430 r2): a v1 artifact carries no meta at all, so its
+    # provenance is UNKNOWN — calling it "single-model-shaped" below would
+    # assert a fact we cannot establish, and would also make this dedicated
+    # warning unreachable under the current (ensemble) production config.
+    st.warning(
+        "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
+        "重跑 scripts/daily_recommend.py 可产出自描述的 v2 工件。"
+    )
 elif _incumbent.is_ensemble:
-    # SHAPE mismatch — the artifact is single-model-shaped while production
-    # serves an ensemble. This must be caught BEFORE the legacy sidecar
-    # comparison below (codex #430): that comparison is against the RETIRED
+    # SHAPE mismatch — a SELF-DESCRIBING v2 artifact that is single-model
+    # shaped while production serves an ensemble. Caught BEFORE the legacy
+    # sidecar comparison below: that comparison is against the RETIRED
     # single model, so a matching sha there would emit no warning at all and
     # present a non-incumbent artifact as safe — the precise failure this
     # page exists to prevent.
@@ -246,11 +255,6 @@ elif _incumbent.is_ensemble:
         f"(`{Path(str(_incumbent.manifest_path)).name}`)。"
         "无论其 sidecar 是否匹配某个旧模型,它都不是当前生产模型给出的"
         "建议,请勿据此下单。"
-    )
-elif _meta_status.artifact_is_v1:
-    st.warning(
-        "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
-        "重跑 scripts/daily_recommend.py 可产出自描述的 v2 工件。"
     )
 elif _meta_status.sha_mismatch is True:
     st.warning(

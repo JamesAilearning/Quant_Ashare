@@ -55,7 +55,8 @@ PR-C' 已于 2026-08-05 落地。这句话现在**既是假陈述**（当前生�
 
 * ensemble（`QUANT_ENSEMBLE_MANIFEST` 可解析）→ 横幅显示 manifest 文件名、
   sha256 前缀、成员数、各成员 fit 窗；
-* 单模型（未设该变量）→ 维持原有晋升 meta 横幅，一字不改；
+* 单模型（**显式** `QUANT_ENSEMBLE_MANIFEST=none` 的 opt-out；未设走
+  文档化默认 manifest，不是这一态）→ 维持原有晋升 meta 横幅，一字不改；
 * 变量已设但文件缺失/不可解析 → **醒目 WARN**，不回退到单模型形态、
   不显示占位值。
 
