@@ -50,6 +50,21 @@ ROUND_TRIP_COST = 0.0030
 # (docs/operations-env-vars.md explains why the CLI deliberately does NOT
 # inherit this default).
 ENV_ENSEMBLE_MANIFEST = "QUANT_ENSEMBLE_MANIFEST"
+# Default = the production manifest written by the 2026-08-05 cutover, per
+# this repo's env-var convention ("each QUANT_* default equals the historical
+# hardcoded path, so behaviour is unchanged where they are unset").
+#
+# Treating an UNSET pointer as "production is a single model" would be a
+# fabricated fact (codex #430 r1): on any deployment that upgrades the UI
+# without also setting a new variable, the page would both keep showing the
+# retired model AND tell the operator not to use the CORRECT ensemble lists.
+# Absence of configuration is not evidence about what production serves.
+DEFAULT_ENSEMBLE_MANIFEST = (
+    "D:/stock/phase_b_artifacts/csi800_n5_ensemble_manifest.json"
+)
+# The documented opt-out for a deployment that genuinely serves ONE model:
+# an explicit statement, never an inference from a missing variable.
+SINGLE_MODEL_SENTINEL = "none"
 
 
 def resolve_model_path() -> str:
@@ -115,11 +130,18 @@ def load_ensemble_manifest_identity(manifest_path: str) -> IncumbentIdentity:
 
 
 def resolve_incumbent() -> IncumbentIdentity:
-    """What is production serving right now — ensemble, single, or unknown."""
+    """What is production serving right now — ensemble, single, or unknown.
+
+    Unset falls back to the DOCUMENTED production manifest, not to
+    "single model": production cut over on 2026-08-05, so a missing
+    variable means "nobody configured this box", never "the ensemble was
+    retired". The single-model state requires the explicit ``none``
+    opt-out — a claim someone made, not one this code inferred.
+    """
     pointer = os.environ.get(ENV_ENSEMBLE_MANIFEST, "").strip()
-    if not pointer:
+    if pointer.lower() == SINGLE_MODEL_SENTINEL:
         return IncumbentIdentity(kind="single")
-    return load_ensemble_manifest_identity(pointer)
+    return load_ensemble_manifest_identity(pointer or DEFAULT_ENSEMBLE_MANIFEST)
 
 
 def model_meta_paths(model_path: str) -> tuple[Path, Path]:

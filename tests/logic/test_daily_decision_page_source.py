@@ -497,16 +497,48 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         ident = load_ensemble_manifest_identity("Z:/nonexistent/manifest.json")
         self.assertEqual("unresolvable", ident.kind)
 
-    def test_unset_pointer_means_single_model(self) -> None:
+    def test_unset_pointer_uses_the_documented_default_not_single(self) -> None:
+        # codex #430 r1: reading "variable not configured" as "production
+        # went back to one model" fabricates a fact — and on any box that
+        # upgraded the UI without adding the variable it would BOTH show the
+        # retired model AND warn against the correct ensemble lists.
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import _daily_decision_helpers as H
+
+        with patch.dict(os.environ, {H.ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
+            with patch.object(H, "load_ensemble_manifest_identity") as fake:
+                fake.return_value = H.IncumbentIdentity(kind="ensemble")
+                H.resolve_incumbent()
+            fake.assert_called_once_with(H.DEFAULT_ENSEMBLE_MANIFEST)
+
+    def test_single_model_requires_the_explicit_opt_out(self) -> None:
         import os
         from unittest.mock import patch
 
         from web.operator_ui.pages._daily_decision_helpers import (
             ENV_ENSEMBLE_MANIFEST,
+            SINGLE_MODEL_SENTINEL,
             resolve_incumbent,
         )
-        with patch.dict(os.environ, {ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
+        with patch.dict(os.environ,
+                        {ENV_ENSEMBLE_MANIFEST: SINGLE_MODEL_SENTINEL},
+                        clear=False):
             self.assertEqual("single", resolve_incumbent().kind)
+
+    def test_default_points_at_the_cutover_manifest(self) -> None:
+        # The default must name the manifest the 2026-08-05 cutover wrote —
+        # a default pointing anywhere else silently reinstates the bug.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            DEFAULT_ENSEMBLE_MANIFEST,
+        )
+        self.assertTrue(
+            DEFAULT_ENSEMBLE_MANIFEST.endswith(
+                "csi800_n5_ensemble_manifest.json"),
+            DEFAULT_ENSEMBLE_MANIFEST)
+        doc = _ENV_DOC.read_text(encoding="utf-8")
+        self.assertIn(DEFAULT_ENSEMBLE_MANIFEST, doc)
 
     # --- source: banner + cross-check must honour those states -------------
 

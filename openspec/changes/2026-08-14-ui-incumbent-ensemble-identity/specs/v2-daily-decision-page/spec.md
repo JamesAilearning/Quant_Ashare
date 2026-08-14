@@ -20,9 +20,15 @@ MUST 醒目 WARN，MUST NOT 回退为单模型形态、MUST NOT 显示占位值�
 - **GIVEN** `QUANT_ENSEMBLE_MANIFEST` 已设但文件缺失或非法
 - **THEN** 页面醒目 WARN，且不显示任何单模型或占位身份
 
-#### Scenario: 现任为单模型（未设指针）
+#### Scenario: 未设指针走文档化默认，MUST NOT 推断为单模型
 
 - **GIVEN** 未设 `QUANT_ENSEMBLE_MANIFEST`
+- **THEN** 按文档化默认（生产 manifest 路径）解析现任；
+  MUST NOT 因变量缺席就断定生产为单模型形态
+
+#### Scenario: 现任为单模型（显式 opt-out）
+
+- **GIVEN** `QUANT_ENSEMBLE_MANIFEST` 显式设为 `none`
 - **THEN** 维持既有的晋升 meta 横幅语义，包括「缺字段只进 WARN、
   绝不填默认值」
 
