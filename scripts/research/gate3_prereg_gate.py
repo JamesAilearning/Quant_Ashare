@@ -112,14 +112,14 @@ def _git(repo: Path, *args: str) -> str:
             ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
              "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
              "-1", "--format=%H", "--", *rest],
-            capture_output=True, text=True, encoding="utf-8", check=True,
+            capture_output=True, check=True,
         )
     elif sub == "log-ctime":
         out = subprocess.run(
             ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
              "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
              "-1", "--format=%cI", "--", *rest],
-            capture_output=True, text=True, encoding="utf-8", check=True,
+            capture_output=True, check=True,
         )
     elif sub == "status":
         # BINARY + explicit decode (#410 r37): a clean filter writes to
@@ -143,7 +143,7 @@ def _git(repo: Path, *args: str) -> str:
              "-c", "core.quotePath=true",
              "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
              "-C", str(repo), "ls-files", "--", *rest],
-            capture_output=True, text=True, encoding="utf-8", check=True,
+            capture_output=True, check=True,
         )
     else:
         raise SystemExit(
@@ -151,7 +151,13 @@ def _git(repo: Path, *args: str) -> str:
             "own literal spawn site so the UTF-8 output pin cannot be "
             "overridden; add one."
         )
-    return out.stdout.strip()
+    # BINARY + explicit decode: git's output is not a function of its
+    # argv — an inherited GIT_CONFIG_GLOBAL naming a malformed file
+    # makes git print that PATH on stderr even for a spotless command
+    # line (#410 r66), so no text-mode git call is provable. The caller
+    # owns the decode policy; these outputs are hashes, ISO timestamps
+    # and quoted paths, so replace is safe and never silently wrong.
+    return out.stdout.decode("utf-8", errors="replace").strip()
 
 
 def _resolve_run_config(

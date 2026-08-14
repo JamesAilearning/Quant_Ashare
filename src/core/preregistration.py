@@ -113,12 +113,21 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
             # region could be ``--ext-diff`` and revive an external diff
             # driver whose output the UTF-8 pin does not govern (#410
             # r30). ``rest`` is therefore the path, nothing else.
-            completed = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",
-                 "--no-ext-diff", "--no-textconv", "-n", "1",
-                 "--format=%H", "--", *rest], cwd=str(cwd),
-                capture_output=True, text=True, encoding="utf-8",
-                timeout=10, check=False,
+            # BINARY + explicit decode, like the probes above: git's
+            # output is not a function of its argv (an inherited
+            # GIT_CONFIG_GLOBAL naming a malformed file prints that path
+            # on stderr even for a spotless command line, #410 r66).
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
+                 "log", "-n", "1", "--format=%H", "--", *rest],
+                cwd=str(cwd), capture_output=True, timeout=10,
+                check=False,
+            )
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stderr.decode("utf-8", errors="replace"),
             )
         else:
             raise PreregistrationError(

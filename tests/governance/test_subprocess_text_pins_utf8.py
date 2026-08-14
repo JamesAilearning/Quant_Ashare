@@ -113,248 +113,12 @@ _CHILD_ENV_FUNC = "utf8_child_env"
 # unrecognized stays UNRESOLVED and fails closed, so a launcher this list
 # does not know (a venv shim, a tool wrapper) is never waved through.
 _NON_PYTHON_PROGRAMS = frozenset({"git"})
-# Git subcommands whose output carries NO commit text — the only ones
-# safe without the encoding pin. A WHITELIST, not a log-family
-# blacklist (codex P2 r26 on #410): an unknown subcommand can be a
-# user ALIAS for log (verified in a scratch repo: ``alias.lg=log`` under
-# ``i18n.logOutputEncoding=GBK`` emits GBK bytes), so "not in the log
-# family" proved nothing. Aliases cannot shadow BUILT-INS (verified:
-# ``alias.status=log -1`` leaves ``git status`` running the builtin),
-# which is what makes this list airtight. Blob content (``diff``,
-# ``cat-file``) is raw bytes git never re-encodes; a non-UTF-8 tracked
-# FILE is a different problem this gate does not claim to solve.
-# ``worktree`` is deliberately ABSENT (codex P2 r33 on #410): ``git
-# worktree add`` runs the post-checkout hook unless ``--no-checkout``,
-# and an operator hook writes whatever bytes it likes (verified: a hook
-# emitting 0xff lands in the captured stdout). No pin or flag governs a
-# hook, so text-mode worktree calls fail closed — the repo's own
-# worktree calls are binary-mode and unaffected.
-_GIT_COMMIT_TEXT_FREE = frozenset({
-    "rev-parse", "ls-files", "ls-tree", "merge-base",
-})
-# ``check-ignore`` is ABSENT: its ``-v`` mode prints the matching
-# .gitignore PATTERN, which ``core.quotePath`` does not escape (codex
-# P2 r56 on #410, reproduced — the pathname was escaped, the pattern
-# byte was not). The command is unused here, so the surface is dropped
-# rather than pinned option-by-option; re-adding it means proving the
-# option set, not just the pattern case.
-# ``symbolic-ref`` is ABSENT: a ref name may carry non-UTF-8 bytes on a
-# POSIX checkout and git prints it verbatim, unquoted (codex P2 r44 on
-# #410, reproduced). ``rev-parse`` has the same exposure through its
-# NAME- and PATH-printing options (verified: ``--show-toplevel`` prints
-# the raw path), so it is accepted only with options whose output is an
-# object name; anything else — including an opaque element that could BE
-# ``--show-toplevel`` — refuses.
-_GIT_REVPARSE_SAFE_OPTS = frozenset({
-    "--verify", "--quiet", "-q", "--short", "--revs-only", "--no-flags",
-    "--default", "--end-of-options", "--",
-})
-# Deliberately ABSENT, each verified to run an external program whose
-# bytes no git setting normalizes (codex P2 r36 on #410):
-#   update-index / hash-object — the ``post-index-change`` hook and the
-#     attributes ``clean`` filter (``--no-filters`` covers hash-object
-#     only, and neither command is used here);
-#   cat-file — opt-in ``--filters`` / ``--textconv``;
-#   diff — the clean filter runs on worktree comparison even with both
-#     driver-off flags (verified), and no blanket switch disables
-#     attribute filters. A text-mode ``git diff`` therefore fails
-#     closed; capture it binary and decode explicitly instead, which is
-#     what this repo's one diff call site now does.
-# Subcommands that GENERATE A DIFF, whose content git hands to an
-# operator-configured external driver (``diff.external``) or textconv
-# filter — neither of which the encoding pin governs (codex P2 r27 on
-# #410; verified: a diff.external helper writing CP936 makes plain
-# ``git diff`` emit those bytes, ``--no-ext-diff`` restores the builtin
-# diff, and a gitattributes textconv filter needs ``--no-textconv``).
-# ``diff`` therefore leaves the no-pin whitelist entirely, and any
-# diff-capable (or unknown, hence possibly diff-capable) subcommand must
-# carry BOTH literal flags.
-# Subcommands that can run an attributes ``clean``/``smudge`` FILTER on
-# worktree content — an external program whose stderr lands in the
-# captured stream, with no blanket switch to disable it (verified: a
-# clean filter pollutes ``git diff`` even with both driver-off flags).
-# Refused in text mode outright; capture binary and decode explicitly.
-_GIT_FILTER_CAPABLE = frozenset({
-    "diff", "update-index", "hash-object", "cat-file", "add", "checkout",
-    "stash", "apply", "restore",
-    # ``show`` prints CONTENT by default — a patch for a commit, the
-    # blob for ``REF:PATH`` — and git never transcodes content (codex
-    # P2 r51 on #410, reproduced with a tracked 0xff). Capture binary
-    # and decode explicitly if you know your files' encoding.
-    "show", "blame", "annotate", "whatchanged", "format-patch",
-    "rev-list", "range-diff", "diff-tree", "diff-index", "diff-files",
-    # ``status`` too (codex P2 r37 on #410; reproduced): when stat info
-    # cannot settle a comparison — same size, racy mtime — git compares
-    # CONTENT, which runs the clean filter and puts its stderr in the
-    # captured stream.
-    "status",
-})
-# ``config`` is refused for a different reason: config VALUES are stored
-# as raw bytes and ``--get`` emits them unchanged, so any non-UTF-8 value
-# breaks a UTF-8 parent (verified with a GBK value in .git/config). No
-# git setting re-encodes them.
-_GIT_RAW_VALUE_SUBCOMMANDS = frozenset({"config"})
-# Path-producing commands are ASCII-safe only while git QUOTES unusual
-# bytes: ``-z``/``--null`` emit paths verbatim, and ``core.quotePath=
-# false`` does the same without any option (codex P2 r38 on #410; both
-# verified against an index entry whose name carries a non-ASCII byte).
-# So these need the literal quoting pin AND no raw-output option, and
-# their option region must be fully literal — an opaque element could be
-# the ``-z``.
-_GIT_PATH_PRODUCING = frozenset({"ls-files", "ls-tree", "check-ignore"})
-# ``-z`` also rides inside a short-option CLUSTER (codex P2 r39 on
-# #410; verified: ``ls-files -cz`` emits NUL-separated raw bytes), so
-# clusters are parsed letter-by-letter rather than compared whole.
-_GIT_RAW_PATH_LONG_OPTS = frozenset({"--null"})
-_GIT_RAW_PATH_LETTER = "z"
-# git's format language emits arbitrary bytes: ``--format=%xFF`` writes
-# 0xff verbatim (verified through a fully pinned log). No encoding
-# setting normalizes them, so ANY format/pretty option on an accepted
-# call must be a literal whose value carries no ``%x`` escape — and an
-# opaque one refuses, since its value cannot be read (codex P2 r43 on
-# #410).
-_GIT_FORMAT_OPTS = ("--format", "--pretty")
-# ``%x`` writes a literal byte; ``%N`` writes the commit NOTE body,
-# which git does NOT transcode (codex P2 r45 on #410, reproduced), so a
-# note holding foreign bytes reaches the parent verbatim.
-# Format placeholders are an ALLOW-LIST, not a blacklist (codex P2 r46
-# on #410, after %x / %N / %D each had to be added in turn — enumerating
-# the unsafe ones is unbounded). These are ASCII BY CONSTRUCTION: object
-# names, unix timestamps, strict-ISO dates, and the two literal escapes.
-# Everything else — note bodies (%N), ref decorations (%D/%d), identity
-# fields, locale-formatted dates (%ad honours --date=format:), raw byte
-# escapes (%xFF) — refuses. Longest-match, case-sensitive.
-_GIT_SAFE_FORMAT_TOKENS = (
-    "%%", "%n", "%H", "%h", "%T", "%t", "%P", "%p",
-    "%at", "%ct", "%aI", "%cI", "%m",
-)
-# Options that append ref DECORATIONS to the output, same raw-name
-# hazard as %D (verified).
-_GIT_DECORATION_OPTS = ("--decorate", "--source")
-# Options that make log/show print FILE PATHS. Paths are escaped only
-# while ``core.quotePath`` is on (reproduced with both settings), so
-# these carry the same quoting requirement as ls-files (codex P2 r45).
-# Options that make the log family print PATCH CONTENT — raw blob
-# bytes, untranscoded by any pin (codex P2 r51, reproduced).
-_GIT_PATCH_OPTS = frozenset({
-    "--patch", "--patch-with-raw", "--patch-with-stat",
-    "--cc", "--unified", "--full-diff", "--first-parent-patch",
-    # ``--binary`` emits an applicable BINARY diff — raw blob bytes by
-    # definition (codex P2 r64 on #410, reproduced).
-    "--binary",
-})
-# The SHORT patch options carry an attached value (``-U1``) and bundle
-# (``-pU3``), so a whole-token match missed them (codex P2 r52 on #410,
-# reproduced with ``-U1``). Any single-dash cluster containing one of
-# these letters generates a patch.
-# ``-L <range:file>`` (line log) emits a patch with no patch letter of
-# its own (codex P2 r62 on #410, reproduced), so it joins the letters
-# rather than being handled as a separate option.
-# ``-c`` here is the SUBCOMMAND's combined-diff option (the global
-# ``-c key=value`` sits before the subcommand and is parsed separately),
-# and it prints a patch (codex P2 r65 on #410, reproduced).
-_GIT_PATCH_LETTERS = frozenset({"p", "u", "U", "L", "c"})
-# Without an explicit format the log family prints attached NOTES,
-# which git does not transcode (codex P2 r53 on #410; reproduced — the
-# default output carries the note bytes, while ``--format=%H`` and
-# ``--no-notes`` each suppress them). One of those two must be present,
-# and an explicit ``--notes`` refuses outright.
-_GIT_NOTES_OFF_OPT = "--no-notes"
-_GIT_NOTES_ON_OPT = "--notes"
-# ``--stdin`` reads revisions from the inherited stdin and echoes bad
-# ones back in its diagnostics, which no pin normalizes (codex P2 r58
-# on #410, reproduced by piping 0xff into a fully pinned log).
-_GIT_STDIN_OPT = "--stdin"
-_GIT_PATH_OUTPUT_OPTS = frozenset({
-    "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
-    "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
-})
-# ``log.showSignature=true`` makes the log family run ``gpg.program``,
-# whose bytes land in the captured stream (codex P2 r49 on #410;
-# reproduced with a verifier emitting 0xff, silenced by the false pin).
-# The explicit ``--show-signature`` option does the same.
-_GIT_SIGNATURE_KEY = "log.showsignature"
-_GIT_SIGNATURE_OFF_VALUES = frozenset({"false", "0", "off", ""})
-_GIT_SIGNATURE_OPTS = ("--show-signature",)
-# The log family's own ``--encoding=<codec>`` overrides the config pin
-# (codex P2 r50 on #410, reproduced: ``--encoding=GBK`` emits GBK
-# through a fully pinned call). Only the UTF-8 spellings are accepted.
-_GIT_ENCODING_OPT = "--encoding"
-_GIT_QUOTEPATH_KEY = "core.quotepath"
-_GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
-# ``log`` is the ONLY diff-capable subcommand this gate can accept: it
-# has an explicit, provable option surface (format placeholders, notes,
-# patch, path output, signature) that the rules below cover. Every other
-# member of the family prints FILE CONTENT or raw paths as its normal
-# output — blame/annotate echo the blamed lines, format-patch and
-# range-diff print patches, rev-list --objects prints paths,
-# diff-tree/index/files print paths (codex P2 r54 on #410; blame,
-# format-patch and rev-list reproduced with a tracked 0xff) — so they
-# join the refuse set rather than being pinned option-by-option.
-_GIT_DIFF_CAPABLE = frozenset({"log"})
-# Each driver is a LAST-ONE-WINS toggle, not a one-way switch
-# (codex P2 r29 on #410; verified: ``--no-ext-diff --ext-diff`` runs the
-# external helper, the reverse order does not), so the option region is
-# replayed in order and only the effective final state counts.
-# A subcommand this gate does not KNOW is refused outright, pin or not
-# (codex P2 r31 on #410): a ``!``-prefixed alias runs an arbitrary shell
-# command whose bytes neither the encoding pin nor the diff-driver flags
-# govern (verified: ``alias.raw='!printf "ÿ"'`` emits 0xff through a
-# fully pinned invocation). Built-ins cannot be shadowed by an alias
-# (verified), so the two known sets below are exactly what is provable.
-_GIT_DRIVER_TOGGLES = {
-    "--no-ext-diff": ("ext", True), "--ext-diff": ("ext", False),
-    "--no-textconv": ("textconv", True), "--textconv": ("textconv", False),
-}
-# git GLOBAL options (pre-subcommand). Value-taking ones consume the next
-# element; the value itself may be opaque (a path) without harm.
-_GIT_GLOBAL_VALUE_OPTS = frozenset({"-c", "-C", "--git-dir", "--work-tree",
-                                    "--namespace"})
-# Global options that PRINT and exit — their output is a filesystem
-# path or a version string that no pin governs, and a bare
-# ``--exec-path`` swallows the next argv element only in appearance
-# (codex P2 r57 on #410; verified: it prints the exec path and never
-# reaches the subcommand). The ``--exec-path=<path>`` value form is an
-# ordinary global option and stays allowed.
-_GIT_TERMINAL_OUTPUT_OPTS = frozenset({
-    "--exec-path", "--man-path", "--html-path", "--info-path",
-    "--version", "-v", "--help", "-h",
-})
-_GIT_GLOBAL_FLAG_OPTS = frozenset({"-p", "--paginate", "--no-pager",
-                                   "--bare", "--no-replace-objects",
-                                   "--literal-pathspecs",
-                                   "--no-optional-locks"})
-_GIT_ENCODING_PIN_KEY = "i18n.logoutputencoding"
-_GIT_ENCODING_PIN_VALUES = frozenset({"utf-8", "utf8"})
-# ``-c include.path=<file>`` / ``includeIf`` are expanded IMMEDIATELY, so
-# an include placed AFTER the pin can redefine it from a file this gate
-# cannot read (codex P2 r34 on #410; verified: a GBK include after the
-# pin brings GBK commit text back, while the same include BEFORE the pin
-# is overridden by it). An include therefore invalidates any pin seen so
-# far.
-_GIT_INCLUDE_KEY_PREFIXES = ("include.", "includeif.")
-# Hooks write arbitrary bytes into the captured streams and no encoding
-# setting governs them (codex P2 r34; verified: a ``core.fsMonitor``
-# hook emitting 0xff on stderr breaks a UTF-8 ``git status``, and
-# ``-c core.fsmonitor=false`` suppresses it). Any accepted text-mode git
-# call must disable it — one uniform requirement rather than a
-# per-subcommand guess about which commands refresh the index.
-_GIT_FSMONITOR_KEY = "core.fsmonitor"
-_GIT_FSMONITOR_OFF_VALUES = frozenset({"false", "0", "off", ""})
-# ``core.fsmonitor=false`` does NOT cover the ordinary hooks: ``git
-# status`` and ``git update-index`` both run ``post-index-change``
-# (verified — the reported update-index case is one instance of the
-# class). Pointing ``core.hooksPath`` at a NON-DIRECTORY makes every
-# hook lookup miss by construction, which is what makes it provable
-# from a literal (verified to suppress the hook and leave the command
-# working, on Windows git too).
-_GIT_HOOKS_KEY = "core.hookspath"
-_GIT_HOOKS_OFF_VALUES = frozenset({"/dev/null", "nul"})
-# Interpreter names are matched EXACTLY, never by prefix (codex P1 r16 on
-# #410): ``startswith(("python", "py"))`` also accepted pyright, pytest,
-# pyinstaller — native/tool children whose decoding PYTHONIOENCODING does
-# not govern. The Windows launcher has exactly two spellings; a CPython
-# binary is ``python`` + optional version digits + optional ``w``.
+# Interpreter names are matched EXACTLY, never by prefix (codex P1 r16
+# on #410): ``startswith(("python", "py"))`` also accepted pyright,
+# pytest, pyinstaller — native/tool children whose decoding
+# PYTHONIOENCODING does not govern. The Windows launcher has exactly two
+# spellings; a CPython binary is ``python`` + optional version digits +
+# optional ``w``.
 _PY_LAUNCHER_NAMES = frozenset({"py", "pyw"})
 _PYTHON_STEM_RE = re.compile(r"python\d*(\.\d+)*w?")
 
@@ -746,305 +510,6 @@ def _python_child(
     return _program_is_python(argv.elts[0], sys_names)
 
 
-def _git_output_safe(call: ast.Call) -> bool:
-    """Is a PROVEN git child's output locale-independent?
-
-    ``i18n.logOutputEncoding`` re-encodes commit text in the log family,
-    so "git emits UTF-8 regardless of locale" is only true outside it —
-    or when the invocation pins the config itself (codex P2 r24 on
-    #410). The pre-subcommand region must therefore be FULLY literal:
-    git honours the LAST ``-c`` (verified: ``-c x=a -c x=b`` yields
-    ``b``), so an opaque splice can override an earlier pin, and git
-    has no top-level end-of-options marker to close the region with
-    (verified: ``--end-of-options`` is not a git global option) —
-    codex P2 r25. Past the literal subcommand anything goes: a
-    post-subcommand ``-c`` is the subcommand's own flag, not config.
-    Opaque VALUES of non-``-c`` options (``-C str(repo)``) stay fine —
-    a value cannot be re-read as an option.
-    """
-    argv = _argv_strings(call)
-    if argv is None:
-        return False
-    pin_seen = False
-    fsmonitor_off = False
-    hooks_off = False
-    quotepath_on = False
-    signature_off = False
-    i = 1
-    while i < len(argv):
-        el = argv[i]
-        if el is None:
-            # A splice/name in the PRE-subcommand region can carry a
-            # later -c that overrides any pin seen so far, or BE the
-            # subcommand. Unprovable either way.
-            return False
-        if el in _GIT_TERMINAL_OUTPUT_OPTS:
-            return False  # prints a path/version and exits
-        if el in _GIT_GLOBAL_VALUE_OPTS:
-            value = argv[i + 1] if i + 1 < len(argv) else None
-            if el == "-c":
-                if value is None:
-                    return False  # an opaque config could BE the codec
-                key, eq, raw_value = value.partition("=")
-                key = key.strip().lower()
-                # ``-c key`` with NO ``=`` is boolean TRUE, while
-                # ``-c key=`` (empty) is boolean FALSE — verified against
-                # ``config --type=bool`` (codex P2 r40 on #410). Folding
-                # the two together made a valueless ``core.fsmonitor``
-                # read as "disabled". ``None`` means "true, no value".
-                val = raw_value.strip().lower() if eq else None
-                if key == _GIT_ENCODING_PIN_KEY:
-                    # LAST assignment wins, like every other setting
-                    # here (verified on this key: GBK then utf-8 emits
-                    # UTF-8, the reverse emits GBK) — short-circuiting
-                    # on the first non-UTF-8 value refused a call that
-                    # later fixed itself (codex P2 r41 on #410).
-                    pin_seen = val in _GIT_ENCODING_PIN_VALUES
-                elif key.startswith(_GIT_INCLUDE_KEY_PREFIXES):
-                    # The included file is expanded AT THIS POSITION and
-                    # may redefine ANY key this scan is tracking — the
-                    # codec and the fsmonitor alike (codex P2 r35 on
-                    # #410; verified: an include after the kill switch
-                    # makes git spawn the hook again, while the same
-                    # include before it stays suppressed). Both states
-                    # reset; a later literal -c re-establishes them.
-                    pin_seen = False
-                    fsmonitor_off = False
-                    hooks_off = False
-                    quotepath_on = False
-                    signature_off = False
-                elif key == _GIT_FSMONITOR_KEY:
-                    fsmonitor_off = val in _GIT_FSMONITOR_OFF_VALUES
-                elif key == _GIT_HOOKS_KEY:
-                    hooks_off = val in _GIT_HOOKS_OFF_VALUES
-                elif key == _GIT_SIGNATURE_KEY:
-                    signature_off = val in _GIT_SIGNATURE_OFF_VALUES
-                elif key == _GIT_QUOTEPATH_KEY:
-                    # Boolean TRUE — the valueless form — is quoting ON.
-                    quotepath_on = (val is None
-                                    or val in _GIT_QUOTEPATH_ON_VALUES)
-            i += 2
-            continue
-        if el in _GIT_GLOBAL_FLAG_OPTS:
-            i += 1
-            continue
-        if el.startswith("--git-dir=") or el.startswith("--work-tree=") \
-                or el.startswith("--namespace=") \
-                or el.startswith("--exec-path="):
-            i += 1
-            continue
-        if el.startswith("-"):
-            return False  # unknown global option — fail closed
-        # el = the subcommand. Two independent hazards, two conditions:
-        # commit text (git re-encodes it; the pin fixes that, aliases
-        # included) and diff content (an operator's external driver or
-        # textconv filter owns those bytes; only the literal flags turn
-        # them off). An UNKNOWN subcommand may be an alias for either,
-        # so it needs both.
-        if el in _GIT_FILTER_CAPABLE or el in _GIT_RAW_VALUE_SUBCOMMANDS:
-            return False  # filters / raw stored bytes: no suppression
-        tail = argv[i + 1:]
-        for pos, later in enumerate(tail):
-            if later in ("--", "--end-of-options"):
-                break  # past the closer nothing is an option
-            if later is None:
-                continue  # opacity is judged by the per-family rules
-            head, eq, value = later.partition("=")
-            if head not in _GIT_FORMAT_OPTS:
-                continue
-            if not eq:
-                # SEPARATED spelling: the value is the NEXT element
-                # (codex P2 r44 on #410 — the earlier branch was dead
-                # code, since partition() puts the whole token in head).
-                value = tail[pos + 1] if pos + 1 < len(tail) else None
-                if value is None:
-                    return False  # missing or opaque format value
-            # A NAMED format (``--pretty=raw``, ``medium``, ``oneline``
-            # …) carries no placeholder for the scan below to inspect,
-            # and prints identity/message/notes fields git does not
-            # transcode (codex P2 r55 on #410; reproduced: --pretty=raw
-            # emits a non-UTF-8 author name verbatim). Only the
-            # placeholder languages are provable, so a value with no
-            # ``%`` refuses — the empty format, which prints nothing,
-            # is the one exception.
-            scan_value = value
-            for prefix in ("format:", "tformat:"):
-                if scan_value.startswith(prefix):
-                    scan_value = scan_value[len(prefix):]
-                    break
-            if scan_value and "%" not in scan_value:
-                return False  # a named format, or an unprovable literal
-            value = scan_value
-            pos_v = 0
-            while True:
-                pos_v = value.find("%", pos_v)
-                if pos_v < 0:
-                    break
-                token = next(
-                    (tok for tok in _GIT_SAFE_FORMAT_TOKENS
-                     if value.startswith(tok, pos_v)), None)
-                if token is None:
-                    return False  # an unproven placeholder
-                pos_v += len(token)
-        if not hooks_off:
-            # A hook writes arbitrary bytes into the captured streams;
-            # ``core.hooksPath`` aimed at a non-directory is the one
-            # literal that provably disables the lot.
-            return False
-        if not fsmonitor_off:
-            # An operator's fsmonitor hook can pollute either stream on
-            # any command that refreshes the index; the literal
-            # ``-c core.fsmonitor=false`` is the one uniform cure.
-            return False
-        # An OPAQUE operand is echoed back by git when it is invalid —
-        # ``fatal: bad revision <bytes>`` — and the diagnostics stream
-        # is captured too (codex P2 r59 on #410). No pin normalizes
-        # that, so every accepted subcommand needs literal operands;
-        # ls-files/ls-tree keep their own closer rule for pathspecs,
-        # which git does NOT echo when they simply fail to match.
-        if el not in _GIT_PATH_PRODUCING:
-            # ``merge-base`` treats everything as a REVISION, closer or
-            # not, and echoes an invalid one back (codex P2 r61 on #410,
-            # reproduced past ``--``), so its whole tail is scanned. For
-            # the rest, elements past the closer are pathspecs that git
-            # does not echo when they simply fail to match.
-            stop_at_closer = el != "merge-base"
-            for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    if stop_at_closer:
-                        break
-                    continue
-                if later is None:
-                    return False  # echoed verbatim on a bad value
-        if el == "rev-parse":
-            # ``--`` does NOT make the rest safe here: rev-parse echoes
-            # its path operands verbatim (codex P2 r50, reproduced), so
-            # the whole tail is scanned, closer or not.
-            for later in argv[i + 1:]:
-                if later is None:
-                    return False  # an operand or a printing option
-                if later in ("--", "--end-of-options"):
-                    continue  # a closer, not a licence
-                if (later.startswith("-")
-                        and later.split("=")[0] not in _GIT_REVPARSE_SAFE_OPTS):
-                    return False  # name/path-printing option
-        prints_paths = el in _GIT_PATH_PRODUCING
-        if not prints_paths:
-            # log/show print paths only when asked to (codex P2 r45);
-            # when they are, the quoting rule applies to them too.
-            for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    break
-                # Compare the option HEAD: git accepts value-bearing
-                # spellings like ``--stat=80`` and ``--dirstat=lines``
-                # (codex P2 r47 on #410, reproduced), which an exact
-                # match missed.
-                if (later is not None
-                        and later.split("=")[0] in _GIT_PATH_OUTPUT_OPTS):
-                    prints_paths = True
-                    break
-        for later in argv[i + 1:]:
-            if later in ("--", "--end-of-options"):
-                break
-            if (later is not None
-                    and later.split("=")[0].startswith(_GIT_DECORATION_OPTS)):
-                return False  # ref decorations print raw ref names
-        if prints_paths:
-            # ``--error-unmatch`` turns an unmatched pathspec into an
-            # ERROR that echoes the path verbatim (codex P2 r63 on #410,
-            # reproduced), so with it every operand must be literal —
-            # closer or not, the "git ignores a non-matching pathspec"
-            # premise no longer holds.
-            for later in argv[i + 1:]:
-                if (later is not None
-                        and later.split("=")[0] == "--error-unmatch"):
-                    if any(x is None for x in argv[i + 1:]):
-                        return False
-                    break
-            if not quotepath_on:
-                return False  # unquoted paths can be any bytes
-            for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    break  # options end; pathspecs cannot be -z
-                if (later is None
-                        or later.split("=")[0] in _GIT_RAW_PATH_LONG_OPTS):
-                    return False  # raw output, or an opaque option
-                if (later.startswith("-") and not later.startswith("--")
-                        and _GIT_RAW_PATH_LETTER in later[1:]):
-                    return False  # -z, or bundled as in -rz / -cz
-        known_text_free = el in _GIT_COMMIT_TEXT_FREE
-        if not known_text_free and el not in _GIT_DIFF_CAPABLE:
-            return False  # unknown subcommand: may be a shell alias
-        if not known_text_free and not pin_seen:
-            return False
-        if el in _GIT_DIFF_CAPABLE:
-            if not signature_off:
-                return False  # gpg.program output is ungoverned
-            notes_suppressed = False
-            for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    break
-                if later is None:
-                    continue
-                head_opt, eq_opt, val_opt = later.partition("=")
-                if head_opt == _GIT_STDIN_OPT:
-                    return False  # ungoverned revision bytes echo back
-                if head_opt == _GIT_NOTES_OFF_OPT:
-                    pass  # necessary, but NOT sufficient (see below)
-                elif head_opt == _GIT_NOTES_ON_OPT:
-                    return False  # explicit note output
-                elif head_opt in _GIT_FORMAT_OPTS:
-                    # Only a PROVEN format makes the output safe: the
-                    # default pretty format prints identity fields git
-                    # does not transcode, so ``--no-notes`` alone is not
-                    # enough (codex P2 r64 on #410, reproduced with a
-                    # non-UTF-8 author name). The value itself is
-                    # validated further down.
-                    notes_suppressed = True
-                if head_opt in _GIT_SIGNATURE_OPTS:
-                    return False  # explicit signature verification
-                if head_opt in _GIT_PATCH_OPTS:
-                    return False  # raw patch content
-                if (later.startswith("-") and not later.startswith("--")
-                        and _GIT_PATCH_LETTERS & set(later[1:])):
-                    return False  # -p / -u / -U<n> / bundled forms
-                if head_opt == _GIT_ENCODING_OPT:
-                    # Its value is the next element when separated; an
-                    # opaque or non-UTF-8 codec refuses.
-                    if not eq_opt:
-                        return False  # unreadable separated value
-                    if (val_opt.strip().lower()
-                            not in _GIT_ENCODING_PIN_VALUES):
-                        return False
-            # The flags count only in the subcommand's OPTION REGION
-            # (codex P2 r28 on #410): ``git diff -- --no-ext-diff`` is a
-            # PATHSPEC, not an option, so a repo file by that name would
-            # have satisfied a whole-argv membership test while the
-            # driver stayed live. The region ends at a literal ``--`` —
-            # or at the first opaque element, which could BE one.
-            if not notes_suppressed:
-                return False  # implicit format: notes AND identity
-            disabled = {"ext": False, "textconv": False}
-            for later in argv[i + 1:]:
-                if later in ("--", "--end-of-options"):
-                    break  # options end here; the rest cannot re-enable
-                if later is None:
-                    # An opaque element INSIDE the option region can be
-                    # ``--ext-diff`` and revive the driver (codex P2 r30
-                    # on #410) — unprovable, so refuse. Put dynamic revs
-                    # and paths after ``--end-of-options`` / ``--``
-                    # (verified: git then rejects a late ``--ext-diff``
-                    # as "must come before non-option arguments").
-                    return False
-                toggle = _GIT_DRIVER_TOGGLES.get(later)
-                if toggle is not None:
-                    driver, off = toggle
-                    disabled[driver] = off
-            return all(disabled.values())
-        return True
-    return False  # options only, no subcommand — not a real invocation
-
-
 def _dynamic_subprocess_calls(tree: ast.Module) -> set[int]:
     """ids of expressions that literally EVALUATE to the module.
 
@@ -1429,12 +894,30 @@ def offending_lines(source: str) -> list[int]:
         # Parent side is right; now the child's own encoder.
         child = _python_child(node, sys_names, kwargs)
         if child is False:
-            # "git emits UTF-8 regardless of locale" holds only outside
-            # the log family, whose commit text is re-encoded per
-            # i18n.logOutputEncoding (codex P2 r24) — the exemption now
-            # requires plumbing OR the literal config pin.
-            if not _git_output_safe(node):
-                hits.append(node.lineno)
+            # A proven NON-python child (git) in TEXT MODE is refused,
+            # always. This began as "git emits UTF-8 regardless of
+            # locale" and was narrowed across forty review rounds —
+            # commit-text re-encoding, config includes, three hook
+            # families, external diff drivers, textconv, clean filters,
+            # path quoting, -z, format placeholders, notes, signature
+            # verification, patch options, raw ref names, operand echo.
+            # The rule that ENDS the class is that the premise itself is
+            # false: git's output is not a function of its argv.
+            #
+            # The decisive case (codex P2 r66 on #410, reproduced): with
+            # a spotless argv — ``git -c core.hooksPath=/dev/null
+            # rev-parse HEAD`` — an inherited ``GIT_CONFIG_GLOBAL``
+            # naming a malformed file makes git print that PATH on
+            # stderr, and ``capture_output`` takes stderr too. No argv
+            # analysis can govern the environment, so NO text-mode git
+            # call is provable, however pinned.
+            #
+            # The remedy is one line longer at each call site and always
+            # correct: capture BYTES and decode explicitly with the
+            # error policy the caller can defend — surrogateescape for
+            # paths that must round-trip, replace for diagnostics,
+            # strict where the caller owns the bytes.
+            hits.append(node.lineno)
             continue
         if child is None:
             # UNRESOLVED child (a non-literal argv, ``shell=True``, an
@@ -1509,7 +992,7 @@ _CP936_PIN = ', env={**os.environ, "PYTHONIOENCODING": "cp936"}'
 _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # --- codec keyword semantics (values, not just names) ---
     ("text bare", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
-    ("text + utf-8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+    ("text + utf-8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     ("text + cp936", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="cp936")', True),
     ("text + None", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=None)', True),
     ("binary", 'subprocess.run(["git"])', False),
@@ -1517,10 +1000,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("text=False + cp936",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="cp936")', True),
     ("text=False + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="utf-8")', True),
     ("errors alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace")', True),
     ("errors + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace", encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace", encoding="utf-8")', True),
     # A codec keyword set to None does NOT enable text mode (verified
     # against the interpreter): flagging it would push the author to add
     # an encoding and flip the call from bytes to str.
@@ -1544,8 +1027,8 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], universal_newlines=want)', True),
     ("non-literal encoding",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=ENC)', True),
-    ("alias U8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="U8")', False),
-    ("alias utf_8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf_8")', False),
+    ("alias U8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="U8")', True),
+    ("alias utf_8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf_8")', True),
     # --- call-target resolution ---
     ("unrelated .run()", "renderer.run(text=True)", False),
     ("locally defined run()",
@@ -1557,7 +1040,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("opaque ** looking binary", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], check=True, **o)', True),
     ("literal ** supplying text", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True})', True),
     ("literal ** supplying text + utf-8",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "utf-8"})', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "utf-8"})', True),
     ("literal ** supplying cp936",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "cp936"})', True),
     # --- the child encoder: the sanctioned constructor, nothing else ---
@@ -1753,7 +1236,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("getoutput via from-import",
      'from subprocess import getoutput\ngetoutput("git log")', True),
     ("git child needs no env",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     # ``X.executable`` proves python only when X is the imported sys module
     # — any object can expose an .executable naming a native binary.
     ("someone else's .executable even fully pinned",
@@ -1776,7 +1259,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("windows absolute git path needs no env",
      'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe",'
      ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("windows path to an unknown tool still fails closed",
      'subprocess.run([r"C:\\tools\\node.exe", "s.js"], text=True,'
      ' encoding="utf-8", env=utf8_child_env())', True),
@@ -1812,7 +1295,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'sp2.run(["git"], text=True)', True),
     ("aliased spawn accepted when properly pinned",
      "sp = subprocess\n"
-     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     # ...and a module reference forwarded OUT of the file-local analysis
     # (call argument, attribute target) fails closed at the forwarding.
     ("module forwarded as a call argument fails closed",
@@ -1821,7 +1304,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      "obj.sp = subprocess", True),
     ("module attribute constants stay usable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], stdout=subprocess.PIPE, text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     # ...and a stored METHOD spawns exactly like the module alias did
     # (codex P2 r19 follow-up): tracked when it is a plain-Name alias,
     # failed closed when forwarded anywhere else.
@@ -1830,7 +1313,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'runner(["git"], text=True)', True),
     ("method alias accepted when properly pinned",
      "runner = subprocess.run\n"
-     'runner(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+     'runner(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     ("method alias of a text-only helper is recognized",
      "go = subprocess.getoutput\n"
      'go("git log")', True),
@@ -1842,7 +1325,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      "try:\n"
      '    subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")\n'
      "except subprocess.CalledProcessError:\n"
-     "    pass", False),
+     "    pass", True),
     # the git exemption is NOT unconditional: the log family re-encodes
     # commit text per i18n.logOutputEncoding (verified with GBK), so it
     # needs the literal config pin; plumbing does not.
@@ -1857,7 +1340,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("git log with a non-utf8 pin is refused",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=GBK",'
      ' "-c", "log.showSignature=false",'
@@ -1867,7 +1350,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' encoding="utf-8")', True),
     ("git plumbing needs no pin",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     # git honours the LAST -c, so a pinned prefix does NOT survive an
     # opaque splice (verified: -c x=a -c x=b -> b; and git has no
     # top-level --end-of-options to close the region with). The whole
@@ -1896,7 +1379,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("--end-of-options closes the region for a dynamic rev",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-C", str(repo), "log", "--no-ext-diff",'
      ' "--no-textconv", "--no-notes", "--format=%H", "--end-of-options", *args],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
@@ -1907,10 +1390,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("...literal pathspecs are still fine with it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--error-unmatch", "--",'
-     ' "CLAUDE.md"], text=True, encoding="utf-8")', False),
+     ' "CLAUDE.md"], text=True, encoding="utf-8")', True),
     ("...and without it a dynamic pathspec stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", path], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     # merge-base treats everything as a REVISION, so a closer is no
     # licence there either (verified: it echoes a bad post-`--` operand).
     ("an opaque merge-base operand past -- still refuses",
@@ -1920,7 +1403,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false", "log", "--no-ext-diff",'
      ' "--no-textconv", "--format=%H", "--", path], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     # a literal carrying lone SURROGATES is not resolvable text: POSIX
     # encodes them back to raw bytes, and git echoes them (verified).
     # The source below spells the escape, so this table file itself
@@ -1940,7 +1423,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("literal merge-base operands pass",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", "HEAD~1",'
-     ' "HEAD"], text=True, encoding="utf-8")', False),
+     ' "HEAD"], text=True, encoding="utf-8")', True),
     ("...and a binary capture is untouched",
      'subprocess.run(["git", "merge-base", "--is-ancestor", a, b],'
      " capture_output=True)", False),
@@ -1966,7 +1449,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      True),
     ("...while the --exec-path=<path> value form stays allowed",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path=/opt/git", "rev-parse", "HEAD"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     # check-ignore -v prints the matching .gitignore PATTERN, which
     # quotePath does not escape (reproduced).
     ("check-ignore is refused in text mode",
@@ -1988,11 +1471,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("the format: prefix keeps its placeholders provable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=format:%H", "-1"], text=True, encoding="utf-8")',
-     False),
+     True),
     ("tformat: too",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=tformat:%H%n%cI", "-1"], text=True, encoding="utf-8")',
-     False),
+     True),
     ("an empty format prints nothing, so it passes",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=", "--name-status", "-c", "core.quotePath=true", "-1"],'
@@ -2025,10 +1508,10 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-1"], text=True, encoding="utf-8")', True),
     ("--no-notes suppresses them",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "--no-notes", "--format=%H", "-1"], text=True, encoding="utf-8")', False),
+     ' "--no-notes", "--format=%H", "-1"], text=True, encoding="utf-8")', True),
     ("a proven format suppresses them too",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "--format=%H", "-1"], text=True, encoding="utf-8")', False),
+     ' "--format=%H", "-1"], text=True, encoding="utf-8")', True),
     ("an explicit --notes refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "--notes", "-1"], text=True, encoding="utf-8")',
@@ -2045,7 +1528,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--format=%H", "-c", "-3"], text=True, encoding="utf-8")', True),
     ("...while the GLOBAL -c before the subcommand is config",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "--format=%H", "-3"], text=True, encoding="utf-8")', False),
+     ' "--format=%H", "-3"], text=True, encoding="utf-8")', True),
     ("a -L line log emits a patch as well",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "-L", "1,1:x"], text=True, encoding="utf-8")',
@@ -2058,7 +1541,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-pU3", "-1"], text=True, encoding="utf-8")', True),
     ("a patch-free short option stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "-n", "1", "--format=%H"], text=True, encoding="utf-8")', False),
+     ' "-n", "1", "--format=%H"], text=True, encoding="utf-8")', True),
     ("--patch is the same option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
      ' "--patch", "-1"], text=True, encoding="utf-8")', True),
@@ -2069,7 +1552,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H",'
-     ' "--", *args], text=True, encoding="utf-8")', False),
+     ' "--", *args], text=True, encoding="utf-8")', True),
     ("an opaque rev before the closer fails closed",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
@@ -2083,7 +1566,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("opaque -C value is fine, it cannot be re-read as an option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("opaque -c value fails closed",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", cfg, "rev-parse"], text=True,'
      ' encoding="utf-8")', True),
@@ -2129,12 +1612,12 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'runner = __import__("subprocess").run\n'
      'runner(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("a dynamically imported module forwarded fails closed",
      'helper(__import__("subprocess"))', True),
     ("a properly pinned dynamic-import spawn passes",
      'sp = __import__("subprocess")\n'
-     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     ("keyword-form import_module is recognized",
      "import importlib\n"
      'importlib.import_module(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
@@ -2176,7 +1659,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-c", "log.showSignature=false",'
      ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",'
      ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("...but a switch before the include does not survive it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "include.path=x.cfg", "-c", "i18n.logOutputEncoding=utf-8",'
@@ -2190,7 +1673,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("an include BEFORE the kill switch is overridden by it",
      'subprocess.run(["git", "-c", "include.path=x.cfg",'
      ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("includeIf counts the same",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "i18n.logOutputEncoding=utf-8",'
@@ -2204,7 +1687,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     # an operator-configured diff.external / textconv driver writes
     # whatever bytes it likes, and the encoding pin does NOT govern it
     # (verified: a CP936 helper makes plain `git diff` emit CP936).
@@ -2214,7 +1697,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log with both driver-off flags is accepted",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
      ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("text-mode git diff is refused — filters have no kill switch",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "--name-status"], text=True,'
@@ -2226,14 +1709,14 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--encoding=GBK", "-1"], text=True, encoding="utf-8")', True),
     ("--encoding=utf-8 is redundant but harmless",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
-     ' "--encoding=utf-8", "-1"], text=True, encoding="utf-8")', False),
+     ' "--encoding=utf-8", "-1"], text=True, encoding="utf-8")', True),
     ("a separated --encoding value cannot be read",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
      ' "--encoding", enc, "-1"], text=True, encoding="utf-8")', True),
     # rev-parse echoes its operands verbatim, so `--` is no licence.
     ("a literal rev operand stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("an opaque operand past -- refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--", path], text=True,'
      ' encoding="utf-8")', True),
@@ -2260,7 +1743,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--dirstat=lines", "-1"], text=True, encoding="utf-8")', True),
     ("...and with the quoting pin they pass",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
-     ' "--stat=80", "-1"], text=True, encoding="utf-8")', False),
+     ' "--stat=80", "-1"], text=True, encoding="utf-8")', True),
     ("a value-bearing --decorate spelling refuses too",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--decorate=short", "--format=%H", "-1"], text=True,'
@@ -2283,7 +1766,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("the proven set still passes",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H%n%cI%n%ct", "-1"], text=True, encoding="utf-8")',
-     False),
+     True),
     # %N prints the commit NOTE body untranscoded (reproduced), while
     # %n is just a newline — the check is case-sensitive there.
     ("a %N note placeholder is refused",
@@ -2291,7 +1774,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--format=%N", "-1"], text=True, encoding="utf-8")', True),
     ("a %n newline stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "--format=%H%n%cI", "-1"], text=True, encoding="utf-8")', False),
+     ' "--format=%H%n%cI", "-1"], text=True, encoding="utf-8")', True),
     # log/show print PATHS when asked to, and paths are escaped only
     # while core.quotePath is on (reproduced with both settings).
     ("log --name-only without the quoting pin is refused",
@@ -2299,7 +1782,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
     ("...and accepted with it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
-     ' "--name-only", "-1"], text=True, encoding="utf-8")', False),
+     ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
     ("--stat counts as path output too",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "show", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
      ' "--stat", "HEAD"], text=True, encoding="utf-8")', True),
@@ -2316,7 +1799,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("rev-parse of an object name stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("symbolic-ref is refused outright",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "symbolic-ref", "HEAD"], text=True,'
      ' encoding="utf-8")', True),
@@ -2337,7 +1820,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "--pretty=%xff%H", "-1"], text=True, encoding="utf-8")', True),
     ("an ordinary format stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
-     ' "--format=%H", "-1"], text=True, encoding="utf-8")', False),
+     ' "--format=%H", "-1"], text=True, encoding="utf-8")', True),
     ("a separated format value cannot be read, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format", fmt, "-1"], text=True, encoding="utf-8")', True),
@@ -2360,7 +1843,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("...and a later GBK undoes an earlier utf-8",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null",'
@@ -2378,11 +1861,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', True),
     ("the explicit empty form is boolean FALSE, so accepted",
      'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=",'
-     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', False),
+     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', True),
     ("a valueless core.quotePath is TRUE, so quoting stays on",
      'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
      ' "-c", "core.quotePath", "ls-files"], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     ("...while core.quotePath= is FALSE and refuses",
      'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
      ' "-c", "core.quotePath=", "ls-files"], text=True,'
@@ -2399,7 +1882,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("ls-files with the quoting pin is accepted",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("...but -z emits raw bytes anyway",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "-z"],'
      ' text=True, encoding="utf-8")', True),
@@ -2414,7 +1897,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("a cluster without z stays acceptable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
-     ' "ls-tree", "-r", "HEAD"], text=True, encoding="utf-8")', False),
+     ' "ls-tree", "-r", "HEAD"], text=True, encoding="utf-8")', True),
     ("--null is the same option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-tree", "--null", "HEAD"],'
      ' text=True, encoding="utf-8")', True),
@@ -2426,7 +1909,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' text=True, encoding="utf-8")', True),
     ("...while a pathspec past -- is harmless",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", *args],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     # status runs the clean filter when stat info cannot settle a
     # comparison (reproduced: same-size edit -> filter stderr), and
     # config emits stored bytes verbatim (reproduced with a GBK value).
@@ -2474,7 +1957,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("flags before -- are real options",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
      ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "--", path], text=True,'
-     ' encoding="utf-8")', False),
+     ' encoding="utf-8")', True),
     # each driver is a last-one-wins toggle (verified: --no-ext-diff
     # --ext-diff runs the helper; the reverse order does not).
     ("a later --ext-diff re-enables the external driver",
@@ -2486,7 +1969,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("a later disable wins over an earlier enable",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--ext-diff",'
      ' "--textconv", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"],'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     # reflective access reaches the spawners without naming them
     ("__dict__ access to a spawner fails closed",
      'subprocess.__dict__["run"](["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
@@ -2509,11 +1992,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'getoutput("git log")', True),
     ("star-import spawn accepted when properly pinned",
      "from subprocess import *\n"
-     'run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', False),
+     'run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
     # a literal tuple argv is as provable as a list
     ("tuple argv git child pinned",
      'subprocess.run(("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"),'
-     ' text=True, encoding="utf-8")', False),
+     ' text=True, encoding="utf-8")', True),
     ("tuple argv python child fully pinned",
      'subprocess.run((sys.executable, "x"), text=True,'
      ' encoding="utf-8", env=utf8_child_env())', False),
