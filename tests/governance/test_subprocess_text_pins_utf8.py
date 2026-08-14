@@ -512,7 +512,8 @@ def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
         if isinstance(head.value, ast.Name) and head.value.id in sys_names:
             return True  # a resolved sys.executable
         return None  # someone ELSE's .executable — fail closed
-    if isinstance(head, ast.Constant) and isinstance(head.value, str):
+    if (isinstance(head, ast.Constant) and isinstance(head.value, str)
+            and not _has_surrogates(head.value)):
         verdicts = set()
         for stem in {PurePosixPath(head.value).stem.lower(),
                      PureWindowsPath(head.value).stem.lower()}:
@@ -545,6 +546,18 @@ def _call_argv_node(call: ast.Call, kwargs: dict[str, ast.expr] | None = None):
     return kwargs.get("args")
 
 
+def _has_surrogates(value: str) -> bool:
+    """Whether a literal carries lone surrogates.
+
+    ``"\\udcff"`` is an ordinary Python literal that POSIX encodes back
+    to the byte 0xff (surrogateescape's inverse), so such an argument
+    reaches the child as ungoverned bytes and comes back in its
+    diagnostics (codex P2 r60 on #410). Literals carrying them are
+    therefore not resolvable TEXT, whatever they look like.
+    """
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
 def _argv_strings(call: ast.Call) -> list[str | None] | None:
     """The call's argv elements, classified for option scanning.
 
@@ -566,7 +579,8 @@ def _argv_strings(call: ast.Call) -> list[str | None] | None:
         return None  # a literal tuple argv is as provable as a list
     return [
         elt.value
-        if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            and not _has_surrogates(elt.value))
         else None
         for elt in argv.elts
     ]
@@ -1855,6 +1869,17 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # a literal carrying lone SURROGATES is not resolvable text: POSIX
+    # encodes them back to raw bytes, and git echoes them (verified).
+    # The source below spells the escape, so this table file itself
+    # stays plain UTF-8.
+    ("a surrogate-bearing literal operand refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor",'
+     ' "\\udcffbad", "HEAD"], text=True, encoding="utf-8")', True),
+    ("a surrogate-bearing program name is unresolvable",
+     'subprocess.run(["git\\udcff", "rev-parse", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
     # git echoes an INVALID operand back in its diagnostics, and the
     # diagnostics stream is captured too — so operands must be literal
     # before the closer (past it they are pathspecs git ignores).
