@@ -1288,3 +1288,64 @@ class BundleFreshnessTests(unittest.TestCase):
                     provider_uri="X", max_age_days=14)
                 self.assertFalse(f.known)
                 self.assertIsNone(f.days_behind)
+
+
+class SpecSelfConsistencyTests(unittest.TestCase):
+    """codex #431 r12: the requirement body still mandated
+    ``summarise_bundle_health()`` as the tail source while a scenario below
+    it forbade exactly that. A spec carrying both cannot be satisfied — and
+    worse, it lets a future implementation revert the corrected behaviour
+    while claiming compliance. Archived, that becomes governance history
+    contradicting itself.
+
+    A machine guard for a rule that was already mine to apply by hand every
+    round (re-read the spec after editing it) and that I missed."""
+
+    def _spec(self) -> str:
+        return (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit"
+                / "specs" / "v2-ops-cockpit-page"
+                / "spec.md").read_text(encoding="utf-8")
+
+    def test_the_other_tail_source_only_ever_appears_as_a_prohibition(self) -> None:
+        # Encode the contradiction risk itself rather than "every paragraph
+        # must name the file": the byte-CONTRACT scenario legitimately talks
+        # about the tail without naming its source. What must never happen
+        # is `summarise_bundle_health` appearing as a POSITIVE mandate for
+        # the tail, which is exactly the stale MUST codex found.
+        #
+        # Scoped per LINE, then per clause. Two earlier attempts were fooled:
+        # a paragraph-level check is satisfied by a MUST NOT elsewhere in the
+        # same paragraph, and punctuation-only splitting does not isolate
+        # anything in markdown — headings and bullets carry no 。/，, so one
+        # "clause" ran across dozens of lines and swallowed an unrelated
+        # MUST NOT (both caught by mutation C46 on this pin).
+        import re
+        offenders = [
+            clause.strip()[:80]
+            for line in self._spec().split("\n")
+            for clause in re.split(r"[。；，]", line)
+            if "尾部日期" in clause
+            and "summarise_bundle_health" in clause
+            and "MUST NOT" not in clause
+        ]
+        self.assertEqual([], offenders,
+                         "identity tail 只能以禁止形式出现在尾部来源的规定里")
+
+    def test_the_calendar_file_is_named_as_the_tail_source(self) -> None:
+        # ...and the positive side is stated somewhere, so the prohibition
+        # above is not vacuously satisfied by saying nothing at all.
+        spec = self._spec()
+        mandates = [
+            para for para in spec.split("\n\n")
+            if "尾部日期" in para and "calendars/day.txt" in para
+        ]
+        self.assertTrue(mandates, "必须有一处正面指明尾部来源是 calendars/day.txt")
+
+    def test_the_health_summary_is_never_promoted_to_a_gate(self) -> None:
+        spec = self._spec()
+        self.assertIn("只能收回", spec)
+        self.assertIn("不能授予", spec)
+        # ...and the implementation agrees: `usable` consults the
+        # recommender's own gate, not the summary alone.
+        self.assertIn("self.integrity_accepted is True",
+                      _HELPERS.read_text(encoding="utf-8"))

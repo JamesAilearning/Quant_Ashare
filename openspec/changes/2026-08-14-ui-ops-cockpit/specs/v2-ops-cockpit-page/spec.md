@@ -178,8 +178,9 @@ MUST NOT 呈现一个看起来像仓库事实的到期日。
 ### Requirement: 每一道被展示的前置校验必须由出单侧自己的可调用物评定
 
 页面凡是展示「出单侧会不会拒绝」这类判定，其**每一个**组成部分 MUST 由
-出单侧自己的读取器/谓词评定——年龄用 `_bundle_is_stale` 的算术与它的日历尾，
-完整性用 `read_bundle_integrity` 加该门自己的三条规则。
+出单侧自己的读取器/谓词评定——年龄用与 `_bundle_is_stale` **相同的算术**
+（并由测试逐日对拍该谓词）与出单侧同源的日历尾，完整性用
+`read_bundle_integrity` 加该门自己的三条规则。
 
 信息性摘要（`summarise_bundle_health` 的 `status`）MUST NOT 代替任何一道门：
 它刻意宽容（`training_guards` 吞掉损坏的 stamp 并回退到 `validation.json`），
@@ -236,9 +237,12 @@ MUST NOT 呈现一个看起来像仓库事实的到期日。
 
 ### Requirement: 数据新鲜度复用既有读取器与既有阈值
 
-页面 MUST 用 `bundle_health.summarise_bundle_health()` 取 bundle 尾部日期，
-用 `RecommendationConfig.bundle_max_age_days` 作为拒绝阈值，
-MUST NOT 新造第二个阈值。页面 MUST 写明尾部日期取自哪一条读取路径。
+页面 MUST 用 `RecommendationConfig.bundle_max_age_days` 作为拒绝阈值，
+MUST NOT 新造第二个阈值。尾部日期 MUST 读自 `calendars/day.txt`（见下方
+「尾部日期必须与出单侧同源」），MUST NOT 取自
+`bundle_health.summarise_bundle_health()` 偏好的 `_fetch_integrity` identity
+tail——后者在此**仅**用于健康信号（它只能收回「可用」，不能授予）。
+页面 MUST 写明尾部日期取自哪一条读取路径。
 
 #### Scenario: 显示落后天数与余量
 
