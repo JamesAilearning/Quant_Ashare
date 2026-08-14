@@ -54,6 +54,14 @@ pv001，加进完整策略后边际贡献为负，被纪律拦截）。战场转
   名单，而改写成 `$…` 形式仍是未知终端 —— 无论面板怎么传，GP 都长不出基本面表达式。
   本 change 因此把**基本面终端注册**（新终端组 + 其类型/taint 规则 + 对应测试）纳入
   scope。这不削弱 D5：注册的是终端符号与类型，不引入任何 qlib/PIT import。
+  **注册还不够，另有两处名字/形状的断点**（codex #427 r4 P1）：
+  ① **终端名 ↔ charter 字段名**：`evaluator` 只认 `$` 开头并按字面查面板 key，而
+  `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field、只收裸名
+  `revenue` —— 映射必须写进契约并做**端到端**测试（GP 生成的终端 → 桥 → view 字段）；
+  ② **prior 期必须是一等公民**：`__prior` 只挂在面板旁边，AST 引用不到（evaluator 只
+  消费已注册且在值 mapping 里的 key），于是**资产增长与 C3 应计根本写不出来** —— 而
+  它们正是本 change 要跑通链路的起步因子。须落成带类型的 prior 期终端或"相邻报告期"
+  算子，进面板 key 与战役白名单。
 * **view 的公开 provenance 响应**（`src/research/financial_pit_view.py` 非零改动）：
   `as_of` 今天返回值列 + 可选的 `_report_period__<endpoint>` / `__prior`，**不返回
   `available_from_trade_date`**。若同时冻结 view，桥就只能读私有内部/裸 store，或从
@@ -93,6 +101,13 @@ view 的契约明确：**各 endpoint 独立服务**，消费者须用 `include_
 provenance 的面板/求值参数（或明确一个在求值前把 period 帧打包进 mapping 的 adapter）；
 若这条通路需要动 `gp_engine.py` 的传参，则 `gp_engine.py` 也进 scope。
 
+**且接线要覆盖每一个求值调用点，不止搜索路径**（codex #427 r4 P1）：`validator.py:157`
+的 `_evaluate_segment` 与 `validator.py:293` 的 `filter_correlated` 都在自己的分段上
+求值且都不带 provenance。若 provenance 变必需，验证会把每个基本面因子判为无效；若保持
+可选，验证就在**未遮蔽的混季值**上算指标并据此裁决 —— 两种都让"决定晋升的指标"不是
+"遮蔽定义的指标"。`validator.py` 因此一并进 scope（AGENTS.md：改契约必须迁移调用方与
+测试）。
+
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
 两者**零交集**（repo 已有 `test_namespace_mismatch_refuses` 记录）。面板必须冻结为与
@@ -100,7 +115,10 @@ GP 输入同一命名空间，并以**逐列精确比对**的测试守住。
 
 ### 2. 四件套泄漏防线（与桥同一个 change 落地）
 
-* **(i) as-of 断言** — 属性层：合成小店上断言"`available_from` 前必为 NA、自该日起
+* **(i) as-of 断言** — 返回前自检的键**落在证据上而非值上**（codex #427 r4 P2）：
+  r3 让"被服务记录值为 NA 仍带可用日"，若断言仍按"非 NA 值"筛，这批 cell 恰好全部
+  逃检，提前公告且该字段为 NA 的记录能带着未来日期的证据出厂，与金丝雀①自相矛盾。
+  属性层：合成小店上断言"`available_from` 前必为 NA、自该日起
   等于 disclosure-of-record 值、**公告日当天仍不可见**（严格次日）、restated 期仍服务
   original"；运行时层：桥输出证据帧后自检 `(available_from <= T).all()`，并对抽样日期
   与边界日（公告日、前一日、后首个交易日）核对 `panel[T] == view.as_of(T)`。
@@ -159,6 +177,8 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
   - `src/research/financial_pit_view.py` —— 增加公开的 provenance 响应，使
     `available_from_trade_date` 由唯一门给出而非被桥反推。
   三处均不引入任何 qlib/PIT import，D5 不受影响。
+  - `src/factor_mining/validator.py` —— 两条求值调用点（`_evaluate_segment` /
+    `filter_correlated`）接 provenance，使验证与搜索用同一把尺；
   - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
     经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
 * **仍然零改动**：`src/factor_mining/pit_adapter.py`、`src/data/pit/*`、canonical

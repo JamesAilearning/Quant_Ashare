@@ -36,7 +36,10 @@ missing.
 The builder SHALL emit, alongside each field's value frame, an availability
 evidence frame of the same shape recording the `available_from_trade_date` of the
 record each cell serves, and SHALL assert `available_from <= trade_date` for every
-non-NA cell before returning.
+non-NA EVIDENCE cell before returning — keyed on the evidence, not on the value.
+Keying the check on non-NA values would leave exactly the served-but-NA-valued
+records unchecked, so an early-announcement record whose requested field is NA
+could carry future-dated evidence and survive construction.
 
 The evidence SHALL come from the serving view's own public response, obtained in
 the SAME call that yields the value — never reconstructed by the builder from
@@ -68,8 +71,14 @@ an unverifiable panel is indistinguishable from a leaking one.
 - **THEN** the builder raises rather than returning the panel
 
 #### Scenario: evidence dated after the trade date fails loud
-- **WHEN** any non-NA cell's recorded `available_from` exceeds its trade date
+- **WHEN** any cell's recorded `available_from` exceeds its trade date
 - **THEN** the builder raises — never silently drops or repairs the cell
+
+#### Scenario: an NA-valued cell's evidence is checked too
+- **WHEN** a served record's requested field is NA but its recorded
+  `available_from` exceeds the trade date
+- **THEN** the builder raises — the check keys on the evidence, so an
+  early-announced record does not escape by having an NA value
 
 ### Requirement: Cross-endpoint period alignment SHALL be enforced where the expression is known
 
@@ -95,9 +104,13 @@ expression check would catch. Same-endpoint subtrees are unaffected.
 
 Evaluation SHALL therefore receive the report-period provenance alongside the
 value panel; the change SHALL define and wire that provenance-bearing argument
-through the GP path (or an adapter that packages the period frames into the
-mapping before evaluation), since the current call passes the value mapping
-only.
+through EVERY path that evaluates an expression — not the search path alone —
+since the current calls pass the value mapping only. Validation evaluates
+expressions on its own segments, so a provenance-less validation path would
+either reject every fundamental factor (if provenance is mandatory) or
+re-compute unmasked mixed-period values and adjudicate on them (if optional);
+either way the metric that decides promotion would not be the metric the
+masking defines.
 
 Endpoints are served independently by the view, so without this a ratio across
 income and balance-sheet fields silently combines different quarters.
@@ -118,14 +131,74 @@ income and balance-sheet fields silently combines different quarters.
   it, so the current date's result is not contaminated
 
 #### Scenario: evaluation receives the period provenance
-- **WHEN** an expression is evaluated against a fundamental panel
-- **THEN** the report-period provenance reaches the evaluation path alongside
-  the values
+- **WHEN** an expression is evaluated against a fundamental panel — on the
+  search path or on the validation path, whole-sample or per-segment
+- **THEN** the report-period provenance reaches that evaluation alongside the
+  values, and the same masking applies
+
+#### Scenario: validation adjudicates on the masked values
+- **WHEN** validation recomputes a fundamental candidate on its own segments
+- **THEN** it evaluates with provenance and masking, so its metrics match what
+  the masked definition produces — it neither rejects the candidate for want of
+  provenance nor scores it on unmasked mixed-period values
 
 #### Scenario: an adjacent-period difference has its own provenance
 - **WHEN** a factor differences a field across adjacent report periods
 - **THEN** the prior period's value carries its own period and availability
   evidence, and the difference is NA when the adjacent period is absent
+
+### Requirement: The terminal names and the view's field names SHALL be bridged explicitly
+
+A registered fundamental terminal SHALL have a defined route to the charter
+field it stands for. The GP side and the view side do not share a name space for
+FIELDS either: the evaluator resolves only terminals beginning with `$` and
+looks them up verbatim in the panel mapping, while
+`FinancialPITDataView.as_of` rejects `$revenue` as an unknown charter field and
+accepts only the bare charter name `revenue`.
+Registering the terminals does not close this gap: a registered `$revenue` still
+has no defined route to the view's `revenue`.
+
+The change SHALL therefore define the mapping between registered fundamental
+terminals and charter field names as part of the contract — the bridge accepting
+charter names and emitting panel keys in terminal form — and SHALL test that a
+GP-GENERATED terminal resolves end to end through the bridge, not merely that
+the registry and the view each work in isolation.
+
+#### Scenario: a generated terminal resolves through the bridge to a view field
+- **WHEN** GP generates an expression referencing a registered fundamental
+  terminal
+- **THEN** evaluating it against the bridged panel yields that charter field's
+  as-of values — the terminal form is accepted by the evaluator and the charter
+  form is what reaches the view
+
+#### Scenario: an unmapped terminal fails loud
+- **WHEN** a fundamental terminal has no charter field mapping
+- **THEN** the bridge refuses rather than emitting a panel key the evaluator
+  would later fail to resolve, or silently omitting the field
+
+### Requirement: Prior-period values SHALL be reachable by generated expressions
+
+Adjacent-period differencing SHALL be expressible by GP, not merely carried in
+the panel. The evaluator can consume only registered terminal keys present in
+the value mapping, so prior-period values held as `__prior` side-objects are
+unreachable from any AST: asset growth and the pure-balance-sheet accrual — the
+starter factors this change must run end to end — cannot be written at all.
+
+The change SHALL make prior periods first-class, either as typed prior-period
+terminals or as an adjacent-report-period operator, SHALL include them in the
+panel keys and in the campaign's frozen terminal/operator whitelist, and SHALL
+test both that GP can GENERATE such an expression and that it EVALUATES to the
+adjacent-period difference.
+
+#### Scenario: GP can generate and evaluate an adjacent-period difference
+- **WHEN** the fundamental terminal/operator set is in force
+- **THEN** an adjacent-report-period difference is generatable by GP and
+  evaluates to the difference between the served period and its prior period
+
+#### Scenario: a missing adjacent period yields NA
+- **WHEN** the prior report period is absent for an instrument on a trade date
+- **THEN** the difference is NA — never imputed from a further-back period
+  without saying so
 
 ### Requirement: The panel SHALL emit one frozen instrument namespace aligned with the GP inputs
 

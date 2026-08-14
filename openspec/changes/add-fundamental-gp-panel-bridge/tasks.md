@@ -13,6 +13,17 @@
       现状 `FeatureRegistry.V1` 仅 12 个终端，`_random_leaf` 与 `V1_*` 取交集、
       `Terminal` 拒绝表外名字 —— 只靠参数传面板，GP **长不出**基本面表达式。
       D5 不受影响（只加终端符号与类型，不引入 qlib/PIT import），须有对应闸测试。
+- [ ] **终端名 ↔ charter 字段名的映射**（codex #427 r4 P1）：注册终端还不够 ——
+      `evaluator` 只认 `$` 开头并按字面查面板 key（`evaluator.py:82`），而
+      `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field
+      （`_FIELD_ENDPOINT` 白名单）、只收裸名 `revenue`。须把映射写进契约：桥收 charter
+      名、发终端形 key；测试要**端到端**（GP 生成的终端 → 桥 → view 字段值），不是
+      注册表和 view 各自能跑；无映射的终端**fail-loud**，不得静默丢字段。
+- [ ] **prior 期做成一等公民**（codex #427 r4 P1）：`__prior` 只挂在面板旁边是**长不出
+      表达式**的 —— evaluator 只能消费已注册且在值 mapping 里的 key，AST 根本引用不到
+      它，于是起步三因子里的**资产增长与 C3 应计写不出来**（而"跑通链路"任务又要求
+      它们跑）。须落成带类型的 prior 期终端或"相邻报告期"算子，进面板 key 与战役
+      白名单，并测试 **GP 能生成** + **求值确为相邻期差分**（相邻期缺失 → NA）。
 
 ## 桥模块（研究侧）
 
@@ -20,8 +31,11 @@
       trade_dates, instruments, *, group_resolver=None)` → `(panels, evidence,
       periods)`；逐交易日 `view.as_of`（**一次调用同时取值、provenance、报告期**），
       实例内缓存已由 view 提供（只付过滤成本）。
-- [ ] 返回前自检：每个非 NA cell 的 `available_from <= trade_date`，违反即 raise；
-      无法建立证据的字段 → 拒绝返回面板（不返回"无证据面板"）。
+- [ ] 返回前自检：`available_from <= trade_date`，**键在证据上而非值上**
+      （codex #427 r4 P2）—— 每个**非 NA 证据** cell 都要查。若按"非 NA 值"来查，
+      r3 引入的"被服务记录值为 NA 仍带可用日"那批 cell 恰好全部逃检，提前公告且
+      该字段为 NA 的记录就能带着未来日期的证据活着出厂，与金丝雀①自相矛盾。
+      违反即 raise；无法建立证据的字段 → 拒绝返回面板（不返回"无证据面板"）。
 - [ ] **跨期 provenance**：面板携带每个字段的 `report_period`
       （用 `include_report_periods`）与差分类字段的 `__prior` 及其自身 provenance
       （用 `include_prior_period`）。
@@ -43,6 +57,14 @@
       新纳入 scope 的 evaluator **没有途径拿到** report periods。须定义并接线一个带
       provenance 的面板/求值参数（或明确一个 adapter，在求值前把 period 帧打包进
       mapping）；若这条通路需要动 `gp_engine.py` 的传参，则它也进 scope。
+- [ ] **接线要覆盖每一个求值调用点，不止搜索路径**（codex #427 r4 P1）：
+      `validator.py:157` 的 `_evaluate_segment` 调 `evaluate_factor(expr, seg_panel,
+      seg_fwd, ...)`、`validator.py:293` 的 `filter_correlated` 调
+      `evaluate_expression(entry.expr, panel)`，两处都不带 provenance。若 provenance
+      变成必需，验证会把**每个**基本面因子判为无效；若保持可选，验证就在**未遮蔽的
+      混季值**上算指标并据此裁决 —— 两种都让"决定晋升的指标"不是"遮蔽定义的指标"。
+      验证的分段切分与两条求值路径一并进 scope，测试同步迁移（AGENTS.md「改契约必须
+      迁移调用方与测试」）。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
@@ -79,8 +101,9 @@
 
 ## 验证与边界
 
-- [ ] 确认改动面与提案一致：`grammar.py`（终端注册）、`evaluator.py`（跨端点同期
-      强制，expression-aware）与 `financial_pit_view.py`（provenance 响应）**有**改动；
+- [ ] 确认改动面与提案一致：`grammar.py`（终端注册 + 名字映射 + prior 期终端/算子）、
+      `evaluator.py`（跨端点同期强制，expression-aware）、`validator.py`（两条求值
+      调用点接 provenance）与 `financial_pit_view.py`（provenance 响应）**有**改动；
       `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
