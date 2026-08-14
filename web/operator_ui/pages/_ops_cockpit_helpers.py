@@ -53,7 +53,7 @@ from web.operator_ui.incumbent import PROJECT_ROOT as _INCUMBENT_ROOT
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.incumbent import anchored_to_repo as anchored_to_repo
 from web.operator_ui.incumbent import (
-    foreign_absolute_reason as foreign_absolute_reason,
+    unusable_path_reason as unusable_path_reason,
 )
 
 # The checkout — reused, not derived a second time (r23/r26/r27).
@@ -578,7 +578,7 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
         # the true fault is upstream: no provider path was resolved at all
         # (codex #431 r21).
         return CalendarTail(known=False, reason=UNRESOLVED_PROVIDER_REASON)
-    _foreign = foreign_absolute_reason(provider_uri)
+    _foreign = unusable_path_reason(provider_uri)
     if _foreign is not None:
         # Reading it would answer about `<cwd>/D:/…` — a location that
         # depends on who is asking, not on the deployment (codex #431 r30).
@@ -674,7 +674,7 @@ def recommender_integrity_check(
         read_bundle_integrity,
     )
 
-    _foreign = foreign_absolute_reason(provider_uri)
+    _foreign = unusable_path_reason(provider_uri)
     if _foreign is not None:
         # Same rule as the calendar reader: a spelling this host resolves
         # against its own CWD names no single bundle (codex #431 r30).
@@ -1009,7 +1009,7 @@ def _arg(value: object) -> str:
         # Verified locally: the file was created. A refusal that executes
         # the thing it refuses is worse than no refusal (codex #431 r20).
         raise _UnusableArgument(text, _WHY_UNRENDERABLE)
-    foreign = foreign_absolute_reason(text)
+    foreign = unusable_path_reason(text)
     if foreign is not None:
         # Quotes fine, reads fine — and means a DIFFERENT place depending on
         # who resolves it. Refused at the same boundary as the other two, so

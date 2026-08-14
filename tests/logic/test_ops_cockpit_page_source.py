@@ -702,6 +702,22 @@ class ResolvedCommandTests(unittest.TestCase):
 class RepoAnchoredPathTests(unittest.TestCase):
     """A path the page READS and PRINTS must mean one bundle, not two."""
 
+    @staticmethod
+    def _as_posix_host(path: str) -> bool:
+        """The POSIX host rule, for a simulation run on Windows.
+
+        On a REAL posix host the machine's own paths are posix-absolute,
+        so only the Windows-spelled LITERALS in fixtures are foreign
+        there. Substituting bare `posixpath.isabs` would also declare
+        PROJECT_ROOT itself unqualified and manufacture failures the
+        POSIX legs never see.
+        """
+        import posixpath
+
+        import web.operator_ui.incumbent as inc
+        return (posixpath.isabs(path)
+                or str(path).startswith(str(inc.PROJECT_ROOT)))
+
     def test_a_relative_path_is_anchored_where_the_command_will_run(
             self) -> None:
         # codex #431 r27 (P1): a relative `provider_uri` was read against
@@ -760,7 +776,6 @@ class RepoAnchoredPathTests(unittest.TestCase):
         # started in /tmp reads `/tmp/D:/qlib_data/…` while the command, run
         # from the instructed repo root, reads `<checkout>/D:/qlib_data/…` —
         # the same page-says-one-bundle / command-runs-another split as r27.
-        import posixpath
         from unittest.mock import patch
 
         import web.operator_ui.incumbent as inc
@@ -773,12 +788,12 @@ class RepoAnchoredPathTests(unittest.TestCase):
         # On the documented platform this is a perfectly good absolute path
         # and nothing may change.
         with patch.object(inc, "_host_is_fully_qualified", lambda p: True):
-            self.assertIsNone(inc.foreign_absolute_reason(value))
+            self.assertIsNone(inc.unusable_path_reason(value))
             ok = data_update_command(provider_uri=value, delisted_registry="R")
             self.assertNotIn("无法生成可粘贴命令", ok.title)
         # …on a host where the spelling is foreign, every surface refuses.
-        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs):
-            reason = inc.foreign_absolute_reason(value)
+        with patch.object(inc, "_host_is_fully_qualified", self._as_posix_host):
+            reason = inc.unusable_path_reason(value)
             self.assertIsNotNone(reason)
             cmd = data_update_command(provider_uri=value,
                                       delisted_registry="R")
@@ -799,7 +814,6 @@ class RepoAnchoredPathTests(unittest.TestCase):
         # working directory would be loaded and reported as the production
         # ensemble — this page's single worst failure mode, reached silently.
         import os
-        import posixpath
         from unittest.mock import patch
 
         import web.operator_ui.incumbent as inc
@@ -809,7 +823,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
             loaded.append(path)
             raise AssertionError("外来写法的 manifest 绝不该被读取")
 
-        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs), \
+        with patch.object(inc, "_host_is_fully_qualified", self._as_posix_host), \
                 patch.dict(os.environ,
                            {"QUANT_ENSEMBLE_MANIFEST": "D:/prod/manifest.json"},
                            clear=False), \
@@ -817,7 +831,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
             identity = inc.resolve_incumbent()
         self.assertEqual([], loaded, "拒绝必须发生在读之前")
         self.assertEqual("unresolvable", identity.kind)
-        self.assertEqual(inc.FOREIGN_ABSOLUTE_REASON, identity.error)
+        self.assertIn(inc.WHY_FOREIGN_CONVENTION, identity.error or "")
         # …and it must NOT degrade to the single-model shape
         self.assertNotEqual("single", identity.kind)
 
@@ -825,19 +839,63 @@ class RepoAnchoredPathTests(unittest.TestCase):
         # The other wrong repair: anchoring makes page and command agree on a
         # location that exists nowhere, and sends the operator chasing a
         # missing bundle instead of a misconfigured path (r30).
-        import posixpath
         from unittest.mock import patch
 
         import web.operator_ui.incumbent as inc
         value = "D:/qlib_data/my_cn_data_pit"
-        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs):
+        with patch.object(inc, "_host_is_fully_qualified", self._as_posix_host):
             self.assertEqual(value, inc.anchored_to_repo(value))
 
     def test_the_page_names_a_foreign_provider_as_the_cause(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
         self.assertIn(
-            "elif foreign_absolute_reason(_provider) is not None:", page)
+            "elif unusable_path_reason(_provider) is not None:", page)
         self.assertIn("provider 路径在本机不可用", page)
+
+    def test_anchoring_that_cannot_fully_qualify_is_refused(self) -> None:
+        # codex #431 r33 (P1): `C:bundle` is drive-RELATIVE — not fully
+        # qualified, not absolute under either pure convention, so it fell
+        # into the anchoring branch. But anchoring does not fix it:
+        # `ntpath.join("D:/checkout", "C:bundle")` returns `C:bundle`
+        # unchanged, because the drive differs. The rule "anchor whatever is
+        # relative" silently produced a value that still means two places.
+        import ntpath
+        from pathlib import PureWindowsPath
+
+        import web.operator_ui.incumbent as inc
+        # the mechanism, so the pin does not rest on my description of it
+        self.assertEqual(
+            "C:bundle", ntpath.normpath(ntpath.join("D:/checkout", "C:bundle")))
+        if inc._HOST_PURE is PureWindowsPath:
+            self.assertIsNotNone(inc.unusable_path_reason("C:bundle"))
+            self.assertIn(inc.WHY_DRIVE_RELATIVE,
+                          inc.unusable_path_reason("C:bundle") or "")
+            # …and an ordinary relative path still anchors normally
+            self.assertIsNone(inc.unusable_path_reason("bundles/live"))
+
+    def test_an_unresolvable_tilde_is_refused_not_passed_through(self) -> None:
+        # codex #431 r33 (P1): returning the raw `~unknown/model.pkl` left it
+        # RELATIVE, and `_arg` then quotes it so no shell expands it either —
+        # the readers resolve it against Streamlit's directory while the
+        # command resolves it against the repo root. Refusing is the only
+        # answer that means one thing.
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+        with patch("os.path.expanduser", side_effect=lambda p: p):
+            reason = inc.unusable_path_reason("~unknown/model.pkl")
+            self.assertIsNotNone(reason)
+            self.assertIn(inc.WHY_UNRESOLVED_TILDE, reason or "")
+            # the value is kept verbatim so the refusal can quote it
+            self.assertEqual("~unknown/model.pkl",
+                             inc.anchored_to_repo("~unknown/model.pkl"))
+            # …and the command boundary refuses it
+            from web.operator_ui.pages._ops_cockpit_helpers import (
+                data_update_command,
+            )
+            cmd = data_update_command(provider_uri="~unknown/model.pkl",
+                                      delisted_registry="R")
+            self.assertIn("无法生成可粘贴命令", cmd.title)
 
     def test_a_drive_relative_rooted_path_is_refused_on_windows(self) -> None:
         # codex #431 r32 (P1): `ntpath.isabs("/srv/bundle")` is True, but the
@@ -867,18 +925,23 @@ class RepoAnchoredPathTests(unittest.TestCase):
         # platform-specific, so the branch is explicit rather than hidden
         # behind a mock — a stubbed rule would leave the implementation
         # itself unpinned (it did: the mutation survived until this).
-        import os
-        if os.name == "nt":
+        # Branch on the RULE, not on `os.name`: the rule IS the platform,
+        # and branching on the rule keeps an "as POSIX" simulation coherent
+        # (the separate assertion below pins rule ↔ platform agreement).
+        if inc._HOST_PURE is PureWindowsPath:
             self.assertFalse(inc._host_is_fully_qualified("/srv/bundle"))
             self.assertTrue(inc._host_is_fully_qualified("D:/srv/bundle"))
-            self.assertIsNotNone(inc.foreign_absolute_reason("/srv/bundle"))
-            self.assertIsNone(inc.foreign_absolute_reason("D:/srv/bundle"))
+            self.assertIsNotNone(inc.unusable_path_reason("/srv/bundle"))
+            self.assertIsNone(inc.unusable_path_reason("D:/srv/bundle"))
         else:
             self.assertTrue(inc._host_is_fully_qualified("/srv/bundle"))
             self.assertFalse(inc._host_is_fully_qualified("D:/srv/bundle"))
-            self.assertIsNone(inc.foreign_absolute_reason("/srv/bundle"))
-            self.assertIsNotNone(inc.foreign_absolute_reason("D:/srv/bundle"))
-        # …and the rule must be the pure-path one on BOTH hosts
+            self.assertIsNone(inc.unusable_path_reason("/srv/bundle"))
+            self.assertIsNotNone(inc.unusable_path_reason("D:/srv/bundle"))
+        # …and the rule must be the one this PLATFORM calls for — the single
+        # place `os.name` is consulted, so the branch above stays coherent
+        # under an "as POSIX" simulation while this still pins the binding.
+        import os
         self.assertIs(
             inc._HOST_PURE,
             PureWindowsPath if os.name == "nt" else PurePosixPath)
@@ -956,7 +1019,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
         self.assertIn("target = anchored_to_repo(pointer or "
                       "DEFAULT_ENSEMBLE_MANIFEST)", incumbent)
         # …and a foreign spelling is refused before the read, not loaded (r31)
-        self.assertLess(incumbent.index("foreign = foreign_absolute_reason"),
+        self.assertLess(incumbent.index("unusable = unusable_path_reason"),
                         incumbent.index("return load_ensemble_manifest_identity"))
 
     def test_the_repo_root_is_reused_not_derived_again(self) -> None:

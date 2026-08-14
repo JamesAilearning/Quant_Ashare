@@ -353,6 +353,17 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
   一个不存在的位置，会把操作人引去查「bundle 丢了」而不是「路径配错了」
 - **AND** 在该写法本就成立的宿主上（Windows），一切 MUST 保持不变
 
+#### Scenario: 判据是一条不变式，不是一张特例表
+
+- **GIVEN** 本页既读又印的任一路径
+- **THEN** 本页最终使用的取值 MUST 在本机**完全限定**，否则 MUST 拒绝——
+  判据是这条**后置条件**，MUST NOT 靠逐一枚举已知写法
+- **AND** 锚定后仍不完全限定的写法 MUST 被拒绝:`C:bundle` 是盘符相对，
+  `ntpath.join("D:/checkout", "C:bundle")` 原样返回 `C:bundle`（实测），
+  「凡相对就锚定」这条规则会静默产出一个仍指两处的值
+- **AND** `~` 解析不出家目录时（`~unknown/…`）MUST 拒绝，MUST NOT 原样放行
+  ——原样放行后它仍是相对路径，而本页无条件加单引号，shell 也不会展开它
+
 #### Scenario: 判据是「本机完全限定」，不是 `os.path.isabs`
 
 - **GIVEN** Windows 上 `provider_uri` 写作 `/srv/bundle`

@@ -50,39 +50,59 @@ def _host_is_fully_qualified(path: str) -> bool:
     return _HOST_PURE(path).is_absolute()
 
 
-# Message shown when a spelling names nothing resolvable on THIS host.
-FOREIGN_ABSOLUTE_REASON = (
-    "该路径在本机**不是完全限定**的写法——要么是另一套约定下的绝对路径"
-    "(如 Windows 的 `D:/…` 出现在 POSIX 主机上),要么是 Windows 上缺盘符的"
-    "`/srv/…`(按**当前盘**解析)。两种情况下,不同工作目录的读取器会解析到"
-    "不同位置,本页无法让它只指一处"
-)
+# Why a spelling cannot be made to name exactly one location here. Kept
+# apart so the refusal the operator reads names the repair they need.
+WHY_FOREIGN_CONVENTION = (
+    "该路径是**另一套约定**下的绝对路径(如 Windows 的 `D:/…` 出现在 POSIX "
+    "主机上),本机的读取器会把它当相对路径")
+WHY_DRIVE_RELATIVE = (
+    "该路径在本机**不是完全限定**的写法(如 Windows 上缺盘符的 `/srv/…`,"
+    "或带盘符却无根的 `C:bundle`),会按当前盘 / 当前目录解析")
+WHY_UNRESOLVED_TILDE = (
+    "该路径以 `~` 开头且本机解析不出对应的家目录(如 `~unknown/…`)")
+_UNUSABLE_TAIL = (
+    "——不同工作目录的读取器会解析到不同位置,本页无法让它只指一处")
 
 
-def foreign_absolute_reason(path: str) -> str | None:
-    """Why this spelling cannot be made to mean one place here — or None.
+def unusable_path_reason(path: str) -> str | None:
+    """Why this page cannot use this spelling — or None if it can.
 
-    ``os.path.isabs`` answers for the HOST. A value like
-    ``D:/qlib_data/my_cn_data_pit`` is absolute to Windows and **relative** to
-    POSIX, so on Linux it does not "simply fail to read" (what r28 claimed):
-    it silently resolves against whatever directory the reader happens to be
-    in. Measured — Streamlit started in ``/tmp`` reads
-    ``/tmp/D:/qlib_data/…`` while the command, run from the instructed
-    repository root, reads ``<checkout>/D:/qlib_data/…``. That is exactly the
-    page-says-one-bundle / command-runs-another split r27 was about, wearing
-    a different spelling (codex #431 r30).
+    ONE invariant, not a list of cases: a value this page both READS and
+    PRINTS must name **exactly one location on this host**, from any working
+    directory. Everything else is refused.
 
-    Anchoring it would make the two agree on a nonsense location and send the
-    operator chasing a missing bundle; passing it through keeps them
-    disagreeing. Neither is usable, so this is reported and the value is
-    refused rather than silently used.
+    Three previous rounds each patched a single spelling and each missed the
+    next one — a Windows path on POSIX (r30), a drive-less `/srv/…` on
+    Windows (r32), then `~unknown/…` and `C:bundle` (r33). So the test is now
+    the post-condition itself: **is the value this page would use fully
+    qualified?** Anything that cannot be made so is reported, never used.
+
+    ``C:bundle`` is the case that proves the point: it is not fully
+    qualified, not absolute under either pure convention, and anchoring does
+    NOT fix it — ``ntpath.join("D:/checkout", "C:bundle")`` returns
+    ``C:bundle`` unchanged, because the drive differs (verified). A rule
+    written as "anchor whatever is relative" silently produced a value that
+    still meant two different places.
     """
     if not path.strip():
+        return None                       # blank: the r21 boundary owns it
+    expanded = os.path.expanduser(path)
+    if _host_is_fully_qualified(expanded):
         return None
-    if _host_is_fully_qualified(path):
-        return None
-    return (FOREIGN_ABSOLUTE_REASON
-            if _is_absolute_under_either_convention(path) else None)
+    if expanded.startswith("~"):
+        # expanduser could not resolve it. Do not guess, and do not anchor a
+        # `~` as if it were a directory name (codex #431 r33).
+        return WHY_UNRESOLVED_TILDE + _UNUSABLE_TAIL
+    if _is_absolute_under_either_convention(expanded):
+        return WHY_FOREIGN_CONVENTION + _UNUSABLE_TAIL
+    if not _host_is_fully_qualified(_anchor(expanded)):
+        return WHY_DRIVE_RELATIVE + _UNUSABLE_TAIL
+    return None
+
+
+def _anchor(expanded: str) -> str:
+    """Where the machine would read this, run from the checkout."""
+    return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
 
 
 def anchored_to_repo(path: str) -> str:
@@ -93,42 +113,30 @@ def anchored_to_repo(path: str) -> str:
     while the command it prints carries the same relative spelling to a
     terminal the page tells the operator to open **at the repository root**.
     Those are two different bundles, and nothing downstream can detect the
-    swap: the page would describe one and the command would run on the other
-    (codex #431 r27).
+    swap (codex #431 r27). So relative paths are resolved against the
+    checkout — the CWD the machine will actually have.
 
-    So relative paths are resolved against the checkout — the CWD the machine
-    will actually have, per the runbook and per this page's own instruction.
+    ``~`` is EXPANDED, and the expansion is what gets both read and printed:
+    the raw ``~/model.pkl`` would be read as a literal ``~`` directory here,
+    and the printed command — single-quoted, because this page quotes
+    unconditionally (r17) — hands that same literal to Python with no shell
+    expansion either (r28).
 
-    ``~`` is EXPANDED, and the expansion is what gets both read and printed.
-    Returning the raw ``~/model.pkl`` would be read as a literal ``~``
-    directory here, while the printed command — single-quoted, because this
-    page quotes unconditionally (r17) — hands that same literal to Python
-    with no shell expansion either. Two wrong answers that happen to differ
-    from what the operator meant; the expanded form is the one thing both
-    sides can agree on (codex #431 r28).
-
-    Everything already unambiguous is returned UNTOUCHED: inventing a
-    normalization the CLI does not share is the mistake r23 and r24 were
-    about. A blank value is likewise untouched — the command boundary
-    refuses it (r21).
-
-    A FOREIGN absolute (``D:/…`` on POSIX) is also returned untouched, but it
-    is NOT usable: see :func:`foreign_absolute_reason`. It keeps the
-    operator's own spelling so the refusal can quote what they configured
-    (codex #431 r30).
+    Anything already fully qualified is returned UNTOUCHED: inventing a
+    normalization the CLI does not share is the mistake r23/r24 were about.
+    Anything :func:`unusable_path_reason` rejects is returned untouched too —
+    it keeps the operator's own spelling so the refusal can quote what they
+    configured, and every consumer refuses it rather than using it.
     """
     if not path.strip():
         return path
     expanded = os.path.expanduser(path)
-    if expanded.startswith("~"):
-        # expanduser could not resolve it (no HOME, or `~unknownuser`). Do
-        # not guess and do not anchor a `~` as if it were a directory name.
-        return path
-    if foreign_absolute_reason(expanded) is not None:
-        return expanded
     if _host_is_fully_qualified(expanded):
         return expanded
-    return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
+    if unusable_path_reason(path) is not None:
+        return expanded if not expanded.startswith("~") else path
+    return _anchor(expanded)
+
 
 # The RETIRED single model — still the incumbent on a deployment that
 # explicitly opted out of the ensemble. Mirrors the CLI default
@@ -252,8 +260,8 @@ def resolve_incumbent() -> IncumbentIdentity:
     # Anchored BEFORE the read, so the manifest this identity was built from
     # is the same file the printed `--ensemble-manifest` will open (r27).
     target = anchored_to_repo(pointer or DEFAULT_ENSEMBLE_MANIFEST)
-    foreign = foreign_absolute_reason(target)
-    if foreign is not None:
+    unusable = unusable_path_reason(target)
+    if unusable is not None:
         # Do NOT load it. On POSIX a `D:/…` pointer is a relative path, so a
         # matching `D:/…` tree happening to exist under Streamlit's working
         # directory would be loaded and reported as the production ensemble —
@@ -261,5 +269,5 @@ def resolve_incumbent() -> IncumbentIdentity:
         # (codex #431 r31). "Unresolvable" is the honest state and both pages
         # already refuse to describe an incumbent in it.
         return IncumbentIdentity(
-            kind="unresolvable", manifest_path=target, error=foreign)
+            kind="unresolvable", manifest_path=target, error=unusable)
     return load_ensemble_manifest_identity(target)

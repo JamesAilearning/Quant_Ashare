@@ -359,10 +359,24 @@
       渲染与分类必须分开考
 - [x] 可信 POSIX 仿真复跑:171 passed
 
+## W39 codex #431 r33（两 **P1**，均属实；停止补特例，改守不变式）
+- [x] **承认模式**:r30/r32/r33 我连补三次特例,每次都漏下一种写法。
+      判据改为**后置条件**:本页最终使用的取值必须在本机**完全限定**,否则拒绝
+- [x] `foreign_absolute_reason` -> `unusable_path_reason`,三种原因分开命名
+      (外来约定 / 非完全限定 / `~` 解析不出),让操作人看到该怎么修
+- [x] **P1-a** `C:bundle` 盘符相对:锚定**修不好**它 ——
+      `ntpath.join("D:/checkout","C:bundle")` 原样返回 `C:bundle`(实测)。
+      「凡相对就锚定」会静默产出仍指两处的值  ← C103 咬住
+- [x] **P1-b** `~unknown/…` 解析不出时原样放行 = 仍是相对路径,而本页无条件
+      加单引号,shell 也不会展开  ← C104 咬住
+- [x] POSIX 仿真的宿主规则抽成测试类共享 helper:裸 `posixpath.isabs` 会把
+      PROJECT_ROOT 自己也判成不合格,制造 POSIX 腿根本不会有的假红
+- [x] 顺手修好一处被早先 heredoc 吃掉反斜杠的注释(`C:\srvundle`)
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C102(C57/C58/C68 随重构作废):98 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C104(C57/C58/C68 随重构作废):100 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

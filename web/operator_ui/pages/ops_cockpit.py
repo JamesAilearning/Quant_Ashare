@@ -29,9 +29,9 @@ from web.operator_ui.bundle_health import (
 from web.operator_ui.formatting import cn_today
 from web.operator_ui.incumbent import (
     anchored_to_repo,
-    foreign_absolute_reason,
     resolve_incumbent,
     resolve_model_path,
+    unusable_path_reason,
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._ops_cockpit_helpers import (
@@ -106,12 +106,12 @@ if not provider_is_resolved(_provider):
         "空路径在下游会被读成**当前工作目录**(`Path('')` 即 `Path('.')`),"
         "照跑会作用在错误的数据上。请先修好 `config.yaml` 再回本页。"
     )
-elif foreign_absolute_reason(_provider) is not None:
+elif unusable_path_reason(_provider) is not None:
     # Said once, same as above: on a POSIX host a `D:/…` provider quotes and
     # reads fine but names a different place for every reader (r30).
     st.error(
         f"⚠ **provider 路径在本机不可用**:`{_provider}` — "
-        f"{foreign_absolute_reason(_provider)}。"
+        f"{unusable_path_reason(_provider)}。"
         "下方 ⑤ 的两道门无法判定,④/⑤ 的命令一律不生成。"
         "请把 `config.yaml` 的 `provider_uri` 改成本机约定下的绝对路径,"
         "或改成相对仓库根的路径。"
