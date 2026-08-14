@@ -217,6 +217,179 @@ def _stamp(value: object) -> str:
     return str(value)
 
 
+# --------------------------------------------------------------- 端到端执行
+
+def write_shifted_store(
+    store_dir: Path, out_dir: Path, shift_days: int,
+    calendar: Sequence[date],
+) -> Path:
+    """Write a copy of ``store_dir`` with every announcement delayed.
+
+    Only ``ann_date`` / ``f_ann_date`` are moved: ``available_from_trade_date``
+    is DERIVED by the contract layer from those, so the view recomputes it and
+    the shifted world stays internally consistent. Writing a shifted
+    availability directly would let the two disagree.
+
+    The shift is the only difference — same instruments, same periods, same
+    values — so any behavioural difference downstream is attributable to the
+    announcement date alone.
+    """
+    if shift_days <= 0:
+        raise ShiftDiagnosticError(
+            f"shift_days must be positive (got {shift_days}).")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    wrote = 0
+    for endpoint_dir in sorted(p for p in store_dir.iterdir() if p.is_dir()):
+        target = out_dir / endpoint_dir.name
+        target.mkdir(parents=True, exist_ok=True)
+        for parquet in sorted(endpoint_dir.glob("*.parquet")):
+            frame = pd.read_parquet(parquet)
+            for col in ("ann_date", "f_ann_date"):
+                if col in frame.columns:
+                    # Written back in the store's own YYYYMMDD string form: the
+                    # contract layer parses these strictly and rejects any
+                    # other rendering as corruption, so emitting date objects
+                    # (which parquet would store as ISO) would fail the store
+                    # rather than shift it.
+                    frame[col] = frame[col].map(
+                        lambda d: _shift_stamp(d, shift_days, calendar))
+            frame.to_parquet(target / parquet.name, index=False)
+            wrote += 1
+    if not wrote:
+        raise ShiftDiagnosticError(
+            f"{store_dir} held no endpoint parquet files — nothing to shift, "
+            "so the diagnostic would compare a store against itself.")
+    return out_dir
+
+
+def _shift_stamp(
+    day: object, n: int, calendar: Sequence[date],
+) -> object:
+    """``_shift_forward`` rendered back into the store's YYYYMMDD string form.
+
+    A blank/NA announcement stays blank — a record with no announcement date is
+    UNAVAILABLE, and inventing one for it would manufacture availability the
+    original store never had.
+    """
+    if day is None or (not isinstance(day, str) and pd.isna(day)):
+        return day
+    if isinstance(day, str) and not day.strip():
+        return day
+    parsed = day if isinstance(day, date) else pd.Timestamp(day).date()
+    moved = _shift_forward(parsed, n, calendar)
+    return "" if moved is None else moved.strftime("%Y%m%d")
+
+
+def served_periods(panel_periods: Mapping[str, pd.DataFrame]) -> dict[
+        tuple[str, date], str | None]:
+    """Flatten a panel's ``periods`` frames into (instrument, date) -> period.
+
+    All requested fields of one endpoint share a served period, so any field's
+    frame answers the question; disagreement across fields would itself be a
+    bug, and is asserted rather than averaged over.
+    """
+    out: dict[tuple[str, date], str | None] = {}
+    for frame in panel_periods.values():
+        for when in frame.index:
+            for inst in frame.columns:
+                raw = frame.loc[when, inst]
+                value = None if pd.isna(raw) else str(raw)
+                key = (str(inst), pd.Timestamp(when).date())
+                if key in out and out[key] != value:
+                    raise ShiftDiagnosticError(
+                        f"fields disagree on the served period at {key}: "
+                        f"{out[key]!r} vs {value!r} — a panel bug, not a "
+                        "shift-sensitivity finding.")
+                out[key] = value
+    return out
+
+
+def run_diagnostic(
+    *,
+    store_dir: Path,
+    calendar: Sequence[date],
+    trade_dates: Sequence[date],
+    fields: Sequence[str],
+    instruments: Sequence[str],
+    financial_issuers: frozenset[str],
+    shift_days: int,
+    workdir: Path,
+    build_panel: object = None,
+) -> ShiftVerdict:
+    """Run defense (iii) end to end: build BOTH panels and adjudicate.
+
+    This is the operational entry point — the helpers above only compute the
+    expectation. A diagnostic whose two sides are supplied by its caller proves
+    nothing about any builder, so the shifted store is constructed here, both
+    panels are built through the REAL factory, and the served periods are read
+    off the panels' own ``periods`` frames.
+
+    ``build_panel`` defaults to the production bridge; tests inject a
+    deliberately announcement-blind builder to prove the REFUSE path fires.
+    """
+    from src.data.trading_calendar import StaticTradingCalendar  # noqa: PLC0415
+    from src.research.financial_pit_view import (  # noqa: PLC0415
+        FinancialPITDataView,
+    )
+    from src.research.fundamental_panel import (  # noqa: PLC0415
+        build_fundamental_panel,
+    )
+
+    factory = build_fundamental_panel if build_panel is None else build_panel
+    cal = StaticTradingCalendar(list(calendar))
+
+    base_view = FinancialPITDataView(store_dir, cal,
+                                     financial_issuers=financial_issuers)
+    base_panel = factory(base_view, fields, trade_dates, instruments)  # type: ignore[operator]
+
+    shifted_dir = write_shifted_store(
+        store_dir, workdir / f"shifted_{shift_days}", shift_days, calendar)
+    shifted_view = FinancialPITDataView(shifted_dir, cal,
+                                        financial_issuers=financial_issuers)
+    shifted_panel = factory(shifted_view, fields, trade_dates, instruments)  # type: ignore[operator]
+
+    # The expectation comes from the SOURCE data, never from either panel —
+    # otherwise an announcement-blind builder would define itself irrelevant.
+    moves = find_winner_moves(
+        _record_frames(store_dir, fields, cal), trade_dates, shift_days,
+        calendar=calendar)
+    return adjudicate(moves, served_periods(base_panel.periods),
+                      served_periods(shifted_panel.periods))
+
+
+def _record_frames(
+    store_dir: Path, fields: Sequence[str], calendar: object,
+) -> dict[str, pd.DataFrame]:
+    """Per-instrument disclosure-of-record frames for the queried endpoints.
+
+    Reduced by the CANONICAL selection before any winner is computed, so rows
+    the view would never serve cannot move a winner — and so a uf1-only period,
+    which IS its period's disclosure of record, still can.
+    """
+    from src.data.pit._common import to_qlib_ticker  # noqa: PLC0415
+    from src.data.pit.financial_pit_contract import (  # noqa: PLC0415
+        build_contract_frame,
+        resolve_current_versions,
+    )
+    from src.research.financial_pit_view import (  # noqa: PLC0415
+        _FIELD_ENDPOINT,
+    )
+
+    endpoints = {_FIELD_ENDPOINT[f] for f in fields if f in _FIELD_ENDPOINT}
+    out: dict[str, pd.DataFrame] = {}
+    for endpoint in sorted(endpoints):
+        endpoint_dir = Path(store_dir) / endpoint
+        if not endpoint_dir.is_dir():
+            continue
+        for parquet in sorted(endpoint_dir.glob("*.parquet")):
+            raw = pd.read_parquet(parquet)
+            record = select_disclosure_of_record(
+                resolve_current_versions(
+                    build_contract_frame(raw, calendar)))  # type: ignore[arg-type]
+            out[to_qlib_ticker(parquet.stem)] = record
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store-dir", required=True)

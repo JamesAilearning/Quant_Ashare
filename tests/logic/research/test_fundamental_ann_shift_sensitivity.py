@@ -207,3 +207,141 @@ def test_verdict_renders_its_reason():
     base, shifted = _served(moves, base_from=lambda m: m.base_period,
                             shift_from=lambda m: m.base_period)
     assert "REFUSE" in adjudicate(moves, base, shifted).render()
+
+
+# --- 端到端：诊断必须真的建两侧面板并裁决 ----------------------------------
+#
+# codex #433 P1：此前 `main` 无条件 raise、无任何调用方，测试自己造 served map ——
+# 于是"盲目构建器"从未被真正跑过、也从未被真正拒绝过，防线 (iii) 不成立。
+# 下面这组用**真的** build_fundamental_panel 与**真的**平移 store 跑完整条路径。
+
+import pandas as _pd  # noqa: E402
+import pytest as _pytest  # noqa: E402
+
+from scripts.research.fundamental_ann_shift_sensitivity import (  # noqa: E402
+    run_diagnostic,
+    served_periods,
+    write_shifted_store,
+)
+from src.research.fundamental_panel import (  # noqa: E402
+    FundamentalPanel,
+)
+
+_E2E_DAYS = [date(2022, 3, 31), date(2022, 4, 1), date(2022, 4, 29),
+             date(2022, 5, 5), date(2022, 5, 6), date(2022, 5, 9)]
+_INCOME = ("revenue", "total_revenue", "oper_cost", "sell_exp",
+           "admin_exp", "rd_exp", "int_exp", "fin_exp")
+
+
+def _store_row(ts, end_date, ann, revenue):
+    row = {"ts_code": ts, "end_date": end_date, "ann_date": ann,
+           "f_ann_date": ann, "update_flag": "0",
+           "_content_hash": f"h_{ts}_{end_date}", "_fetch_batch": "b1",
+           "_source_endpoint": "income"}
+    for f in _INCOME:
+        row[f] = revenue if f == "revenue" else _pd.NA
+    return row
+
+
+@_pytest.fixture
+def e2e_store(tmp_path):
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    _pd.DataFrame([
+        _store_row("000001.SZ", "20211231", "20220331", 100.0),
+        _store_row("000001.SZ", "20220331", "20220429", 30.0),
+    ]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    return tmp_path / "store"
+
+
+def _run(store, tmp_path, *, build_panel=None, shift_days=2):
+    return run_diagnostic(
+        store_dir=store, calendar=_E2E_DAYS, trade_dates=_E2E_DAYS,
+        fields=["revenue"], instruments=["000001.SZ"],
+        financial_issuers=frozenset(), shift_days=shift_days,
+        workdir=tmp_path / "work", build_panel=build_panel)
+
+
+def test_shifted_store_only_moves_the_announcement(e2e_store, tmp_path):
+    """平移 store 只动 ann_date/f_ann_date —— 值与期一律不动。"""
+    out = write_shifted_store(e2e_store, tmp_path / "s", 2, _E2E_DAYS)
+    before = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    after = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
+    assert list(after["revenue"]) == list(before["revenue"])
+    assert list(after["end_date"]) == list(before["end_date"])
+    assert list(after["ann_date"]) != list(before["ann_date"])
+
+
+def test_the_real_bridge_passes_end_to_end(e2e_store, tmp_path):
+    """真桥走完整条路径 → OK（非空性：诊断不是恒 REFUSE）。"""
+    verdict = _run(e2e_store, tmp_path)
+    assert verdict.verdict == OK, verdict.render()
+    assert verdict.moves != ()          # 确有胜者移动，不是靠 INCONCLUSIVE 蒙混
+
+
+def _announcement_blind_builder(view, fields, trade_dates, instruments, **kw):
+    """一个**真的**按 report_period 取值的错误实现。
+
+    它无视 available_from，直接把「期末日 <= 交易日」的最新一期端上来 ——
+    也就是财报一结账就当天可见，公告日完全不参与。这正是防线 (iii) 存在的理由。
+    """
+    from src.data.pit._common import to_qlib_ticker
+
+    insts = [to_qlib_ticker(i) if "." in i else i for i in instruments]
+    idx = _pd.DatetimeIndex(sorted(trade_dates))
+    values = _pd.DataFrame(index=idx, columns=insts, dtype="object")
+    periods = _pd.DataFrame(index=idx, columns=insts, dtype="object")
+    evidence = _pd.DataFrame(index=idx, columns=insts, dtype="object")
+    store = view._store_dir / "income"          # noqa: SLF001 - 故意绕过 view
+    for parquet in store.glob("*.parquet"):
+        raw = _pd.read_parquet(parquet)
+        col = to_qlib_ticker(parquet.stem)
+        if col not in insts:
+            continue
+        for when in idx:
+            ok = raw[raw["end_date"].map(
+                lambda e, _w=when: _pd.Timestamp(e).date() <= _w.date())]
+            if ok.empty:
+                continue
+            hit = ok.sort_values("end_date").iloc[-1]
+            values.loc[when, col] = hit["revenue"]
+            periods.loc[when, col] = str(hit["end_date"])
+            evidence.loc[when, col] = when.strftime("%Y%m%d")
+    key = "$" + fields[0]
+    return FundamentalPanel({key: values}, {key: evidence}, {key: periods},
+                            {}, {}, {})
+
+
+def test_an_announcement_blind_builder_is_refused_end_to_end(e2e_store,
+                                                             tmp_path):
+    """核心：真跑一个盲目构建器，诊断必须 REFUSE。
+
+    它平移前后服务的都是同一期（因为它根本不看公告日），所以"被服务的记录
+    没换人" —— 这正是判据要抓的。
+    """
+    verdict = _run(e2e_store, tmp_path, build_panel=_announcement_blind_builder)
+    assert verdict.verdict == REFUSE, verdict.render()
+    assert verdict.violations != ()
+
+
+def test_blind_builder_does_not_escape_via_inconclusive_end_to_end(e2e_store,
+                                                                   tmp_path):
+    """相关性来自源数据，所以盲目构建器**建立得起**相关性，逃不掉裁决。"""
+    verdict = _run(e2e_store, tmp_path, build_panel=_announcement_blind_builder)
+    assert verdict.verdict != INCONCLUSIVE
+    assert verdict.moves != ()
+
+
+def test_served_periods_flattening_rejects_field_disagreement():
+    idx = _pd.DatetimeIndex([_pd.Timestamp(2022, 5, 5)])
+    a = _pd.DataFrame([["20220331"]], index=idx, columns=["SZ000001"])
+    b = _pd.DataFrame([["20211231"]], index=idx, columns=["SZ000001"])
+    with _pytest.raises(ShiftDiagnosticError, match="disagree on the served"):
+        served_periods({"$x": a, "$y": b})
+
+
+def test_empty_store_is_refused(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with _pytest.raises(ShiftDiagnosticError, match="nothing to shift"):
+        write_shifted_store(empty, tmp_path / "o", 1, _E2E_DAYS)

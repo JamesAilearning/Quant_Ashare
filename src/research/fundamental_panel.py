@@ -76,9 +76,18 @@ def to_terminal(field: str) -> str:
 def to_field(terminal: str) -> str:
     """GP terminal name -> charter field name (``$revenue`` -> ``revenue``).
 
-    Fail loud on a name that is not in terminal form: silently accepting one
-    would let a caller pass a charter name where a terminal is expected and get
-    a panel whose keys the evaluator cannot resolve.
+    Two separate refusals, because they are two different mistakes:
+
+    * not in terminal form — a caller passed a charter name where a terminal
+      was expected, and the resulting panel key would never resolve;
+    * in terminal form but naming NO charter field — a misspelled or
+      mismatched registered terminal (``$not_a_field``, or a bare ``$``).
+      Stripping the prefix and returning the remainder would let it travel on
+      as if it were mapped, and it would surface much later as a confusing
+      lookup miss instead of failing here at the bridge boundary.
+
+    Membership is checked against the VIEW's own field table, so this cannot
+    drift from the set of fields that can actually be served.
     """
     if not terminal.startswith(TERMINAL_PREFIX):
         raise FundamentalPanelError(
@@ -86,7 +95,25 @@ def to_field(terminal: str) -> str:
             f"{TERMINAL_PREFIX!r} prefix) — the evaluator resolves only "
             "terminal-form keys, so an unprefixed key would never resolve."
         )
-    return terminal[len(TERMINAL_PREFIX):]
+    field = terminal[len(TERMINAL_PREFIX):]
+    if field not in _view_field_endpoints():
+        raise FundamentalPanelError(
+            f"terminal {terminal!r} maps to no charter field — the bridge "
+            "refuses it here rather than passing an unmapped key downstream. "
+            f"Valid fields: {sorted(_view_field_endpoints())}"
+        )
+    return field
+
+
+def _view_field_endpoints() -> Mapping[str, str]:
+    """The view's field -> endpoint table (imported lazily to keep this a leaf).
+
+    Deliberately not a private copy: a second table would be free to drift from
+    the one that actually serves the values.
+    """
+    from src.research.financial_pit_view import _FIELD_ENDPOINT  # noqa: PLC0415
+
+    return _FIELD_ENDPOINT
 
 
 class FundamentalPanel(NamedTuple):
@@ -229,10 +256,8 @@ def _endpoint_of(view: FinancialPITDataView, field: str) -> str:
     the one that actually served the value, and the evidence column we then read
     would describe a different endpoint's record.
     """
-    from src.research.financial_pit_view import _FIELD_ENDPOINT  # noqa: PLC0415
-
     try:
-        return _FIELD_ENDPOINT[field]
+        return _view_field_endpoints()[field]
     except KeyError as exc:
         raise FundamentalPanelError(
             f"unknown charter field {field!r} — it has no endpoint in the "
