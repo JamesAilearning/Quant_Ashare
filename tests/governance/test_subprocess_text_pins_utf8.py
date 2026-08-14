@@ -873,6 +873,19 @@ def _git_output_safe(call: ast.Call) -> bool:
             # any command that refreshes the index; the literal
             # ``-c core.fsmonitor=false`` is the one uniform cure.
             return False
+        # An OPAQUE operand is echoed back by git when it is invalid —
+        # ``fatal: bad revision <bytes>`` — and the diagnostics stream
+        # is captured too (codex P2 r59 on #410). No pin normalizes
+        # that, so every accepted subcommand needs literal operands;
+        # ls-files/ls-tree keep their own closer rule for pathspecs,
+        # which git does NOT echo when they simply fail to match.
+        if el not in _GIT_PATH_PRODUCING:
+            for later in argv[i + 1:]:
+                if later in ("--", "--end-of-options"):
+                    break  # past the closer they are PATHSPECS, which
+                    # git does not echo when they fail to match
+                if later is None:
+                    return False  # echoed verbatim on a bad value
         if el == "rev-parse":
             # ``--`` does NOT make the rest safe here: rev-parse echoes
             # its path operands verbatim (codex P2 r50, reproduced), so
@@ -1842,6 +1855,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # git echoes an INVALID operand back in its diagnostics, and the
+    # diagnostics stream is captured too — so operands must be literal
+    # before the closer (past it they are pathspecs git ignores).
+    ("an opaque merge-base operand refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", a, b],'
+     ' text=True, encoding="utf-8")', True),
+    ("literal merge-base operands pass",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", "HEAD~1",'
+     ' "HEAD"], text=True, encoding="utf-8")', False),
+    ("...and a binary capture is untouched",
+     'subprocess.run(["git", "merge-base", "--is-ancestor", a, b],'
+     " capture_output=True)", False),
     # --stdin reads revisions from the inherited stdin and echoes bad
     # ones back in its diagnostics (reproduced with a piped 0xff).
     ("log --stdin is refused",

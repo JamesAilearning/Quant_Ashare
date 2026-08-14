@@ -235,9 +235,22 @@ def run_commit_from_report(report: Mapping[str, Any], *, run_label: str) -> str:
 def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> bool:
     """True iff ``ancestor`` is an ancestor of (or equal to) ``descendant``."""
     try:
-        completed = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+        # BINARY + explicit decode: the operands are dynamic, and git
+        # echoes an invalid one back verbatim ("fatal: Not a valid
+        # object name <bytes>") — a run report's git_commit read from
+        # JSON can carry surrogates, so a strict decode here would raise
+        # past this gate's PreregistrationError contract (#410 r59).
+        raw = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=str(repo_root), capture_output=True, timeout=10,
+            check=False,
+        )
+        completed = subprocess.CompletedProcess(
+            raw.args, raw.returncode,
+            raw.stdout.decode("utf-8", errors="replace"),
+            raw.stderr.decode("utf-8", errors="replace"),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(
