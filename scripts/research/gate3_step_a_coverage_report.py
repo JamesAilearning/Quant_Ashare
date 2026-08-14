@@ -137,13 +137,30 @@ _FLOOR_BUNDLES: dict[str, tuple[dict[str, float], float, str]] = {
 def resolve_floor_bundle(
     universe: str, instruments_file: Path | str,
 ) -> tuple[dict[str, float], float, str]:
-    """Pick the floor bundle for ``universe``, refusing an obvious mismatch.
+    """Pick the floor bundle for ``universe``, bound to its CANONICAL members.
 
     The universe is an EXPLICIT required choice (never inferred, never
     defaulted) — a silently-defaulted bundle is how the wrong floors get
-    enforced. As a second line, an instruments filename naming a DIFFERENT
-    known universe is refused: passing the flag but pointing it at the other
-    universe's members is the same misconfiguration one step later.
+    enforced.
+
+    The instruments file must be the universe's canonical membership file
+    (``<universe>.txt``). Matching on "the filename does not name a DIFFERENT
+    universe" is not enough (codex #425 r3): a basename naming neither known
+    universe — a custom sleeve, or simply a RENAMED csi300.txt — would pass
+    with any bundle, so a CSI300 membership could be scored against CSI800
+    floors (silently loosening contract_liab) and the artifact would still be
+    labelled with the selected universe.
+
+    Rejecting an unregistered membership is the point, not a limitation:
+    floors are calibrated on a specific issuer mix, so a universe with no
+    measured floors has nothing valid to be checked against. The way to run a
+    new universe is to measure and register ITS floors, not to borrow
+    another's.
+
+    Note the boundary this does NOT cover: the file's CONTENT is not
+    fingerprinted, so an edited ``csi800.txt`` still resolves. The report
+    prints the resolved member count (``universe: <U>-ever n=…``) so that
+    stays inspectable in the artifact.
     """
     if universe not in _FLOOR_BUNDLES:
         raise ReportError(
@@ -151,14 +168,15 @@ def resolve_floor_bundle(
             f"{sorted(_FLOOR_BUNDLES)}"
         )
     stem = Path(instruments_file).stem.lower()
-    for other in _FLOOR_BUNDLES:
-        if other != universe and other in stem:
-            raise ReportError(
-                f"--floors-universe={universe} but the instruments file "
-                f"({Path(instruments_file).name}) names {other} — floors are "
-                "per-universe; a mismatched bundle rejects valid coverage or "
-                "silently accepts a regression."
-            )
+    if stem != universe:
+        raise ReportError(
+            f"--floors-universe={universe} requires that universe's canonical "
+            f"membership file ('{universe}.txt'); got "
+            f"'{Path(instruments_file).name}'. Floors are calibrated on a "
+            "specific issuer mix — a renamed or custom membership cannot be "
+            "validated against them. Measure and register floors for that "
+            "universe first (see financial_pit_coverage_floors)."
+        )
     return _FLOOR_BUNDLES[universe]
 
 
