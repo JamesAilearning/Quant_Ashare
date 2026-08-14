@@ -16,31 +16,41 @@ forward-fill from the announcement day itself, and SHALL NOT impute a missing
 value (no 0, no cross-sectional median, no latest, no future). Missing stays
 missing.
 
-"Not yet available" applies to the PERIOD, never to the cell: while a newer
-filing is pending, the cell continues to serve the latest period that IS
-available. Blanking the cell around each filing would manufacture artificial
+"Not yet available" applies to the PERIOD, never to the cell: while a filing is
+pending, the cell continues to serve the WINNER — the latest report period that
+IS already available. Availability makes a period ELIGIBLE to win; it does not
+make it the served one. An older period that arrives late (or arrives the same
+day as a newer one) therefore does NOT displace an already-available newer
+period. Blanking the cell around each filing would manufacture artificial
 missing intervals that move both coverage and factor values, and it is not what
 "missing stays missing" means — that phrase forbids IMPUTING an absent value,
-not serving a genuinely available older one.
+not serving a genuinely available one.
 
-#### Scenario: a new filing is not served before its availability date
+#### Scenario: a filing is not served before its availability date
 - **WHEN** a report period's `available_from_trade_date` is `D`
 - **THEN** on every trade date before `D` the panel does NOT serve that period —
-  it serves the latest EARLIER period whose availability date has passed IF ONE
-  EXISTS, and otherwise the cell is NA
-- **AND** it serves the new period's disclosure-of-record value on `D` and
-  thereafter (until a newer period becomes available)
+  it serves the WINNER, the latest report period already available at that date,
+  and the cell is NA only when none is
+- **AND** from `D` onward it serves that period's disclosure-of-record value ONLY
+  where the period is itself the winner — i.e. no LATER report period is already
+  available; otherwise the existing winner keeps being served
 
 #### Scenario: a cell is NA only when nothing has become available yet
 - **WHEN** an instrument has no report period whose `available_from_trade_date`
   is on or before trade date `T`
 - **THEN** the panel value at `T` is NA — a filing being pending never blanks a
-  cell that an earlier available period can still serve
+  cell that an already-available period can still serve
+
+#### Scenario: a late-arriving older period does not displace a newer one
+- **WHEN** an older report period becomes available AFTER a newer report period
+  is already available (or both become available the same day)
+- **THEN** the panel keeps serving the newer period — availability makes a
+  period ELIGIBLE, it does not make it the winner
 
 #### Scenario: the announcement day itself does not yet serve the new filing
 - **WHEN** a filing is announced on trade date `A` (post-close assumption)
-- **THEN** the panel on `A` still serves the previous available period if one
-  exists (otherwise NA), not the newly announced one — the new period's
+- **THEN** the panel on `A` still serves the winner among the periods already
+  available (NA if none), not the newly announced one — the new period's
   availability starts strictly after `A`
 
 #### Scenario: a restated period still serves its original disclosure
