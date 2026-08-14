@@ -72,11 +72,20 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
     sub, rest = args[0], args[1:]
     try:
         if sub == "rev-parse":
-            completed = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
+            # BINARY + explicit decode: this helper's only rev-parse use
+            # is ``--show-toplevel``, which prints the repository PATH
+            # verbatim — unquoted, so a non-UTF-8 byte in it would break
+            # a strict decoder (#410 r44).
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
                  "rev-parse", *rest], cwd=str(cwd),
-                capture_output=True, text=True, encoding="utf-8",
-                timeout=10, check=False,
+                capture_output=True, timeout=10, check=False,
+            )
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stderr.decode("utf-8", errors="replace"),
             )
         elif sub == "status":
             # BINARY + explicit decode (#410 r37): a clean filter's

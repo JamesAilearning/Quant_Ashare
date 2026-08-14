@@ -130,8 +130,18 @@ _NON_PYTHON_PROGRAMS = frozenset({"git"})
 # hook, so text-mode worktree calls fail closed — the repo's own
 # worktree calls are binary-mode and unaffected.
 _GIT_COMMIT_TEXT_FREE = frozenset({
-    "rev-parse", "ls-files", "ls-tree", "merge-base", "symbolic-ref",
-    "check-ignore",
+    "rev-parse", "ls-files", "ls-tree", "merge-base", "check-ignore",
+})
+# ``symbolic-ref`` is ABSENT: a ref name may carry non-UTF-8 bytes on a
+# POSIX checkout and git prints it verbatim, unquoted (codex P2 r44 on
+# #410, reproduced). ``rev-parse`` has the same exposure through its
+# NAME- and PATH-printing options (verified: ``--show-toplevel`` prints
+# the raw path), so it is accepted only with options whose output is an
+# object name; anything else — including an opaque element that could BE
+# ``--show-toplevel`` — refuses.
+_GIT_REVPARSE_SAFE_OPTS = frozenset({
+    "--verify", "--quiet", "-q", "--short", "--revs-only", "--no-flags",
+    "--default", "--end-of-options", "--",
 })
 # Deliberately ABSENT, each verified to run an external program whose
 # bytes no git setting normalizes (codex P2 r36 on #410):
@@ -721,17 +731,24 @@ def _git_output_safe(call: ast.Call) -> bool:
         # so it needs both.
         if el in _GIT_FILTER_CAPABLE or el in _GIT_RAW_VALUE_SUBCOMMANDS:
             return False  # filters / raw stored bytes: no suppression
-        for later in argv[i + 1:]:
+        tail = argv[i + 1:]
+        for pos, later in enumerate(tail):
             if later in ("--", "--end-of-options"):
                 break  # past the closer nothing is an option
             if later is None:
                 continue  # opacity is judged by the per-family rules
-            head, _, value = later.partition("=")
-            if head in _GIT_FORMAT_OPTS:
-                if _GIT_RAW_BYTE_ESCAPE in value.lower():
-                    return False  # %xNN writes raw bytes
-            elif later in _GIT_FORMAT_OPTS:
-                return False  # separated value: unreadable from here
+            head, eq, value = later.partition("=")
+            if head not in _GIT_FORMAT_OPTS:
+                continue
+            if not eq:
+                # SEPARATED spelling: the value is the NEXT element
+                # (codex P2 r44 on #410 — the earlier branch was dead
+                # code, since partition() puts the whole token in head).
+                value = tail[pos + 1] if pos + 1 < len(tail) else None
+                if value is None:
+                    return False  # missing or opaque format value
+            if _GIT_RAW_BYTE_ESCAPE in value.lower():
+                return False  # %xNN writes raw bytes
         if not hooks_off:
             # A hook writes arbitrary bytes into the captured streams;
             # ``core.hooksPath`` aimed at a non-directory is the one
@@ -742,6 +759,15 @@ def _git_output_safe(call: ast.Call) -> bool:
             # any command that refreshes the index; the literal
             # ``-c core.fsmonitor=false`` is the one uniform cure.
             return False
+        if el == "rev-parse":
+            for later in argv[i + 1:]:
+                if later in ("--", "--end-of-options"):
+                    break
+                if later is None:
+                    return False  # could be --show-toplevel
+                if (later.startswith("-")
+                        and later.split("=")[0] not in _GIT_REVPARSE_SAFE_OPTS):
+                    return False  # name/path-printing option
         if el in _GIT_PATH_PRODUCING:
             if not quotepath_on:
                 return False  # unquoted paths can be any bytes
@@ -1628,8 +1654,11 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "show", "--no-ext-diff", "--no-textconv", ref], text=True,'
      ' encoding="utf-8")', True),
-    ("literal plumbing subcommand with a trailing splice",
+    ("an opaque rev-parse arg could be --show-toplevel",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("literal plumbing subcommand with a trailing splice past --",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", "--", *args],'
      ' text=True, encoding="utf-8")', False),
     ("opaque -C value is fine, it cannot be re-read as an option",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse"], text=True,'
@@ -1763,6 +1792,27 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
+    # rev-parse's name/path-printing options emit raw bytes, and
+    # symbolic-ref prints a ref name verbatim (both reproduced).
+    ("rev-parse --show-toplevel is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--show-toplevel"], text=True,'
+     ' encoding="utf-8")', True),
+    ("rev-parse --abbrev-ref prints a ref name, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--abbrev-ref", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    ("rev-parse of an object name stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
+     ' encoding="utf-8")', False),
+    ("symbolic-ref is refused outright",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "symbolic-ref", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a separated --format value is inspected, not skipped",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
+     ' "--format", "%xFF"], text=True, encoding="utf-8")', True),
+    ("...and an ordinary separated format passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
+     ' "--format", "%(objectname)"], text=True, encoding="utf-8")',
+     False),
     # git's format language writes raw bytes: %xFF emits 0xff even
     # through a fully pinned call (verified).
     ("a %x escape in --format is refused",
