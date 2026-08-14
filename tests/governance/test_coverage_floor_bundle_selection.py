@@ -84,6 +84,16 @@ class FloorBundleSelectionTests(unittest.TestCase):
                     with self.assertRaisesRegex(ReportError, "canonical"):
                         resolve_floor_bundle(universe, Path("instruments") / name)
 
+    def test_same_stem_other_extension_is_refused(self) -> None:
+        # Path.stem strips the extension, so a stem check would accept a stale
+        # backup or an unrelated export under the universe's name (codex #425
+        # r4). The match is on the COMPLETE filename.
+        for name in ("csi800.csv", "csi800.bak", "csi800", "csi800.txt.bak",
+                     "csi800.parquet"):
+            with self.subTest(file=name):
+                with self.assertRaisesRegex(ReportError, "canonical"):
+                    resolve_floor_bundle("csi800", Path("instruments") / name)
+
     def test_canonical_file_resolves_from_any_directory(self) -> None:
         # the binding is on the membership file's identity, not its location.
         floors, _c, _p = resolve_floor_bundle(

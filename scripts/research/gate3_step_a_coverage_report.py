@@ -157,25 +157,31 @@ def resolve_floor_bundle(
     new universe is to measure and register ITS floors, not to borrow
     another's.
 
-    Note the boundary this does NOT cover: the file's CONTENT is not
-    fingerprinted, so an edited ``csi800.txt`` still resolves. The report
-    prints the resolved member count (``universe: <U>-ever n=…``) so that
-    stays inspectable in the artifact.
+    The match is on the COMPLETE filename, not ``Path.stem`` (codex #425 r4):
+    stem equals ``csi800`` for ``csi800.csv``, ``csi800.bak`` and a bare
+    ``csi800`` alike, so a stem check would accept a stale backup or an
+    unrelated export as if it were the canonical membership.
+
+    Note the boundary this does NOT cover, at any level of filename strictness:
+    a filename states INTENT, it cannot attest CONTENT. An edited or stale
+    ``csi800.txt`` still resolves. The report prints the resolved member count
+    (``universe: <U>-ever n=…``) so the content side stays inspectable in the
+    artifact rather than being implicitly claimed as verified.
     """
     if universe not in _FLOOR_BUNDLES:
         raise ReportError(
             f"unknown floors universe {universe!r}; known: "
             f"{sorted(_FLOOR_BUNDLES)}"
         )
-    stem = Path(instruments_file).stem.lower()
-    if stem != universe:
+    expected_name = f"{universe}.txt"
+    if Path(instruments_file).name.lower() != expected_name:
         raise ReportError(
             f"--floors-universe={universe} requires that universe's canonical "
-            f"membership file ('{universe}.txt'); got "
+            f"membership file ('{expected_name}'); got "
             f"'{Path(instruments_file).name}'. Floors are calibrated on a "
-            "specific issuer mix — a renamed or custom membership cannot be "
-            "validated against them. Measure and register floors for that "
-            "universe first (see financial_pit_coverage_floors)."
+            "specific issuer mix — a renamed, backup, or custom membership "
+            "cannot be validated against them. Measure and register floors "
+            "for that universe first (see financial_pit_coverage_floors)."
         )
     return _FLOOR_BUNDLES[universe]
 
