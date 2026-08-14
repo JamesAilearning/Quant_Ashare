@@ -65,12 +65,84 @@ class PreregPlan:
 
 
 def _git(args: list[str], *, cwd: str | Path) -> str:
-    """Run git, returning stripped stdout; PreregistrationError on any failure."""
+    """Run git, returning stripped stdout; PreregistrationError on any failure.
+
+    The subcommand is dispatched to a LITERAL spawn site rather than
+    spliced in. git honours the LAST ``-c``, so a spliced pre-subcommand
+    region could carry ``-c i18n.logOutputEncoding=GBK`` and override
+    the UTF-8 pin this call depends on — the parent decodes as UTF-8 and
+    a non-ASCII commit message would then raise UnicodeDecodeError. With
+    the subcommand literal, everything after it is the subcommand's own
+    argv (a post-subcommand ``-c`` is its flag, not config), so the pin
+    is unoverridable. See ``tests/governance/
+    test_subprocess_text_pins_utf8.py`` (#410 r25).
+    """
+    sub, rest = args[0], args[1:]
     try:
-        completed = subprocess.run(
-            ["git", *args], cwd=str(cwd),
-            capture_output=True, text=True, timeout=10, check=False,
-        )
+        if sub == "rev-parse":
+            # BINARY + explicit decode: this helper's only rev-parse use
+            # is ``--show-toplevel``, which prints the repository PATH
+            # verbatim — unquoted, so a non-UTF-8 byte in it would break
+            # a strict decoder (#410 r44).
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
+                 "rev-parse", *rest], cwd=str(cwd),
+                capture_output=True, timeout=10, check=False,
+            )
+            # ``surrogateescape`` on stdout, not ``replace``: this is a
+            # filesystem PATH and a non-UTF-8 byte must survive the round
+            # trip so ``Path(...).relative_to`` still matches (#410 r58).
+            # stderr is diagnostics only, so lossy is fine there.
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="surrogateescape"),
+                raw.stderr.decode("utf-8", errors="replace"),
+            )
+        elif sub == "status":
+            # BINARY + explicit decode (#410 r37): a clean filter's
+            # stderr rides along whenever git has to compare content,
+            # and must not be able to raise out of this helper.
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
+                 "-c", "core.quotePath=true",
+                 "status", *rest], cwd=str(cwd),
+                capture_output=True, timeout=10, check=False,
+            )
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stderr.decode("utf-8", errors="replace"),
+            )
+        elif sub == "log-last-commit":
+            # Every OPTION is literal here and the caller supplies only a
+            # pathspec, after ``--``: an opaque element inside the option
+            # region could be ``--ext-diff`` and revive an external diff
+            # driver whose output the UTF-8 pin does not govern (#410
+            # r30). ``rest`` is therefore the path, nothing else.
+            # BINARY + explicit decode, like the probes above: git's
+            # output is not a function of its argv (an inherited
+            # GIT_CONFIG_GLOBAL naming a malformed file prints that path
+            # on stderr even for a spotless command line, #410 r66).
+            raw = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null",
+                 "log", "-n", "1", "--format=%H", "--", *rest],
+                cwd=str(cwd), capture_output=True, timeout=10,
+                check=False,
+            )
+            completed = subprocess.CompletedProcess(
+                raw.args, raw.returncode,
+                raw.stdout.decode("utf-8", errors="replace"),
+                raw.stderr.decode("utf-8", errors="replace"),
+            )
+        else:
+            raise PreregistrationError(
+                f"unsupported git subcommand {sub!r} — each subcommand "
+                "needs its own literal spawn site so the UTF-8 output "
+                "pin cannot be overridden; add one."
+            )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(
             f"git {' '.join(args)} failed to execute ({exc!r}) — the gate needs a "
@@ -251,7 +323,7 @@ def load_plan(path: str | Path) -> PreregPlan:
             f"Plan {p} has UNCOMMITTED changes ({porcelain.splitlines()[0]!r}). Commit "
             "the plan first — the registration is the committed content, nothing else."
         )
-    commit = _git(["log", "-n", "1", "--format=%H", "--", rel], cwd=repo_root)
+    commit = _git(["log-last-commit", rel], cwd=repo_root)
     if not commit:
         raise PreregistrationError(
             f"Plan {p} is not committed (no commit touches {rel!r}). Commit the plan "
@@ -290,9 +362,22 @@ def run_commit_from_report(report: Mapping[str, Any], *, run_label: str) -> str:
 def is_ancestor(ancestor: str, descendant: str, *, repo_root: str | Path) -> bool:
     """True iff ``ancestor`` is an ancestor of (or equal to) ``descendant``."""
     try:
-        completed = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=str(repo_root), capture_output=True, text=True, timeout=10, check=False,
+        # BINARY + explicit decode: the operands are dynamic, and git
+        # echoes an invalid one back verbatim ("fatal: Not a valid
+        # object name <bytes>") — a run report's git_commit read from
+        # JSON can carry surrogates, so a strict decode here would raise
+        # past this gate's PreregistrationError contract (#410 r59).
+        raw = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=str(repo_root), capture_output=True, timeout=10,
+            check=False,
+        )
+        completed = subprocess.CompletedProcess(
+            raw.args, raw.returncode,
+            raw.stdout.decode("utf-8", errors="replace"),
+            raw.stderr.decode("utf-8", errors="replace"),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise PreregistrationError(

@@ -45,6 +45,12 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.child_env import utf8_child_env  # noqa: E402
+
 GATE = "scripts/research/gate3_prereg_gate.py"
 MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"
 
@@ -85,12 +91,20 @@ FINAL_STUB_REL = "config/presets/quality_gate3_final_adjudication_c1_gpa.yaml"
 FINAL_PARENT_REL = "config/presets/quality_gate3_final_adjudication.yaml"
 
 
+
 def _run_gate(repo: Path, store: Path, *extra: str) -> tuple[int, str]:
-    argv = [sys.executable, str(repo / GATE), "--repo-root", str(repo),
-            "--store-dir", str(store), *extra]
+    args = ["--repo-root", str(repo), "--store-dir", str(store), *extra]
     if "--run-config" not in extra:
-        argv += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
-    out = subprocess.run(argv, capture_output=True, text=True)
+        args += ["--run-config", str(repo / DEV_STUB_REL)]  # tracked, frozen
+    # The interpreter AND the script stay visible at the call: the encoding
+    # gate proves the child is python from a literal argv[0], and the
+    # explicit "--" ends the interpreter-option region (a dynamic script
+    # path proves nothing — str(...) could just as well evaluate to an
+    # env-ignoring -E/-I) — so the *args splice sits safely past a
+    # boundary CPython itself honors.
+    out = subprocess.run(
+        [sys.executable, "--", str(repo / GATE), *args], capture_output=True,
+        text=True, encoding="utf-8", env=utf8_child_env())
     return out.returncode, out.stdout + out.stderr
 
 

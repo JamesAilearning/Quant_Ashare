@@ -404,7 +404,10 @@ class BuildAggregateReportTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             calls["n"] += 1
             if "rev-parse" in cmd:
-                return SimpleNamespace(stdout="abc123\n")
+                # BYTES: both probes capture binary and decode
+                # explicitly, so a non-UTF-8 path in the inherited git
+                # environment cannot raise past the handlers (#410 r61).
+                return SimpleNamespace(stdout=b"abc123\n")
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
 
         # patch.object on the module OBJECT (not a string target) — identity-safe.

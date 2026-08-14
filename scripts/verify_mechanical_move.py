@@ -318,9 +318,57 @@ def find_split_destinations(old_text: str | Counter[str],
 
 
 def _git(*args: str) -> str:
-    out = subprocess.run(["git", "-C", str(_REPO), *args],
-                         capture_output=True, text=True, check=True)
-    return out.stdout
+    """Run git, dispatching the subcommand to a LITERAL spawn site.
+
+    git honours the LAST ``-c``, so a spliced pre-subcommand region
+    could override the UTF-8 output pin this tool's decoder depends on
+    (#410 r25) — the very crash that motivated the gate. Literal
+    subcommand => everything after it is the subcommand's own argv.
+    """
+    sub, rest = args[0], args[1:]
+    if sub == "show":
+        # ``--end-of-options`` closes the option region BEFORE the
+        # caller's dynamic rev: without it an opaque element could be
+        # ``--ext-diff`` and revive an external driver whose bytes the
+        # UTF-8 pin does not govern (#410 r30; verified: git rejects a
+        # late ``--ext-diff`` as "must come before non-option
+        # arguments").
+        # BINARY + explicit decode: ``show`` prints CONTENT — the blob
+        # for REF:PATH — and git never transcodes it (#410 r51). This
+        # tool compares Python SOURCE, which this repo keeps in UTF-8,
+        # so it decodes strictly and a genuinely non-UTF-8 tracked file
+        # fails loudly here rather than being silently mangled.
+        raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
+                              "-c", "core.hooksPath=/dev/null",
+                              "-c", "i18n.logOutputEncoding=utf-8",
+                              "-c", "log.showSignature=false",
+                              "-c", "core.quotePath=true",
+                              "-C", str(_REPO), "show",
+                              "--no-ext-diff", "--no-textconv",
+                              "--end-of-options", *rest],
+                             capture_output=True, check=True)
+        return raw.stdout.decode("utf-8")
+    elif sub == "diff-name-status":
+        # BINARY + explicit decode: an attributes ``clean`` filter is an
+        # external program that writes to stderr on a worktree diff, and
+        # no git switch disables filters wholesale (#410 r36). Decoding
+        # here keeps the tool's own bytes (git-generated, quoted paths)
+        # strict while a filter's diagnostics cannot crash the parse.
+        raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
+                              "-c", "core.hooksPath=/dev/null",
+                              "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
+                              "-c", "core.quotePath=true",
+                              "-C", str(_REPO), "diff",
+                              "--no-ext-diff", "--no-textconv",
+                              "--name-status", "-M50%",
+                              "--end-of-options", *rest],
+                             capture_output=True, check=True)
+        return raw.stdout.decode("utf-8")
+    raise SystemExit(
+        f"unsupported git subcommand {sub!r} — each needs its own "
+        "literal spawn site so the UTF-8 output pin cannot be "
+        "overridden; add one."
+    )
 
 
 def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
@@ -331,7 +379,7 @@ def _detect_renames(base: str) -> tuple[list[tuple[str, str]],
     ``M existing.py``) must be matched too (codex #364 r4 P2) — and the
     two kinds are kept apart so each MODIFIED destination gets its own
     base version subtracted during verification (codex #364 r6 P1)."""
-    raw = _git("diff", "--name-status", "-M50%", base, "HEAD")
+    raw = _git("diff-name-status", base, "HEAD")
     pairs: list[tuple[str, str]] = []
     deleted: list[str] = []
     added: list[str] = []

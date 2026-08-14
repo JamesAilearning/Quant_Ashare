@@ -136,6 +136,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+from scripts.child_env import utf8_child_env  # noqa: E402
 from scripts.research.gate3_step_a_coverage_report import (  # noqa: E402
     fetch_financial_issuers,
     members_on,
@@ -181,6 +182,7 @@ C3_ENDPOINTS = ("balancesheet", "income")
 
 N_SIZE_DECILES = 10
 MAX_MV_STALENESS_DAYS = 20  # trading days; beyond -> drop from fold, counted
+
 
 
 class EvaluatorError(RuntimeError):
@@ -648,10 +650,10 @@ CANDIDATE_FORMULAS = {
 def run_gate(repo: Path, candidate: str, store_dir: Path,
              run_config_rel: str) -> str:
     proc = subprocess.run(
-        [sys.executable, str(repo / GATE), "--repo-root", str(repo),
+        [sys.executable, "--", str(repo / GATE), "--repo-root", str(repo),
          "--candidate", candidate, "--store-dir", str(store_dir),
          "--run-config", str(repo / run_config_rel)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
     )
     out = proc.stdout + proc.stderr
     if proc.returncode != 0 or "GATE ACCEPT" not in out:

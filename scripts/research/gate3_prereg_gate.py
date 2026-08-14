@@ -53,6 +53,12 @@ from pathlib import Path
 
 import yaml
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.child_env import utf8_child_env  # noqa: E402
+
 PLAN_REL = "docs/prereg/quality_profitability.yaml"
 LEDGER_REL = "docs/prereg/quality_profitability_ledger.yaml"
 MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"
@@ -82,17 +88,76 @@ FROZEN_ARTIFACTS = (
 )
 
 
+
 def _refuse(reason: str) -> int:
     print(f"GATE REFUSE: {reason}")
     return 1
 
 
 def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True, text=True, check=True,
-    )
-    return out.stdout.strip()
+    """Run git in ``repo``, dispatching the subcommand to a LITERAL spawn.
+
+    git honours the LAST ``-c``, so a spliced pre-subcommand region could
+    carry ``-c i18n.logOutputEncoding=GBK`` and override the UTF-8 pin
+    the parent decoder depends on (#410 r25). With the subcommand
+    literal, everything after it is the subcommand's own argv and the
+    pin is unoverridable.
+    """
+    sub, rest = args[0], args[1:]
+    if sub == "log-hash":
+        # Literal options only; ``rest`` is a pathspec after ``--`` — an
+        # opaque element in the option region could be ``--ext-diff``
+        # and revive an external diff driver (#410 r30).
+        out = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
+             "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
+             "-1", "--format=%H", "--", *rest],
+            capture_output=True, check=True,
+        )
+    elif sub == "log-ctime":
+        out = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
+             "-C", str(repo), "log", "--no-ext-diff", "--no-textconv",
+             "-1", "--format=%cI", "--", *rest],
+            capture_output=True, check=True,
+        )
+    elif sub == "status":
+        # BINARY + explicit decode (#410 r37): a clean filter writes to
+        # stderr whenever git compares content instead of stat info.
+        raw = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "-c", "core.quotePath=true",
+             "-C", str(repo), "status", *rest],
+            capture_output=True, check=True,
+        )
+        return raw.stdout.decode("utf-8", errors="replace").strip()
+    elif sub == "ls-files":
+        # ``core.quotePath=true`` keeps unusual path bytes ESCAPED (a
+        # repo can set it false globally), and the literal ``--`` closes
+        # the option region so the caller's pathspec cannot be read as
+        # ``-z``, which would emit raw bytes (#410 r38).
+        out = subprocess.run(
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "-c", "core.quotePath=true",
+             "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
+             "-C", str(repo), "ls-files", "--", *rest],
+            capture_output=True, check=True,
+        )
+    else:
+        raise SystemExit(
+            f"REFUSE: unsupported git subcommand {sub!r} — each needs its "
+            "own literal spawn site so the UTF-8 output pin cannot be "
+            "overridden; add one."
+        )
+    # BINARY + explicit decode: git's output is not a function of its
+    # argv — an inherited GIT_CONFIG_GLOBAL naming a malformed file
+    # makes git print that PATH on stderr even for a spotless command
+    # line (#410 r66), so no text-mode git call is provable. The caller
+    # owns the decode policy; these outputs are hashes, ISO timestamps
+    # and quoted paths, so replace is safe and never silently wrong.
+    return out.stdout.decode("utf-8", errors="replace").strip()
 
 
 def _resolve_run_config(
@@ -238,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
                        f"repository {repo_resolved} — the gated config must "
                        "be repo-tracked and git-provable.")
     cfg_rel = cfg_resolved.relative_to(repo_resolved).as_posix()
-    tracked = _git(repo, "ls-files", "--", cfg_rel)
+    tracked = _git(repo, "ls-files", cfg_rel)
     if not tracked:
         return _refuse(f"run config {cfg_rel} is not git-tracked — an "
                        "untracked config is not git-provable; commit it "
@@ -425,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2. the WHOLE frozen package is committed; freeze time = the LATEST
     # commit across all frozen artifacts (codex #352 P1).
-    plan_commit = _git(repo, "log", "-1", "--format=%H", "--", PLAN_REL)
+    plan_commit = _git(repo, "log-hash", PLAN_REL)
     if not plan_commit:
         return _refuse(f"plan not committed: {PLAN_REL} has no git history "
                        "(freeze commit required before any run).")
@@ -436,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
             # so the timestamp alone would treat it as frozen (codex #352 r2)
             # — the whole package must EXIST at the gated checkout.
             return _refuse(f"frozen artifact missing from checkout: {rel}")
-        ts_raw = _git(repo, "log", "-1", "--format=%cI", "--", rel)
+        ts_raw = _git(repo, "log-ctime", rel)
         if not ts_raw:
             return _refuse(f"frozen artifact not committed: {rel}")
         ts = datetime.fromisoformat(ts_raw)
@@ -464,9 +529,10 @@ def main(argv: list[str] | None = None) -> int:
     # 5. manifest verification (re-hash the store against the FROZEN manifest)
     manifest_path = repo / MANIFEST_REL
     verify = subprocess.run(
-        [sys.executable, str(repo / "scripts/research/gate3_store_manifest.py"),
+        [sys.executable, "--",
+         str(repo / "scripts/research/gate3_store_manifest.py"),
          "--store-dir", str(args.store_dir), "--verify", str(manifest_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(),
     )
     if verify.returncode != 0:
         return _refuse("store manifest mismatch:\n" + verify.stdout.strip())
@@ -482,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     pit = subprocess.run(
         [sys.executable, "-m", "pytest", *pit_targets, "-q",
          "--no-header", "-x"],
-        capture_output=True, text=True, cwd=str(repo),
+        capture_output=True, text=True, encoding="utf-8", env=utf8_child_env(), cwd=str(repo),
     )
     if pit.returncode != 0:
         tail = "\n".join(pit.stdout.strip().splitlines()[-5:])

@@ -1,0 +1,2065 @@
+"""Governance: text-mode subprocess calls pin UTF-8 on BOTH ends of the pipe.
+
+``subprocess.run(..., text=True)`` decodes the child's output with
+``locale.getpreferredencoding(False)`` — ``cp936`` (GBK) on a CN Windows
+box, ``UTF-8`` on the Linux CI runner. This repo's tracked files, commit
+messages and log lines are full of Chinese, so the same call SUCCEEDS in
+CI and raises ``UnicodeDecodeError`` locally.
+
+That is not hypothetical: ``scripts/verify_mechanical_move.py`` (the
+hardening-backlog #1 gate) crashed on every invocation on a CN Windows
+machine — ``git show <ref>:<path>`` returns file content, the reader thread
+died mid-decode, and the tool then failed with a confusing
+``NoneType.splitlines``. The gate was green in CI and unusable in the local
+review loop it was built for.
+
+TWO halves, and both are needed:
+
+* the PARENT must decode as UTF-8 (``encoding="utf-8"``) — git emits UTF-8
+  regardless of locale, so the platform default was simply the wrong
+  decoder;
+* a PYTHON child must ENCODE as UTF-8, which only ``PYTHONIOENCODING`` in
+  its environment achieves. Pinning the parent alone converts mojibake
+  into a ``UnicodeDecodeError`` — the same crash, relocated.
+
+HOW this gate decides, and why it is shaped this way: proving "this mapping
+pins PYTHONIOENCODING" from an AST is a losing game — a later
+``**os.environ`` overrides an earlier pin, a helper with a conditional
+return falls through to ``None``, a parameter shadows a module constant.
+Those are not corner cases, they are the language. So the child-side rule
+is SYNTACTIC: a python spawn must pass ``env=utf8_child_env()``, the one
+sanctioned constructor in ``scripts/child_env.py``, whose correctness is
+proved where it can be — ``tests/logic/test_child_env.py`` spawns a real
+child and reads a non-ASCII round trip back.
+
+Scope is ``src/`` + ``scripts/`` — the production and tooling trees whose
+behavior must not depend on the operator's locale. ``tests/`` is excluded
+deliberately: a test that spawns a subprocess sets its own pipe policy
+(several already pass ``encoding``/``errors`` for their own assertions),
+and a blanket rule there would fight per-test intent rather than protect a
+shipped code path.
+"""
+from __future__ import annotations
+
+import ast
+import re
+import sys
+import unittest
+from collections import Counter
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+_TREES = ("src", "scripts")
+_SPAWNERS = frozenset({"run", "check_output", "Popen", "call", "check_call"})
+# ``getoutput`` / ``getstatusoutput`` are ALWAYS text mode and take no
+# encoding at all on Python 3.10 (the oldest runtime in CI); they decode
+# with the locale, which is the whole bug. There is no pinning spelling to
+# recommend, so any use is rejected outright (codex P2 r8 on #410).
+_TEXT_ONLY_HELPERS = frozenset({"getoutput", "getstatusoutput"})
+# Module attributes that CANNOT spawn: constants, exception classes, and
+# the pure-string helper. Everything else on the module — a reflective
+# ``__dict__`` / ``__getattribute__``, or an attribute added by a future
+# Python — is treated as forwarding and fails closed (codex P2 r26 on
+# #410). Extending this set is a deliberate, reviewable act.
+_SUBPROCESS_INERT_ATTRS = frozenset({
+    "PIPE", "DEVNULL", "STDOUT", "SubprocessError", "CalledProcessError",
+    "TimeoutExpired", "CompletedProcess", "list2cmdline",
+    "STARTUPINFO", "STARTF_USESHOWWINDOW", "SW_HIDE",
+    "CREATE_NEW_CONSOLE", "CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW",
+    "DETACHED_PROCESS", "ABOVE_NORMAL_PRIORITY_CLASS",
+    "BELOW_NORMAL_PRIORITY_CLASS", "HIGH_PRIORITY_CLASS",
+    "IDLE_PRIORITY_CLASS", "NORMAL_PRIORITY_CLASS",
+    "REALTIME_PRIORITY_CLASS",
+})
+_TEXT_FLAGS = frozenset({"text", "universal_newlines"})
+
+# Interpreter flags that make a python child IGNORE ``PYTHON*`` env vars —
+# ``-E`` per ``python --help``, and ``-I`` which implies ``-E``. With either
+# one, ``PYTHONIOENCODING`` in the child env is dead letter (verified: the
+# child emits cp936 bytes), unless UTF-8 mode is forced on the command line.
+_ENV_IGNORING_FLAGS = frozenset({"E", "I"})
+# Short interpreter options that CONSUME a value (attached, ``-Xutf8``, or
+# the next argv element, ``-X utf8``) — needed so the value is not mistaken
+# for another flag cluster, and so a later script argument spelled ``utf8``
+# is not mistaken for the option's value.
+_VALUE_TAKING_FLAGS = frozenset({"X", "W"})
+# Long options that CONSUME the next argv element. Without this, the value
+# ("always") is mistaken for the script name and option parsing stops
+# BEFORE a later -E/-I (codex P2 r13 on #410; verified:
+# ``--check-hash-based-pycs always -E`` reports ignore_environment=1).
+_VALUE_TAKING_LONG_OPTS = frozenset({"--check-hash-based-pycs"})
+# The ONLY ``-X`` options that turn UTF-8 mode ON, spelled exactly as CPython
+# accepts them. Verified against the interpreter, because two neighbouring
+# spellings silently do NOT repair an env-ignoring child (codex P2 r10 on
+# #410 for the first, found while checking the class for the second):
+#   ``-X utf8=0``  -> UTF-8 mode DISABLED, child emits cp936;
+#   ``-X UTF8``    -> ignored, child emits cp936 (``-X`` names are
+#                     case-SENSITIVE, so no case folding here);
+#   ``-X utf8=2`` / ``utf8=on`` -> the interpreter refuses to start.
+# Matching the option NAME and ignoring its value is exactly the class of
+# looseness this gate keeps being caught by; this set is compared whole.
+_UTF8_MODE_ENABLING_X = frozenset({"utf8", "utf8=1"})
+# Spellings CPython's codec registry normalizes to UTF-8 (aliases differ only
+# by case and by '-'/'_' separators).
+_UTF8_SPELLINGS = frozenset({"utf8", "utf_8", "u8", "utf"})
+
+_CHILD_ENV_MODULE = "scripts.child_env"
+_CHILD_ENV_FUNC = "utf8_child_env"
+
+# Program names known NOT to be a python interpreter. Anything else
+# unrecognized stays UNRESOLVED and fails closed, so a launcher this list
+# does not know (a venv shim, a tool wrapper) is never waved through.
+_NON_PYTHON_PROGRAMS = frozenset({"git"})
+# Interpreter names are matched EXACTLY, never by prefix (codex P1 r16
+# on #410): ``startswith(("python", "py"))`` also accepted pyright,
+# pytest, pyinstaller — native/tool children whose decoding
+# PYTHONIOENCODING does not govern. The Windows launcher has exactly two
+# spellings; a CPython binary is ``python`` + optional version digits +
+# optional ``w``.
+_PY_LAUNCHER_NAMES = frozenset({"py", "pyw"})
+_PYTHON_STEM_RE = re.compile(r"python\d*(\.\d+)*w?")
+
+
+def _is_utf8_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is a string LITERAL naming the UTF-8 codec.
+
+    A literal is required on purpose: ``encoding=_ENC`` may well be
+    "utf-8", but a gate that accepts an unresolvable name cannot tell it
+    from ``encoding=locale.getpreferredencoding()``.
+    """
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return False
+    return node.value.strip().lower().replace("-", "_") in _UTF8_SPELLINGS
+
+
+def _sanctioned_env_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(bare names, module aliases) bound to the sanctioned constructor.
+
+    Both spellings must be resolved through an actual IMPORT: an attribute
+    whose base is not a proven ``scripts.child_env`` alias could be any
+    object with a same-named method returning an unpinned environment
+    (codex P2 r7 on #410) — the same target-resolution rule the spawner
+    check uses.
+    """
+    bare: set[str] = set()
+    modules: set[str] = set()
+    package, _, leaf = _CHILD_ENV_MODULE.rpartition(".")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == _CHILD_ENV_MODULE:
+                for alias in node.names:
+                    if alias.name == _CHILD_ENV_FUNC:
+                        bare.add(alias.asname or alias.name)
+            elif node.module == package:  # from scripts import child_env
+                for alias in node.names:
+                    if alias.name == leaf:
+                        modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _CHILD_ENV_MODULE and alias.asname:
+                    modules.add(alias.asname)  # import ... as X
+    return bare, modules
+
+
+def _binding_counts(tree: ast.Module) -> Counter[str]:
+    """How many times each name is BOUND anywhere in the module.
+
+    Every binding form counts — imports included (codex P2 r9 on #410: a
+    fallback ``except ImportError: from elsewhere import utf8_child_env``
+    re-binds the same name and the runtime branch decides which wins), as
+    do parameters, assignments, loop / ``with`` / ``except`` targets, defs
+    and classes.
+
+    A sanctioned import is trusted only when its name has EXACTLY ONE
+    binding site in the file. Anything else — a second import, a parameter,
+    an assignment — makes the name prove nothing at the call site, and the
+    call fails closed. The remedy is simply not to shadow or re-bind the
+    sanctioned name; nothing in this repo does.
+    """
+    counts: Counter[str] = Counter()
+
+    def _add_target(node: ast.expr | None) -> None:
+        for sub in ast.walk(node) if node is not None else ():
+            if isinstance(sub, ast.Name):
+                counts[sub.id] += 1
+
+    def _add_args(args: ast.arguments) -> None:
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                    args.vararg, args.kwarg):
+            if arg is not None:
+                counts[arg.arg] += 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                counts[alias.asname or alias.name.split(".")[0]] += 1
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            counts[node.name] += 1
+            _add_args(node.args)
+        elif isinstance(node, ast.Lambda):
+            _add_args(node.args)
+        elif isinstance(node, ast.ClassDef):
+            counts[node.name] += 1
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                _add_target(target)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For,
+                               ast.AsyncFor, ast.comprehension)):
+            _add_target(node.target)
+        elif isinstance(node, ast.NamedExpr):
+            _add_target(node.target)
+        elif isinstance(node, ast.withitem):
+            _add_target(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            counts[node.name] += 1
+        # Structural pattern matching binds names too (codex P2 r13):
+        # ``case {"env": utf8_child_env}:`` captures into that name, so a
+        # sanctioned import shadowed by a match capture must lose its
+        # exactly-once status like any other rebinding.
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            counts[node.name] += 1
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            counts[node.rest] += 1
+    return counts
+
+
+def _env_is_sanctioned(
+    env: ast.expr, bare: set[str], modules: set[str],
+) -> bool:
+    """Whether ``env=`` is a DIRECT call to the sanctioned constructor.
+
+    Not "a mapping that looks pinned", not a name that might hold one, and
+    not any attribute that happens to be spelled ``utf8_child_env``: the
+    call expression itself, with its target resolved through an import.
+    Every weaker form this gate accepted in an earlier revision turned out
+    to be forgeable (see the module docstring).
+    """
+    if not isinstance(env, ast.Call):
+        return False
+    func = env.func
+    if isinstance(func, ast.Name):
+        return func.id in bare
+    return (  # child_env.utf8_child_env(...)
+        isinstance(func, ast.Attribute)
+        and func.attr == _CHILD_ENV_FUNC
+        and isinstance(func.value, ast.Name)
+        and func.value.id in modules
+    )
+
+
+def _sys_module_names(tree: ast.Module) -> set[str]:
+    """Names bound to the ``sys`` MODULE by import.
+
+    ``X.executable`` proves a python child only when ``X`` really is the
+    ``sys`` module — any object can expose an ``executable`` attribute
+    naming a native binary (codex P2 r12 on #410). Same target-resolution
+    rule as the spawner and env-helper checks: resolved through an import,
+    never by the attribute's spelling.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    names.add(alias.asname or "sys")
+    return names
+
+
+def _program_is_python(head: ast.expr, sys_names: set[str]) -> bool | None:
+    """True / False / None (unresolvable) for the spawned program.
+
+    A literal is judged under BOTH path conventions (codex P2 r20 on
+    #410): this gate runs on Windows boxes and Linux CI alike, and
+    ``PosixPath`` treats backslashes as ordinary characters, so a pinned
+    spawn of ``r"C:\\...\\python.exe"`` would flip verdicts between
+    runners. ``PureWindowsPath`` splits both separators; the posix read
+    of a backslashed path is one opaque component (verdict None), and
+    None never overrides a definite verdict — but CONFLICTING definite
+    verdicts (one convention says python, the other a known non-python)
+    fail closed.
+    """
+    if isinstance(head, ast.Attribute) and head.attr == "executable":
+        if isinstance(head.value, ast.Name) and head.value.id in sys_names:
+            return True  # a resolved sys.executable
+        return None  # someone ELSE's .executable — fail closed
+    if (isinstance(head, ast.Constant) and isinstance(head.value, str)
+            and not _has_surrogates(head.value)):
+        verdicts = set()
+        for stem in {PurePosixPath(head.value).stem.lower(),
+                     PureWindowsPath(head.value).stem.lower()}:
+            if stem in _NON_PYTHON_PROGRAMS:
+                verdicts.add(False)
+            elif stem in _PY_LAUNCHER_NAMES or _PYTHON_STEM_RE.fullmatch(stem):
+                verdicts.add(True)  # python / python3.12 / pyw launcher
+            else:
+                verdicts.add(None)
+        if True in verdicts and False in verdicts:
+            return None  # the conventions disagree — fail closed
+        if True in verdicts:
+            return True
+        if False in verdicts:
+            return False
+    return None
+
+
+def _call_argv_node(call: ast.Call, kwargs: dict[str, ast.expr] | None = None):
+    """The argv expression, positional or ``args=`` keyword.
+
+    ``subprocess.run(args=[...], ...)`` is the documented keyword form
+    and runs normally (verified), so reading only ``call.args[0]``
+    reported a compliant call (codex P2 r43 on #410).
+    """
+    if call.args:
+        return call.args[0]
+    if kwargs is None:
+        kwargs, _ = _collect_kwargs(call)
+    return kwargs.get("args")
+
+
+def _has_surrogates(value: str) -> bool:
+    """Whether a literal carries lone surrogates.
+
+    ``"\\udcff"`` is an ordinary Python literal that POSIX encodes back
+    to the byte 0xff (surrogateescape's inverse), so such an argument
+    reaches the child as ungoverned bytes and comes back in its
+    diagnostics (codex P2 r60 on #410). Literals carrying them are
+    therefore not resolvable TEXT, whatever they look like.
+    """
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
+def _argv_strings(call: ast.Call) -> list[str | None] | None:
+    """The call's argv elements, classified for option scanning.
+
+    Per element: a literal string stays itself; EVERYTHING else becomes
+    ``None`` — unresolvable. A ``*args`` splice can carry any number of
+    flags and a bare name can hold one (codex P2 r14 on #410), but so
+    can ANY other single expression: with ``flag = "-E"``, the call
+    ``[sys.executable, str(flag), "x.py"]`` hands CPython the
+    env-ignoring option itself, so the old "one opaque value ends the
+    option region like a script name" rule was an accept built on an
+    unprovable claim (codex P2 r18). Only a literal non-option element
+    or an explicit ``--`` proves the boundary — spell a dynamic script
+    path as ``[sys.executable, "--", str(path), ...]`` (verified: ``--``
+    ends CPython option parsing; ``python -- -E`` opens a FILE named
+    ``-E``, while ``-E`` before ``--`` stays active).
+    """
+    argv = _call_argv_node(call)
+    if not isinstance(argv, (ast.List, ast.Tuple)):
+        return None  # a literal tuple argv is as provable as a list
+    return [
+        elt.value
+        if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            and not _has_surrogates(elt.value))
+        else None
+        for elt in argv.elts
+    ]
+
+
+def _interpreter_options(
+    argv: list[str | None],
+) -> tuple[set[str], list[str], bool]:
+    """(short option letters, ``-X`` option values) of a python argv.
+
+    Parsed the way CPython parses: options end at ``-c`` / ``-m`` / ``--``
+    or the script name, and value-taking short options (``-X``, ``-W``)
+    consume the rest of their cluster if attached (``-Xutf8``) or the NEXT
+    element otherwise (``-X utf8``). Both rules matter — a trailing script
+    argument that happens to read ``utf8`` must NOT count as a UTF-8 pin
+    (codex P2 r9 on #410), and ``-Es`` must still yield the ``E``.
+    """
+    letters: set[str] = set()
+    x_values: list[str] = []
+    unresolvable = False
+    i = 1  # argv[0] is the interpreter itself
+    while i < len(argv):
+        arg = argv[i]
+        if arg is None:
+            # A *splice or a variable in the OPTION REGION: it can contain
+            # -E / -I, so the options cannot be known (codex P2 r14).
+            unresolvable = True
+            break
+        if not arg.startswith("-") or arg in ("-", "--"):
+            break  # the script name (or an explicit end of options)
+        if arg in ("-c", "-m"):
+            break  # everything after belongs to the command / module
+        if arg.startswith("--"):
+            # A value-taking long option consumes the NEXT element too —
+            # otherwise its value is mistaken for the script name and
+            # parsing stops before a later -E/-I (codex P2 r13).
+            if arg in _VALUE_TAKING_LONG_OPTS:
+                i += 2
+            else:
+                i += 1
+            continue
+        cluster = arg[1:]
+        done = False
+        for pos, letter in enumerate(cluster):
+            if letter in ("c", "m"):
+                # Attached ``-cprint(1)`` / ``-mmod`` consume the REST of
+                # the argument and TERMINATE option parsing (verified:
+                # ``python -c<code> -E`` runs the code with "-E" as
+                # argv[1] and ignore_environment=0, while ``-Ec<code>``
+                # keeps the fused -E active) — codex P2 r22 on #410.
+                done = True
+                break
+            if letter in _VALUE_TAKING_FLAGS:
+                attached = cluster[pos + 1:]
+                if attached:
+                    if letter == "X":
+                        x_values.append(attached)
+                elif i + 1 < len(argv):
+                    nxt = argv[i + 1]
+                    if nxt is None:
+                        # A DYNAMIC value for a value-taking option (-X
+                        # mode): the option cannot be known — unresolvable,
+                        # not a crash (codex P2 r15).
+                        unresolvable = True
+                        i = len(argv)
+                        break
+                    if letter == "X":
+                        x_values.append(nxt)
+                    i += 1
+                break  # the rest of the cluster was this option's value
+            letters.add(letter)
+        if done:
+            break
+        i += 1
+    return letters, x_values, unresolvable
+
+
+def _child_ignores_env(call: ast.Call) -> bool:
+    """Whether the spawned python is told to IGNORE ``PYTHON*`` variables.
+
+    ``-E`` ignores every ``PYTHON*`` env var and ``-I`` implies it, so
+    ``PYTHONIOENCODING`` in the child env becomes dead letter and the child
+    falls back to the locale encoder — verified against the interpreter
+    (codex P2 r8 on #410). ``-X utf8`` forces UTF-8 mode on the command
+    line and repairs it, but only when ``utf8`` is the option PAIRED with
+    ``-X`` (codex P2 r9).
+    """
+    argv = _argv_strings(call)
+    if argv is None:
+        # The child can be PROVEN python by the executable= override
+        # while the argv stays opaque — and an opaque argv can carry
+        # -E/-I where this scan cannot see them (codex P2 r23 on #410:
+        # ``run(argv, executable=sys.executable, ...)``). Unresolvable
+        # options fail closed like every other unresolvable input; on
+        # the argv[0]-proof path this line is unreachable (that proof
+        # requires a literal argv).
+        return True
+    letters, x_values, unresolvable = _interpreter_options(argv)
+    if unresolvable:
+        return True  # hidden flags possible — fail closed
+    if not letters & _ENV_IGNORING_FLAGS:
+        return False
+    # Repeated ``-X utf8`` options: CPython honors the FIRST occurrence
+    # (verified: ``-X utf8=0 -X utf8=1`` -> utf8_mode=0, and the reverse
+    # -> 1), so ``any()`` over the values was wrong (codex P2 r13). Only
+    # the first utf8-named option decides.
+    for value in x_values:
+        if value == "utf8" or value.startswith("utf8="):
+            return value not in _UTF8_MODE_ENABLING_X
+    return True  # env-ignoring flag with no utf8 option at all
+
+
+def _python_child(
+    call: ast.Call, sys_names: set[str], kwargs: dict[str, ast.expr],
+) -> bool | None:
+    """Is the spawned command a PYTHON interpreter? ``None`` = unresolvable.
+
+    Only a LITERAL argv is judged. Name resolution was tried and removed:
+    binding a name to its value across scopes, positions and parameters is
+    the same losing game as the env analysis, and a wrong answer here is a
+    wrong verdict. An argv the gate cannot read literally fails closed.
+
+    An ``executable=`` OVERRIDES the program (Popen executes it and argv[0]
+    becomes mere display), so when present it — not argv[0] — is what gets
+    judged (codex P2 r14 on #410), and it counts however it arrives:
+    keyword or Popen's THIRD positional argument (codex r16) — read from
+    the NORMALIZED kwargs map, so a literal ``**{"shell": True}`` or
+    ``**{"executable": "node"}`` expansion carries the same override
+    power as the named spelling (codex P2 r22). A literal
+    ``executable=None`` is CPython's own no-override spelling and falls
+    through to argv[0]. Under a truthy (or unresolvable) ``shell=`` the
+    argv is a shell command line, not a program vector — nothing about the
+    child is provable. And more than three positional arguments would let
+    later Popen parameters (``shell`` among them, at position nine) arrive
+    positionally unmodeled — fail closed rather than model them.
+    """
+    shell = kwargs.get("shell")
+    if shell is not None and not (
+        isinstance(shell, ast.Constant) and not shell.value
+    ):
+        return None  # truthy or unresolvable shell — fail closed
+    if len(call.args) > 3:
+        return None  # positions past executable are unmodeled — fail closed
+    executable: ast.expr | None = call.args[2] if len(call.args) == 3 else None
+    if "executable" in kwargs:
+        executable = kwargs["executable"]
+    if executable is not None and not (
+        isinstance(executable, ast.Constant) and executable.value is None
+    ):
+        return _program_is_python(executable, sys_names)
+    argv = _call_argv_node(call, kwargs)
+    if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
+        return None  # tuple argv is judged exactly like a list (codex r21)
+    return _program_is_python(argv.elts[0], sys_names)
+
+
+def _dynamic_subprocess_calls(tree: ast.Module) -> set[int]:
+    """ids of expressions that literally EVALUATE to the module.
+
+    ``__import__("subprocess")`` and ``importlib.import_module(
+    "subprocess")`` hand back the module without any import binding for
+    the name-based discovery to find (codex P2 r32 on #410). Only
+    LITERAL module names are resolved: a fully dynamic
+    ``import_module(name)`` is indistinguishable from ordinary plugin
+    loading (this repo has three such call sites), and the gate defends
+    against honest mistakes, not obfuscation — a determined bypass has
+    unbounded spellings (exec, getattr chains, ctypes).
+    """
+    importlib_modules: set[str] = set()
+    importlib_bare: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import importlib.util`` binds ``importlib`` (codex
+                # P2 r58 on #410) — a dotted import without ``as``
+                # binds its TOP-LEVEL package, not the full path.
+                if alias.asname:
+                    if alias.name == "importlib":
+                        importlib_modules.add(alias.asname)
+                elif alias.name.split(".")[0] == "importlib":
+                    importlib_modules.add("importlib")
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    importlib_bare.add(alias.asname or alias.name)
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # The module name may arrive as the first positional OR as
+        # ``name="subprocess"`` — both spellings return the real module
+        # (codex P2 r33 on #410; verified for import_module and for the
+        # __import__ builtin).
+        named = next((kw.value for kw in node.keywords if kw.arg == "name"),
+                     None)
+        first = node.args[0] if node.args else named
+        if named is not None and not node.args:
+            first = named
+        if not (isinstance(first, ast.Constant)
+                and first.value == "subprocess"):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in ({"__import__"}
+                                                      | importlib_bare):
+            found.add(id(node))
+        elif (isinstance(func, ast.Attribute)
+                and func.attr == "import_module"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in importlib_modules):
+            found.add(id(node))
+    return found
+
+
+def _subprocess_names(
+    tree: ast.Module,
+) -> tuple[set[str], set[str], set[str]]:
+    """(module aliases, bare spawner names, bare text-helper names).
+
+    Resolving the CALL TARGET — not just its trailing attribute — is what
+    keeps an unrelated ``renderer.run(text=True)`` or a locally defined
+    ``run(text=True)`` from being reported as an unpinned subprocess and
+    "fixed" with an ``encoding`` kwarg the API does not accept.
+
+    Import bindings are the roots; plain ``Name = Name`` assignments then
+    propagate them to a fixpoint (codex P2 r19 on #410: ``sp =
+    subprocess`` followed by ``sp.run(...)`` spawned unseen). Rebinding
+    an alias later does not un-flag it — the gate is a refuse-list, so
+    over-approximating aliases only ever fails closed.
+    """
+    modules: set[str] = set()
+    bare: set[str] = set()
+    helpers: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    modules.add(alias.asname or "subprocess")
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name == "*":
+                    # ``from subprocess import *`` exports every spawning
+                    # API unaliased (codex P2 r21 on #410: the "*" alias
+                    # matched nothing and the whole file went unseen).
+                    bare.update(_SPAWNERS)
+                    helpers.update(_TEXT_ONLY_HELPERS)
+                elif alias.name in _SPAWNERS:
+                    bare.add(alias.asname or alias.name)
+                elif alias.name in _TEXT_ONLY_HELPERS:
+                    helpers.add(alias.asname or alias.name)
+    return _propagate_aliases(tree, modules, bare, helpers)
+
+
+def _propagate_aliases(
+    tree: ast.Module, modules: set[str], bare: set[str], helpers: set[str],
+    dynamic: set[int] | None = None,
+) -> tuple[set[str], set[str], set[str]]:
+    """Grow the three pools over assignment aliases, to a fixpoint.
+
+    Shared by import discovery and the dynamic-import seeding so both
+    reach ``sp2 = sp`` and ``runner = sp.run`` by the same rule. The
+    method-alias branch accepts a DYNAMIC base as well (codex P2 r42 on
+    #410): ``runner = __import__("subprocess").run`` binds the spawner
+    just as ``runner = sp.run`` does, and requiring an ``ast.Name`` base
+    left it untracked while the forwarding check exempted it as if it
+    had been.
+    """
+    dynamic = dynamic or set()
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            if isinstance(value, ast.Name):
+                for pool in (modules, bare, helpers):
+                    if value.id in pool and not names <= pool:
+                        pool.update(names)
+                        grew = True
+            elif (isinstance(value, ast.Attribute)
+                    and ((isinstance(value.value, ast.Name)
+                          and value.value.id in modules)
+                         or id(value.value) in dynamic)):
+                # ``runner = subprocess.run`` stores the METHOD (codex P2
+                # r19 follow-up) — the alias spawns exactly like the
+                # from-imported bare name, so it joins the same pool.
+                if value.attr in _SPAWNERS and not names <= bare:
+                    bare.update(names)
+                    grew = True
+                elif (value.attr in _TEXT_ONLY_HELPERS
+                        and not names <= helpers):
+                    helpers.update(names)
+                    grew = True
+    return modules, bare, helpers
+
+
+def _collect_kwargs(call: ast.Call) -> tuple[dict[str, ast.expr], bool]:
+    """(keyword map, opaque_unpacking).
+
+    A LITERAL ``**{...}`` is expanded — it can itself supply ``text=True``,
+    so treating any unpacking as "not a text flag" was a hole. Any other
+    unpacking is unresolvable and makes the call fail closed.
+    """
+    kwargs: dict[str, ast.expr] = {}
+    opaque = False
+    for kw in call.keywords:
+        if kw.arg is not None:
+            kwargs[kw.arg] = kw.value
+        elif isinstance(kw.value, ast.Dict) and all(
+            isinstance(k, ast.Constant) and isinstance(k.value, str)
+            for k in kw.value.keys
+        ):
+            for key, value in zip(kw.value.keys, kw.value.values, strict=True):
+                kwargs[key.value] = value  # type: ignore[union-attr]
+        else:
+            opaque = True
+    return kwargs, opaque
+
+
+def offending_lines(source: str) -> list[int]:
+    """Line numbers of text-mode ``subprocess`` spawns not pinned to UTF-8.
+
+    Keyword VALUES are inspected, not just their presence, because both
+    directions matter: ``text=False`` asks for BYTES (and "fixing" it with
+    ``encoding`` would flip the return type), while ``text=True,
+    encoding=None`` or ``encoding="cp936"`` would satisfy a name-only check
+    while still decoding with the locale or the wrong codec.
+
+    The order follows CPython's own rule,
+    ``text_mode = encoding or errors or text or universal_newlines``: a
+    CODEC keyword is decisive and OUTRANKS ``text=False``
+    (``run(..., text=False, encoding="cp936")`` really does return ``str``),
+    so the codec keywords are judged first.
+
+    THE INVARIANT, and the reason this function keeps its shape: every path
+    that ACCEPTS a call must be provably safe, and everything else fails
+    closed. Exactly four acceptances exist —
+
+    1. the call is not a subprocess spawn at all;
+    2. provably binary: no codec keyword with a truthy value, no unpacking,
+       and every text flag a falsy LITERAL;
+    3. a proven non-python child (``git``) with a UTF-8 literal encoding —
+       git emits UTF-8 whatever the locale;
+    4. a proven PYTHON child with a UTF-8 literal encoding, the sanctioned
+       ``env=utf8_child_env()``, and no ``-E`` / ``-I`` to ignore it.
+
+    Everything else — an opaque ``**kwargs``, a non-literal argv or an
+    unknown program, a dynamic text flag, a non-literal encoding, a
+    hand-rolled env, a shadowed sanctioned name — is REFUSED. Two of these
+    used to be exceptions ("skip the dynamic flag", "let the env repair an
+    unresolved child") and both turned into holes, so the rule is now
+    uniform: unresolvable means refused, never assumed.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # not this gate's job to report
+        return []
+    modules, bare, text_helpers = _subprocess_names(tree)
+    dynamic = _dynamic_subprocess_calls(tree)
+    if dynamic:
+        # ``sp = __import__("subprocess")`` binds the module under an
+        # ordinary name; the same fixpoint that tracks ``sp = subprocess``
+        # then carries it (and its aliases) forward.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if node.value is not None and id(node.value) in dynamic:
+                    modules.update(x.id for x in targets
+                                   if isinstance(x, ast.Name))
+        modules, bare, text_helpers = _propagate_aliases(
+            tree, modules, bare, text_helpers, dynamic)
+    if not modules and not bare and not text_helpers and not dynamic:
+        return []
+    sanctioned_bare, sanctioned_modules = _sanctioned_env_names(tree)
+    # A sanctioned name is trusted only when the file binds it EXACTLY
+    # once — a second import, a parameter or an assignment means the call
+    # site cannot know which object it gets, so fail closed.
+    counts = _binding_counts(tree)
+    sanctioned_bare = {n for n in sanctioned_bare if counts[n] == 1}
+    sanctioned_modules = {n for n in sanctioned_modules if counts[n] == 1}
+    # Same exactly-once rule for the sys module itself: a shadowed ``sys``
+    # cannot prove ``sys.executable`` is a python interpreter.
+    sys_names = {n for n in _sys_module_names(tree) if counts[n] == 1}
+    hits: list[int] = []
+    # A module OR SPAWNER reference FORWARDED anywhere else — a call
+    # argument, an attribute/subscript target, a container literal, a
+    # return value — escapes this file-local analysis entirely: the
+    # receiver can spawn through it unseen (codex P2 r19 on #410, both
+    # rounds). Resolvable uses only: a direct call (judged by the main
+    # loop below), a plain-Name alias (tracked in ``_subprocess_names``),
+    # and non-spawning module attributes (``subprocess.PIPE``, exception
+    # classes) — those cannot spawn, so they stay free.
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def _is_plain_alias(parent: ast.AST | None, value: ast.expr) -> bool:
+        if isinstance(parent, ast.Assign):
+            return (parent.value is value and len(parent.targets) == 1
+                    and isinstance(parent.targets[0], ast.Name))
+        if isinstance(parent, ast.AnnAssign):
+            return (parent.value is value
+                    and isinstance(parent.target, ast.Name))
+        return False
+
+    spawn_attrs = _SPAWNERS | _TEXT_ONLY_HELPERS
+    for node in ast.walk(tree):
+        is_module_expr = id(node) in dynamic
+        if not (is_module_expr or (isinstance(node, ast.Name)
+                                   and isinstance(node.ctx, ast.Load))):
+            continue
+        parent = parents.get(node)
+        if is_module_expr or node.id in modules:
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                if parent.attr in _SUBPROCESS_INERT_ATTRS:
+                    continue  # PIPE / DEVNULL / exceptions: cannot spawn
+                if parent.attr not in spawn_attrs:
+                    # NOT a blanket exemption (codex P2 r26 on #410):
+                    # ``subprocess.__dict__["run"]`` and
+                    # ``subprocess.__getattribute__("run")`` reach the
+                    # spawners reflectively. Anything that is neither a
+                    # known-inert constant nor a recognized spawner is
+                    # unresolvable forwarding.
+                    hits.append(node.lineno)
+                    continue
+                grand = parents.get(parent)
+                if isinstance(grand, ast.Call) and grand.func is parent:
+                    continue  # direct spawn call — judged below
+                if _is_plain_alias(grand, parent):
+                    continue  # tracked method alias
+                hits.append(node.lineno)
+                continue
+            if _is_plain_alias(parent, node):
+                continue  # tracked module alias
+            hits.append(node.lineno)
+        elif node.id in bare or node.id in text_helpers:
+            if isinstance(parent, ast.Call) and parent.func is node:
+                continue  # direct spawn call — judged below
+            if _is_plain_alias(parent, node):
+                continue  # tracked alias
+            hits.append(node.lineno)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            base_is_module = (
+                (isinstance(func.value, ast.Name)
+                 and func.value.id in modules)
+                or id(func.value) in dynamic
+            )
+            is_spawn = func.attr in _SPAWNERS and base_is_module
+        elif isinstance(func, ast.Name):
+            is_spawn = func.id in bare
+        else:
+            is_spawn = False
+
+        # subprocess.getoutput / getstatusoutput: always text mode, and no
+        # encoding parameter at all on Python 3.10 (oldest CI runtime), so
+        # they decode with the locale and there is no pinning spelling to
+        # recommend — reject outright (codex P2 r8).
+        is_text_helper = (
+            isinstance(func, ast.Attribute)
+            and func.attr in _TEXT_ONLY_HELPERS
+            and ((isinstance(func.value, ast.Name)
+                  and func.value.id in modules)
+                 or id(func.value) in dynamic)
+        ) or (isinstance(func, ast.Name) and func.id in text_helpers)
+        if is_text_helper:
+            hits.append(node.lineno)
+            continue
+        if not is_spawn:
+            continue
+
+        kwargs, opaque_unpacking = _collect_kwargs(node)
+
+        # Popen's optional parameters can arrive POSITIONALLY too — env is
+        # position 10 and universal_newlines position 11 (codex P2 r17 on
+        # #410: a positional universal_newlines=True with no text keyword
+        # made the call look provably binary and skipped the gate). The
+        # keyword-based analysis below models nothing past ``executable``
+        # (position 2), and a call-level ``*splat`` can smuggle any number
+        # of positions — both make the call unresolvable, so they fail
+        # closed BEFORE the binary-mode conclusion, not after it.
+        if len(node.args) > 3 or any(
+            isinstance(arg, ast.Starred) for arg in node.args
+        ):
+            hits.append(node.lineno)
+            continue
+
+        # A codec keyword enables text mode only when its VALUE is truthy:
+        # CPython evaluates ``encoding or errors or text or
+        # universal_newlines``, so an explicit ``encoding=None`` leaves the
+        # result as BYTES and must not be reported — following the advice
+        # would flip the return type (codex P2 r7 on #410, verified against
+        # the interpreter). A non-literal codec value is unresolvable and
+        # therefore still counts as text mode (fail closed).
+        codecs = [kwargs[k] for k in ("encoding", "errors") if k in kwargs]
+        # TRUTHINESS, not is-not-None (codex P2 r15; verified): CPython's
+        # ``encoding or errors or text or ...`` treats EVERY falsy literal
+        # as binary — encoding="" and errors="" return bytes just like
+        # None. A non-literal stays unresolvable (counts as text mode).
+        codec_enables_text = any(
+            not isinstance(v, ast.Constant) or bool(v.value)
+            for v in codecs
+        )
+        if codec_enables_text:
+            text_mode = True
+        elif opaque_unpacking:
+            text_mode = True  # cannot prove binary — fail closed
+        else:
+            flags = [kwargs[f] for f in _TEXT_FLAGS if f in kwargs]
+            if any(not isinstance(v, ast.Constant) for v in flags):
+                # A DYNAMIC text flag cannot be proven binary, and if it is
+                # true at runtime the call decodes with the locale — the
+                # very bug. Skipping it was the one place this gate failed
+                # OPEN (codex P2 r11 on #410); it now fails closed like
+                # every other unresolvable input. The remedy is a literal
+                # flag, not an added encoding (that would flip a genuinely
+                # binary call to text) — see the failure message.
+                hits.append(node.lineno)
+                continue
+            text_mode = any(bool(v.value) for v in flags)  # type: ignore[union-attr]
+        if not text_mode:
+            continue  # bytes: no codec kwarg, no unpacking, no text flag
+
+        if opaque_unpacking or not _is_utf8_literal(
+            kwargs.get("encoding", ast.Constant(None))
+        ):
+            hits.append(node.lineno)
+            continue
+
+        # Parent side is right; now the child's own encoder.
+        child = _python_child(node, sys_names, kwargs)
+        if child is False:
+            # A proven NON-python child (git) in TEXT MODE is refused,
+            # always. This began as "git emits UTF-8 regardless of
+            # locale" and was narrowed across forty review rounds —
+            # commit-text re-encoding, config includes, three hook
+            # families, external diff drivers, textconv, clean filters,
+            # path quoting, -z, format placeholders, notes, signature
+            # verification, patch options, raw ref names, operand echo.
+            # The rule that ENDS the class is that the premise itself is
+            # false: git's output is not a function of its argv.
+            #
+            # The decisive case (codex P2 r66 on #410, reproduced): with
+            # a spotless argv — ``git -c core.hooksPath=/dev/null
+            # rev-parse HEAD`` — an inherited ``GIT_CONFIG_GLOBAL``
+            # naming a malformed file makes git print that PATH on
+            # stderr, and ``capture_output`` takes stderr too. No argv
+            # analysis can govern the environment, so NO text-mode git
+            # call is provable, however pinned.
+            #
+            # The remedy is one line longer at each call site and always
+            # correct: capture BYTES and decode explicitly with the
+            # error policy the caller can defend — surrogateescape for
+            # paths that must round-trip, replace for diagnostics,
+            # strict where the caller owns the bytes.
+            hits.append(node.lineno)
+            continue
+        if child is None:
+            # UNRESOLVED child (a non-literal argv, ``shell=True``, an
+            # unknown program): PYTHONIOENCODING cannot control a native
+            # child's encoder, so the env helper does not repair it and
+            # must not be accepted as if it did (codex P2 r11 on #410).
+            # Only a PROVEN python child is repairable.
+            hits.append(node.lineno)
+            continue
+        env = kwargs.get("env")
+        if env is None or not _env_is_sanctioned(
+            env, sanctioned_bare, sanctioned_modules,
+        ) or _child_ignores_env(node):
+            hits.append(node.lineno)
+    return hits
+
+
+def _offenders() -> list[str]:
+    """``path:line`` for every text-mode spawn that does not pin UTF-8."""
+    found: list[str] = []
+    for tree_name in _TREES:
+        for py in sorted((PROJECT_ROOT / tree_name).rglob("*.py")):
+            if "__pycache__" in py.parts:
+                continue
+            rel = py.relative_to(PROJECT_ROOT).as_posix()
+            found += [
+                f"{rel}:{line}"
+                for line in offending_lines(py.read_text(encoding="utf-8"))
+            ]
+    return found
+
+
+class SubprocessEncodingPinTests(unittest.TestCase):
+    def test_no_text_mode_spawn_without_explicit_encoding(self) -> None:
+        offenders = _offenders()
+        self.assertEqual(
+            offenders, [],
+            msg=(
+                "text-mode subprocess call(s) not pinned to UTF-8:\n  "
+                + "\n  ".join(offenders)
+                + "\n\ntext=True decodes with the platform default (GBK on a "
+                "CN Windows box, UTF-8 in CI), so these succeed in CI and "
+                "raise UnicodeDecodeError locally on any non-ASCII output. "
+                'Add encoding="utf-8"; if the child is a PYTHON process, '
+                "also pass env=utf8_child_env() from scripts.child_env — "
+                "the child ENCODES with the inherited locale."
+            ),
+        )
+
+
+_PREAMBLE = (
+    "import os\n"
+    "import subprocess\n"
+    "import sys\n"
+    "from scripts.child_env import utf8_child_env\n"
+)
+_PY = 'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8"{extra})'
+_INLINE_PIN = ', env={**os.environ, "PYTHONIOENCODING": "utf-8"}'
+_REVERSED_PIN = ', env={"PYTHONIOENCODING": "utf-8", **os.environ}'
+_CP936_PIN = ', env={**os.environ, "PYTHONIOENCODING": "cp936"}'
+
+# The decision space, as a table. Written after this gate needed six review
+# rounds: each round fixed the ONE reported symptom, so the next hole was
+# found by the reviewer rather than by the tests. Enumerating the space is
+# what makes a future shortcut fail HERE first.
+#
+# Note the "hand-rolled env" rows: they are REJECTED even when they look
+# correct, because the gate requires the sanctioned constructor rather than
+# reasoning about mappings (module docstring). The three rows after them are
+# exactly the forgeries that beat the old mapping analysis — now moot by
+# construction rather than by ever-longer AST rules.
+_DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
+    # --- codec keyword semantics (values, not just names) ---
+    ("text bare", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("text + utf-8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    ("text + cp936", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="cp936")', True),
+    ("text + None", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=None)', True),
+    ("binary", 'subprocess.run(["git"])', False),
+    ("text=False", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False)', False),
+    ("text=False + cp936",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="cp936")', True),
+    ("text=False + utf-8",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=False, encoding="utf-8")', True),
+    ("errors alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace")', True),
+    ("errors + utf-8",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="replace", encoding="utf-8")', True),
+    # A codec keyword set to None does NOT enable text mode (verified
+    # against the interpreter): flagging it would push the author to add
+    # an encoding and flip the call from bytes to str.
+    ("encoding=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding=None)', False),
+    ("errors=None alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors=None)', False),
+    # EVERY falsy literal is binary (verified: encoding="" returns bytes),
+    # so flagging it would flip the return type — same rule as None.
+    ("encoding empty-string alone",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding="")', False),
+    ("errors empty-string alone", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], errors="")', False),
+    ("text=True with empty encoding",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="")', True),
+    ("both codecs None",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], encoding=None, errors=None)', False),
+    ("encoding=None with text=True",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=None)', True),
+    # A dynamic flag cannot be proven binary; if it is true at runtime the
+    # call decodes with the locale, so it is refused rather than skipped.
+    ("dynamic text flag", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=want)', True),
+    ("dynamic universal_newlines",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], universal_newlines=want)', True),
+    ("non-literal encoding",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding=ENC)', True),
+    ("alias U8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="U8")', True),
+    ("alias utf_8", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf_8")', True),
+    # --- call-target resolution ---
+    ("unrelated .run()", "renderer.run(text=True)", False),
+    ("locally defined run()",
+     "def run(text=False):\n    pass\nrun(text=True)", False),
+    ("aliased module", 'import subprocess as sp\nsp.run(["git"], text=True)', True),
+    ("from-import", 'from subprocess import run\nrun(["git"], text=True)', True),
+    # --- ** unpacking: it can itself supply text=True ---
+    ("opaque ** in text mode", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, **o)', True),
+    ("opaque ** looking binary", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], check=True, **o)', True),
+    ("literal ** supplying text", 'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True})', True),
+    ("literal ** supplying text + utf-8",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "utf-8"})', True),
+    ("literal ** supplying cp936",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], **{"text": True, "encoding": "cp936"})', True),
+    # --- the child encoder: the sanctioned constructor, nothing else ---
+    ("python child, no env", _PY.format(extra=""), True),
+    ("python child, sanctioned env",
+     _PY.format(extra=", env=utf8_child_env()"), False),
+    ("python child, sanctioned env with a base",
+     _PY.format(extra=", env=utf8_child_env(base)"), False),
+    ("python child, hand-rolled inline env", _PY.format(extra=_INLINE_PIN), True),
+    ("python child, env via a local name",
+     "env = utf8_child_env()\n" + _PY.format(extra=", env=env"), True),
+    ("python child, env=os.environ", _PY.format(extra=", env=os.environ"), True),
+    # The attribute spelling must resolve through an IMPORT of the module —
+    # any object can expose a same-named method returning an unpinned env.
+    ("python child, unrelated object with the same method name",
+     _PY.format(extra=", env=helper.utf8_child_env()"), True),
+    ("python child, imported module alias",
+     "from scripts import child_env\n"
+     + _PY.format(extra=", env=child_env.utf8_child_env()"), False),
+    ("python child, aliased module import",
+     "import scripts.child_env as ce\n"
+     + _PY.format(extra=", env=ce.utf8_child_env()"), False),
+    ("python child, env pinned to cp936", _PY.format(extra=_CP936_PIN), True),
+    # the three forgeries that beat the old mapping analysis
+    ("python child, pin overridden by later unpacking",
+     _PY.format(extra=_REVERSED_PIN), True),
+    ("python child, helper that can fall through",
+     "def h():\n    if flag:\n        return utf8_child_env()\n"
+     + _PY.format(extra=", env=h()"), True),
+    ("python child, parameter shadowing a module constant",
+     "ENV = utf8_child_env()\ndef f(ENV):\n    " + _PY.format(extra=", env=ENV"),
+     True),
+    ("python child, sanctioned name shadowed by a parameter",
+     "def launch(utf8_child_env):\n    " + _PY.format(extra=", env=utf8_child_env()"),
+     True),
+    ("python child, sanctioned name shadowed by an assignment",
+     "utf8_child_env = make_env\n" + _PY.format(extra=", env=utf8_child_env()"),
+     True),
+    # -E ignores every PYTHON* var and -I implies it, so the env pin is dead
+    # letter (verified: the child emits cp936 bytes) unless -X utf8 forces
+    # UTF-8 mode on the command line.
+    ("python child with -E ignores the env",
+     'subprocess.run([sys.executable, "-E", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with -I ignores the env",
+     'subprocess.run([sys.executable, "-I", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with a combined -Es cluster",
+     'subprocess.run([sys.executable, "-Es", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child with -E but -X utf8 forced",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # ``-X`` consumes the option NEXT to it: a different -X option plus a
+    # later script argument spelled "utf8" is NOT a UTF-8 pin.
+    ("python child, -X dev with a trailing utf8 argument",
+     'subprocess.run([sys.executable, "-E", "-X", "dev", "-c", code, "utf8"],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, utf8 only after -c",
+     'subprocess.run([sys.executable, "-I", "-c", code, "-X", "utf8"],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X utf8=1 accepted",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=1", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # ``-X utf8[=0|1]``: the VALUE decides, and the option name is
+    # case-SENSITIVE — both spellings below leave the child on cp936
+    # (verified against the interpreter).
+    ("python child, -X utf8=0 disables UTF-8 mode",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=0", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X UTF8 is not the option name",
+     'subprocess.run([sys.executable, "-E", "-X", "UTF8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -Xutf8=0 attached form",
+     'subprocess.run([sys.executable, "-I", "-Xutf8=0", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # Repeated -X utf8: CPython honors the FIRST occurrence (verified).
+    ("python child, -X utf8=0 then utf8=1 stays disabled",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=0", "-X", "utf8=1",'
+     ' "x"], text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("python child, -X utf8=1 then utf8=0 stays enabled",
+     'subprocess.run([sys.executable, "-E", "-X", "utf8=1", "-X", "utf8=0",'
+     ' "x"], text=True, encoding="utf-8", env=utf8_child_env())', False),
+    # A value-taking LONG option must not end option parsing (its value is
+    # not the script name): the -E after it still ignores the env.
+    ("python child, long option value before -E",
+     'subprocess.run([sys.executable, "--check-hash-based-pycs", "always",'
+     ' "-E", "x"], text=True, encoding="utf-8", env=utf8_child_env())', True),
+    # A match-pattern capture shadows the sanctioned name (3.10+).
+    ("python child, sanctioned name captured by a match pattern",
+     "match cfg:\n    case {\"env\": utf8_child_env}:\n        pass\n"
+     + _PY.format(extra=", env=utf8_child_env()"), True),
+    # A *splice or a variable in the OPTION REGION can hide -E/-I — the
+    # options cannot be known, so the call fails closed; past the script
+    # boundary (an opaque single value like str(path)) it is harmless.
+    ("python child, starred args in the option region",
+     'args = ["-E", "x.py"]\n'
+     'subprocess.run([sys.executable, *args], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("python child, variable in the option region",
+     'subprocess.run([sys.executable, flag, "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # An OPAQUE expression is no script boundary: str(flag) can evaluate
+    # to "-E" just as well as to a path (codex P2 r18) — only a literal
+    # non-option or an explicit "--" proves where options end.
+    ("opaque expression in the option region fails closed",
+     'subprocess.run([sys.executable, str(script), *args], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("opaque value can BE the env-ignoring flag",
+     'flag = "-E"\n'
+     'subprocess.run([sys.executable, str(flag), "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("explicit -- proves the boundary for a dynamic script",
+     'subprocess.run([sys.executable, "--", str(script), *args],'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', False),
+    ("literal script boundary keeps later opaque args harmless",
+     'subprocess.run([sys.executable, "x.py", str(arg)], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # A DYNAMIC value for a value-taking option: the option set cannot be
+    # known — unresolvable and refused, never an AttributeError crash.
+    ("python child, dynamic separated -X value",
+     'subprocess.run([sys.executable, "-E", "-X", mode, "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # executable= OVERRIDES the program: argv[0] becomes display only.
+    ("python argv but executable=node",
+     'subprocess.run([sys.executable, "x"], executable="node", text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("node argv but executable=sys.executable",
+     'subprocess.run(["node", "x"], executable=sys.executable, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("executable from a variable is unresolvable",
+     'subprocess.run([sys.executable, "x"], executable=exe, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # executable can arrive as Popen's THIRD positional just as well.
+    ("positional executable overrides a python argv",
+     'subprocess.Popen([sys.executable, "x"], -1, "node", text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("positional executable=sys.executable proves python",
+     'subprocess.Popen(["node", "x"], -1, sys.executable, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("literal executable=None is no override",
+     'subprocess.run([sys.executable, "x"], executable=None, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("positions past executable are unmodeled",
+     'subprocess.Popen([sys.executable, "x"], -1, None, None, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # ...even with NO text keyword at all: universal_newlines is position
+    # 11 and env position 10, so a long positional call is never provably
+    # binary (codex P2 r17 on #410).
+    ("positional universal_newlines with positional env",
+     "subprocess.Popen([sys.executable, \"x\"], -1, None, None, None,"
+     " None, None, True, False, None, utf8_child_env(), True)", True),
+    ("four positionals look binary but fail closed",
+     "subprocess.Popen([sys.executable, \"x\"], -1, None, None)", True),
+    ("call-level splat can smuggle positional text flags",
+     "subprocess.run(*cmd)", True),
+    ("three positionals with no text keyword stay provably binary",
+     'subprocess.Popen(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], -1, None)', False),
+    # a truthy shell= makes argv a shell command line, not a program vector
+    ("list argv with shell=True even fully pinned",
+     'subprocess.run([sys.executable, "x"], shell=True, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("shell from a variable is unresolvable",
+     'subprocess.run([sys.executable, "x"], shell=flag, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("shell=False stays a program vector",
+     'subprocess.run([sys.executable, "x"], shell=False, text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # interpreter names match exactly — "py" the prefix proves nothing
+    ("py-prefixed native tool even fully pinned",
+     'subprocess.run(["pyright", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("pytest is not an interpreter either",
+     'subprocess.run(["pytest", "-q"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("versioned windows interpreter still proves python",
+     'subprocess.run(["python3.12", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("pyw launcher still proves python",
+     'subprocess.run(["pyw", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # a competing / fallback import re-binds the sanctioned name
+    ("python child, sanctioned name also imported elsewhere",
+     "from fallback import utf8_child_env\n"
+     + _PY.format(extra=", env=utf8_child_env()"), True),
+    ("python child with -I but -Xutf8 forced",
+     'subprocess.run([sys.executable, "-I", "-Xutf8", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    # subprocess.getoutput / getstatusoutput decode with the locale and take
+    # no encoding on Python 3.10 — no pinning spelling exists, so reject.
+    ("getoutput", 'subprocess.getoutput("git log")', True),
+    ("getstatusoutput", 'subprocess.getstatusoutput("git log")', True),
+    ("getoutput via from-import",
+     'from subprocess import getoutput\ngetoutput("git log")', True),
+    ("git child needs no env",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    # ``X.executable`` proves python only when X is the imported sys module
+    # — any object can expose an .executable naming a native binary.
+    ("someone else's .executable even fully pinned",
+     'subprocess.run([native_tool.executable, "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("aliased sys module still proves python",
+     "import sys as _s\n"
+     'subprocess.run([_s.executable, "x"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", False),
+    ("shadowed sys cannot prove python",
+     "def f(sys):\n    "
+     'subprocess.run([sys.executable, "x"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    # --- interpreter naming / unknown programs fail closed ---
+    # Path literals are judged under BOTH separator conventions, so the
+    # verdict is identical on Windows boxes and Linux CI (codex P2 r20).
+    ("windows absolute interpreter path fully pinned",
+     'subprocess.run([r"C:\\Python312\\python.exe", "s.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("windows absolute git path needs no env",
+     'subprocess.run([r"C:\\Program Files\\Git\\bin\\git.exe",'
+     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
+     ' text=True, encoding="utf-8")', True),
+    ("windows path to an unknown tool still fails closed",
+     'subprocess.run([r"C:\\tools\\node.exe", "s.js"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("py launcher", 'subprocess.run(["py", "s.py"], text=True, encoding="utf-8")',
+     True),
+    ("python3", 'subprocess.run(["python3", "s.py"], text=True, encoding="utf-8")',
+     True),
+    ("unknown program",
+     'subprocess.run(["node", "s.js"], text=True, encoding="utf-8")', True),
+    # PYTHONIOENCODING cannot control a NATIVE child's encoder, so the env
+    # helper does not repair an unresolved child and must not excuse it.
+    ("unknown program even with the sanctioned env",
+     'subprocess.run(["node", "s.js"], text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("shell=True command with the sanctioned env",
+     'subprocess.run("git log", shell=True, text=True, encoding="utf-8",'
+     " env=utf8_child_env())", True),
+    ("variable argv even with the sanctioned env",
+     "argv = [sys.executable, 'x']\n"
+     'subprocess.run(argv, text=True, encoding="utf-8", env=utf8_child_env())',
+     True),
+    ("unresolvable argv expression",
+     'subprocess.run(build(), text=True, encoding="utf-8")', True),
+    ("argv from a variable is unresolvable",
+     'argv = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"]\nsubprocess.run(argv, text=True, encoding="utf-8")',
+     True),
+    # an ordinary assignment alias must not launder the module reference
+    ("assigned alias spawns are recognized",
+     "sp = subprocess\n"
+     'sp.run(["git"], text=True)', True),
+    ("alias-of-alias spawns are recognized",
+     "sp = subprocess\nsp2 = sp\n"
+     'sp2.run(["git"], text=True)', True),
+    ("aliased spawn accepted when properly pinned",
+     "sp = subprocess\n"
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    # ...and a module reference forwarded OUT of the file-local analysis
+    # (call argument, attribute target) fails closed at the forwarding.
+    ("module forwarded as a call argument fails closed",
+     "helper(subprocess)", True),
+    ("module stored onto an attribute fails closed",
+     "obj.sp = subprocess", True),
+    ("module attribute constants stay usable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], stdout=subprocess.PIPE, text=True,'
+     ' encoding="utf-8")', True),
+    # ...and a stored METHOD spawns exactly like the module alias did
+    # (codex P2 r19 follow-up): tracked when it is a plain-Name alias,
+    # failed closed when forwarded anywhere else.
+    ("method alias spawns are recognized",
+     "runner = subprocess.run\n"
+     'runner(["git"], text=True)', True),
+    ("method alias accepted when properly pinned",
+     "runner = subprocess.run\n"
+     'runner(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    ("method alias of a text-only helper is recognized",
+     "go = subprocess.getoutput\n"
+     'go("git log")', True),
+    ("spawner method forwarded as an argument fails closed",
+     "helper(subprocess.run)", True),
+    ("bare spawner forwarded as an argument fails closed",
+     "from subprocess import run\nhelper(run)", True),
+    ("exception classes stay usable",
+     "try:\n"
+     '    subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")\n'
+     "except subprocess.CalledProcessError:\n"
+     "    pass", True),
+    # the git exemption is NOT unconditional: the log family re-encodes
+    # commit text per i18n.logOutputEncoding (verified with GBK), so it
+    # needs the literal config pin; plumbing does not.
+    ("git log without the encoding pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "log", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("git log pinned but with diff drivers live is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "-1"], text=True, encoding="utf-8")', True),
+    ("git log pinned with the drivers off is accepted",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("git log with a non-utf8 pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "-1"], text=True, encoding="utf-8")', True),
+    ("git show stays in the risky set",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "show", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("git plumbing needs no pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    # git honours the LAST -c, so a pinned prefix does NOT survive an
+    # opaque splice (verified: -c x=a -c x=b -> b; and git has no
+    # top-level --end-of-options to close the region with). The whole
+    # pre-subcommand region must be literal.
+    ("pinned prefix does not rescue a spliced git call",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "-C", str(repo), *args], text=True, encoding="utf-8")', True),
+    ("unpinned spliced git call fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args], text=True,'
+     ' encoding="utf-8")', True),
+    # ...but a literal subcommand closes the region: everything after it
+    # is the subcommand's own argv, so a splice there is harmless.
+    ("a splice inside the option region can re-enable the driver",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "-C", str(repo), "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("text-mode git show is refused — it prints raw content",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-C", str(repo), "show",'
+     ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "--end-of-options", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a binary show is untouched",
+     'subprocess.run(["git", "show", "HEAD:x"], capture_output=True)',
+     False),
+    ("--end-of-options closes the region for a dynamic rev",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-C", str(repo), "log", "--no-ext-diff",'
+     ' "--no-textconv", "--no-notes", "--format=%H", "--end-of-options", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("log -p prints raw patch content, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # --error-unmatch echoes an unmatched pathspec verbatim (verified),
+    # so it revokes the "pathspecs past the closer are inert" premise.
+    ("ls-files --error-unmatch with an opaque pathspec refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--error-unmatch", "--", path],'
+     ' text=True, encoding="utf-8")', True),
+    ("...literal pathspecs are still fine with it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--error-unmatch", "--",'
+     ' "CLAUDE.md"], text=True, encoding="utf-8")', True),
+    ("...and without it a dynamic pathspec stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", path], text=True,'
+     ' encoding="utf-8")', True),
+    # merge-base treats everything as a REVISION, so a closer is no
+    # licence there either (verified: it echoes a bad post-`--` operand).
+    ("an opaque merge-base operand past -- still refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", "HEAD", "--",'
+     ' rev], text=True, encoding="utf-8")', True),
+    ("...while log keeps its dynamic pathspec past --",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false", "log", "--no-ext-diff",'
+     ' "--no-textconv", "--format=%H", "--", path], text=True,'
+     ' encoding="utf-8")', True),
+    # a literal carrying lone SURROGATES is not resolvable text: POSIX
+    # encodes them back to raw bytes, and git echoes them (verified).
+    # The source below spells the escape, so this table file itself
+    # stays plain UTF-8.
+    ("a surrogate-bearing literal operand refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor",'
+     ' "\\udcffbad", "HEAD"], text=True, encoding="utf-8")', True),
+    ("a surrogate-bearing program name is unresolvable",
+     'subprocess.run(["git\\udcff", "rev-parse", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    # git echoes an INVALID operand back in its diagnostics, and the
+    # diagnostics stream is captured too — so operands must be literal
+    # before the closer (past it they are pathspecs git ignores).
+    ("an opaque merge-base operand refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", a, b],'
+     ' text=True, encoding="utf-8")', True),
+    ("literal merge-base operands pass",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", "HEAD~1",'
+     ' "HEAD"], text=True, encoding="utf-8")', True),
+    ("...and a binary capture is untouched",
+     'subprocess.run(["git", "merge-base", "--is-ancestor", a, b],'
+     " capture_output=True)", False),
+    # --stdin reads revisions from the inherited stdin and echoes bad
+    # ones back in its diagnostics (reproduced with a piped 0xff).
+    ("log --stdin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "--stdin"], text=True, encoding="utf-8")', True),
+    # a dotted importlib import binds the top-level package name.
+    ("import importlib.util still binds importlib",
+     "import importlib.util\n"
+     'importlib.import_module("subprocess").run(["git"], text=True)',
+     True),
+    ("...and the aliased dotted form is unaffected",
+     "import importlib.util as iu\n"
+     'iu.import_module("subprocess").run(["git"], text=True)', False),
+    # bare printing globals never reach a subcommand (verified).
+    ("a bare --exec-path prints a path and exits",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path", "ignored", "rev-parse",'
+     ' "HEAD"], text=True, encoding="utf-8")', True),
+    ("--version is the same shape",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--version"], text=True, encoding="utf-8")',
+     True),
+    ("...while the --exec-path=<path> value form stays allowed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--exec-path=/opt/git", "rev-parse", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    # check-ignore -v prints the matching .gitignore PATTERN, which
+    # quotePath does not escape (reproduced).
+    ("check-ignore is refused in text mode",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "check-ignore", "-v", "x"], text=True, encoding="utf-8")', True),
+    ("...while binary capture is untouched",
+     'subprocess.run(["git", "check-ignore", "-v", "x"],'
+     " capture_output=True)", False),
+    # NAMED formats carry no placeholder to inspect and print identity
+    # fields git does not transcode (reproduced: --pretty=raw emits a
+    # non-UTF-8 author name verbatim).
+    ("--pretty=raw is a named format, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--pretty=raw", "-1"], text=True, encoding="utf-8")', True),
+    ("--format=oneline likewise",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=oneline", "-1"], text=True, encoding="utf-8")', True),
+    ("the format: prefix keeps its placeholders provable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=format:%H", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("tformat: too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=tformat:%H%n%cI", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("an empty format prints nothing, so it passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=", "--name-status", "-c", "core.quotePath=true", "-1"],'
+     ' text=True, encoding="utf-8")', True),
+    # only `log` stays acceptable in the diff family: the others print
+    # file content or raw paths as their normal output (blame,
+    # format-patch and rev-list reproduced with a tracked 0xff).
+    ("blame echoes file content, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "blame", "--no-ext-diff", "x"], text=True,'
+     ' encoding="utf-8")', True),
+    ("annotate is the same command",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "annotate", "x"], text=True,'
+     ' encoding="utf-8")', True),
+    ("format-patch prints patches",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "format-patch", "-1", "--stdout"],'
+     ' text=True, encoding="utf-8")', True),
+    ("rev-list --objects prints paths",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-list", "--objects", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("diff-tree prints paths too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff-tree", "-r", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("...while binary capture is untouched",
+     'subprocess.run(["git", "blame", "x"], capture_output=True)',
+     False),
+    # without an explicit format the default output prints NOTES, which
+    # git does not transcode (reproduced).
+    ("default log output carries notes, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-1"], text=True, encoding="utf-8")', True),
+    ("--no-notes suppresses them",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--no-notes", "--format=%H", "-1"], text=True, encoding="utf-8")', True),
+    ("a proven format suppresses them too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-1"], text=True, encoding="utf-8")', True),
+    ("an explicit --notes refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "--notes", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("--no-notes alone leaves the default format's identity fields",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--no-notes", "-1"], text=True, encoding="utf-8")', True),
+    ("--binary emits a binary patch",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "--binary", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("a combined-diff -c prints a patch",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-c", "-3"], text=True, encoding="utf-8")', True),
+    ("...while the GLOBAL -c before the subcommand is config",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-3"], text=True, encoding="utf-8")', True),
+    ("a -L line log emits a patch as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-L", "1,1:x"], text=True, encoding="utf-8")',
+     True),
+    ("an attached -U1 generates a patch too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "-U1", "-1"], text=True, encoding="utf-8")', True),
+    ("a bundled -pU3 as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "-pU3", "-1"], text=True, encoding="utf-8")', True),
+    ("a patch-free short option stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-n", "1", "--format=%H"], text=True, encoding="utf-8")', True),
+    ("--patch is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--patch", "-1"], text=True, encoding="utf-8")', True),
+    ("-U3 counts too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--unified=3", "-1"], text=True, encoding="utf-8")', True),
+    ("-- closes it for a dynamic pathspec",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H",'
+     ' "--", *args], text=True, encoding="utf-8")', True),
+    ("an opaque rev before the closer fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "show", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", ref], text=True,'
+     ' encoding="utf-8")', True),
+    ("an opaque rev-parse arg could be --show-toplevel",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("rev-parse echoes path operands, so a splice past -- refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse", "--", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("opaque -C value is fine, it cannot be re-read as an option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    ("opaque -c value fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", cfg, "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    # an UNKNOWN subcommand may be a user alias for log (verified in a
+    # scratch repo), so the safe set is a built-in whitelist...
+    ("unknown git subcommand fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "lg", "-1"], text=True, encoding="utf-8")',
+     True),
+    ("...and not even the pin plus driver-off flags rescue it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "lg", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    # a "!"-prefixed alias runs an arbitrary shell command whose bytes
+    # nothing about git governs (verified: alias.raw emits 0xff through
+    # a fully pinned call), so the known-built-in sets are the ceiling.
+    ("a shell-backed alias name is refused however pinned",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "raw", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H"], text=True,'
+     ' encoding="utf-8")', True),
+    # a LITERAL dynamic import hands back the module with no import
+    # binding for name-based discovery to find.
+    ("__import__ chain spawns are recognized",
+     '__import__("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("__import__ alias spawns are recognized",
+     'sp = __import__("subprocess")\n'
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("importlib.import_module chain is recognized",
+     "import importlib\n"
+     'importlib.import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
+     " text=True)", True),
+    ("from-imported import_module is recognized",
+     "from importlib import import_module\n"
+     'import_module("subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("a method alias taken from a dynamic import is tracked",
+     'runner = __import__("subprocess").run\n'
+     'runner(["git"], text=True)', True),
+    ("...the text-helper alias too",
+     'go = __import__("subprocess").getoutput\n'
+     'go("git log")', True),
+    ("...and the pinned form of that alias passes",
+     'runner = __import__("subprocess").run\n'
+     'runner(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    ("a dynamically imported module forwarded fails closed",
+     'helper(__import__("subprocess"))', True),
+    ("a properly pinned dynamic-import spawn passes",
+     'sp = __import__("subprocess")\n'
+     'sp.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    ("keyword-form import_module is recognized",
+     "import importlib\n"
+     'importlib.import_module(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"],'
+     " text=True)", True),
+    ("keyword-form __import__ is recognized",
+     '__import__(name="subprocess").run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)',
+     True),
+    # `git worktree add` runs the post-checkout hook, whose bytes no pin
+    # or flag governs (verified: a hook emitting 0xff lands in stdout).
+    ("git worktree in text mode fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", str(wt),'
+     ' rev], text=True, encoding="utf-8")', True),
+    ("...while a binary worktree call is untouched",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "worktree", "prune"], capture_output=True)',
+     False),
+    # a fsmonitor hook writes arbitrary bytes into the captured streams
+    # on any index-refreshing command (verified: 0xff on stderr breaks a
+    # UTF-8 `git status`), and only the literal kill switch stops it.
+    ("git status without the fsmonitor kill switch is refused",
+     'subprocess.run(["git", "rev-parse", "--porcelain"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an explicit fsmonitor path is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=/hooks/fsm",'
+     ' "rev-parse"], text=True, encoding="utf-8")', True),
+    ("a later fsmonitor re-enable wins",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.fsmonitor=/hooks/fsm", "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    # `-c include.path=<file>` is expanded immediately and can redefine
+    # the codec from a file this gate cannot read (verified both orders).
+    ("an include AFTER the pin invalidates it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "include.path=x.cfg",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an include BEFORE both switches is overridden by them",
+     'subprocess.run(["git", "-c", "include.path=x.cfg",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("...but a switch before the include does not survive it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "include.path=x.cfg", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an include AFTER the fsmonitor kill switch invalidates it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "include.path=x.cfg", "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an include BEFORE the kill switch is overridden by it",
+     'subprocess.run(["git", "-c", "include.path=x.cfg",'
+     ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    ("includeIf counts the same",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "-c", "includeIf.gitdir:/x/.path=y.cfg",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a dynamic import of another module is untouched",
+     '__import__("json").dumps({})', False),
+    ("a known built-in with the same shape still passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H"],'
+     ' text=True, encoding="utf-8")', True),
+    # an operator-configured diff.external / textconv driver writes
+    # whatever bytes it likes, and the encoding pin does NOT govern it
+    # (verified: a CP936 helper makes plain `git diff` emit CP936).
+    ("plain git diff is refused — an external driver may own its output",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    ("log with both driver-off flags is accepted",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
+     ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("text-mode git diff is refused — filters have no kill switch",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "diff",'
+     ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # the log family's own --encoding overrides the config pin
+    # (reproduced: --encoding=GBK emits GBK through a pinned call).
+    ("--encoding=GBK overrides the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--encoding=GBK", "-1"], text=True, encoding="utf-8")', True),
+    ("--encoding=utf-8 is redundant but harmless",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--encoding=utf-8", "-1"], text=True, encoding="utf-8")', True),
+    ("a separated --encoding value cannot be read",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--encoding", enc, "-1"], text=True, encoding="utf-8")', True),
+    # rev-parse echoes its operands verbatim, so `--` is no licence.
+    ("a literal rev operand stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an opaque operand past -- refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--", path], text=True,'
+     ' encoding="utf-8")', True),
+    # log.showSignature=true runs gpg.program, whose bytes reach the
+    # captured stream (reproduced with a verifier emitting 0xff).
+    ("log without the signature pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "-1"], text=True, encoding="utf-8")', True),
+    ("an explicit --show-signature refuses even with the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff",'
+     ' "--no-textconv", "--show-signature", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a later showSignature=true undoes the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "log.showSignature=true",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    # value-bearing spellings of the path-output options (reproduced
+    # with --stat=80) must be recognized by their HEAD.
+    ("--stat=80 is still path output",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--stat=80", "-1"], text=True, encoding="utf-8")', True),
+    ("--dirstat=lines too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--dirstat=lines", "-1"], text=True, encoding="utf-8")', True),
+    ("...and with the quoting pin they pass",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--stat=80", "-1"], text=True, encoding="utf-8")', True),
+    ("a value-bearing --decorate spelling refuses too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--decorate=short", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    # format placeholders are an ALLOW-LIST: %D/%d print ref names raw
+    # (reproduced), as do the decoration options.
+    ("a %D ref decoration is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%D", "-1"], text=True, encoding="utf-8")', True),
+    ("--decorate is the same hazard",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--decorate", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("an identity placeholder is not proven ASCII either",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%an", "-1"], text=True, encoding="utf-8")', True),
+    ("a locale-formattable date placeholder refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%ad", "-1"], text=True, encoding="utf-8")', True),
+    ("the proven set still passes",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H%n%cI%n%ct", "-1"], text=True, encoding="utf-8")',
+     True),
+    # %N prints the commit NOTE body untranscoded (reproduced), while
+    # %n is just a newline — the check is case-sensitive there.
+    ("a %N note placeholder is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%N", "-1"], text=True, encoding="utf-8")', True),
+    ("a %n newline stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H%n%cI", "-1"], text=True, encoding="utf-8")', True),
+    # log/show print PATHS when asked to, and paths are escaped only
+    # while core.quotePath is on (reproduced with both settings).
+    ("log --name-only without the quoting pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
+    ("...and accepted with it",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
+    ("--stat counts as path output too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "show", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--stat", "HEAD"], text=True, encoding="utf-8")', True),
+    ("--raw as well",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--raw", "-1"], text=True, encoding="utf-8")', True),
+    # rev-parse's name/path-printing options emit raw bytes, and
+    # symbolic-ref prints a ref name verbatim (both reproduced).
+    ("rev-parse --show-toplevel is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--show-toplevel"], text=True,'
+     ' encoding="utf-8")', True),
+    ("rev-parse --abbrev-ref prints a ref name, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--abbrev-ref", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    ("rev-parse of an object name stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--verify", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("symbolic-ref is refused outright",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "symbolic-ref", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a separated --format value is inspected, not skipped",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
+     ' "--format", "%xFF"], text=True, encoding="utf-8")', True),
+    ("...and ls-files' own format language is not modelled, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files",'
+     ' "--format", "%(objectname)"], text=True, encoding="utf-8")',
+     True),
+    # git's format language writes raw bytes: %xFF emits 0xff even
+    # through a fully pinned call (verified).
+    ("a %x escape in --format is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%xFF", "-1"], text=True, encoding="utf-8")', True),
+    ("--pretty carries the same escape",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--pretty=%xff%H", "-1"], text=True, encoding="utf-8")', True),
+    ("an ordinary format stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format=%H", "-1"], text=True, encoding="utf-8")', True),
+    ("a separated format value cannot be read, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--format", fmt, "-1"], text=True, encoding="utf-8")', True),
+    # argv may arrive as the documented ``args=`` keyword.
+    ("keyword argv proves the python child",
+     'subprocess.run(args=[sys.executable, "-c", code], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("keyword argv is scanned for env-ignoring flags too",
+     'subprocess.run(args=[sys.executable, "-E", "x.py"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("keyword argv naming git obeys the git rules",
+     'subprocess.run(args=["git", "rev-parse", "HEAD"], text=True,'
+     ' encoding="utf-8")', True),
+    # the codec is last-one-wins too (verified on the key itself).
+    ("a later utf-8 override rescues an earlier GBK",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null",'
+     ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("...and a later GBK undoes an earlier utf-8",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
+     ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
+     ' "log", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    # ``-c key`` (no =) is boolean TRUE and ``-c key=`` is FALSE —
+    # verified with ``config --type=bool``; folding them together read a
+    # valueless core.fsmonitor as "disabled".
+    ("a valueless core.fsmonitor is boolean TRUE, so refused",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor",'
+     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', True),
+    ("the explicit empty form is boolean FALSE, so accepted",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=",'
+     ' "rev-parse", "HEAD"], text=True, encoding="utf-8")', True),
+    ("a valueless core.quotePath is TRUE, so quoting stays on",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.quotePath", "ls-files"], text=True,'
+     ' encoding="utf-8")', True),
+    ("...while core.quotePath= is FALSE and refuses",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.quotePath=", "ls-files"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a valueless encoding pin proves no codec",
+     'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",'
+     ' "-c", "i18n.logOutputEncoding", "log", "--no-ext-diff",'
+     ' "--no-textconv", "-1"], text=True, encoding="utf-8")', True),
+    # path-producing commands are ASCII-safe only while git QUOTES
+    # unusual bytes: -z and core.quotePath=false both emit them raw
+    # (verified against an index entry with a non-ASCII byte).
+    ("ls-files without the quoting pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files"],'
+     ' text=True, encoding="utf-8")', True),
+    ("ls-files with the quoting pin is accepted",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files"],'
+     ' text=True, encoding="utf-8")', True),
+    ("...but -z emits raw bytes anyway",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "-z"],'
+     ' text=True, encoding="utf-8")', True),
+    ("a bundled z is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-files", "-cz"], text=True, encoding="utf-8")', True),
+    ("...and in ls-tree too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-tree", "-rz", "HEAD"], text=True, encoding="utf-8")', True),
+    ("a cluster without z stays acceptable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true",'
+     ' "ls-tree", "-r", "HEAD"], text=True, encoding="utf-8")', True),
+    ("--null is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-tree", "--null", "HEAD"],'
+     ' text=True, encoding="utf-8")', True),
+    ("an explicit quotePath=false is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", "ls-files"],'
+     ' text=True, encoding="utf-8")', True),
+    ("an opaque option could be the -z",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a pathspec past -- is harmless",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=true", "ls-files", "--", *args],'
+     ' text=True, encoding="utf-8")', True),
+    # status runs the clean filter when stat info cannot settle a
+    # comparison (reproduced: same-size edit -> filter stderr), and
+    # config emits stored bytes verbatim (reproduced with a GBK value).
+    ("text-mode git status is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "status", "--porcelain"],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a binary status is untouched",
+     'subprocess.run(["git", "status", "--porcelain"],'
+     " capture_output=True)", False),
+    ("text-mode git config --get is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "config", "--get", "user.name"],'
+     ' text=True, encoding="utf-8")', True),
+    # update-index / hash-object run the post-index-change hook and the
+    # attributes clean filter respectively (both verified with 0xff).
+    ("text-mode git update-index is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "update-index", "--refresh"],'
+     ' text=True, encoding="utf-8")', True),
+    ("text-mode git hash-object is refused even with --no-filters",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "hash-object", "--no-filters",'
+     ' "--", path], text=True, encoding="utf-8")', True),
+    # the hooks kill switch is required, and last-one-wins like the rest
+    ("git status without the hooks kill switch is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "rev-parse"],'
+     ' text=True, encoding="utf-8")', True),
+    ("a later hooksPath pointing at a directory wins",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null", "-c", "core.hooksPath=/hooks",'
+     ' "rev-parse"], text=True, encoding="utf-8")', True),
+    ("...while a binary diff is untouched",
+     'subprocess.run(["git", "diff", "--name-status"],'
+     " capture_output=True)", False),
+    ("--no-ext-diff alone is not enough (textconv remains)",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--no-ext-diff"], text=True,'
+     ' encoding="utf-8")', True),
+    ("driver-off flags after -- are PATHSPECS, not options",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--", "--no-ext-diff",'
+     ' "--no-textconv"], text=True, encoding="utf-8")', True),
+    ("...and an opaque element could BE that separator",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", sep, "--no-ext-diff",'
+     ' "--no-textconv"], text=True, encoding="utf-8")', True),
+    ("flags before -- are real options",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
+     ' "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "--", path], text=True,'
+     ' encoding="utf-8")', True),
+    # each driver is a last-one-wins toggle (verified: --no-ext-diff
+    # --ext-diff runs the helper; the reverse order does not).
+    ("a later --ext-diff re-enables the external driver",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--ext-diff"], text=True, encoding="utf-8")', True),
+    ("a later --textconv re-enables the filter",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H",'
+     ' "--textconv"], text=True, encoding="utf-8")', True),
+    ("a later disable wins over an earlier enable",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--ext-diff",'
+     ' "--textconv", "--no-ext-diff", "--no-textconv", "--no-notes", "--format=%H", "-1"],'
+     ' text=True, encoding="utf-8")', True),
+    # reflective access reaches the spawners without naming them
+    ("__dict__ access to a spawner fails closed",
+     'subprocess.__dict__["run"](["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("__getattribute__ access to a spawner fails closed",
+     'subprocess.__getattribute__("run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)',
+     True),
+    ("getattr on the module fails closed",
+     'getattr(subprocess, "run")(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True)', True),
+    ("an unknown module attribute fails closed",
+     "handler = subprocess.some_future_helper", True),
+    ("unknown git global option fails closed",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--weird", "rev-parse"], text=True,'
+     ' encoding="utf-8")', True),
+    # a star-import exports the whole spawning surface unaliased
+    ("star-import spawns are recognized",
+     "from subprocess import *\n"
+     'run(["git"], text=True)', True),
+    ("star-import text helpers are recognized",
+     "from subprocess import *\n"
+     'getoutput("git log")', True),
+    ("star-import spawn accepted when properly pinned",
+     "from subprocess import *\n"
+     'run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"], text=True, encoding="utf-8")', True),
+    # a literal tuple argv is as provable as a list
+    ("tuple argv git child pinned",
+     'subprocess.run(("git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse"),'
+     ' text=True, encoding="utf-8")', True),
+    ("tuple argv python child fully pinned",
+     'subprocess.run((sys.executable, "x"), text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("tuple argv options are parsed too",
+     'subprocess.run((sys.executable, "-E", "x"), text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # literal ** expansion carries the same override power as named
+    # keywords — the child classification reads the normalized map.
+    ("literal unpacking carries shell",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env(), "shell": True})',
+     True),
+    ("literal unpacking carries executable",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env(),'
+     ' "executable": "node"})', True),
+    ("literal unpacking without overrides stays judged normally",
+     'subprocess.run([sys.executable, "x"], **{"text": True,'
+     ' "encoding": "utf-8", "env": utf8_child_env()})', False),
+    # attached -c/-m consume the rest of the argument and END options:
+    # a later "-E" is script/command argv, not an interpreter flag.
+    ("attached -c ends the option region",
+     'subprocess.run([sys.executable, "-cprint(1)", "-E"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("attached -m ends the option region",
+     'subprocess.run([sys.executable, "-mjson.tool", "-E"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', False),
+    ("-E fused before an attached -c still ignores env",
+     'subprocess.run([sys.executable, "-Ecprint(1)", "x"], text=True,'
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    # executable= proves the child is python, but an OPAQUE argv can
+    # still smuggle -E/-I where the option scan cannot see them.
+    ("opaque argv with executable override fails closed",
+     'argv = ["display", "-E", "-c", code]\n'
+     "subprocess.run(argv, executable=sys.executable, text=True,"
+     ' encoding="utf-8", env=utf8_child_env())', True),
+    ("literal argv options are scanned under the override",
+     'subprocess.run(["display", "-E", "x"], executable=sys.executable,'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', True),
+    ("literal argv without flags accepted under the override",
+     'subprocess.run(["display", "x.py"], executable=sys.executable,'
+     ' text=True, encoding="utf-8", env=utf8_child_env())', False),
+)
+
+
+class DecisionTableTests(unittest.TestCase):
+    """Every branch of the gate's decision space, in one place."""
+
+    def test_decision_table(self) -> None:
+        for label, body, should_flag in _DECISION_TABLE:
+            with self.subTest(case=label):
+                flagged = bool(offending_lines(_PREAMBLE + body + "\n"))
+                self.assertEqual(flagged, should_flag, label)
+
+    def test_absolute_python_path_is_recognized(self) -> None:
+        # Kept out of the table because a Windows path literal fights the
+        # table's own quoting; the program-name rule is what matters.
+        src = _PREAMBLE + (
+            'subprocess.run([r"C:\\Python\\python.exe", "s"],'
+            ' text=True, encoding="utf-8")\n'
+        )
+        self.assertTrue(offending_lines(src))
+
+
+if __name__ == "__main__":
+    unittest.main()
