@@ -44,8 +44,19 @@ private internals, raw store reads, or inference from sampled dates and value
 changes. Inferred provenance is precisely what evidence must exclude, so the view
 SHALL expose availability as part of its public as-of response.
 
+Evidence records WHICH DISCLOSURE WAS SERVED, not whether its value is present:
+when a served record carries NA for the requested field, its availability date
+SHALL still be recorded. Evidence is NA only where NO record has been announced
+yet. Collapsing "served but the field is NA" into "no evidence" would also break
+the shift diagnostic — a field NA in both periods would then move neither values
+nor evidence, and a correct announcement-aware builder would be refused.
+
 A panel that cannot produce this evidence SHALL be refused rather than returned —
 an unverifiable panel is indistinguishable from a leaking one.
+
+#### Scenario: a served record with an NA value still carries its availability
+- **WHEN** the served disclosure has NA for the requested field
+- **THEN** the cell's evidence is that record's availability date, not NA
 
 #### Scenario: value and evidence come from one view response
 - **WHEN** the builder obtains a cell's value
@@ -71,10 +82,22 @@ point, not in the panel builder. The builder runs before any expression exists
 and each terminal resolves to its own value frame, so the builder cannot tell
 whether a candidate combines endpoints: masking globally would discard valid
 same-endpoint expressions, and masking not at all leaves mixed-quarter ratios
-reachable. The evaluation path SHALL therefore, for the terminals a given
-expression actually references, require a common report period per
-`(trade_date, instrument)` when those terminals span endpoints, yielding NA for
-that cell otherwise. Same-endpoint expressions are unaffected.
+reachable.
+
+The masking SHALL be applied at the FIRST cross-endpoint subtree — the lowest
+node whose operands span endpoints — before any parent rolling or
+cross-sectional operator consumes its output, NOT to the finished expression's
+cells. Masking only the final cell is too late: in
+`ts_mean(div_safe($revenue, $total_assets), 5)` the periods may align on trade
+date `T` while the rolling window still averages mixed-quarter ratios from
+earlier dates, producing a contaminated non-NA value at `T` that no end-of-
+expression check would catch. Same-endpoint subtrees are unaffected.
+
+Evaluation SHALL therefore receive the report-period provenance alongside the
+value panel; the change SHALL define and wire that provenance-bearing argument
+through the GP path (or an adapter that packages the period frames into the
+mapping before evaluation), since the current call passes the value mapping
+only.
 
 Endpoints are served independently by the view, so without this a ratio across
 income and balance-sheet fields silently combines different quarters.
@@ -87,6 +110,17 @@ income and balance-sheet fields silently combines different quarters.
 #### Scenario: a same-endpoint expression is not masked
 - **WHEN** an expression references terminals from a single endpoint
 - **THEN** no cross-endpoint alignment masking is applied to it
+
+#### Scenario: a rolling operator cannot consume mixed-period inputs
+- **WHEN** a cross-endpoint combination is nested under a time-series operator
+  and the periods misalign on an EARLIER date inside the window
+- **THEN** that earlier input is already NA when the rolling operator consumes
+  it, so the current date's result is not contaminated
+
+#### Scenario: evaluation receives the period provenance
+- **WHEN** an expression is evaluated against a fundamental panel
+- **THEN** the report-period provenance reaches the evaluation path alongside
+  the values
 
 #### Scenario: an adjacent-period difference has its own provenance
 - **WHEN** a factor differences a field across adjacent report periods

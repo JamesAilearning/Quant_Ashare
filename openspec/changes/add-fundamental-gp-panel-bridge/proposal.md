@@ -59,7 +59,9 @@ pv001，加进完整策略后边际贡献为负，被纪律拦截）。战场转
   `available_from_trade_date`**。若同时冻结 view，桥就只能读私有内部/裸 store，或从
   抽样日期与值变化去反推 —— 那正是"证据"该排除的东西。本 change 因此把**给 view 增
   加一个公开的、携带 provenance 的响应**纳入 scope，让证据由**唯一门**给出，而不是
-  由桥私自推断。
+  由桥私自推断。证据记的是"**服务了哪条披露**"，不是"值是否有效"：被服务记录的字段
+  值为 NA 时**仍带其可用日**，只有尚无任何已公告记录时证据才为 NA（codex #427 r3
+  P2）—— 否则"两期皆 NA"的字段在 (iii) 平移下值与证据都不变，会误拒正确实现。
 
 桥模块的输出契约：面板 **加上每个 field 的 `available_from` 证据帧**（同形状），
 **外加 view 已有的 `report_period` / `prior` provenance**（见 §1b）。证据帧不是可选
@@ -78,6 +80,18 @@ view 的契约明确：**各 endpoint 独立服务**，消费者须用 `include_
 又把每个终端各自解析为值帧，所以桥无从知道候选是否跨端点 —— 全局遮蔽会误杀合法的
 同端点表达式，不遮蔽则混季比率仍可达。强制点因此放在**求值路径**（按该表达式实际
 引用的终端判断），这使 `evaluator.py` 进入 scope。
+
+**遮蔽点必须落在第一个跨端点子树**（操作数跨端点的最低节点），在任何父级滚动/横截面
+算子消费它之前 —— **只遮蔽最终 cell 太晚**（codex #427 r3 P1）：
+`ts_mean(div_safe($revenue, $total_assets), 5)` 在交易日 T 可能两端点同期，但滚动窗内
+**更早日期**的混季比率仍会被平均进来，在 T 产出一个表达式末端检查抓不到的、被污染的
+非 NA 值。须有嵌套表达式回归用例。
+
+**且 provenance 得有路径抵达求值。** 桥把 `periods` 作为第三个返回对象，而现有 GP 调用
+是 `evaluate_factor(expr, panel, ...)` 只传值面板 —— 新纳入 scope 的 evaluator 根本
+**拿不到** report periods（codex #427 r3 P1）。本 change 因此须定义并接线一个带
+provenance 的面板/求值参数（或明确一个在求值前把 period 帧打包进 mapping 的 adapter）；
+若这条通路需要动 `gp_engine.py` 的传参，则 `gp_engine.py` 也进 scope。
 
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
@@ -145,8 +159,10 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
   - `src/research/financial_pit_view.py` —— 增加公开的 provenance 响应，使
     `available_from_trade_date` 由唯一门给出而非被桥反推。
   三处均不引入任何 qlib/PIT import，D5 不受影响。
-* **仍然零改动**：`src/factor_mining/` 的 pit_adapter / gp_engine、
-  `src/data/pit/*`、canonical runtime。
+  - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
+    经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
+* **仍然零改动**：`src/factor_mining/pit_adapter.py`、`src/data/pit/*`、canonical
+  runtime。
 * **零 gate 改签**：D5 gate 与财务 PIT 隔离 gate 均保持原样并继续通过。
 * 新 spec capability `v2-fundamental-gp-panel`：面板化的 PIT 契约 + 防线要求。
 * 不训练、不挖因子、不动生产数据：本 change 只交付桥与防线；真正的基本面 GP 战役是

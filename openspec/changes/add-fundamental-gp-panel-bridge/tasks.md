@@ -5,7 +5,10 @@
 - [ ] `src/research/financial_pit_view.py`：`as_of` 增加**公开的 provenance 响应**
       （每个服务字段的 `available_from_trade_date`，与值**同一次调用**返回）。没有它，
       桥只能读私有内部/裸 store 或反推证据 —— 而反推正是"证据"该排除的东西。
-      配套测试：值与 provenance 同源、缺失字段的 provenance 亦为 NA。
+      配套测试：值与 provenance 同源；**被服务记录的字段值为 NA 时仍带其可用日**
+      （证据记的是"服务了哪条披露"，不是"值是否有效"；只有尚无任何已公告记录时
+      证据才为 NA）——否则"两期皆 NA"的字段在公告日平移下值与证据都不变，
+      平移诊断会误拒正确实现（codex #427 r3 P2）。
 - [ ] `src/factor_mining/grammar.py`：注册**基本面终端组** + 其类型/taint 规则。
       现状 `FeatureRegistry.V1` 仅 12 个终端，`_random_leaf` 与 `V1_*` 取交集、
       `Terminal` 拒绝表外名字 —— 只靠参数传面板，GP **长不出**基本面表达式。
@@ -30,10 +33,16 @@
 - [ ] **跨端点同期强制放到 expression-aware 层**（codex #427 r2 P1）：面板层做不到 ——
       桥在表达式产生**之前**运行，`evaluator` 又把每个终端各自解析为值帧，所以桥无从
       知道候选是否跨端点：全局遮蔽会误杀合法的同端点表达式，不遮蔽则混季比率仍可达。
-      改为在**求值路径**上按该表达式**实际引用的终端**判断：跨端点时要求每个
-      `(trade_date, instrument)` 的 report_period 一致，否则该 cell 为 NA；同端点
-      表达式不受影响。这意味着 `src/factor_mining/evaluator.py` 也在 scope 内
-      （仍不引入 qlib/PIT import，D5 不受影响）。
+      改为在**求值路径**上做，且遮蔽点必须落在**第一个跨端点子树**（操作数跨端点的
+      最低节点），在任何父级滚动/横截面算子消费它之前 —— 只遮蔽最终 cell 太晚
+      （codex #427 r3 P1）：`ts_mean(div_safe($revenue, $total_assets), 5)` 在 T 日
+      期可能对齐，但窗口内**更早日期**的混季比率会被卷进来，在 T 产出被污染的非 NA 值。
+      须加嵌套表达式回归用例。这意味着 `src/factor_mining/evaluator.py` 在 scope 内。
+- [ ] **把 period provenance 接进求值路径**（codex #427 r3 P1）：桥把 `periods` 作为
+      第三个返回对象，而现有 GP 调用是 `evaluate_factor(expr, panel, ...)` 只传值面板 ——
+      新纳入 scope 的 evaluator **没有途径拿到** report periods。须定义并接线一个带
+      provenance 的面板/求值参数（或明确一个 adapter，在求值前把 period 帧打包进
+      mapping）；若这条通路需要动 `gp_engine.py` 的传参，则它也进 scope。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
@@ -72,7 +81,8 @@
 
 - [ ] 确认改动面与提案一致：`grammar.py`（终端注册）、`evaluator.py`（跨端点同期
       强制，expression-aware）与 `financial_pit_view.py`（provenance 响应）**有**改动；
-      `pit_adapter` / `gp_engine` / `src/data/pit/*` / canonical runtime **无**改动。
+      `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
+      `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
       （**不改签**）—— 终端注册不引入 qlib/PIT import，桥仍在 `src/research/` 内。
 - [ ] ruff + mypy --strict + 治理全套 + 新增测试全绿。
