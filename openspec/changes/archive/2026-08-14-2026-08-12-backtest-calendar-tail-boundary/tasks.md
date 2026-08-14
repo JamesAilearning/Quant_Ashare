@@ -77,12 +77,28 @@ caller 的汇合点）。零配置键。
 
 ## 3. 收尾
 
-- [ ] `openspec validate 2026-08-12-backtest-calendar-tail-boundary --strict`
-- [ ] `pytest`（默认快速套件；E2E 不跑）
-- [ ] `ruff check .`；`mypy`（strict 默认）
-- [ ] PR 写明 `Closes #213`，并注明 #327 已覆盖 walk-forward 侧
+- [x] `openspec validate 2026-08-12-backtest-calendar-tail-boundary --strict`
+- [x] `pytest`（分套件，CI 等价；E2E 不跑）：logic+governance 3689 passed /
+      27 skipped，data_pipeline 395，pit 34，regression（CI 的 `--ignore`）3
+- [x] `ruff check .` 全过；`mypy --strict`（CI 完整范围 src/ scripts/
+      web/operator_ui/）204 files 无问题
+- [x] PR #428 写明 `Closes #213`，并注明 #327 已覆盖 walk-forward 侧
+- [x] CI 7/7 绿（ubuntu + windows × 3.10/3.11/3.12）；`Run REGEN-2 CI-real
+      replay regression` 步为 **success**（已核实是真执行、非条件跳过），
+      即守卫在真实 mini-bundle 上放行
+- [x] codex 评审 `8a9302e914`：Didn't find any major issues；邀请中点名
+      的四处（判据与崩溃条件是否相等 / 回绕分支覆盖面 / lag 无关性 /
+      两侧日历来源的刻意不对称）均无反对
+- [x] 合并 `7b63d7bc`，issue #213 自动关闭 2026-08-14T02:04:04Z
 
 ## 4. 点火（并后，操作人，可选）
 
-- [ ] 单折 Pipeline 复现阶段 B 案例：`test_end=` bundle 日历末位 →
-      得到指名报错而非 raw IndexError
+- [x] 阶段 B 案例的实质已在**真实 bundle** 上验过（合并前直接对
+      `D.calendar(freq="day", future=True)` 跑守卫算术；2082 sessions，
+      末位 2026-08-03）：`2026-08-03` 末位 → 拒；`2026-07-31`（`cal[-2]`，
+      也是仓库最紧的已提交窗口 csi800_n5_bootstrap_m3）→ 放行；
+      `2026-12-31` 越尾 → 拒；`2017-01-01` 早于首日 → 拒。日历实为
+      `ndarray(dtype=object)`、tz-naive、已排序，`bisect_right` 行为与
+      测试注入的 list 一致。
+      未再跑一遍单折 Pipeline：它只是把同一判断多穿几层，需真实预测
+      数据，且 CI 的 REGEN-2 replay 已带守卫真跑通。照录依据，不点火。

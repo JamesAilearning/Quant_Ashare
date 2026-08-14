@@ -1152,6 +1152,35 @@ class CalendarTailBoundaryTests(unittest.TestCase):
         self.assertIn("final bar", msg)
         self.assertEqual(sentinel.call_count, 0)
 
+    def test_non_tail_padded_dates_survive_past_the_guard(self) -> None:
+        """The gap the tail-rejection tests could not see (codex P1 on
+        PR #429): a padded date AWAY from the calendar tail CLEARS the
+        guard, and execution then reached a second, bare
+        ``date.fromisoformat(request.evaluation_*)`` in the stamp-tax
+        block — outside any wrap — so it still escaped ``run()`` as a
+        raw ValueError. The guard now normalizes ONCE and every
+        downstream consumer gets the canonical form, so the run must
+        proceed all the way to the qlib boundary.
+
+        Both ends are padded: ``evaluation_start`` hit the very same
+        bare parse one line above ``evaluation_end``'s."""
+        import pandas as pd
+
+        cal = list(pd.bdate_range("2025-09-01", "2026-01-15"))
+        msg, _, seam = self._run_guarded(
+            calendar=cal,
+            request=_make_request(
+                evaluation_start="  2025-10-01  ",
+                evaluation_end="  2025-12-30  ",
+            ),
+            deep_qlib=True,
+        )
+        self.assertTrue(seam.called, "guard must consult the seam")
+        # Reached the qlib boundary => no raw ValueError on the way.
+        # (The harness already pins the type as BacktestRunnerError.)
+        self.assertNotIn("#213", msg)
+        self.assertNotIn("Invalid isoformat string", msg)
+
     def test_end_beyond_calendar_tail_refused(self) -> None:
         import pandas as pd
 

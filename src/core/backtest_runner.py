@@ -361,8 +361,30 @@ class BacktestRunner:
         # stamp-tax ``D.calendar`` fetch, whose except-block named it.
         # ``error_cls`` is wired to ``BacktestRunnerError`` so even a
         # future divergence surfaces named.
+        #
+        # NORMALIZE ONCE, REUSE DOWNSTREAM (codex P1 on PR #429). Parsing
+        # only for the guard's own comparison was not enough: a
+        # contract-valid non-canonical string that CLEARS the guard (a
+        # padded date away from the calendar tail) went on to hit
+        # ``date.fromisoformat(request.evaluation_*)`` in the stamp-tax
+        # block — a bare parse OUTSIDE any wrap — and escaped ``run()``
+        # as a raw ``ValueError`` anyway. The tail-rejection tests never
+        # reached that second parse. So the canonical ISO forms computed
+        # here are what every downstream consumer receives; the RAW
+        # strings survive only in operator-facing messages and
+        # provenance, where echoing exactly what the caller passed is
+        # the point.
+        _start_date = _sv.parse_iso_date(
+            request.evaluation_start, error_cls=BacktestRunnerError)
         _end_date = _sv.parse_iso_date(
             request.evaluation_end, error_cls=BacktestRunnerError)
+        if _start_date is None:
+            raise BacktestRunnerError(
+                "BacktestRunner.run: evaluation_start parsed to nothing "
+                f"({request.evaluation_start!r}); the canonical contract "
+                "requires a non-empty ISO date. Refusing (issue #213 "
+                "boundary guard)."
+            )
         if _end_date is None:
             raise BacktestRunnerError(
                 "BacktestRunner.run: evaluation_end parsed to nothing "
@@ -370,6 +392,9 @@ class BacktestRunner:
                 "requires a non-empty ISO date. Refusing (issue #213 "
                 "boundary guard)."
             )
+        # The canonical forms every downstream consumer gets from here on.
+        _eval_start = _start_date.isoformat()
+        _eval_end = _end_date.isoformat()
         _end_idx = bisect.bisect_right(
             execution_calendar, pd.Timestamp(_end_date)) - 1
         if _end_idx < 0:
@@ -434,13 +459,13 @@ class BacktestRunner:
         # on PR #178.
         #
         # Audit P0-4 + add-stamp-tax-schedule.
-        period_start = date.fromisoformat(request.evaluation_start)
-        period_end = date.fromisoformat(request.evaluation_end)
+        period_start = _start_date
+        period_end = _end_date
         try:
             from qlib.data import D as _qlib_D
             trading_calendar_ts = _qlib_D.calendar(
-                start_time=request.evaluation_start,
-                end_time=request.evaluation_end,
+                start_time=_eval_start,
+                end_time=_eval_end,
             )
             trading_calendar: list[date] = [
                 ts.date() if hasattr(ts, "date") else date.fromisoformat(str(ts)[:10])
@@ -507,8 +532,8 @@ class BacktestRunner:
         # itself; still strictly before the qlib backtest consumes the benchmark.
         cls._validate_consumed_benchmark(
             request.benchmark_code,
-            request.evaluation_start,
-            request.evaluation_end,
+            _eval_start,
+            _eval_end,
             universe_hint=universe_hint,
         )
         # Price-limit enforcement (PR-D, audit A2): the contract's
@@ -633,8 +658,8 @@ class BacktestRunner:
         try:
             mask_result = compute_unavailable_mask(
                 instruments=instruments_in_predictions,
-                start_date=request.evaluation_start,
-                end_date=request.evaluation_end,
+                start_date=_eval_start,
+                end_date=_eval_end,
                 pit_provider=pit_provider,
             )
         except MicrostructureMaskError as exc:
@@ -656,11 +681,11 @@ class BacktestRunner:
         try:
             from qlib.data import D as _remap_D
             remap_start = (
-                date.fromisoformat(request.evaluation_start)
+                _start_date
                 - timedelta(days=20)
             ).isoformat()
             remap_calendar_ts = _remap_D.calendar(
-                start_time=remap_start, end_time=request.evaluation_end,
+                start_time=remap_start, end_time=_eval_end,
             )
         except Exception as exc:
             raise BacktestRunnerError(
@@ -740,7 +765,7 @@ class BacktestRunner:
         else:
             try:
                 namechange = load_namechange(namechange_path)
-                assert_covers(namechange, request.evaluation_end)
+                assert_covers(namechange, _eval_end)
                 st_lookup = build_st_lookup(namechange)
             except StHistoryError as exc:
                 raise BacktestRunnerError(
@@ -859,8 +884,8 @@ class BacktestRunner:
             _factor_probe = D.features(
                 exchange_codes,
                 ["$factor", "$close"],
-                start_time=request.evaluation_start,
-                end_time=request.evaluation_end,
+                start_time=_eval_start,
+                end_time=_eval_end,
                 freq="day",
             )
             _factor_col = _factor_probe.iloc[:, 0]
@@ -895,8 +920,8 @@ class BacktestRunner:
 
         try:
             portfolio_metric_dict, indicator_dict = qlib_backtest(
-                start_time=request.evaluation_start,
-                end_time=request.evaluation_end,
+                start_time=_eval_start,
+                end_time=_eval_end,
                 strategy=strategy,
                 executor=executor,
                 account=request.account_config.init_cash,
@@ -977,8 +1002,8 @@ class BacktestRunner:
                 eqw_returns = cls._compute_equalweight_baseline(
                     predictions=shifted_predictions,
                     topk=topk,
-                    evaluation_start=request.evaluation_start,
-                    evaluation_end=request.evaluation_end,
+                    evaluation_start=_eval_start,
+                    evaluation_end=_eval_end,
                     pit_provider=pit_provider,
                 )
                 if eqw_returns:
