@@ -654,9 +654,12 @@ def _git_output_safe(call: ast.Call) -> bool:
                 # read as "disabled". ``None`` means "true, no value".
                 val = raw_value.strip().lower() if eq else None
                 if key == _GIT_ENCODING_PIN_KEY:
-                    if val not in _GIT_ENCODING_PIN_VALUES:
-                        return False  # non-UTF-8 codec, or valueless
-                    pin_seen = True
+                    # LAST assignment wins, like every other setting
+                    # here (verified on this key: GBK then utf-8 emits
+                    # UTF-8, the reverse emits GBK) — short-circuiting
+                    # on the first non-UTF-8 value refused a call that
+                    # later fixed itself (codex P2 r41 on #410).
+                    pin_seen = val in _GIT_ENCODING_PIN_VALUES
                 elif key.startswith(_GIT_INCLUDE_KEY_PREFIXES):
                     # The included file is expanded AT THIS POSITION and
                     # may redefine ANY key this scan is tracking — the
@@ -1708,6 +1711,21 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("text-mode git diff is refused — filters have no kill switch",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # the codec is last-one-wins too (verified on the key itself).
+    ("a later utf-8 override rescues an earlier GBK",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null",'
+     ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
+     ' encoding="utf-8")', False),
+    ("...and a later GBK undoes an earlier utf-8",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false",'
+     ' "-c", "core.hooksPath=/dev/null",'
+     ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # ``-c key`` (no =) is boolean TRUE and ``-c key=`` is FALSE —
     # verified with ``config --type=bool``; folding them together read a
