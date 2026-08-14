@@ -47,6 +47,15 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** MUST NOT 依赖 CLI 的硬编码默认值——gate 工件不记录任何数据路径，
   用错 bundle 产出的 PASS 事后无从分辨，却足以授权一次生产轮换
 
+#### Scenario: 晨跑命令必须指明整个部署
+
+- **GIVEN** 运行 UI 的环境与操作人终端的环境未必相同
+- **WHEN** 页面给出晨跑出单命令
+- **THEN** MUST 显式携带 `--provider-uri` / `--delisted-registry` /
+  `--name-source`，取值为本页解析到的路径
+- **AND** MUST NOT 只给模型/manifest 而让 CLI 回落到它自己的默认值——
+  那会让这条命令产出一份**实盘清单**，其数据源与页面刚报告的不是同一个
+
 #### Scenario: 现任不可解析时不给出可运行命令
 
 - **GIVEN** 现任指针不可解析
@@ -184,6 +193,19 @@ MUST NOT 新造第二个阈值。页面 MUST 写明尾部日期取自哪一条�
 - **THEN** MUST 使用同一语义的「今天」，MUST NOT 使用面向操作人的
   CN 本地日期——两者在 UTC 宿主上的 CN 零点至 08:00 相差一天，
   恰在阈值边界会给出相反的结论
+
+#### Scenario: 尾部日期必须与出单侧同源
+
+- **GIVEN** `_fetch_integrity` 的 identity tail 与 qlib 日历尾在不完整换库后分歧
+- **WHEN** 页面比较 bundle 年龄
+- **THEN** MUST 读 `calendars/day.txt`（出单侧 `calendar[-1]` 的同一来源），
+  MUST NOT 使用 `summarise_bundle_health` 偏好的 identity tail
+
+#### Scenario: 年龄通过不等于可用
+
+- **GIVEN** 日期够新，但 bundle 健康检查报 warning（如 `built_from_holey_fetch`）
+- **THEN** 页面 MUST NOT 呈现为成功——出单侧在年龄检查之后还有其它前置校验
+- **AND** MUST 显示该健康告警本身
 
 #### Scenario: 阈值不得硬编码
 

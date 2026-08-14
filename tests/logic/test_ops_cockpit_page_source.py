@@ -87,7 +87,8 @@ class IrreversibleCommandTests(unittest.TestCase):
         self.assertFalse(morning_command(
             IncumbentIdentity(kind="ensemble", manifest_path="m.json",
                               manifest_sha256="a" * 64),
-            model_path="x.pkl").irreversible)
+            model_path="x.pkl", provider_uri="P",
+            delisted_registry="R", name_source="N").irreversible)
 
     def test_the_page_renders_the_irreversible_marker(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
@@ -121,11 +122,17 @@ class ResolvedCommandTests(unittest.TestCase):
             rotation_commands,
         )
         commands = [
-            morning_command(self._ensemble(), model_path="/srv/m.pkl"),  # type: ignore[arg-type]
+            morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet"),  # type: ignore[arg-type]
             morning_command(IncumbentIdentity(kind="single"),
-                            model_path="/srv/m.pkl"),
+                            model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet"),
             morning_command(IncumbentIdentity(kind="unresolvable", error="x"),
-                            model_path="/srv/m.pkl"),
+                            model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet"),
             data_update_command(provider_uri="/srv/bundle",
                                 delisted_registry="/srv/reg.parquet"),
             *rotation_commands("/srv/prod_manifest.json",
@@ -139,7 +146,9 @@ class ResolvedCommandTests(unittest.TestCase):
 
     def test_ensemble_deployment_gets_the_resolved_manifest(self) -> None:
         from web.operator_ui.pages._ops_cockpit_helpers import morning_command
-        cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl")  # type: ignore[arg-type]
+        cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet")  # type: ignore[arg-type]
         self.assertIn("--ensemble-manifest /srv/prod_manifest.json", cmd.command)
 
     def test_single_model_deployment_gets_a_single_model_command(self) -> None:
@@ -148,7 +157,9 @@ class ResolvedCommandTests(unittest.TestCase):
         from web.operator_ui.incumbent import IncumbentIdentity
         from web.operator_ui.pages._ops_cockpit_helpers import morning_command
         cmd = morning_command(
-            IncumbentIdentity(kind="single"), model_path="/srv/m.pkl")
+            IncumbentIdentity(kind="single"), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet")
         self.assertIn("--model /srv/m.pkl", cmd.command)
         self.assertNotIn("--ensemble-manifest", cmd.command)
         self.assertNotIn("none", cmd.command)
@@ -161,7 +172,9 @@ class ResolvedCommandTests(unittest.TestCase):
         cmd = morning_command(
             IncumbentIdentity(kind="unresolvable",
                               manifest_path="/srv/broken.json", error="boom"),
-            model_path="/srv/m.pkl")
+            model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet")
         self.assertTrue(cmd.command.lstrip().startswith("#"))
         self.assertNotIn("/srv/broken.json", cmd.command)
         self.assertNotIn("daily_recommend.py --", cmd.command)
@@ -238,9 +251,13 @@ class ResolvedCommandTests(unittest.TestCase):
             (morning_command(  # type: ignore[arg-type]
                 IncumbentIdentity(kind="ensemble", manifest_path=hostile_file,
                                   manifest_sha256="a" * 64),
-                model_path="/srv/m.pkl"), "--ensemble-manifest", hostile_file),
+                model_path="/srv/m.pkl", provider_uri="/srv/bundle",
+                            delisted_registry="/srv/reg.parquet",
+                            name_source="/srv/ns.parquet"), "--ensemble-manifest", hostile_file),
             (morning_command(IncumbentIdentity(kind="single"),
-                             model_path=hostile_file), "--model", hostile_file),
+                             model_path=hostile_file, provider_uri="/p",
+                             delisted_registry="/r", name_source="/n"),
+             "--model", hostile_file),
             (data_update_command(provider_uri=hostile_dir,
                                  delisted_registry=hostile_file),
              "--provider-dir", hostile_dir),
@@ -260,6 +277,52 @@ class ResolvedCommandTests(unittest.TestCase):
                 self.assertIn(flag, tokens)
                 self.assertEqual(want, tokens[tokens.index(flag) + 1],
                                  "路径必须是单个 shell 参数")
+
+    def test_the_morning_command_names_the_whole_deployment(self) -> None:
+        # codex #431 r5 (P1): daily_recommend.py defines its OWN
+        # --provider-uri/--delisted-registry/--name-source defaults from ITS
+        # environment. Streamlit may hold a QUANT_PROVIDER_URI the operator's
+        # terminal never inherits, so a command carrying only the model can
+        # produce a LIVE list from a different bundle than sections ④/⑤ just
+        # reported on.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        for incumbent in (
+            IncumbentIdentity(kind="ensemble", manifest_path="/srv/m.json",
+                              manifest_sha256="a" * 64),
+            IncumbentIdentity(kind="single"),
+        ):
+            with self.subTest(kind=incumbent.kind):
+                cmd = morning_command(
+                    incumbent, model_path="/srv/x.pkl",
+                    provider_uri="/srv/bundle",
+                    delisted_registry="/srv/reg.parquet",
+                    name_source="/srv/ns.parquet")
+                self.assertIn("--provider-uri /srv/bundle", cmd.command)
+                self.assertIn("--delisted-registry /srv/reg.parquet", cmd.command)
+                self.assertIn("--name-source /srv/ns.parquet", cmd.command)
+
+    def test_the_page_feeds_the_morning_command_the_same_bundle(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        block = page[page.index("_render_command(morning_command("):
+                     page.index("st.subheader(\"② ")]
+        self.assertIn("provider_uri=_provider,", block)
+        self.assertIn("name_source=resolve_name_source()", block)
+
+    def test_name_source_resolver_follows_the_env_var(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            DEFAULT_NAME_SOURCE,
+            ENV_NAME_SOURCE,
+            resolve_name_source,
+        )
+        with patch.dict(os.environ, {ENV_NAME_SOURCE: ""}, clear=False):
+            self.assertEqual(DEFAULT_NAME_SOURCE, resolve_name_source())
+        with patch.dict(os.environ, {ENV_NAME_SOURCE: "/x/ns.parquet"},
+                        clear=False):
+            self.assertEqual("/x/ns.parquet", resolve_name_source())
 
     def test_namechange_resolver_follows_the_env_var(self) -> None:
         import os
@@ -916,6 +979,64 @@ class BundleFreshnessTests(unittest.TestCase):
                     provider_uri="X", max_age_days=14)
                 self.assertEqual(
                     _bundle_is_stale(tail, today, 14), mine.refuses_today)
+
+    def test_the_tail_is_read_the_way_the_recommender_reads_it(self) -> None:
+        # codex #431 r5: summarise_bundle_health PREFERS the _fetch_integrity
+        # identity tail; the recommender uses qlib's calendar[-1], i.e.
+        # calendars/day.txt. After a partial bundle replacement they diverge,
+        # and at the age boundary that flips accept/refuse.
+        import tempfile
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            recommender_calendar_tail,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "calendars").mkdir()
+            (root / "calendars" / "day.txt").write_text(
+                "2026-07-30\n2026-07-31\n2026-08-03\n", encoding="utf-8")
+            self.assertEqual(date(2026, 8, 3),
+                             recommender_calendar_tail(str(root)))
+            # No calendar at all is unknown, not a guess.
+            self.assertIsNone(recommender_calendar_tail(str(root / "nope")))
+
+    def test_the_page_feeds_freshness_the_calendar_tail(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        block = page[page.index("_fresh = bundle_freshness("):]
+        self.assertIn("tail_date=_cal_tail.isoformat() if _cal_tail else None",
+                      block)
+        self.assertNotIn("tail_date=_summary.tail_date", block)
+
+    def test_a_health_warning_is_never_rendered_as_usable(self) -> None:
+        # codex #431 r5: the recommender runs further preconditions AFTER the
+        # age guard — a fresh-dated bundle stamped built_from_holey_fetch is
+        # refused by _assert_bundle_fetch_complete. Age alone must not be
+        # shown as usable.
+        from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
+        fresh = bundle_freshness(
+            today=date(2026, 8, 14), tail_date="2026-08-13",
+            provider_uri="X", max_age_days=14)
+        self.assertTrue(fresh.age_ok)
+        self.assertTrue(fresh.usable)
+        for status, warns in (("warning", ()), ("error", ()),
+                              ("ok", ("built_from_holey_fetch",))):
+            with self.subTest(status=status, warnings=warns):
+                flagged = bundle_freshness(
+                    today=date(2026, 8, 14), tail_date="2026-08-13",
+                    provider_uri="X", max_age_days=14,
+                    health_status=status, health_warnings=warns)
+                self.assertTrue(flagged.age_ok, "年龄仍然是过的")
+                self.assertFalse(flagged.usable, "但整体不可判为可用")
+
+    def test_the_page_gates_green_on_bundle_health(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        block = page[page.index("if _fresh.refuses_today:"):
+                     page.index("st.caption(\n    f\"provider = ")]
+        self.assertIn("elif not _fresh.usable:", block)
+        self.assertEqual(1, block.count("st.success("), "只有一处绿色")
+        i_health = block.index("elif not _fresh.usable:")
+        i_green = block.index("st.success(")
+        self.assertLess(i_health, i_green, "健康检查必须排在上绿之前")
 
     def test_unreadable_tail_is_unknown_not_zero(self) -> None:
         from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness

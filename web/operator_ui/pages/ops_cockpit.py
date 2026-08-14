@@ -40,7 +40,9 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     gate_card_status,
     morning_command,
     read_gate_cards,
+    recommender_calendar_tail,
     resolve_delisted_registry,
+    resolve_name_source,
     resolve_namechange_path,
     retrain_window,
     rotation_commands,
@@ -95,8 +97,15 @@ else:
         with _col:
             st.caption("成员 fit 窗")
             st.markdown(f"**{_mem['fit_start']} ~ {_mem['fit_end']}**")
+# The command must name the SAME deployment sections ④/⑤ report on: the CLI
+# has its own path defaults, and Streamlit's environment is not necessarily
+# the operator's terminal environment (codex #431 r5).
 _render_command(morning_command(
-    _incumbent, model_path=resolve_model_path()))
+    _incumbent,
+    model_path=resolve_model_path(),
+    provider_uri=_provider,
+    delisted_registry=resolve_delisted_registry(),
+    name_source=resolve_name_source()))
 
 # ---------------------------------------------------------------------------
 # ② 授权门工件 — 权威是入库 baseline 的摘要,页面只做转录
@@ -265,13 +274,21 @@ for _cmd in rotation_commands(
 st.markdown("---")
 st.subheader("⑤ 数据 bundle 新鲜度")
 _summary: Any = summarise_bundle_health(_provider)
+_cal_tail = recommender_calendar_tail(_provider)
 _fresh = bundle_freshness(
     # No clock argument: defaults to the RECOMMENDER's own (host-local)
     # today, so this refusal prediction cannot disagree with the machine
     # that actually refuses (codex #431 r3).
-    tail_date=_summary.tail_date,
+    #
+    # And the TAIL is read the recommender's way too — off the qlib calendar,
+    # not the _fetch_integrity identity that summarise_bundle_health prefers.
+    # After a partial bundle replacement the two disagree, and at the age
+    # boundary that flips the answer (codex #431 r5).
+    tail_date=_cal_tail.isoformat() if _cal_tail else None,
     provider_uri=_summary.provider_uri,
     message=_summary.message,
+    health_status=_summary.status,
+    health_warnings=_summary.warnings,
 )
 if not _fresh.known:
     st.error(f"⚠ 无法判定 bundle 新鲜度:{_fresh.message}")
@@ -291,6 +308,18 @@ else:
             f"⛔ 落后 {_fresh.days_behind} 天 > 阈值 {_fresh.max_age_days} 天——"
             "今天跑晨跑出单会被 fail-loud 拒绝。请先更新数据。"
         )
+    elif not _fresh.usable:
+        # Age is fine, but the bundle failed some OTHER health check — the
+        # recommender runs further preconditions after the age guard (e.g.
+        # _assert_bundle_fetch_complete on a built_from_holey_fetch stamp),
+        # so a green "usable" here would promise something the machine
+        # refuses (codex #431 r5).
+        st.error(
+            f"⛔ 日期虽新（落后 {_fresh.days_behind} 天），但 bundle 健康检查未通过"
+            f"（status `{_fresh.health_status}`）:{_fresh.message}"
+            + ("；".join(_fresh.health_warnings) if _fresh.health_warnings else "")
+            + "。出单侧在年龄检查之后还有其它前置校验,请勿据此认为可以出单。"
+        )
     elif (_fresh.headroom_days or 0) <= 3:
         st.warning(
             f"⚠ 只剩 {_fresh.headroom_days} 天余量,再不更新就会触发出单拒绝。"
@@ -298,10 +327,11 @@ else:
     else:
         st.success(f"✅ 落后 {_fresh.days_behind} 天,在阈值内。")
 st.caption(
-    f"provider = `{_fresh.provider_uri}`。尾部日期取自 **provider 元数据的 "
-    "coverage_end_date**（bundle_health 读取路径）；出单侧另有一条路径读 "
-    "qlib 运行时 `calendar[-1]`——两者通常一致，但不是同一个读取器。"
+    f"provider = `{_fresh.provider_uri}`。尾部日期读自 **`calendars/day.txt`**"
+    "——与出单侧的 `calendar[-1]` 同源；bundle_health 偏好的 `_fetch_integrity` "
+    "identity tail 在此仅用于其健康判定，不用于年龄比较（两者在不完整换库后会分歧）。"
     f"拒绝阈值 {_fresh.max_age_days} 天取自 RecommendationConfig,非本页字面量。"
+    "年龄只是出单侧的**其中一道**前置校验,通过不等于今天一定能出单。"
 )
 _render_command(data_update_command(
     provider_uri=str(_fresh.provider_uri or _provider),

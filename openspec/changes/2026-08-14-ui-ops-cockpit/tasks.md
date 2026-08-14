@@ -65,10 +65,18 @@
 - [x] 页面只在 `GATE_STATUS_OK` 时上绿；旧的按序分支删除  ← C25 咬住
 - [x] PASS 复用 `retrain_gate_lib.PASS`，不复述字面量  ← C26 咬住
 
+## W11 codex #431 r5（P1 + 两 P2，均属实；同一族的第 8-10 例）
+- [x] **P1** 晨跑命令显式携带 provider/registry/name-source  ← CLI 有自己的默认值,会跑在另一份 bundle 上
+- [x] 新增 `QUANT_NAME_SOURCE` 解析器  ← C27 咬住
+- [x] **P2** 尾部日期改读 `calendars/day.txt`（复用 training_guards 的读取器）  ← C28 咬住;不写第二套解析
+- [x] **P2** 健康 warning 时不得上绿,并显示告警本身  ← C29/C30 咬住
+- [x] `BundleFreshness` 拆出 `age_ok` / `usable` 两个语义  ← 年龄过 ≠ 可用
+- [x] 修正 ⑤ 的取数说明（此前自认「两条路径不同」却仍当拒绝预测用）
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C26 二十六处全落地全咬红(C11/C20 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C30 三十处全落地全咬红(C11/C20 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

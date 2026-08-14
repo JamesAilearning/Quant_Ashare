@@ -444,6 +444,43 @@ class BundleFreshness:
     refuses_today: bool | None = None
     provider_uri: str | None = None
     message: str = ""
+    # The bundle-health verdict on everything OTHER than age. The recommender
+    # runs further preconditions after its age check — a fresh-dated bundle
+    # stamped ``built_from_holey_fetch`` is refused by
+    # ``_assert_bundle_fetch_complete`` — so age alone must never be rendered
+    # as "usable" (codex #431 r5).
+    health_status: str = "ok"
+    health_warnings: tuple[str, ...] = ()
+
+    @property
+    def age_ok(self) -> bool:
+        """Passes the AGE check only. Not a verdict on the whole bundle."""
+        return self.known and self.refuses_today is False
+
+    @property
+    def usable(self) -> bool:
+        """Age is fine AND bundle health raised nothing."""
+        return self.age_ok and self.health_status == "ok" and not self.health_warnings
+
+
+def recommender_calendar_tail(provider_uri: str) -> date | None:
+    """The bundle's last trading day AS THE RECOMMENDER READS IT.
+
+    ``daily_recommend`` compares ``pd.Timestamp(calendar[-1])`` — qlib's
+    calendar, i.e. ``<provider>/calendars/day.txt``. ``summarise_bundle_health``
+    deliberately PREFERS the ``_fetch_integrity`` identity tail over that file
+    (``training_guards`` treats the identity as canonical), so after a partial
+    or inconsistent bundle replacement the two disagree — and at the age
+    boundary they give opposite accept/refuse answers (codex #431 r5).
+
+    Reuses ``training_guards``' own calendar reader rather than adding a
+    second interpretation of the same file.
+    """
+    from web.operator_ui.training_guards import (  # noqa: PLC0415
+        _read_calendar_dates,
+    )
+    dates = _read_calendar_dates(Path(provider_uri) / "calendars" / "day.txt")
+    return dates[-1] if dates else None
 
 
 def recommender_today() -> date:
@@ -485,6 +522,8 @@ def bundle_freshness(
     provider_uri: str | None,
     message: str = "",
     max_age_days: int | None = None,
+    health_status: str = "ok",
+    health_warnings: tuple[str, ...] = (),
 ) -> BundleFreshness:
     limit = serving_bundle_max_age_days() if max_age_days is None else max_age_days
     # Default to the recommender's clock rather than the caller's: every call
@@ -493,20 +532,23 @@ def bundle_freshness(
     if not tail_date:
         return BundleFreshness(
             known=False, max_age_days=limit, provider_uri=provider_uri,
-            message=message or "bundle 尾部日期不可读")
+            message=message or "bundle 尾部日期不可读",
+            health_status=health_status, health_warnings=health_warnings)
     try:
         tail = date.fromisoformat(str(tail_date))
     except ValueError:
         return BundleFreshness(
             known=False, tail_date=str(tail_date), max_age_days=limit,
             provider_uri=provider_uri,
-            message=f"bundle 尾部日期不是合法日期:{tail_date!r}")
+            message=f"bundle 尾部日期不是合法日期:{tail_date!r}",
+            health_status=health_status, health_warnings=health_warnings)
     behind = (today - tail).days
     return BundleFreshness(
         known=True, tail_date=tail.isoformat(), days_behind=behind,
         max_age_days=limit, headroom_days=limit - behind,
         refuses_today=behind > limit, provider_uri=provider_uri,
-        message=message)
+        message=message, health_status=health_status,
+        health_warnings=health_warnings)
 
 
 @dataclass(frozen=True)
@@ -537,6 +579,17 @@ def resolve_delisted_registry() -> str:
     """Delisted registry path: env override > documented default."""
     return (os.environ.get(ENV_DELISTED_REGISTRY, "").strip()
             or DEFAULT_DELISTED_REGISTRY)
+
+
+# The active-stocks snapshot the recommender needs for the ST filter.
+ENV_NAME_SOURCE = "QUANT_NAME_SOURCE"
+DEFAULT_NAME_SOURCE = "D:/qlib_data/tushare_raw/active_stocks.parquet"
+
+
+def resolve_name_source() -> str:
+    """Active-stocks snapshot: env override > documented default."""
+    return (os.environ.get(ENV_NAME_SOURCE, "").strip()
+            or DEFAULT_NAME_SOURCE)
 
 
 # The name-change history the gates mask ST/renamed instruments with.
@@ -579,14 +632,29 @@ def _arg(value: object) -> str:
 
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
+    provider_uri: str, delisted_registry: str, name_source: str,
 ) -> OpsCommand:
-    """The morning list command for THIS deployment's actual shape."""
+    """The morning list command for THIS deployment's actual shape.
+
+    Names the DATA paths too, not only the model: ``daily_recommend.py``
+    defines its own ``--provider-uri``/``--delisted-registry``/
+    ``--name-source`` defaults from ITS environment. Streamlit may hold a
+    ``QUANT_PROVIDER_URI`` the operator's terminal never inherits (a service
+    unit, a different shell), or ``config.yaml`` may select another provider
+    — and then the copyable command scores a LIVE list from a different
+    bundle than sections ④/⑤ just reported on (codex #431 r5).
+    """
+    data_flags = (f" \\\n  --provider-uri {_arg(provider_uri)}"
+                  f" \\\n  --delisted-registry {_arg(delisted_registry)}"
+                  f" \\\n  --name-source {_arg(name_source)}")
     if incumbent.kind == "single":
         return OpsCommand(
             title="晨跑出单（每交易日早晨，手动）",
-            command=f"python scripts/daily_recommend.py --model {_arg(model_path)}",
+            command=(f"python scripts/daily_recommend.py --model {_arg(model_path)}"
+                     + data_flags),
             note=("现任为单模型形态（QUANT_ENSEMBLE_MANIFEST 显式设为 `none`），"
-                  "故为 --model 形态而非 --ensemble-manifest。"),
+                  "故为 --model 形态而非 --ensemble-manifest。"
+                  "数据路径显式传入——CLI 有自己的默认值，不传就可能跑在另一份 bundle 上。"),
         )
     if not incumbent.is_ensemble:
         # Refusing to print a runnable command is the point: the incumbent
@@ -602,7 +670,8 @@ def morning_command(
     return OpsCommand(
         title="晨跑出单（每交易日早晨，手动）",
         command=("python scripts/daily_recommend.py "
-                 f"--ensemble-manifest {_arg(incumbent.manifest_path)}"),
+                 f"--ensemble-manifest {_arg(incumbent.manifest_path)}"
+                 + data_flags),
         note=("路径为本机已解析的现任 manifest（而非 $QUANT_ENSEMBLE_MANIFEST 的字面量："
               "该变量未设时 shell 会展开成空串）。ensemble 模式下宇宙/节奏/topk "
               "自动绑定 config/serving/csi800_n5_production.yaml；显式传参必须与绑定值相等。"),
