@@ -325,10 +325,28 @@
 - [x] 教训:r28 我把「我认为会发生什么」写进了注释当既成事实,没有实测。
       与 W35 同源:未经验证的前提
 
+## W37 codex #431 r31（两 **P1**，均属实；一条是漏面，一条又要打红 CI）
+- [x] **P1-a** `resolve_incumbent` 仍把外来写法的 manifest 交给 serving loader
+      —— r30 我守了命令与两道读取器,漏了这条读路径  ← C99 咬住
+      POSIX 上该指针是相对路径:若 Streamlit 工作目录下恰好有同名 `D:/…` 树,
+      两页会**静默**把无关 ensemble 当生产现任报出
+- [x] 拒绝态是「不可解析」,**不得**退化为单模型形态  ← C100 咬住
+- [x] **P1-b** 两处既有测试会在 POSIX 上红(`_arg("D:/plain")`、
+      `delisted_registry="D:/r.parquet"`),改用 `/srv/…` ——
+      `/srv/x` 在 ntpath 与 posixpath 下**同为绝对**,宿主无关
+- [x] `test_unset_pointer_uses_the_documented_default_not_single` 显式钉住
+      Windows 语义(文档化默认值本就是 Windows 路径),并另钉 POSIX 下仍不退化
+- [x] 宿主判定抽成模块级 `_host_isabs`:此前测试改的是 `os.path.isabs`,
+      而 Windows 上 `os.path is ntpath` —— 全局替换会把测试自己 import 的
+      `ntpath.isabs` 一起改掉,导致「模拟 POSIX」**静默失效**。这个坑是我做
+      仿真时踩到的,不是推理出来的
+- [x] 建立**可信的 POSIX 仿真**(只换 `_host_isabs`,并把机器自身真实路径视为
+      绝对——POSIX 上本就如此):全套 170 passed,Ubuntu 腿有实证支撑
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C98(C57/C58/C68 随重构作废):94 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C100(C57/C58/C68 随重构作废):96 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

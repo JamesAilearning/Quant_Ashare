@@ -30,6 +30,13 @@ def _is_absolute_under_either_convention(path: str) -> bool:
             or PurePosixPath(path).is_absolute())
 
 
+# The HOST's own absoluteness rule, bound once so tests can substitute the
+# other platform's without mutating `os.path` — which on Windows IS `ntpath`,
+# so a global swap also rewrites the very function a test imports to restore
+# Windows semantics (that made an "as POSIX" simulation silently unsound).
+_host_isabs = os.path.isabs
+
+
 # Message shown when a spelling names nothing resolvable on THIS host.
 FOREIGN_ABSOLUTE_REASON = (
     "该路径是**另一套约定**下的绝对路径(如 Windows 的 `D:/…` 出现在 POSIX 主机上)"
@@ -58,7 +65,7 @@ def foreign_absolute_reason(path: str) -> str | None:
     """
     if not path.strip():
         return None
-    if os.path.isabs(path):
+    if _host_isabs(path):
         return None
     return (FOREIGN_ABSOLUTE_REASON
             if _is_absolute_under_either_convention(path) else None)
@@ -105,7 +112,7 @@ def anchored_to_repo(path: str) -> str:
         return path
     if foreign_absolute_reason(expanded) is not None:
         return expanded
-    if os.path.isabs(expanded):
+    if _host_isabs(expanded):
         return expanded
     return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
 
@@ -230,5 +237,15 @@ def resolve_incumbent() -> IncumbentIdentity:
         return IncumbentIdentity(kind="single")
     # Anchored BEFORE the read, so the manifest this identity was built from
     # is the same file the printed `--ensemble-manifest` will open (r27).
-    return load_ensemble_manifest_identity(
-        anchored_to_repo(pointer or DEFAULT_ENSEMBLE_MANIFEST))
+    target = anchored_to_repo(pointer or DEFAULT_ENSEMBLE_MANIFEST)
+    foreign = foreign_absolute_reason(target)
+    if foreign is not None:
+        # Do NOT load it. On POSIX a `D:/…` pointer is a relative path, so a
+        # matching `D:/…` tree happening to exist under Streamlit's working
+        # directory would be loaded and reported as the production ensemble —
+        # this page's single worst failure mode, reached silently
+        # (codex #431 r31). "Unresolvable" is the honest state and both pages
+        # already refuse to describe an incumbent in it.
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=target, error=foreign)
+    return load_ensemble_manifest_identity(target)

@@ -562,6 +562,13 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # went back to one model" fabricates a fact — and on any box that
         # upgraded the UI without adding the variable it would BOTH show the
         # retired model AND warn against the correct ensemble lists.
+        # The documented default is a WINDOWS path, so the host's own
+        # absoluteness rule is pinned to Windows here — otherwise on the
+        # POSIX legs it reads as a foreign spelling, `resolve_incumbent`
+        # refuses it before loading (correctly, codex #431 r31) and this
+        # test would be asserting the platform rather than the rule it is
+        # about (codex #431 r31 / same class as W35).
+        import ntpath
         import os
         from unittest.mock import patch
 
@@ -570,12 +577,17 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # level so 生产运维 asks the same code, and a page-local patch would
         # no longer intercept the call it is meant to observe.
         from web.operator_ui import incumbent as H
-
         with patch.dict(os.environ, {H.ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
-            with patch.object(H, "load_ensemble_manifest_identity") as fake:
+            with patch.object(H, "_host_isabs", ntpath.isabs), \
+                    patch.object(H, "load_ensemble_manifest_identity") as fake:
                 fake.return_value = H.IncumbentIdentity(kind="ensemble")
                 H.resolve_incumbent()
             fake.assert_called_once_with(H.DEFAULT_ENSEMBLE_MANIFEST)
+            # …and on a host where that spelling is NOT usable it still must
+            # not degrade to the single-model shape — the actual invariant.
+            import posixpath
+            with patch.object(H, "_host_isabs", posixpath.isabs):
+                self.assertEqual("unresolvable", H.resolve_incumbent().kind)
 
     def test_single_model_requires_the_explicit_opt_out(self) -> None:
         import os

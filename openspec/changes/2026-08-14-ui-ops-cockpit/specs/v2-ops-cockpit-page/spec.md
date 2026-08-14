@@ -362,6 +362,15 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 - **AND** `~` 无法解析时（无 HOME / `~unknown`）MUST 原样返回，
   MUST NOT 把 `~` 当成目录名去锚定
 
+#### Scenario: 外来写法的 manifest 必须在读之前拒绝
+
+- **GIVEN** `QUANT_ENSEMBLE_MANIFEST` 是 `D:/…`，而本机是 POSIX
+- **THEN** 解析器 MUST 在**读之前**拒绝，MUST NOT 交给 serving loader
+- **AND** 理由:POSIX 上该指针是相对路径，若 Streamlit 工作目录下恰好存在同名
+  的 `D:/…` 目录树，两页会**静默**把那个无关 ensemble 当作生产现任报出——
+  这正是本页存在的意义所要杜绝的最坏一种
+- **AND** 该状态 MUST 是「不可解析」，MUST NOT 退化为单模型形态
+
 #### Scenario: 命令的工作目录依赖必须说明
 
 - **GIVEN** 生成的命令以 `scripts/…` 这样的仓库相对路径命名脚本

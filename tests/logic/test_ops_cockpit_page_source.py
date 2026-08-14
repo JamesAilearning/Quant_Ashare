@@ -256,7 +256,11 @@ class ResolvedCommandTests(unittest.TestCase):
         # argument entirely (verified: `--provider-dir @bundle` →
         # `ARGV= ['--provider-dir']`). Quoting everything removes the class.
         from web.operator_ui.pages._ops_cockpit_helpers import _arg
-        for value in ("@bundle", "D:/plain", "x;y", "a&b", "$var",
+        # NB: every literal here must be host-INDEPENDENT — `/srv/plain` is
+        # absolute to both ntpath and posixpath, whereas a `D:/…` spelling
+        # (used here before r31) is foreign on POSIX and now refused, which
+        # would red the Ubuntu legs for a reason this test is not about.
+        for value in ("@bundle", "/srv/plain", "x;y", "a&b", "$var",
                       "`tick", "%pct%", "(paren)"):
             with self.subTest(value=value):
                 self.assertEqual(f"'{value}'", _arg(value))
@@ -266,7 +270,7 @@ class ResolvedCommandTests(unittest.TestCase):
             data_update_command,
         )
         cmd = data_update_command(provider_uri="@bundle",
-                                  delisted_registry="D:/r.parquet")
+                                  delisted_registry="/srv/r.parquet")
         toks = shlex.split(cmd.command)
         self.assertEqual("@bundle", toks[toks.index("--provider-dir") + 1])
 
@@ -752,12 +756,12 @@ class RepoAnchoredPathTests(unittest.TestCase):
         value = "D:/qlib_data/my_cn_data_pit"
         # On the documented platform this is a perfectly good absolute path
         # and nothing may change.
-        with patch.object(inc.os.path, "isabs", lambda p: True):
+        with patch.object(inc, "_host_isabs", lambda p: True):
             self.assertIsNone(inc.foreign_absolute_reason(value))
             ok = data_update_command(provider_uri=value, delisted_registry="R")
             self.assertNotIn("无法生成可粘贴命令", ok.title)
         # …on a host where the spelling is foreign, every surface refuses.
-        with patch.object(inc.os.path, "isabs", posixpath.isabs):
+        with patch.object(inc, "_host_isabs", posixpath.isabs):
             reason = inc.foreign_absolute_reason(value)
             self.assertIsNotNone(reason)
             cmd = data_update_command(provider_uri=value,
@@ -771,6 +775,36 @@ class RepoAnchoredPathTests(unittest.TestCase):
             self.assertFalse(integrity.known)
             self.assertIsNone(integrity.accepted)
 
+    def test_a_foreign_manifest_is_refused_before_it_is_loaded(self) -> None:
+        # codex #431 r31 (P1): r30 refused the foreign spelling at the
+        # command boundary and in the two readers, but `resolve_incumbent`
+        # still handed it straight to the serving loader. On POSIX a `D:/…`
+        # pointer is RELATIVE, so a matching `D:/…` tree under Streamlit's
+        # working directory would be loaded and reported as the production
+        # ensemble — this page's single worst failure mode, reached silently.
+        import os
+        import posixpath
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+        loaded: list[str] = []
+
+        def spy(path: str) -> object:
+            loaded.append(path)
+            raise AssertionError("外来写法的 manifest 绝不该被读取")
+
+        with patch.object(inc, "_host_isabs", posixpath.isabs), \
+                patch.dict(os.environ,
+                           {"QUANT_ENSEMBLE_MANIFEST": "D:/prod/manifest.json"},
+                           clear=False), \
+                patch.object(inc, "load_ensemble_manifest_identity", spy):
+            identity = inc.resolve_incumbent()
+        self.assertEqual([], loaded, "拒绝必须发生在读之前")
+        self.assertEqual("unresolvable", identity.kind)
+        self.assertEqual(inc.FOREIGN_ABSOLUTE_REASON, identity.error)
+        # …and it must NOT degrade to the single-model shape
+        self.assertNotEqual("single", identity.kind)
+
     def test_a_foreign_absolute_is_never_anchored_into_nonsense(self) -> None:
         # The other wrong repair: anchoring makes page and command agree on a
         # location that exists nowhere, and sends the operator chasing a
@@ -780,7 +814,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
 
         import web.operator_ui.incumbent as inc
         value = "D:/qlib_data/my_cn_data_pit"
-        with patch.object(inc.os.path, "isabs", posixpath.isabs):
+        with patch.object(inc, "_host_isabs", posixpath.isabs):
             self.assertEqual(value, inc.anchored_to_repo(value))
 
     def test_the_page_names_a_foreign_provider_as_the_cause(self) -> None:
@@ -857,10 +891,12 @@ class RepoAnchoredPathTests(unittest.TestCase):
         self.assertIn("model_path=anchored_to_repo(resolve_model_path())", page)
         self.assertIn(
             "_model_path = anchored_to_repo(resolve_model_path())", daily)
-        # the manifest is anchored BEFORE the read, inside the resolver
-        self.assertIn("load_ensemble_manifest_identity(\n"
-                      "        anchored_to_repo(pointer or "
-                      "DEFAULT_ENSEMBLE_MANIFEST))", incumbent)
+        # the manifest is anchored BEFORE the read, inside the resolver…
+        self.assertIn("target = anchored_to_repo(pointer or "
+                      "DEFAULT_ENSEMBLE_MANIFEST)", incumbent)
+        # …and a foreign spelling is refused before the read, not loaded (r31)
+        self.assertLess(incumbent.index("foreign = foreign_absolute_reason"),
+                        incumbent.index("return load_ensemble_manifest_identity"))
 
     def test_the_repo_root_is_reused_not_derived_again(self) -> None:
         from scripts import rotate_ensemble_member
