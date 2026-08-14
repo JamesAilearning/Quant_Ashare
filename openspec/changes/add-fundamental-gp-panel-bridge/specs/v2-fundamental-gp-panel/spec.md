@@ -662,8 +662,8 @@ A shift-sensitivity diagnostic SHALL rebuild the panel with every effective
 announcement date shifted later by `N` trading days and compare against the
 baseline. The hash compared SHALL cover the PROVENANCE-BEARING output — values
 AND their availability evidence together — and SHALL change whenever at least
-one SHIFTED disclosure is actually SERVED by the requested panel on a sampled
-trade date.
+one SHIFTED disclosure's availability interval CROSSES a sampled trade date (as
+defined below).
 
 Hashing values alone would refuse a correct builder: a delayed filing that
 repeats the preceding period's value for the requested field, or whose field is
@@ -677,12 +677,25 @@ revenue-only panel correctly ignores a balance-sheet-only filing, so shifting
 that filing moves neither values nor evidence — and an unconditional rule would
 REFUSE a builder that is behaving exactly right. The diagnostic SHALL therefore
 establish RELEVANCE first, and relevance SHALL mean the shift CROSSES a sampled
-date: there is at least one sampled trade date at which the BASELINE panel
-serves a shifted disclosure and the SHIFTED rebuild does not. Merely being
-served on some sampled date is not enough — if a disclosure's original and
-shifted availability dates both precede the first sampled date, or fall between
-the same two sparse sample dates, it is served and relevant yet no sampled cell
-moves, and an unconditional rule would again REFUSE a correct builder. Where no
+date: for some shifted disclosure of a requested field, there is at least one
+sampled trade date lying in the half-open interval between its ORIGINAL
+`available_from_trade_date` and its SHIFTED one — a date at which a correct
+builder must serve it before the shift and not after.
+
+That determination SHALL be made from the SOURCE DATA — the store's disclosure
+dates, the shift, the requested fields, and the sampled calendar — and SHALL NOT
+consult the rebuilt panel. Defining relevance as "the baseline serves it and the
+shifted rebuild does not" is circular against exactly the defect this diagnostic
+exists to catch: an announcement-BLIND builder (one keyed on report period)
+keeps serving the same disclosure after the shift, so relevance would never be
+established, the diagnostic would return INCONCLUSIVE, and the unchanged-hash
+refusal below would never fire. The panel output SHALL be used only for the
+sensitivity assertion, never to decide whether the assertion applies.
+
+Merely being served on some sampled date is not enough either — if a
+disclosure's original and shifted availability dates both precede the first
+sampled date, or fall between the same two sparse sample dates, no sampled cell
+can move, and an unconditional rule would REFUSE a correct builder. Where no
 shifted disclosure crosses a sampled date the diagnostic SHALL report
 INCONCLUSIVE rather than REFUSE — an inconclusive diagnostic is a signal to
 widen the sample or use the deterministic fixture, not a verdict on the
@@ -701,16 +714,23 @@ correct-looking code can substitute for.
   unchanged hash is expected, not evidence of an announcement-blind builder
 
 #### Scenario: a served filing whose shift crosses no sampled date is inconclusive
-- **WHEN** a shifted disclosure IS served by the panel, but its original and
+- **WHEN** a shifted disclosure is of a requested field, but its original and
   shifted availability dates fall on the same side of every sampled date
 - **THEN** the diagnostic reports INCONCLUSIVE — no sampled cell could have
   moved, so the unchanged hash says nothing about the builder
 
 #### Scenario: a shift that crosses a sampled date must move the hash
-- **WHEN** at least one sampled trade date has the baseline serving a shifted
-  disclosure while the shifted rebuild does not
+- **WHEN** the source data shows a sampled trade date falling between a shifted
+  disclosure's original and shifted availability dates
 - **THEN** the values-plus-evidence hash differs from the baseline, and an
   unchanged hash REFUSES
+
+#### Scenario: an announcement-blind builder cannot escape via INCONCLUSIVE
+- **WHEN** the builder keys on report period, so the shifted rebuild keeps
+  serving the same disclosure as the baseline
+- **THEN** relevance is still established from the source data, the diagnostic
+  reaches its assertion, and the unchanged hash REFUSES — it does not report
+  INCONCLUSIVE
 
 The IC-series assertion SHALL be required only on a DETERMINISTIC FIXTURE
 constructed so that the shift necessarily alters evaluated values or their
