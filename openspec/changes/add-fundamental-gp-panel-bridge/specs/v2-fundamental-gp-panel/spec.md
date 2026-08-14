@@ -662,13 +662,18 @@ A shift-sensitivity diagnostic SHALL rebuild the panel with every effective
 announcement date shifted later by `N` trading days and compare against the
 baseline.
 
-The assertion SHALL be on WHICH RECORD IS SERVED, not on a combined hash. For
-each crossing established from the source data (below), at each sampled date
-inside that crossing interval, the shifted rebuild SHALL serve the PREDECESSOR
-disclosure — the latest record still available under the shifted dates — or NA
-where none exists, while the baseline serves the crossing record. The served
-report-period / record provenance is what must move; the diagnostic SHALL
-REFUSE when it does not.
+The assertion SHALL be on WHICH RECORD IS SERVED, not on a combined hash, and it
+SHALL be framed per SAMPLED DATE in terms of the WINNING record, not per
+disclosure in terms of an interval.
+
+For each sampled trade date the diagnostic SHALL compute, source-side, two
+winners under the canonical as-of rule — the latest `report_period` whose
+availability is on or before that date, after disclosure-of-record selection:
+`W_base` under the ORIGINAL availability dates and `W_shift` under the SHIFTED
+ones. Where `W_base` and `W_shift` differ, the baseline panel SHALL serve
+`W_base` and the shifted rebuild SHALL serve `W_shift` (or NA where no record is
+yet available). The served report-period / record provenance is what must move;
+the diagnostic SHALL REFUSE when it does not.
 
 A values-plus-evidence hash is NOT sufficient on its own, and the reason is the
 defect this exists to catch: a report-period-keyed builder can keep serving the
@@ -688,20 +693,26 @@ filing need not touch any requested field, endpoint, or instrument. A
 revenue-only panel correctly ignores a balance-sheet-only filing, so shifting
 that filing moves neither values nor evidence — and an unconditional rule would
 REFUSE a builder that is behaving exactly right. The diagnostic SHALL therefore
-establish RELEVANCE first, and relevance SHALL mean the shift CROSSES a sampled
-date: for some shifted disclosure of a requested field, there is at least one
-sampled trade date lying in the half-open interval between its ORIGINAL
-`available_from_trade_date` and its SHIFTED one — a date at which a correct
-builder must serve it before the shift and not after.
+establish RELEVANCE first, and relevance SHALL mean that the WINNER MOVES: for
+some requested field there is at least one sampled trade date whose `W_base` and
+`W_shift`, as defined above, differ.
 
-The source rows SHALL first be reduced by the CANONICAL DISCLOSURE-OF-RECORD
-SELECTION (preferred version, earliest effective announcement) before the
-crossing is tested. Raw rows include re-announcements and `update_flag=1`
-restatements that the view never serves; letting one of those establish
-relevance would demand movement a correct panel must not make, and the
-diagnostic would REFUSE the builder for obeying the serve-rule.
+A per-record interval test is NOT equivalent and is wrong in both directions.
+The view serves only the winner at each date, so when two disclosure-of-record
+periods have overlapping shift intervals — an annual and a Q1 report becoming
+available the same day, say — a per-record test marks BOTH relevant, yet the
+baseline never serves the annual one at all; asserting that the baseline serves
+every crossing record would REFUSE a correct builder. Comparing winners asks
+exactly the question the serve-rule answers.
 
-That determination SHALL be made from the SOURCE DATA — the store's disclosure
+The source rows SHALL be reduced by the CANONICAL DISCLOSURE-OF-RECORD
+SELECTION (preferred version, earliest effective announcement) before either
+winner is computed. Raw rows include re-announcements and `update_flag=1`
+restatements the view never serves; letting one of those move a winner would
+demand movement a correct panel must not make, and the diagnostic would REFUSE
+the builder for obeying the serve-rule.
+
+Both winners SHALL be computed from the SOURCE DATA — the store's disclosure
 dates, the shift, the requested fields, and the sampled calendar — and SHALL NOT
 consult the rebuilt panel. Defining relevance as "the baseline serves it and the
 shifted rebuild does not" is circular against exactly the defect this diagnostic
@@ -713,10 +724,10 @@ sensitivity assertion, never to decide whether the assertion applies.
 
 Merely being served on some sampled date is not enough either — if a
 disclosure's original and shifted availability dates both precede the first
-sampled date, or fall between the same two sparse sample dates, no sampled cell
-can move, and an unconditional rule would REFUSE a correct builder. Where no
-shifted disclosure crosses a sampled date the diagnostic SHALL report
-INCONCLUSIVE rather than REFUSE — an inconclusive diagnostic is a signal to
+sampled date, or fall between the same two sparse sample dates, the winner is
+the same on every sampled date and no cell can move, and an unconditional rule
+would REFUSE a correct builder. Where no sampled date has a moving winner the
+diagnostic SHALL report INCONCLUSIVE rather than REFUSE — an inconclusive diagnostic is a signal to
 widen the sample or use the deterministic fixture, not a verdict on the
 builder. Running the assertion on a
 deterministic relevant-record fixture satisfies this by construction.
@@ -733,19 +744,26 @@ no amount of correct-looking code can substitute for.
   unmoved served record is expected here, not evidence of an announcement-blind
   builder
 
-#### Scenario: a served filing whose shift crosses no sampled date is inconclusive
-- **WHEN** a shifted disclosure is of a requested field, but its original and
-  shifted availability dates fall on the same side of every sampled date
+#### Scenario: a shift that never moves a winner is inconclusive
+- **WHEN** a shifted disclosure is of a requested field, but the source-side
+  winner is identical under original and shifted availability at every sampled
+  date
 - **THEN** the diagnostic reports INCONCLUSIVE — no sampled cell could have
   moved, so an unmoved served record says nothing about the builder
 
-#### Scenario: a crossing must change which record is served
-- **WHEN** the source data — after disclosure-of-record selection — shows a
-  sampled trade date falling between a shifted disclosure's original and
-  shifted availability dates
-- **THEN** at that date the shifted rebuild serves the predecessor disclosure
-  (or NA if none) while the baseline serves the crossing one, and a served
-  record that does not move REFUSES
+#### Scenario: a moving winner must change which record is served
+- **WHEN** at a sampled trade date the source-side winners differ — `W_base`
+  under original availability, `W_shift` under shifted availability
+- **THEN** the baseline serves `W_base` and the shifted rebuild serves `W_shift`
+  (or NA if none is yet available), and a served record that does not move
+  REFUSES
+
+#### Scenario: an overlapping filing that never wins is not asserted on
+- **WHEN** two disclosure-of-record periods have overlapping shift intervals —
+  an annual and a Q1 report becoming available the same day — so the annual one
+  is never the winner at any sampled date
+- **THEN** the diagnostic asserts nothing about it; only the dates where the
+  winner itself moves are asserted on
 
 #### Scenario: an announcement-blind builder cannot escape via INCONCLUSIVE
 - **WHEN** the builder keys on report period, so the shifted rebuild keeps
@@ -761,7 +779,7 @@ no amount of correct-looking code can substitute for.
   and a changed hash is not the criterion
 
 #### Scenario: a restatement row cannot establish relevance
-- **WHEN** the only source row whose shift crosses a sampled date is one the
+- **WHEN** the only source row whose shift would move anything is one the
   disclosure-of-record selection never serves (a restatement or later
   re-announcement)
 - **THEN** the diagnostic reports INCONCLUSIVE — a correct panel is unchanged
@@ -777,13 +795,13 @@ refuse valid implementations.
 
 #### Scenario: an announcement-insensitive builder is refused
 - **WHEN** a shifted rebuild whose relevance is established keeps serving the
-  same report period at the crossing dates
+  same report period at the moving-winner dates
 - **THEN** the diagnostic REFUSES, reporting that the announcement date is unused
 
 #### Scenario: an unchanged value with a moved served period is not a failure
-- **WHEN** at a crossing date the shifted rebuild serves the predecessor period
-  but that period repeats the same value (or the field is NA in both), leaving
-  values identical
+- **WHEN** at a moving-winner date the shifted rebuild serves `W_shift` but that
+  period repeats the same value (or the field is NA in both), leaving values
+  identical
 - **THEN** the diagnostic does not refuse — the served record moved, which is
   what is asserted; value inequality is not required
 
