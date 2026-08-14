@@ -331,6 +331,25 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 - **AND** 绝对路径与空值 MUST 原样返回——锚定只许消除歧义，不许发明 CLI 不
   共享的规范化
 
+#### Scenario: 绝对性不得问宿主
+
+- **GIVEN** 本仓库文档化的默认值是 Windows 路径（`D:/qlib_data/…`），而 CI
+  的一半跑在 Linux 上
+- **THEN** 「是否绝对」MUST 按 **Windows 与 POSIX 两种约定之一**判定，
+  MUST NOT 只问运行宿主——`os.path.isabs("D:/…")` 在 Linux 上为假，锚定会
+  造出 `/checkout/D:/qlib_data/…` 这样一条哪里都不存在的路径
+- **AND** 在错误的宿主上，该路径 MUST 直接读不到并如实报出，MUST NOT 被改写成
+  一个掩盖来源的新路径
+
+#### Scenario: `~` 必须展开后再同时用于读与印
+
+- **GIVEN** `QUANT_MODEL_PATH=~/model.pkl`
+- **THEN** 页面 MUST 展开后再读、再印。原样返回会让页面读一个字面 `~` 目录，
+  而印出的命令因本页**无条件加单引号**（r17）同样不会被 shell 展开——两边
+  各错一次，且错得不一样
+- **AND** `~` 无法解析时（无 HOME / `~unknown`）MUST 原样返回，
+  MUST NOT 把 `~` 当成目录名去锚定
+
 #### Scenario: 命令的工作目录依赖必须说明
 
 - **GIVEN** 生成的命令以 `scripts/…` 这样的仓库相对路径命名脚本

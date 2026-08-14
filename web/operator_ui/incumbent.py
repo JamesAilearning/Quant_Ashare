@@ -15,12 +15,32 @@ from __future__ import annotations
 import os
 import os.path
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 
 from scripts import rotate_ensemble_member as _rotate
 
 # The checkout — the executor's OWN constant, not a fourth derivation of the
 # same directory (codex #431 r23/r26).
 PROJECT_ROOT = _rotate.PROJECT_ROOT
+
+
+def _is_absolute_under_either_convention(path: str) -> bool:
+    """Absolute as Windows OR as POSIX reads it.
+
+    ``os.path.isabs`` answers for the HOST, and this repository's documented
+    defaults are Windows paths (``D:/qlib_data/…``) while CI runs on Linux.
+    Asking only the host makes ``D:/qlib_data/my_cn_data_pit`` look RELATIVE
+    on Linux, and anchoring would then manufacture
+    ``/checkout/D:/qlib_data/my_cn_data_pit`` — a path that exists nowhere,
+    from a value that was never ambiguous (codex #431 r28).
+
+    A path that is absolute under either convention is left alone. On the
+    wrong host it will simply fail to read, and the page reports that — which
+    is the truth, unlike a rewritten path that hides where the value came
+    from.
+    """
+    return (PureWindowsPath(path).is_absolute()
+            or PurePosixPath(path).is_absolute())
 
 
 def anchored_to_repo(path: str) -> str:
@@ -36,17 +56,30 @@ def anchored_to_repo(path: str) -> str:
 
     So relative paths are resolved against the checkout — the CWD the machine
     will actually have, per the runbook and per this page's own instruction.
-    Absolute paths are returned UNTOUCHED: there is nothing to disambiguate,
-    and inventing a normalization the CLI does not share is the mistake r23
-    and r24 were about. A blank value is likewise untouched — the command
-    boundary refuses it (r21).
+
+    ``~`` is EXPANDED, and the expansion is what gets both read and printed.
+    Returning the raw ``~/model.pkl`` would be read as a literal ``~``
+    directory here, while the printed command — single-quoted, because this
+    page quotes unconditionally (r17) — hands that same literal to Python
+    with no shell expansion either. Two wrong answers that happen to differ
+    from what the operator meant; the expanded form is the one thing both
+    sides can agree on (codex #431 r28).
+
+    Everything already unambiguous is returned UNTOUCHED: inventing a
+    normalization the CLI does not share is the mistake r23 and r24 were
+    about. A blank value is likewise untouched — the command boundary
+    refuses it (r21).
     """
     if not path.strip():
         return path
-    if os.path.isabs(os.path.expanduser(path)):
+    expanded = os.path.expanduser(path)
+    if expanded.startswith("~"):
+        # expanduser could not resolve it (no HOME, or `~unknownuser`). Do
+        # not guess and do not anchor a `~` as if it were a directory name.
         return path
-    return os.path.normpath(
-        os.path.join(PROJECT_ROOT, os.path.expanduser(path)))
+    if _is_absolute_under_either_convention(expanded):
+        return expanded
+    return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
 
 # The RETIRED single model — still the incumbent on a deployment that
 # explicitly opted out of the ensemble. Mirrors the CLI default

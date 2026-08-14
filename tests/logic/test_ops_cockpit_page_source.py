@@ -708,10 +708,73 @@ class RepoAnchoredPathTests(unittest.TestCase):
     def test_absolute_and_blank_values_are_left_alone(self) -> None:
         # Inventing a normalization the CLI does not share is the mistake
         # r23/r24 were about — anchoring may only touch what is ambiguous.
-        from web.operator_ui.incumbent import anchored_to_repo
-        for untouched in ("D:/qlib_data/my_cn_data_pit", "", "   ", "/srv/b"):
+        #
+        # HOST-INDEPENDENT on purpose (codex #431 r28): `os.path.isabs` answers
+        # for the running platform, so on Linux CI the repo's own documented
+        # `D:/qlib_data/…` defaults looked RELATIVE and anchoring manufactured
+        # `/checkout/D:/qlib_data/…` — a path that exists nowhere, from a value
+        # that was never ambiguous. Both spellings must survive on both hosts.
+        from web.operator_ui.incumbent import (
+            _is_absolute_under_either_convention,
+            anchored_to_repo,
+        )
+        for untouched in ("D:/qlib_data/my_cn_data_pit", "", "   ", "/srv/b",
+                          "\\\\server\\share\\bundle"):
             with self.subTest(value=repr(untouched)):
                 self.assertEqual(untouched, anchored_to_repo(untouched))
+        for absolute in ("D:/qlib_data/x", "/srv/b", "\\\\server\\share\\b"):
+            with self.subTest(absolute=repr(absolute)):
+                self.assertTrue(
+                    _is_absolute_under_either_convention(absolute),
+                    "Windows 与 POSIX 任一读法为绝对,就不该被锚定")
+        for relative in ("bundles/live", "a/b/c"):
+            with self.subTest(relative=repr(relative)):
+                self.assertFalse(
+                    _is_absolute_under_either_convention(relative))
+
+    def test_the_absoluteness_test_is_not_asked_of_the_host(self) -> None:
+        # A SOURCE pin, deliberately, because no behavioural one is possible
+        # here: on Windows `os.path.isabs` agrees with the dual-convention
+        # rule for every input (`D:/x`, `/srv/b`, `\\\\srv\\share`, `C:rel`),
+        # so a Windows-only run cannot observe the regression at all — it
+        # surfaces only on the POSIX half of the CI matrix, which is exactly
+        # how it escaped review in r27 (codex #431 r28).
+        # Read off the COMPILED code, not the source text: a text scan also
+        # matches the docstring that explains why `os.path.isabs` is wrong,
+        # so it fires on the correct implementation too (it did — the harness
+        # caught it because an unrelated equivalent mutant went red).
+        from web.operator_ui.incumbent import (
+            _is_absolute_under_either_convention as decide,
+        )
+        names = decide.__code__.co_names
+        self.assertNotIn(
+            "isabs", names,
+            "绝对性不能问宿主:Linux 上 `os.path.isabs('D:/…')` 为假,"
+            "本仓库文档化的默认值会被锚成一条哪里都不存在的路径")
+        self.assertIn("PureWindowsPath", names)
+        self.assertIn("PurePosixPath", names)
+
+    def test_a_tilde_path_is_expanded_for_both_the_read_and_the_print(
+            self) -> None:
+        # codex #431 r28: returning the raw `~/model.pkl` made the page read a
+        # literal `~` directory, while the printed command — single-quoted,
+        # because this page quotes unconditionally (r17) — handed that same
+        # literal to Python with no shell expansion either. Two wrong answers
+        # that differ from what the operator meant.
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.incumbent import anchored_to_repo
+        got = anchored_to_repo("~/model.pkl")
+        self.assertNotIn("~", got)
+        self.assertEqual(os.path.expanduser("~/model.pkl"), got)
+
+        # …but when `~` cannot be resolved, do NOT anchor it as if it were a
+        # directory name — say nothing rather than guess.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("HOME", "USERPROFILE", "HOMEPATH", "HOMEDRIVE")}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual("~/model.pkl", anchored_to_repo("~/model.pkl"))
 
     def test_every_read_and_printed_path_goes_through_the_anchor(self) -> None:
         # The three the page BOTH reads and prints. Paths it only prints

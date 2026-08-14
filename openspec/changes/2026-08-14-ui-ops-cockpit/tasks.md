@@ -272,10 +272,24 @@
 - [x] 仓库根第四次派生取消,统一复用执行器的常量(incumbent / helpers / recert)
 - [x] 页面 import 钉改为钉**属性**而非某一种书写(多行 import 让原钉误红)
 
+## W34 codex #431 r28（**P1**，属实；我 r27 的锚定实现自己踩了跨平台坑）
+- [x] **CI 实红**:ubuntu 3.10/3.12 在 a524779 上失败,codex 比我先看到
+      (我的监控只在全部 check 非 pending 时才播报,还没触发)
+- [x] 绝对性改按 **Windows 与 POSIX 两种约定之一**判定  ← C90 咬住
+      posix 规则下复现旧实现:`D:/qlib_data/my_cn_data_pit` →
+      `/home/runner/.../Quant_Ashare/D:/qlib_data/my_cn_data_pit`(哪里都不存在)
+- [x] `~` 改为**展开后**同时用于读与印  ← C91 咬住
+      原样返回:页面读字面 `~` 目录,命令因无条件单引号也不展开 —— 两边各错一次
+- [x] `~` 无法解析(无 HOME)时原样返回,不把 `~` 当目录名锚定  ← C92 咬住
+- [x] 该类缺陷**在 Windows 上无行为可观测**(两种判定在本机处处一致),
+      故补一条宿主无关的源码钉;且钉的是**编译后的 co_names**,不是源码文本
+      —— 文本扫描会匹配到解释「为何不能用 isabs」的 docstring,正确实现也报红
+      (这个错是变异 harness 通过一个无关等价变异转红暴露的)
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C89(C57/C58/C68 随重构作废):85 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C92(C57/C58/C68 随重构作废):88 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
