@@ -93,24 +93,35 @@ whether a candidate combines endpoints: masking globally would discard valid
 same-endpoint expressions, and masking not at all leaves mixed-quarter ratios
 reachable.
 
-The masking SHALL be applied at the FIRST cross-endpoint subtree — the lowest
-node whose operands span endpoints — before any parent rolling or
-cross-sectional operator consumes its output, NOT to the finished expression's
-cells. Masking only the final cell is too late: in
-`ts_mean(div_safe($revenue, $total_assets), 5)` the periods may align on trade
-date `T` while the rolling window still averages mixed-quarter ratios from
-earlier dates, producing a contaminated non-NA value at `T` that no end-of-
-expression check would catch. Same-endpoint subtrees are unaffected.
+The mask SHALL be computed from the SET of endpoints the whole expression
+references, and SHALL be applied AT THE TERMINALS — every referenced field's
+frame is masked where those endpoints' report periods disagree, BEFORE any
+operator consumes it. An expression referencing a single endpoint has a
+one-element endpoint set and is therefore never masked.
+
+Masking at any interior node is too late, in either direction:
+
+- Below a rolling parent — `ts_mean(div_safe($revenue, $total_assets), 5)` —
+  the periods may align on trade date `T` while the window still averages
+  mixed-quarter ratios from earlier dates.
+- Above rolling children — `add(ts_mean($revenue, 5), ts_mean($total_assets,
+  5))` — the first cross-endpoint node is `add`, by which point each child has
+  already aggregated its own misaligned history; alignment at `T` says nothing
+  about the dates inside those windows.
+
+Terminal-level masking is the only placement that admits no such topology: no
+operator, temporal or otherwise, can observe a misaligned date.
 
 Evaluation SHALL therefore receive the report-period provenance alongside the
 value panel; the change SHALL define and wire that provenance-bearing argument
-through EVERY path that evaluates an expression — not the search path alone —
-since the current calls pass the value mapping only. Validation evaluates
-expressions on its own segments, so a provenance-less validation path would
-either reject every fundamental factor (if provenance is mandatory) or
-re-compute unmasked mixed-period values and adjudicate on them (if optional);
-either way the metric that decides promotion would not be the metric the
-masking defines.
+through EVERY path that evaluates an expression — search, validation, AND the
+promotion entry point that drives them — since the current calls pass the value
+mapping only. The promotion path builds its own `(panel, fwd)` pair and then
+adjudicates, so a provenance-less promotion would either fail outright (if
+provenance is mandatory) or re-compute unmasked mixed-period values and promote
+on them (if optional); either way the metric that decides promotion would not
+be the metric the masking defines. The panel-building adapter these entry
+points call SHALL therefore carry provenance too, not just the leaf evaluators.
 
 Endpoints are served independently by the view, so without this a ratio across
 income and balance-sheet fields silently combines different quarters.
@@ -130,6 +141,14 @@ income and balance-sheet fields silently combines different quarters.
 - **THEN** that earlier input is already NA when the rolling operator consumes
   it, so the current date's result is not contaminated
 
+#### Scenario: rolling children of a cross-endpoint node are masked too
+- **WHEN** each endpoint is rolled separately and combined only at the top —
+  `add(ts_mean($revenue, 5), ts_mean($total_assets, 5))` — and the periods
+  misalign on an earlier date inside those windows
+- **THEN** the misaligned date is already NA in BOTH children's inputs, because
+  the mask is applied at the terminals — the alignment holding at the current
+  date does not rescue the contaminated history
+
 #### Scenario: evaluation receives the period provenance
 - **WHEN** an expression is evaluated against a fundamental panel — on the
   search path or on the validation path, whole-sample or per-segment
@@ -141,6 +160,12 @@ income and balance-sheet fields silently combines different quarters.
 - **THEN** it evaluates with provenance and masking, so its metrics match what
   the masked definition produces — it neither rejects the candidate for want of
   provenance nor scores it on unmasked mixed-period values
+
+#### Scenario: promotion runs end to end with provenance
+- **WHEN** the promotion entry point builds its panel and adjudicates a
+  fundamental candidate
+- **THEN** provenance reaches every evaluation it triggers, and promotion
+  neither fails for want of it nor promotes on unmasked values
 
 #### Scenario: an adjacent-period difference has its own provenance
 - **WHEN** a factor differences a field across adjacent report periods

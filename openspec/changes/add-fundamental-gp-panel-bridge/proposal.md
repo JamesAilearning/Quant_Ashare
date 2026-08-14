@@ -89,11 +89,14 @@ view 的契约明确：**各 endpoint 独立服务**，消费者须用 `include_
 同端点表达式，不遮蔽则混季比率仍可达。强制点因此放在**求值路径**（按该表达式实际
 引用的终端判断），这使 `evaluator.py` 进入 scope。
 
-**遮蔽点必须落在第一个跨端点子树**（操作数跨端点的最低节点），在任何父级滚动/横截面
-算子消费它之前 —— **只遮蔽最终 cell 太晚**（codex #427 r3 P1）：
-`ts_mean(div_safe($revenue, $total_assets), 5)` 在交易日 T 可能两端点同期，但滚动窗内
-**更早日期**的混季比率仍会被平均进来，在 T 产出一个表达式末端检查抓不到的、被污染的
-非 NA 值。须有嵌套表达式回归用例。
+**遮蔽必须落在终端层**：按该表达式引用的**端点集合**算联合对齐掩码，在任何算子消费
+之前把各字段帧上"这些端点报告期不一致"的 (日期, instrument) 置 NA；单端点表达式的
+端点集只有一个元素，天然不被遮蔽。**在内部节点上遮蔽两个方向都漏**：
+① 父级滚动之下（codex #427 r3 P1）—— `ts_mean(div_safe($revenue, $total_assets), 5)`
+在 T 可能同期，但滚动窗内更早日期的混季比率仍被平均进来；
+② 滚动子节点之上（codex #427 r5 P1）—— `add(ts_mean($revenue, 5), ts_mean($total_assets, 5))`
+的第一个跨端点节点是 `add`，到那时两个子树各自**已经**把错期历史聚合完了，T 日对齐
+救不回来。终端层是唯一不留拓扑口子的位置；两种拓扑都要有回归用例。
 
 **且 provenance 得有路径抵达求值。** 桥把 `periods` 作为第三个返回对象，而现有 GP 调用
 是 `evaluate_factor(expr, panel, ...)` 只传值面板 —— 新纳入 scope 的 evaluator 根本
@@ -106,7 +109,10 @@ provenance 的面板/求值参数（或明确一个在求值前把 period 帧打
 求值且都不带 provenance。若 provenance 变必需，验证会把每个基本面因子判为无效；若保持
 可选，验证就在**未遮蔽的混季值**上算指标并据此裁决 —— 两种都让"决定晋升的指标"不是
 "遮蔽定义的指标"。`validator.py` 因此一并进 scope（AGENTS.md：改契约必须迁移调用方与
-测试）。
+测试）。**晋升入口同理，而且更硬**（codex #427 r5 P1）：`promote.py:376` 的
+`build_panel_for_data` 只造 `(panel, fwd)`，386/389 行的 `validate_pool` /
+`filter_correlated` 拿不到 `periods` —— 而这条是**真正做裁决**的路径。造面板的
+adapter 与其调用方一并进 scope，并有端到端晋升测试。
 
 **另有一处致命实现细节**（同轮 P1）：view 把 instrument 归一化为 store 原生 `ts_code`
 （`600000.SH`），而 factor_mining 面板与 forward-return 用 qlib 标签（`SH600000`），
@@ -179,6 +185,8 @@ artifact + range 模式 as-of 消费者 + `within_industry_rank` + 一次性抓�
   三处均不引入任何 qlib/PIT import，D5 不受影响。
   - `src/factor_mining/validator.py` —— 两条求值调用点（`_evaluate_segment` /
     `filter_correlated`）接 provenance，使验证与搜索用同一把尺；
+  - `src/factor_mining/promote.py` 与其造面板 adapter `build_panel_for_data` ——
+    晋升入口带 provenance，使**做裁决的那条路径**用的也是同一把尺；
   - `src/factor_mining/gp_engine.py` —— **仅当** period provenance 的传参通路必须
     经由它时（见 §1b 末段）；若 adapter 方案足够，则不动。
 * **仍然零改动**：`src/factor_mining/pit_adapter.py`、`src/data/pit/*`、canonical

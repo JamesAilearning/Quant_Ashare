@@ -47,11 +47,16 @@
 - [ ] **跨端点同期强制放到 expression-aware 层**（codex #427 r2 P1）：面板层做不到 ——
       桥在表达式产生**之前**运行，`evaluator` 又把每个终端各自解析为值帧，所以桥无从
       知道候选是否跨端点：全局遮蔽会误杀合法的同端点表达式，不遮蔽则混季比率仍可达。
-      改为在**求值路径**上做，且遮蔽点必须落在**第一个跨端点子树**（操作数跨端点的
-      最低节点），在任何父级滚动/横截面算子消费它之前 —— 只遮蔽最终 cell 太晚
-      （codex #427 r3 P1）：`ts_mean(div_safe($revenue, $total_assets), 5)` 在 T 日
-      期可能对齐，但窗口内**更早日期**的混季比率会被卷进来，在 T 产出被污染的非 NA 值。
-      须加嵌套表达式回归用例。这意味着 `src/factor_mining/evaluator.py` 在 scope 内。
+      改为在**求值路径**上做，遮蔽落在**终端层**：按该表达式引用的**端点集合**算联合
+      对齐掩码，在**任何算子消费之前**就把各字段帧上"这些端点报告期不一致"的
+      (日期, instrument) 置 NA。单端点表达式的端点集只有一个元素，天然不被遮蔽。
+      **任何内部节点上遮蔽都太晚，两个方向都漏**：
+      ①父级滚动之下 —— `ts_mean(div_safe($revenue, $total_assets), 5)` 在 T 可能同期，
+      但窗口内更早日期的混季比率被卷进来（r3 P1）；
+      ②滚动子节点之上 —— `add(ts_mean($revenue, 5), ts_mean($total_assets, 5))` 的
+      第一个跨端点节点是 `add`，到那时两个子树各自已把错期历史聚合完了（r5 P1）。
+      终端层是唯一不留拓扑口子的位置。两种拓扑都要有回归用例。
+      这意味着 `src/factor_mining/evaluator.py` 在 scope 内。
 - [ ] **把 period provenance 接进求值路径**（codex #427 r3 P1）：桥把 `periods` 作为
       第三个返回对象，而现有 GP 调用是 `evaluate_factor(expr, panel, ...)` 只传值面板 ——
       新纳入 scope 的 evaluator **没有途径拿到** report periods。须定义并接线一个带
@@ -65,6 +70,12 @@
       混季值**上算指标并据此裁决 —— 两种都让"决定晋升的指标"不是"遮蔽定义的指标"。
       验证的分段切分与两条求值路径一并进 scope，测试同步迁移（AGENTS.md「改契约必须
       迁移调用方与测试」）。
+- [ ] **晋升入口也要接**（codex #427 r5 P1）：`promote.py:376` 的
+      `panel, fwd = build_panel_for_data(config.data)` 只造 `(panel, fwd)`，随后
+      386 行 `validate_pool` 与 389 行 `filter_correlated` 都拿不到 `periods`。
+      这条是**真正做裁决的路径** —— provenance 可选则晋升在未遮蔽值上裁决，必需则
+      晋升直接失败。造面板的 adapter（`build_panel_for_data`）与其调用方一并进 scope，
+      并有端到端晋升测试。
 - [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
@@ -102,8 +113,9 @@
 ## 验证与边界
 
 - [ ] 确认改动面与提案一致：`grammar.py`（终端注册 + 名字映射 + prior 期终端/算子）、
-      `evaluator.py`（跨端点同期强制，expression-aware）、`validator.py`（两条求值
-      调用点接 provenance）与 `financial_pit_view.py`（provenance 响应）**有**改动；
+      `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
+      调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
+      provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
       `gp_engine.py` **仅当** period 传参通路必须经由它时才动（adapter 方案则不动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
 - [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
