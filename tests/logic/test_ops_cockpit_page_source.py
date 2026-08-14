@@ -980,31 +980,70 @@ class BundleFreshnessTests(unittest.TestCase):
                 self.assertEqual(
                     _bundle_is_stale(tail, today, 14), mine.refuses_today)
 
-    def test_the_tail_is_read_the_way_the_recommender_reads_it(self) -> None:
+    def _calendar(self, body: str | None) -> str:
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        if body is not None:
+            (root / "calendars").mkdir()
+            (root / "calendars" / "day.txt").write_text(body, encoding="utf-8")
+        return str(root)
+
+    def test_the_tail_comes_off_the_recommenders_calendar_file(self) -> None:
         # codex #431 r5: summarise_bundle_health PREFERS the _fetch_integrity
-        # identity tail; the recommender uses qlib's calendar[-1], i.e.
+        # identity tail; the recommender's calendar is built from
         # calendars/day.txt. After a partial bundle replacement they diverge,
         # and at the age boundary that flips accept/refuse.
-        import tempfile
-
         from web.operator_ui.pages._ops_cockpit_helpers import (
-            recommender_calendar_tail,
+            bundle_calendar_tail,
         )
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / "calendars").mkdir()
-            (root / "calendars" / "day.txt").write_text(
-                "2026-07-30\n2026-07-31\n2026-08-03\n", encoding="utf-8")
-            self.assertEqual(date(2026, 8, 3),
-                             recommender_calendar_tail(str(root)))
-            # No calendar at all is unknown, not a guess.
-            self.assertIsNone(recommender_calendar_tail(str(root / "nope")))
+        got = bundle_calendar_tail(
+            self._calendar("2026-07-30\n2026-07-31\n2026-08-03\n"))
+        self.assertTrue(got.known)
+        self.assertEqual(date(2026, 8, 3), got.tail)
+        self.assertFalse(bundle_calendar_tail(self._calendar(None)).known)
+
+    def test_ambiguous_calendar_bytes_yield_unknown_not_a_guess(self) -> None:
+        # codex #431 r7: the recommender reads this file through QLIB's
+        # loader, which a read-only page cannot invoke. training_guards'
+        # reader silently DROPS malformed rows and sorts/dedupes, so a
+        # corrupt calendar still produces a confident (possibly wrong) tail.
+        # This reader is deliberately SOUND rather than exact: it may say
+        # "unknown" where qlib is fine; it must never do the reverse.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        for name, body in (
+            ("malformed row", "2026-07-30\nnot-a-date\n2026-08-03\n"),
+            ("blank row in the middle", "2026-07-30\n\n2026-08-03\n"),
+            ("duplicate", "2026-07-30\n2026-08-03\n2026-08-03\n"),
+            ("out of order", "2026-08-03\n2026-07-30\n"),
+            ("empty file", "\n\n"),
+        ):
+            with self.subTest(case=name):
+                got = bundle_calendar_tail(self._calendar(body))
+                self.assertFalse(got.known, "有歧义就必须说不知道")
+                self.assertIsNone(got.tail)
+                self.assertTrue(got.reason)
+
+    def test_the_page_does_not_claim_to_be_the_recommenders_parser(self) -> None:
+        # The wording matters: same FILE, different PARSER.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("解析器不是 qlib 自己的", page)
+        self.assertNotIn("与出单侧的 `calendar[-1]` 同源", page)
+
+    def test_an_unknown_tail_reports_the_reason_not_a_green(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
+        fresh = bundle_freshness(
+            today=date(2026, 8, 14), tail_date=None, provider_uri="X",
+            message="交易日历第 2 行不是合法日期", max_age_days=14)
+        self.assertFalse(fresh.known)
+        self.assertFalse(fresh.usable)
+        self.assertIn("不是合法日期", fresh.message)
 
     def test_the_page_feeds_freshness_the_calendar_tail(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
         block = page[page.index("_fresh = bundle_freshness("):]
-        self.assertIn("tail_date=_cal_tail.isoformat() if _cal_tail else None",
-                      block)
+        self.assertIn("tail_date=_cal_tail.tail.isoformat()", block)
         self.assertNotIn("tail_date=_summary.tail_date", block)
 
     def test_integrity_gate_matches_the_recommenders_three_rules(self) -> None:

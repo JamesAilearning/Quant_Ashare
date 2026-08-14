@@ -481,24 +481,71 @@ class BundleFreshness:
                 and not self.health_warnings)
 
 
-def recommender_calendar_tail(provider_uri: str) -> date | None:
-    """The bundle's last trading day AS THE RECOMMENDER READS IT.
+@dataclass(frozen=True)
+class CalendarTail:
+    """The bundle's last trading day, or an honest refusal to name one."""
 
-    ``daily_recommend`` compares ``pd.Timestamp(calendar[-1])`` — qlib's
-    calendar, i.e. ``<provider>/calendars/day.txt``. ``summarise_bundle_health``
-    deliberately PREFERS the ``_fetch_integrity`` identity tail over that file
-    (``training_guards`` treats the identity as canonical), so after a partial
-    or inconsistent bundle replacement the two disagree — and at the age
-    boundary they give opposite accept/refuse answers (codex #431 r5).
+    known: bool
+    tail: date | None = None
+    reason: str = ""
 
-    Reuses ``training_guards``' own calendar reader rather than adding a
-    second interpretation of the same file.
+
+def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
+    """The last trading day — ONLY when the calendar bytes are unambiguous.
+
+    The recommender takes ``calendar[-1]`` from **qlib's** provider calendar
+    (``D.calendar()``), which needs ``qlib.init()``. A read-only page cannot
+    do that — it is heavyweight, and this page is barred from importing qlib
+    at all. So this does NOT claim to be the recommender's parser, and must
+    not be described as its path (codex #431 r7).
+
+    What it does instead: read the same file and refuse to answer unless the
+    content is unambiguous — non-empty, every row a valid ISO date, strictly
+    increasing, no duplicates, no blank rows before the end. Under those
+    conditions every reasonable parser agrees on the last element. Outside
+    them the page says it does not know, rather than hand out a tail qlib
+    might not share.
+
+    Deliberately NOT ``training_guards._read_calendar_dates``: that one
+    silently DROPS malformed rows and sorts/dedupes the survivors, so a
+    corrupt calendar still yields a confident (possibly wrong) tail — fine
+    for an informational banner, wrong for a refusal prediction.
+
+    This is SOUND, not exact: it may answer "unknown" where qlib would be
+    fine. It must never do the reverse.
     """
-    from web.operator_ui.training_guards import (  # noqa: PLC0415
-        _read_calendar_dates,
-    )
-    dates = _read_calendar_dates(Path(provider_uri) / "calendars" / "day.txt")
-    return dates[-1] if dates else None
+    path = Path(provider_uri) / "calendars" / "day.txt"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return CalendarTail(
+            known=False, reason=f"读不到交易日历 {path}:{type(exc).__name__}")
+    rows = [line.strip() for line in raw.splitlines()]
+    while rows and not rows[-1]:
+        rows.pop()
+    if not rows:
+        return CalendarTail(known=False, reason=f"交易日历为空:{path}")
+    parsed: list[date] = []
+    for index, value in enumerate(rows, start=1):
+        if not value:
+            return CalendarTail(
+                known=False,
+                reason=f"交易日历第 {index} 行为空行,内容有歧义,不据此判定")
+        try:
+            parsed.append(date.fromisoformat(value))
+        except ValueError:
+            return CalendarTail(
+                known=False,
+                reason=(f"交易日历第 {index} 行不是合法日期({value!r});"
+                        "本页不猜测 qlib 会如何解读它"))
+    for index in range(1, len(parsed)):
+        if parsed[index] <= parsed[index - 1]:
+            return CalendarTail(
+                known=False,
+                reason=(f"交易日历第 {index + 1} 行未严格递增"
+                        f"({parsed[index - 1]} → {parsed[index]});内容有歧义"))
+    return CalendarTail(known=True, tail=parsed[-1],
+                        reason="交易日历字节无歧义")
 
 
 @dataclass(frozen=True)

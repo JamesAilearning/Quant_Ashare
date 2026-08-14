@@ -35,12 +35,12 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     GATE_STATUS_OK,
     GATE_STATUS_TIGHT,
     OpsCommand,
+    bundle_calendar_tail,
     bundle_freshness,
     data_update_command,
     gate_card_status,
     morning_command,
     read_gate_cards,
-    recommender_calendar_tail,
     recommender_integrity_check,
     resolve_delisted_registry,
     resolve_name_source,
@@ -275,20 +275,24 @@ for _cmd in rotation_commands(
 st.markdown("---")
 st.subheader("⑤ 数据 bundle 新鲜度")
 _summary: Any = summarise_bundle_health(_provider)
-_cal_tail = recommender_calendar_tail(_provider)
+_cal_tail = bundle_calendar_tail(_provider)
 _integrity = recommender_integrity_check(_provider)
 _fresh = bundle_freshness(
     # No clock argument: defaults to the RECOMMENDER's own (host-local)
     # today, so this refusal prediction cannot disagree with the machine
     # that actually refuses (codex #431 r3).
     #
-    # And the TAIL is read the recommender's way too — off the qlib calendar,
-    # not the _fetch_integrity identity that summarise_bundle_health prefers.
-    # After a partial bundle replacement the two disagree, and at the age
-    # boundary that flips the answer (codex #431 r5).
-    tail_date=_cal_tail.isoformat() if _cal_tail else None,
+    # And the TAIL comes off the same FILE the recommender's calendar is
+    # built from — not the _fetch_integrity identity that
+    # summarise_bundle_health prefers (codex #431 r5). It is NOT qlib's
+    # parser though (a read-only page cannot init qlib), so the reader
+    # refuses to name a tail unless the bytes are unambiguous, and this
+    # section then reports 无法判定 instead of a possibly-wrong green
+    # (codex #431 r7).
+    tail_date=_cal_tail.tail.isoformat() if _cal_tail.known and _cal_tail.tail
+    else None,
     provider_uri=_summary.provider_uri,
-    message=_summary.message,
+    message=_cal_tail.reason if not _cal_tail.known else _summary.message,
     health_status=_summary.status,
     health_warnings=_summary.warnings,
     # The integrity precondition is evaluated by the RECOMMENDER's own
@@ -338,8 +342,10 @@ else:
         st.success(f"✅ 落后 {_fresh.days_behind} 天,在阈值内。")
 st.caption(
     f"provider = `{_fresh.provider_uri}`。尾部日期读自 **`calendars/day.txt`**"
-    "——与出单侧的 `calendar[-1]` 同源；bundle_health 偏好的 `_fetch_integrity` "
-    "identity tail 在此仅用于其健康判定，不用于年龄比较（两者在不完整换库后会分歧）。"
+    "——即出单侧 `calendar[-1]` 所建之于的同一份文件；但**解析器不是 qlib 自己的**"
+    "（只读页面不能 `qlib.init()`），故本页仅在该文件字节**无歧义**时给出尾部日期，"
+    "否则报「无法判定」而非一个 qlib 未必认同的值。"
+    "bundle_health 偏好的 `_fetch_integrity` identity tail 在此仅用于其健康判定。"
     f"拒绝阈值 {_fresh.max_age_days} 天取自 RecommendationConfig,非本页字面量。"
     "本页评的两道门(年龄、完整性 stamp)均由**出单侧自己的读取器/谓词**判定;"
     "但它们只是其前置条件的**子集**——全绿不等于今天一定能出单。"
