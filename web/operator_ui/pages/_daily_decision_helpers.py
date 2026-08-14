@@ -76,11 +76,16 @@ def resolve_model_path() -> str:
 class IncumbentIdentity:
     """Which model production is ACTUALLY serving, as far as the UI can tell.
 
-    Three states, and the third is the point: an unset pointer means "no
-    ensemble configured, the single-model banner applies", but a pointer that
-    is SET and unreadable must not degrade to that — it means the operator
-    told us production is an ensemble and we cannot confirm which one. The
-    page WARNs instead of showing a model that may not be serving.
+    Three states, and the third is the point:
+
+    * ``ensemble``     — a manifest the SERVING validator accepts. Reached by
+      the documented default (unset pointer) or an explicit path.
+    * ``single``       — reached ONLY by the explicit ``none`` opt-out. An
+      unset pointer is NOT this state: "nobody configured this box" is not
+      evidence that production retired the ensemble (codex #430 r1).
+    * ``unresolvable`` — a pointer that resolves to something the validator
+      refuses. It must never degrade to ``single``: that would show a model
+      which may not be serving, the exact failure this page prevents.
     """
 
     kind: str                       # "ensemble" | "single" | "unresolvable"
