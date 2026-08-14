@@ -16,6 +16,7 @@ each has its own block below:
 from __future__ import annotations
 
 import json
+import shlex
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -150,7 +151,9 @@ class ResolvedCommandTests(unittest.TestCase):
         cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
                             name_source="/srv/ns.parquet", bundle_max_age_days=14)  # type: ignore[arg-type]
-        self.assertIn("--ensemble-manifest /srv/prod_manifest.json", cmd.command)
+        toks = shlex.split(cmd.command)
+        self.assertEqual("/srv/prod_manifest.json",
+                         toks[toks.index("--ensemble-manifest") + 1])
 
     def test_single_model_deployment_gets_a_single_model_command(self) -> None:
         # The opt-out's pointer value is literally `none`; passing that to
@@ -161,7 +164,8 @@ class ResolvedCommandTests(unittest.TestCase):
             IncumbentIdentity(kind="single"), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
                             name_source="/srv/ns.parquet", bundle_max_age_days=14)
-        self.assertIn("--model /srv/m.pkl", cmd.command)
+        toks = shlex.split(cmd.command)
+        self.assertEqual("/srv/m.pkl", toks[toks.index("--model") + 1])
         self.assertNotIn("--ensemble-manifest", cmd.command)
         self.assertNotIn("none", cmd.command)
 
@@ -187,8 +191,10 @@ class ResolvedCommandTests(unittest.TestCase):
         )
         cmd = data_update_command(
             provider_uri="/srv/bundle", delisted_registry="/srv/reg.parquet")
-        self.assertIn("--provider-dir /srv/bundle", cmd.command)
-        self.assertIn("--delisted-registry /srv/reg.parquet", cmd.command)
+        toks = shlex.split(cmd.command)
+        self.assertEqual("/srv/bundle", toks[toks.index("--provider-dir") + 1])
+        self.assertEqual("/srv/reg.parquet",
+                         toks[toks.index("--delisted-registry") + 1])
         # The one argument with no documented env var stays an honest
         # placeholder rather than a variable that expands to nothing.
         self.assertIn(TUSHARE_DIR_PLACEHOLDER, cmd.command)
@@ -243,6 +249,27 @@ class ResolvedCommandTests(unittest.TestCase):
                 self.assertNotIn("PowerShell、cmd", text)
                 self.assertNotIn("PowerShell, cmd", text)
 
+    def test_every_value_is_quoted_not_just_the_posix_special_ones(self) -> None:
+        # codex #431 r17: shlex.quote asks "does POSIX need quoting?" — a
+        # path named `@bundle` does not, so it came back bare, and
+        # PowerShell then read the leading `@` as splatting and DROPPED the
+        # argument entirely (verified: `--provider-dir @bundle` →
+        # `ARGV= ['--provider-dir']`). Quoting everything removes the class.
+        from web.operator_ui.pages._ops_cockpit_helpers import _arg
+        for value in ("@bundle", "D:/plain", "x;y", "a&b", "$var",
+                      "`tick", "%pct%", "(paren)"):
+            with self.subTest(value=value):
+                self.assertEqual(f"'{value}'", _arg(value))
+
+    def test_an_at_prefixed_path_survives_into_the_command(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+        )
+        cmd = data_update_command(provider_uri="@bundle",
+                                  delisted_registry="D:/r.parquet")
+        toks = shlex.split(cmd.command)
+        self.assertEqual("@bundle", toks[toks.index("--provider-dir") + 1])
+
     def test_a_single_quote_in_a_path_is_refused_not_faked(self) -> None:
         # POSIX and PowerShell escape an embedded single quote differently
         # ('"'"' vs ''), so no one rendering is correct in both. Say so
@@ -271,8 +298,11 @@ class ResolvedCommandTests(unittest.TestCase):
         self.assertEqual(2, len(gates), "member 与 ensemble 两道 scope")
         for cmd in gates:
             with self.subTest(cmd=cmd.title):
-                self.assertIn("--provider /srv/bundle", cmd.command)
-                self.assertIn("--namechange /srv/nc.parquet", cmd.command)
+                toks = shlex.split(cmd.command)
+                self.assertEqual("/srv/bundle",
+                                 toks[toks.index("--provider") + 1])
+                self.assertEqual("/srv/nc.parquet",
+                                 toks[toks.index("--namechange") + 1])
 
     def test_the_page_feeds_gate_commands_the_bundle_it_reports_on(self) -> None:
         # One resolution, used by both section ④ and section ⑤: two calls
@@ -290,8 +320,6 @@ class ResolvedCommandTests(unittest.TestCase):
         # interpolation splits it into two argv entries — the gate then runs
         # against a different bundle than the one shown — and a
         # metacharacter would execute as shell syntax.
-        import shlex
-
         from web.operator_ui.incumbent import IncumbentIdentity
         from web.operator_ui.pages._ops_cockpit_helpers import (
             data_update_command,
@@ -352,9 +380,11 @@ class ResolvedCommandTests(unittest.TestCase):
                     provider_uri="/srv/bundle",
                     delisted_registry="/srv/reg.parquet",
                     name_source="/srv/ns.parquet", bundle_max_age_days=14)
-                self.assertIn("--provider-uri /srv/bundle", cmd.command)
-                self.assertIn("--delisted-registry /srv/reg.parquet", cmd.command)
-                self.assertIn("--name-source /srv/ns.parquet", cmd.command)
+                toks = shlex.split(cmd.command)
+                for flag, want in (("--provider-uri", "/srv/bundle"),
+                                   ("--delisted-registry", "/srv/reg.parquet"),
+                                   ("--name-source", "/srv/ns.parquet")):
+                    self.assertEqual(want, toks[toks.index(flag) + 1], flag)
 
     def test_the_morning_command_carries_the_predicted_threshold(self) -> None:
         # codex #431 r14: scripts/daily_recommend.py has its OWN argparse
@@ -370,7 +400,9 @@ class ResolvedCommandTests(unittest.TestCase):
             model_path="/x.pkl", provider_uri="/b",
             delisted_registry="/r", name_source="/n",
             bundle_max_age_days=21)
-        self.assertIn("--bundle-max-age-days 21", cmd.command)
+        toks = shlex.split(cmd.command)
+        self.assertEqual("21",
+                         toks[toks.index("--bundle-max-age-days") + 1])
 
     def test_the_page_feeds_the_command_the_threshold_it_predicts_with(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
@@ -1375,10 +1407,16 @@ class SpecSelfConsistencyTests(unittest.TestCase):
     A machine guard for a rule that was already mine to apply by hand every
     round (re-read the spec after editing it) and that I missed."""
 
+    _CHANGE = (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit")
+
     def _spec(self) -> str:
-        return (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit"
-                / "specs" / "v2-ops-cockpit-page"
-                / "spec.md").read_text(encoding="utf-8")
+        # EVERY governance artifact of the change, not just spec.md. r12's
+        # fix corrected the spec and left the proposal still naming the
+        # rejected tail source — archived, that sends a later maintainer
+        # back to it (codex #431 r17). One guard over all of them.
+        return "\n\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(self._CHANGE.rglob("*.md")))
 
     @staticmethod
     def _clauses(text: str) -> list[str]:

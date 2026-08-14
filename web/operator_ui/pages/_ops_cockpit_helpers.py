@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -839,7 +838,14 @@ def _arg(value: object) -> str:
     text = str(value)
     if "'" in text:
         return f"<路径含单引号，无法给出 PowerShell 与 POSIX 通用的写法：{text}>"
-    return shlex.quote(text)
+    # UNCONDITIONAL, not shlex.quote's "does this need quoting?" judgement —
+    # that judgement is POSIX's. A path named ``@bundle`` needs no quoting in
+    # POSIX, so shlex returns it bare, and PowerShell then reads a leading
+    # ``@`` as splatting syntax and DROPS the argument entirely (verified:
+    # ``--provider-dir @bundle`` → ``ARGV= ['--provider-dir']``). Quoting
+    # everything removes the whole class of per-shell metacharacter
+    # disagreement instead of enumerating it (codex #431 r17).
+    return f"'{text}'"
 
 
 def morning_command(

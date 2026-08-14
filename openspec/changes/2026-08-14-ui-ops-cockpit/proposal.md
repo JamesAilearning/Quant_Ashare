@@ -91,12 +91,25 @@ rev** 读正文与读 tip 日期。`origin/main` 是移动 ref，分两次读会
 页面 MUST 写明这是**由间距硬 pin 推导**，而非仓库里存在的到期日——本仓库反复
 被挑的就是 UI 自己造事实，这里不能再犯。
 
-### W5 — 数据新鲜度（复用两侧既有口径，不新造阈值）
+### W5 — 数据新鲜度（每一道都用出单侧自己的读取器/谓词）
 
-`bundle_health.summarise_bundle_health()` 给 `tail_date`；
-`RecommendationConfig.bundle_max_age_days`（=14）给拒绝阈值。页面显示尾部日期、
-落后天数、距拒绝阈值的余量，并写明 tail 来自 provider 元数据（与出单侧
-`calendar[-1]` 是两条不同取数路径，今天都是 2026-08-03）。
+尾部日期读自 **`calendars/day.txt`** —— 出单侧 `calendar[-1]` 所建之于的同一份
+文件。**不用** `bundle_health.summarise_bundle_health()` 偏好的 `_fetch_integrity`
+identity tail：两者在不完整换库后会分歧，恰在年龄边界给出相反的 accept/refuse。
+该健康摘要在此仅用于健康信号 —— 它刻意宽容（会吞掉损坏的 stamp），因此只能
+**收回**「可用」，不能**授予**。
+
+拒绝阈值取自 `RecommendationConfig.bundle_max_age_days`，并显式写进晨跑命令
+（CLI 有自己独立的 argparse 默认值）。完整性这一道由出单侧自己的
+`read_bundle_integrity` 加该门的三条规则评定。
+
+页面显示尾部日期、落后天数、距阈值余量，并写明：这两道门只是出单侧前置条件的
+**子集**，全绿不等于今天一定能出单。
+
+> 本节在 codex #431 r5/r6/r12/r14/r17 之后重写。初稿曾写「tail 取自 provider
+> 元数据（与出单侧是两条不同取数路径）」—— 那句在承认分歧的同时仍把该值当作
+> 拒绝预测用，是自相矛盾的；且与最终规格/实现相反，归档后会把维护者指回被
+> 否决的来源。
 
 ## 边界（本 change 不做）
 

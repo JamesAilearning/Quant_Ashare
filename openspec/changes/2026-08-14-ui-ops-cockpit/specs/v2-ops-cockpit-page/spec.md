@@ -78,6 +78,13 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** 页面 MUST NOT 声称支持 `cmd.exe`——它不把单引号当参数分隔符，
   含空格的路径会被切成多个参数（实测 `ARGV= ['--provider-dir', "'D:/qlib", "bundles/live'"]`）
 
+#### Scenario: 每个值都必须加引号，而不只是 POSIX 认为需要的那些
+
+- **GIVEN** 某路径名为 `@bundle`（POSIX 判定无需引用）
+- **THEN** 页面 MUST 仍然给它加引号——PowerShell 会把裸 `@name` 读成
+  splatting 语法并**整个丢掉**该参数（实测 `ARGV= ['--provider-dir']`）
+- **AND** 引用 MUST NOT 依据某一种 shell 的「是否需要」判据
+
 #### Scenario: 无法跨 shell 表达的路径必须明说
 
 - **GIVEN** 某路径含单引号（POSIX 与 PowerShell 的转义方式不同）

@@ -145,10 +145,17 @@
 - [x] 声称范围收窄为 **PowerShell + POSIX**,并显式写明不支持 cmd.exe  ← C53 咬住
 - [x] 规格/docstring/测试注释三处同步
 
+## W23 codex #431 r17（两 P2，均属实）
+- [x] 引用改为**无条件**，不再用 shlex 的 POSIX「是否需要」判据  ← C54 咬住
+      实测:裸 `@bundle` 在 PowerShell 中被当 splatting,参数**整个消失**
+- [x] proposal 的 W5 重写为最终的日历尾契约  ← r12 我只改了 spec,漏了 proposal
+- [x] 自洽守卫扩到该 change 的**全部** .md（不只 spec.md）  ← C55 咬住
+- [x] 命令类断言改为按 shlex token 比对,对引用方式不敏感
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C53:52 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C55:54 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
