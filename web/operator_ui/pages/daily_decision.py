@@ -236,9 +236,18 @@ elif _verdict == VERDICT_ENSEMBLE_UNDER_SINGLE:
     # explicit statement that production serves ONE model, so an ensemble
     # artifact provably did not come from it. "无法判定" would hide a
     # governance state we actually know.
+    #
+    # Reached with or without a bindable manifest sha (codex #430 r5): the
+    # meta.ensemble block already DECLARES the shape, and the shape alone
+    # settles this. The missing digest is reported as an extra fact, never
+    # as a reason to downgrade the refusal.
+    _id_txt = (
+        f"(sha256 `{_art_sha[:12]}…`)" if _art_sha
+        else "(meta.ensemble 缺 manifest_sha256,其身份还无法绑定)"
+    )
     st.warning(
-        "⚠ 该工件由 **ensemble(manifest)** 生成(sha256 "
-        f"`{_art_sha[:12]}…`),而**现任是单模型形态**"
+        f"⚠ 该工件由 **ensemble(manifest)** 生成{_id_txt},"
+        "而**现任是单模型形态**"
         "(QUANT_ENSEMBLE_MANIFEST 显式设为 `none` 的 opt-out)。"
         "它不是当前生产模型给出的建议,请勿据此下单。"
     )

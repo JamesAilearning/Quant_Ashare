@@ -85,3 +85,19 @@ MUST NOT 声称「当前生产为单模型形态」这类与现任形态不符�
 - **WHEN** 检查来源判定
 - **THEN** 现任 3 态 × 工件 4 形共 12 个组合均有明确裁定
 - **AND** 未知的形态输入 MUST 抛错，MUST NOT 落入「恰好排在最后」的分支
+
+### Requirement: 形态不符优先于一切「未知」
+
+来源判定 MUST 让形态不符优先于所有「身份不可绑定 / 现任不可解析」这类
+未知态——形态不符是**唯一**无需任何身份即可推出的确定拒绝。工件的
+`meta.ensemble` 块**声明的是形态**：缺 `manifest_sha256` 丢的是身份、
+不是形态，MUST NOT 因此把一个可证明的不匹配降级为「无法核对」。
+
+#### Scenario: 现任为单模型 × 工件声明 ensemble 但缺 manifest_sha256
+
+- **GIVEN** `QUANT_ENSEMBLE_MANIFEST=none`（现任为**确认过的**单模型）
+- **AND** 选中工件带 `meta.ensemble` 块但其中无 `manifest_sha256`
+- **THEN** 页面 MUST 给出与「工件出自 ensemble、现任是单模型」同级的
+  确定拒绝（含「请勿据此下单」），MUST NOT 只说「身份无法绑定」
+- **AND** 缺失的摘要 MUST 作为附加事实一并说明，MUST NOT 渲染一个
+  并不存在的 sha256

@@ -614,7 +614,11 @@ class ProvenanceMatrixTotalityTests(unittest.TestCase):
         ),
         # ---- incumbent = single (reached ONLY via the explicit opt-out) ----
         ("single", "ensemble"): (({}, "ensemble_under_single"),),
-        ("single", "ensemble_no_sha"): (({}, "ensemble_sha_missing"),),
+        # r5: the meta.ensemble block DECLARES the shape — losing the digest
+        # loses the identity, not the shape. Against a CONFIRMED single-model
+        # incumbent that is still a provable mismatch, so it must keep the
+        # 请勿据此下单 refusal rather than drop to "身份无法绑定".
+        ("single", "ensemble_no_sha"): (({}, "ensemble_under_single"),),
         ("single", "v1"): (({}, "v1_unknown_provenance"),),
         ("single", "single"): (
             ({"single_sha_mismatch": True}, "single_sha_mismatch"),
@@ -674,6 +678,45 @@ class ProvenanceMatrixTotalityTests(unittest.TestCase):
             classify_provenance(incumbent_kind="nope", artifact_kind="v1")
         with self.assertRaises(ValueError):
             classify_provenance(incumbent_kind="ensemble", artifact_kind="nope")
+
+    def test_shape_mismatch_outranks_every_unknown(self) -> None:
+        # codex #430 r5, stated as the RULE rather than as one more cell: a
+        # shape mismatch is the only DEFINITE refusal derivable with no
+        # identity at all, so no "unknown" may soften it. Ordering it after
+        # the unknowns is exactly what made ("single", "ensemble_no_sha")
+        # under-warn.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            VERDICT_ENSEMBLE_UNDER_SINGLE,
+            VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE,
+            classify_provenance,
+        )
+        # Every artifact whose meta DECLARES an ensemble shape — digest
+        # present or not — is a provable mismatch under a confirmed single.
+        for art in ("ensemble", "ensemble_no_sha"):
+            with self.subTest(artifact=art):
+                self.assertEqual(
+                    VERDICT_ENSEMBLE_UNDER_SINGLE,
+                    classify_provenance(
+                        incumbent_kind="single", artifact_kind=art))
+        # ...and the mirror direction, regardless of what the retired
+        # model's sidecar comparison would have said.
+        for mismatch in (True, False, None):
+            with self.subTest(sha_mismatch=mismatch):
+                self.assertEqual(
+                    VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE,
+                    classify_provenance(
+                        incumbent_kind="ensemble", artifact_kind="single",
+                        single_sha_mismatch=mismatch))
+
+    def test_declared_shape_survives_a_missing_digest(self) -> None:
+        # The distinction the r5 bug collapsed: identity and shape are
+        # separate facts. `ensemble_no_sha` has lost only the former.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            _ARTIFACT_SHAPE,
+        )
+        self.assertEqual(
+            _ARTIFACT_SHAPE["ensemble"], _ARTIFACT_SHAPE["ensemble_no_sha"])
+        self.assertIsNone(_ARTIFACT_SHAPE["v1"], "v1 连形态都无从得知")
 
     def test_artifact_kind_of_maps_each_shape_to_exactly_one_kind(self) -> None:
         # The matrix is only total if the shape classifier is ONTO it.
@@ -744,6 +787,14 @@ class ProvenanceRenderingTests(unittest.TestCase):
         i_unknown = self.xcheck.index("VERDICT_INCUMBENT_UNRESOLVED")
         self.assertLess(i_known, i_unknown)
         self.assertIn("现任是单模型形态", self.xcheck)
+
+    def test_ensemble_under_single_message_survives_a_missing_digest(self) -> None:
+        # r5 made this branch reachable with an EMPTY _art_sha; rendering
+        # "(sha256 `…`)" for it would print a digest that does not exist.
+        i = self.xcheck.index("VERDICT_ENSEMBLE_UNDER_SINGLE")
+        seg = self.xcheck[i:i + 1400]
+        self.assertIn('if _art_sha', seg)
+        self.assertIn("缺 manifest_sha256", seg)
 
     def test_single_incumbent_message_names_the_explicit_opt_out(self) -> None:
         # After the default-manifest change, `single` is reachable ONLY via

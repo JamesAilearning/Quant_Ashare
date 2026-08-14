@@ -446,12 +446,17 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
 
 # ---------------------------------------------------------------------------
 # Provenance verdict — the incumbent × artifact matrix as DATA, not as a
-# chain of elifs (codex #430 r1..r3 leaked four different cells of it: a
-# single-model artifact under an ensemble incumbent, an unset pointer read as
-# "single", a v1 artifact called "single-model shaped", and an unresolvable
-# incumbent falling through to the retired model's sidecar). Ordered branches
-# give no structural guarantee that every combination is covered; a table
-# does, and the test asserts the table is total.
+# chain of elifs (codex #430 r1..r4 leaked four different cells of it: a
+# single-model artifact under an ensemble incumbent, a v1 artifact called
+# "single-model shaped", an unset pointer read as "single", and an
+# unresolvable incumbent falling through to the retired model's sidecar).
+# Ordered branches give no structural guarantee that every combination is
+# covered; a table does, and the test asserts the table is total.
+#
+# Coverage is necessary, not sufficient: r5 found a cell that WAS covered and
+# answered too weakly. Hence the explicit precedence rule in
+# ``classify_provenance`` — definite refusals outrank unknowns — instead of
+# whichever order the branches happened to end up in.
 # ---------------------------------------------------------------------------
 
 # Artifact shapes, as classified by ``artifact_meta_status``.
@@ -462,6 +467,23 @@ ARTIFACT_KINDS: tuple[str, ...] = (
     "single",            # v2, self-describing single-model
 )
 INCUMBENT_KINDS: tuple[str, ...] = ("ensemble", "single", "unresolvable")
+
+# The SHAPE each side declares, independent of whether its identity can be
+# bound. ``None`` = the shape itself is unknown, so no comparison is possible.
+# An artifact missing ``manifest_sha256`` has still DECLARED itself ensemble
+# (the ``meta.ensemble`` block is there) — losing the identity does not lose
+# the shape (codex #430 r5).
+_ARTIFACT_SHAPE: dict[str, str | None] = {
+    "ensemble": "ensemble",
+    "ensemble_no_sha": "ensemble",
+    "v1": None,
+    "single": "single",
+}
+_INCUMBENT_SHAPE: dict[str, str | None] = {
+    "ensemble": "ensemble",
+    "single": "single",
+    "unresolvable": None,
+}
 
 # Verdicts the page renders. Each is one message; none means "say nothing".
 VERDICT_MATCHES_INCUMBENT = "matches_incumbent"
@@ -489,33 +511,49 @@ def classify_provenance(
     combination raises rather than silently returning "nothing to say",
     because "no warning" is exactly how a non-incumbent artifact gets
     presented as safe.
+
+    The rule the four steps below encode: **a shape mismatch is the only
+    DEFINITE refusal derivable without any identity at all, so it outranks
+    every kind of "unknown".** Ordering it after the unknowns is what made
+    ``single`` × ``ensemble_no_sha`` under-warn — a provably-non-incumbent
+    artifact got the mild "identity unbindable" notice instead of "请勿据此
+    下单" (codex #430 r5).
     """
     if incumbent_kind not in INCUMBENT_KINDS:
         raise ValueError(f"unknown incumbent kind: {incumbent_kind!r}")
     if artifact_kind not in ARTIFACT_KINDS:
         raise ValueError(f"unknown artifact kind: {artifact_kind!r}")
 
-    # Shape-independent of the incumbent: these two say what they say no
-    # matter what production serves.
-    if artifact_kind == "ensemble_no_sha":
-        return VERDICT_ENSEMBLE_SHA_MISSING
+    # 1. Both shapes known and different → provably not the incumbent's
+    #    output. No identity needed, and no later "unknown" can soften it.
+    art_shape = _ARTIFACT_SHAPE[artifact_kind]
+    inc_shape = _INCUMBENT_SHAPE[incumbent_kind]
+    if art_shape is not None and inc_shape is not None and art_shape != inc_shape:
+        return (VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE if art_shape == "single"
+                else VERDICT_ENSEMBLE_UNDER_SINGLE)
+
+    # 2. v1 carries no meta at all — even its SHAPE is unknown, so there was
+    #    nothing to compare above and nothing to compare below.
     if artifact_kind == "v1":
         return VERDICT_V1_UNKNOWN
 
-    # An incumbent we could not confirm cannot vouch for — or against —
-    # anything. It must never fall through to the retired model's sidecar.
+    # 3. Shape agrees (or the incumbent's shape is unknown) but the artifact
+    #    declares no identity. Unbindable whatever production serves. When the
+    #    incumbent is ALSO unresolvable this deliberately reports the
+    #    artifact-side defect rather than repeating the incumbent one — the
+    #    page banner already renders a prominent st.error for that.
+    if artifact_kind == "ensemble_no_sha":
+        return VERDICT_ENSEMBLE_SHA_MISSING
+
+    # 4. An incumbent we could not confirm cannot vouch for — or against —
+    #    anything. It must never fall through to the retired model's sidecar.
     if incumbent_kind == "unresolvable":
         return VERDICT_INCUMBENT_UNRESOLVED
 
+    # 5. Shapes agree and both sides are identifiable — down to the digests.
     if incumbent_kind == "ensemble":
-        if artifact_kind == "single":
-            return VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE
         return (VERDICT_MATCHES_INCUMBENT if ensemble_sha_matches
                 else VERDICT_OTHER_MANIFEST)
-
-    # incumbent_kind == "single" (the explicit opt-out)
-    if artifact_kind == "ensemble":
-        return VERDICT_ENSEMBLE_UNDER_SINGLE
     if single_sha_mismatch is True:
         return VERDICT_SINGLE_SHA_MISMATCH
     if single_sha_mismatch is None:
