@@ -26,7 +26,8 @@ not serving a genuinely available older one.
 #### Scenario: a new filing is not served before its availability date
 - **WHEN** a report period's `available_from_trade_date` is `D`
 - **THEN** on every trade date before `D` the panel does NOT serve that period —
-  it serves the latest EARLIER period whose availability date has passed
+  it serves the latest EARLIER period whose availability date has passed IF ONE
+  EXISTS, and otherwise the cell is NA
 - **AND** it serves the new period's disclosure-of-record value on `D` and
   thereafter (until a newer period becomes available)
 
@@ -38,8 +39,9 @@ not serving a genuinely available older one.
 
 #### Scenario: the announcement day itself does not yet serve the new filing
 - **WHEN** a filing is announced on trade date `A` (post-close assumption)
-- **THEN** the panel on `A` still serves the previous available period, not the
-  newly announced one — the new period's availability starts strictly after `A`
+- **THEN** the panel on `A` still serves the previous available period if one
+  exists (otherwise NA), not the newly announced one — the new period's
+  availability starts strictly after `A`
 
 #### Scenario: a restated period still serves its original disclosure
 - **WHEN** a report period has both an `update_flag=0` and an `update_flag=1` row
@@ -674,11 +676,17 @@ filing need not touch any requested field, endpoint, or instrument. A
 revenue-only panel correctly ignores a balance-sheet-only filing, so shifting
 that filing moves neither values nor evidence — and an unconditional rule would
 REFUSE a builder that is behaving exactly right. The diagnostic SHALL therefore
-establish RELEVANCE first: it SHALL verify that at least one shifted disclosure
-is served by the requested panel on a sampled date, and SHALL report
-INCONCLUSIVE rather than REFUSE when no such disclosure exists — an
-inconclusive diagnostic is a signal to widen the sample or use the
-deterministic fixture, not a verdict on the builder. Running the assertion on a
+establish RELEVANCE first, and relevance SHALL mean the shift CROSSES a sampled
+date: there is at least one sampled trade date at which the BASELINE panel
+serves a shifted disclosure and the SHIFTED rebuild does not. Merely being
+served on some sampled date is not enough — if a disclosure's original and
+shifted availability dates both precede the first sampled date, or fall between
+the same two sparse sample dates, it is served and relevant yet no sampled cell
+moves, and an unconditional rule would again REFUSE a correct builder. Where no
+shifted disclosure crosses a sampled date the diagnostic SHALL report
+INCONCLUSIVE rather than REFUSE — an inconclusive diagnostic is a signal to
+widen the sample or use the deterministic fixture, not a verdict on the
+builder. Running the assertion on a
 deterministic relevant-record fixture satisfies this by construction.
 
 Given a relevant shifted disclosure, an unchanged panel SHALL be treated as
@@ -692,9 +700,15 @@ correct-looking code can substitute for.
 - **THEN** the diagnostic reports INCONCLUSIVE rather than REFUSE — the
   unchanged hash is expected, not evidence of an announcement-blind builder
 
-#### Scenario: a relevant shifted filing must move the hash
-- **WHEN** at least one shifted disclosure is served by the requested panel on
-  a sampled trade date
+#### Scenario: a served filing whose shift crosses no sampled date is inconclusive
+- **WHEN** a shifted disclosure IS served by the panel, but its original and
+  shifted availability dates fall on the same side of every sampled date
+- **THEN** the diagnostic reports INCONCLUSIVE — no sampled cell could have
+  moved, so the unchanged hash says nothing about the builder
+
+#### Scenario: a shift that crosses a sampled date must move the hash
+- **WHEN** at least one sampled trade date has the baseline serving a shifted
+  disclosure while the shifted rebuild does not
 - **THEN** the values-plus-evidence hash differs from the baseline, and an
   unchanged hash REFUSES
 
@@ -708,8 +722,8 @@ refuse valid implementations.
 
 #### Scenario: shifting announcements changes the panel
 - **WHEN** the panel is rebuilt with effective announcement dates shifted by
-  `N` trading days AND at least one shifted disclosure is served by the
-  requested panel on a sampled date
+  `N` trading days AND at least one shifted disclosure's shift CROSSES a
+  sampled date
 - **THEN** the hash of the values-plus-evidence output differs from the baseline
 
 #### Scenario: an announcement-insensitive builder is refused
@@ -718,8 +732,9 @@ refuse valid implementations.
 - **THEN** the diagnostic REFUSES, reporting that the announcement date is unused
 
 #### Scenario: an unchanged value with moved evidence is not a failure
-- **WHEN** a served, delayed filing repeats the previous period's value (or the
-  field is NA in both), leaving values identical while the evidence moves
+- **WHEN** a served, delayed filing whose shift crosses a sampled date repeats
+  the previous period's value (or the field is NA in both), leaving values
+  identical AT THAT SAMPLED DATE while the evidence moves
 - **THEN** the hash still differs and the diagnostic does not refuse
 
 #### Scenario: IC movement is asserted on a fixture built to move it
