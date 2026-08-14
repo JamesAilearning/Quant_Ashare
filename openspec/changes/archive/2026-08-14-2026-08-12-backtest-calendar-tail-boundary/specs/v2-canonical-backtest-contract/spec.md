@@ -129,11 +129,27 @@ bundle-roll 跳掉末折，绝不放行会崩的折）。
 底层异常裸逃出 `run()`，更 SHALL NOT 在加载失败时跳过守卫继续回测 ——
 与印花税日历取数同一条"禁止静默回退"规矩。
 
-`evaluation_end` SHALL 用 `CanonicalBacktestContract` 校验时所用的**同
-一个** ISO 解析器解析。两个解析器对 ISO 周日期不一致
-（`date.fromisoformat("2026-W01-1")` 在 3.11+ 有效，`pd.Timestamp` 抛
-`DateParseError`），因此把原始字符串交给另一个解析器会让**合约有效**
-的请求以裸 pandas 异常逃出 `run()`。
+`evaluation_start` / `evaluation_end` SHALL 用 `CanonicalBacktestContract`
+校验时所用的**同一个** ISO 解析器解析。各解析器对边缘形式不一致
+（`date.fromisoformat("2026-W01-1")` 在 3.11+ 有效而 `pd.Timestamp` 抛
+`DateParseError`；`parse_iso_date` 先 `.strip()` 而裸
+`date.fromisoformat` 不）——把原始字符串交给另一个解析器会让**合约
+有效**的请求以裸异常逃出 `run()`。
+
+解析 SHALL 只做一次，且规范化结果 SHALL 被**所有下游消费方**复用
+（qlib 调用、掩码、基准校验、ST 覆盖检查、等权基线）。仅在守卫**自身
+比较处**规范化是不够的：一个**通过**守卫的非规范串（远离日历末位的
+填充日期）随后仍会撞上印花税段里第二次裸解析并裸抛，而只测末位拒绝的
+用例永远走不到那第二次解析（codex P1 on PR #429）。原始串 SHALL 仅
+保留在面向操作人的报文与 provenance 中——那里照录调用方所传即是目的。
+
+#### Scenario: 通过守卫的非规范日期不得在下游裸抛
+
+- **GIVEN** `evaluation_start` / `evaluation_end` 为带首尾空白的合约
+  有效日期，且其后仍有日历项（不触发末位拒绝）
+- **WHEN** 调用 `BacktestRunner.run`
+- **THEN** 执行穿过守卫直抵 qlib 边界，SHALL NOT 抛出裸
+  `ValueError`/`DateParseError`
 
 日历为空时 SHALL 拒绝。该分支是纵深防御而非真实 provider 路径：qlib 的
 `CalendarProvider.calendar` 在无边界调用下会先 `_calendar[0]` 越界，
