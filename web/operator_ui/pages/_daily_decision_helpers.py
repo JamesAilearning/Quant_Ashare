@@ -48,6 +48,9 @@ from web.operator_ui.incumbent import (
 from web.operator_ui.incumbent import (
     resolve_model_path as resolve_model_path,
 )
+from web.operator_ui.incumbent import (
+    unusable_path_reason as unusable_path_reason,
+)
 
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").
@@ -117,8 +120,11 @@ def load_promotion_meta(model_path: str) -> dict[str, Any] | None:
     #330). The trainer sidecar is consumed separately, for the sha cross-check
     only (:func:`load_trainer_sidecar_sha`).
     """
-    if not model_path.strip():
-        # No model path configured at all. `model_meta_paths("")` would raise
+    if not model_path.strip() or unusable_path_reason(model_path):
+        # No model path configured at all — or one this host cannot resolve
+        # to a single location. Reading sidecars beside it would answer about
+        # `<cwd>/D:/prod/…`, i.e. about a different artifact than the command
+        # names (codex #431 r34, same rule the manifest read got in r31). `model_meta_paths("")` would raise
         # (``Path("").with_suffix`` → "empty name") and take the page down
         # with a traceback; this contract is best-effort-or-None, and "there
         # is no model to read a sidecar beside" is exactly None. Reachable
@@ -131,8 +137,8 @@ def load_promotion_meta(model_path: str) -> dict[str, Any] | None:
 
 def load_trainer_sidecar_sha(model_path: str) -> str | None:
     """``pkl_sha256`` from the ModelTrainer sidecar (cross-check source)."""
-    if not model_path.strip():
-        return None                      # see load_promotion_meta (r24)
+    if not model_path.strip() or unusable_path_reason(model_path):
+        return None                      # see load_promotion_meta (r24/r34)
     trainer_sidecar = model_meta_paths(model_path)[1]
     meta = _read_json_file(trainer_sidecar)
     if meta is None:

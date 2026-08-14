@@ -353,6 +353,23 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
   一个不存在的位置，会把操作人引去查「bundle 丢了」而不是「路径配错了」
 - **AND** 在该写法本就成立的宿主上（Windows），一切 MUST 保持不变
 
+#### Scenario: 不可用的路径在**每一处读取之前**被拒绝
+
+- **GIVEN** 单模型部署的 `QUANT_MODEL_PATH` 在本机不可用
+- **THEN** 旁文件读取器 MUST 直接返回「没有」，MUST NOT 拿它去找文件——
+  否则读侧按 Streamlit 目录、命令按仓库根，两边描述的是不同工件
+- **AND** 该守卫 MUST 落在**读取器**上，MUST NOT 落在某个页面调用点
+
+#### Scenario: 含 NUL 的路径必须在触碰文件系统之前拒绝
+
+- **GIVEN** `provider_uri` 是一个完全限定、但含 NUL 字节的字符串
+- **THEN** 本页 MUST 直接判定其不可用，MUST NOT 走到 `Path.read_bytes()`
+  ——它抛的是 `ValueError`，读取器原先只兜 `OSError`，整页会变成 traceback
+- **AND** 完整性这一道 MUST 报「无法判定」，MUST NOT 像先前那样给出
+  `known=True, accepted=False`——对一条不可能命名任何文件的路径下确信裁定
+- **AND** 日历读取器的异常边界 MUST 收 `ValueError`（`UnicodeDecodeError`
+  本就是其子类，故为严格放宽）
+
 #### Scenario: 判据是一条不变式，不是一张特例表
 
 - **GIVEN** 本页既读又印的任一路径

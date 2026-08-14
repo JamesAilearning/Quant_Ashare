@@ -589,7 +589,7 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
         # lone CR into LF, which would accept a separator this contract does
         # not list (codex #431 r11).
         raw = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         # UnicodeDecodeError is a ValueError, NOT an OSError — corrupt or
         # partially-copied bytes would otherwise escape and take the whole
         # Streamlit page down with a traceback instead of producing the

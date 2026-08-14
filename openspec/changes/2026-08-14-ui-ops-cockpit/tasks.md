@@ -373,10 +373,24 @@
       PROJECT_ROOT 自己也判成不合格,制造 POSIX 腿根本不会有的假红
 - [x] 顺手修好一处被早先 heredoc 吃掉反斜杠的注释(`C:\srvundle`)
 
+## W40 codex #431 r34（P1 + P2，均属实）
+- [x] **P1** r31 我守了 manifest 的读,model_path 仍直接进旁文件读取器。
+      守卫落在**读取器**而非页面调用点  ← C107 咬住
+- [x] **P2** 含 NUL 的完全限定路径:`Path.read_bytes()` 抛 `ValueError`,
+      读取器只兜 `OSError` -> 整页 traceback  ← C105 咬住
+      比报告更广的一点:完整性那一道还会给出 `known=True, accepted=False`
+      —— 对一条**不可能命名任何文件**的路径下确信裁定(r21 同款错误)
+- [x] NUL 判定放在分类器最前、任何文件系统调用之前 —— 一处收口四个面
+      (日历 / 完整性 / 三条命令 / 旁文件)
+- [x] 日历异常边界放宽到 `ValueError`(`UnicodeDecodeError` 本就是其子类)
+      ← C42/C106 咬住;r10 是同一课,只隔了一个异常
+- [x] C107 **首轮存活**:我的断言两边都是 `None`,分不出来。改为**监视是否
+      发生了查找**(与 r31 manifest 同法),并反向钉住可用路径仍会到达构造器
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C104(C57/C58/C68 随重构作废):100 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C107(C57/C58/C68 随重构作废):103 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

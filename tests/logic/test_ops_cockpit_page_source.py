@@ -873,6 +873,80 @@ class RepoAnchoredPathTests(unittest.TestCase):
             # …and an ordinary relative path still anchors normally
             self.assertIsNone(inc.unusable_path_reason("bundles/live"))
 
+    def test_a_nul_byte_path_is_refused_before_any_filesystem_call(self) -> None:
+        # codex #431 r34 (P2): a fully-qualified path carrying an embedded
+        # NUL passed the classifier, and `Path(...).read_bytes()` then raised
+        # ValueError — which the calendar reader's OSError boundary did not
+        # catch, so the whole page became a traceback. The integrity reader
+        # was worse: it answered `known=True, accepted=False`, a confident
+        # verdict about a path that cannot name any file.
+        import web.operator_ui.incumbent as inc
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_promotion_meta,
+        )
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+            data_update_command,
+            recommender_integrity_check,
+        )
+        nul = "D:/qlib" + chr(0) + "/bundle"
+        reason = inc.unusable_path_reason(nul)
+        self.assertIsNotNone(reason)
+        self.assertIn(inc.WHY_NUL_BYTE, reason or "")
+        tail = bundle_calendar_tail(nul)          # must not raise
+        self.assertFalse(tail.known)
+        integrity = recommender_integrity_check(nul)
+        self.assertFalse(integrity.known)
+        self.assertIsNone(integrity.accepted)
+        self.assertIn("无法生成可粘贴命令",
+                      data_update_command(provider_uri=nul,
+                                          delisted_registry="R").title)
+        self.assertIsNone(load_promotion_meta(nul))
+
+    def test_the_calendar_reader_catches_every_value_error(self) -> None:
+        # UnicodeDecodeError is a ValueError subclass, so widening the
+        # boundary to ValueError is strictly safer — and it is what stops a
+        # NUL (or any future ValueError from the path layer) reaching the
+        # page as a traceback (r10 was the same lesson, one exception ago).
+        source = _HELPERS.read_text(encoding="utf-8")
+        self.assertIn("except (OSError, ValueError) as exc:", source)
+        self.assertNotIn("except (OSError, UnicodeDecodeError)", source)
+
+    def test_unusable_model_path_reads_no_sidecar(self) -> None:
+        # codex #431 r34 (P1): r31 guarded the MANIFEST read; the model path
+        # kept going straight into the sidecar loaders. On a POSIX
+        # single-model deployment with `QUANT_MODEL_PATH=D:/prod/model.pkl`
+        # they resolve it against Streamlit's CWD while the command resolves
+        # it against the repo root — page and command describe different
+        # artifacts. Guarded in the LOADERS, so no call site has to remember.
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+
+        # `assertIsNone` alone cannot see this: a missing file reads as None
+        # either way. Spy on the path builder instead — the refusal must
+        # happen BEFORE anything is looked up (the mutation survived until
+        # this was asserted).
+        import web.operator_ui.pages._daily_decision_helpers as dh
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_promotion_meta,
+            load_trainer_sidecar_sha,
+        )
+        looked_up: list[str] = []
+
+        def spy(model_path: str) -> object:
+            looked_up.append(model_path)
+            raise AssertionError("不可用的 model_path 绝不该被拿去找旁文件")
+
+        with patch.object(inc, "_host_is_fully_qualified",
+                          self._as_posix_host),                 patch.object(dh, "model_meta_paths", spy):
+            self.assertIsNone(load_promotion_meta("D:/prod/model.pkl"))
+            self.assertIsNone(load_trainer_sidecar_sha("D:/prod/model.pkl"))
+        self.assertEqual([], looked_up)
+        # …and a usable path still reaches the builder
+        with patch.object(dh, "model_meta_paths", spy),                 self.assertRaises(AssertionError):
+            load_promotion_meta(str(inc.PROJECT_ROOT) + "/m.pkl")
+
     def test_an_unresolvable_tilde_is_refused_not_passed_through(self) -> None:
         # codex #431 r33 (P1): returning the raw `~unknown/model.pkl` left it
         # RELATIVE, and `_arg` then quotes it so no shell expands it either —

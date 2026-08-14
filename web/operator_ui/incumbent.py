@@ -58,6 +58,9 @@ WHY_FOREIGN_CONVENTION = (
 WHY_DRIVE_RELATIVE = (
     "该路径在本机**不是完全限定**的写法(如 Windows 上缺盘符的 `/srv/…`,"
     "或带盘符却无根的 `C:bundle`),会按当前盘 / 当前目录解析")
+WHY_NUL_BYTE = (
+    "该路径含 NUL 字节,不可能命名任何文件——文件系统调用会直接抛 "
+    "`ValueError`,把整页打成 traceback")
 WHY_UNRESOLVED_TILDE = (
     "该路径以 `~` 开头且本机解析不出对应的家目录(如 `~unknown/…`)")
 _UNUSABLE_TAIL = (
@@ -84,6 +87,12 @@ def unusable_path_reason(path: str) -> str | None:
     written as "anchor whatever is relative" silently produced a value that
     still meant two different places.
     """
+    if "\x00" in path:
+        # Checked FIRST and before any filesystem call: `Path(...).read_bytes`
+        # raises ValueError for an embedded NUL, which the readers' OSError
+        # boundary does not catch — the whole page became a traceback
+        # (codex #431 r34). Nothing downstream can use such a value either.
+        return WHY_NUL_BYTE + _UNUSABLE_TAIL
     if not path.strip():
         return None                       # blank: the r21 boundary owns it
     expanded = os.path.expanduser(path)
