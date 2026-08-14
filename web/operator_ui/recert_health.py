@@ -27,6 +27,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from scripts.rotation_lib import (
@@ -89,14 +90,32 @@ class RecertHealth:
         return self.known and self.rotation_allowed is False
 
 
+def executor_now_iso() -> str:
+    """The evaluation instant the ROTATION EXECUTOR uses: UTC.
+
+    ``rotate_ensemble_member.py`` passes ``datetime.now(tz=timezone.utc)``
+    and ``recert_validity`` compares ``now.date()`` WITHOUT normalizing
+    zones, so the clock's offset decides which calendar day the expiry is
+    judged against. Handing it a ``+08:00`` instant makes this page disagree
+    with the executor for eight hours around the boundary — reporting
+    rotation frozen while the executor would still permit it — and a page
+    that claims to transcribe the machine decision must not invent its own
+    (codex #431 r2).
+    """
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
 def probe_recert_health(
-    *, now_iso: str, run: CommandRunner | None = None,
+    *, now_iso: str | None = None, run: CommandRunner | None = None,
 ) -> RecertHealth:
     """Run the executor's own checks over the mainline status artifact.
 
-    ``now_iso`` is injected rather than read from the clock so the page and
-    the tests evaluate the same way the executor does.
+    ``now_iso`` defaults to the executor's own UTC clock; tests inject a
+    fixture. The default is deliberately not a caller's choice: every
+    caller getting it right is a weaker guarantee than there being nothing
+    to get wrong.
     """
+    now_iso = now_iso if now_iso is not None else executor_now_iso()
     runner = run or _default_runner
     try:
         rev = runner(git_resolve_mainline_cmd()).strip()

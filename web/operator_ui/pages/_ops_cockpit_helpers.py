@@ -469,6 +469,19 @@ def resolve_delisted_registry() -> str:
             or DEFAULT_DELISTED_REGISTRY)
 
 
+# The name-change history the gates mask ST/renamed instruments with.
+# `config.yaml` already expands `${QUANT_NAMECHANGE_PATH:-…}`; the default
+# below is that same historical path.
+ENV_NAMECHANGE_PATH = "QUANT_NAMECHANGE_PATH"
+DEFAULT_NAMECHANGE_PATH = "D:/qlib_data/tushare_raw/all_namechanges.parquet"
+
+
+def resolve_namechange_path() -> str:
+    """Name-change history path: env override > documented default."""
+    return (os.environ.get(ENV_NAMECHANGE_PATH, "").strip()
+            or DEFAULT_NAMECHANGE_PATH)
+
+
 # ---------------------------------------------------------------------------
 # Command text. Built from the RESOLVED deployment state, not from `$VAR`
 # spellings (codex #431 r1): only ``daily_recommend.py`` reads QUANT_* itself,
@@ -537,9 +550,23 @@ def data_update_command(
     )
 
 
-def rotation_commands(manifest_path: str | None) -> tuple[OpsCommand, ...]:
-    """The quarterly retrain card, pointed at the resolved manifest."""
+def rotation_commands(
+    manifest_path: str | None, *, provider_uri: str, namechange_path: str,
+) -> tuple[OpsCommand, ...]:
+    """The quarterly retrain card, pointed at the resolved manifest AND the
+    resolved data paths.
+
+    ``retrain_gate.py`` defines hardcoded ``--provider``/``--namechange``
+    defaults that BOTH scopes consume, while the gate artifact records
+    NEITHER path. So on a deployment that overrides the bundle, an omitted
+    flag silently gates against a different bundle than the one this page is
+    describing — and the resulting PASS artifact can later authorize a
+    production rotation with nothing downstream able to detect the mismatch
+    (codex #431 r2). Print both flags explicitly.
+    """
     target = manifest_path or "<现任 manifest（当前不可解析）>"
+    data_flags = (f"  --provider {provider_uri} \\\n"
+                  f"  --namechange {namechange_path} \\\n")
     return (
         OpsCommand(
             title="① 训练新成员（GPU，操作人点火）",
@@ -554,7 +581,8 @@ def rotation_commands(manifest_path: str | None) -> tuple[OpsCommand, ...]:
                 "  --member-pkl <新成员.pkl> --member-meta <新成员.pkl.meta.json> \\\n"
                 "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
                 "  --valid-start <valid 起> --valid-end <valid 终> \\\n"
-                "  --out output/retrain_gates/<季度>_member_gate.json"
+                + data_flags
+                + "  --out output/retrain_gates/<季度>_member_gate.json"
             ),
             note="四个窗口参数照抄该成员训练所用 preset——门必须评的是同一个窗。",
         ),
@@ -575,7 +603,8 @@ def rotation_commands(manifest_path: str | None) -> tuple[OpsCommand, ...]:
                 "python scripts/retrain_gate.py --scope ensemble \\\n"
                 "  --manifest output/retrain_gates/<季度>_candidate_manifest.json \\\n"
                 "  --window-start <上季度首交易日> --window-end <上季度末> \\\n"
-                "  --out output/retrain_gates/<季度>_ensemble_gate.json"
+                + data_flags
+                + "  --out output/retrain_gates/<季度>_ensemble_gate.json"
             ),
         ),
         OpsCommand(

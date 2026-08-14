@@ -198,16 +198,6 @@ def cn_today() -> date:
     return datetime.now(_CN_TZ).date()
 
 
-def cn_now_iso() -> str:
-    """The current instant as a tz-aware CN-local (UTC+8) ISO string.
-
-    The instant form of :func:`cn_today`, for callers that must hand a
-    timezone-aware ``now`` to a validity check. A host-local value would
-    put a UTC container's "now" on the wrong side of a day boundary, and a
-    tz-NAIVE one is refused outright by ``rotation_lib.recert_validity``."""
-    return datetime.now(_CN_TZ).isoformat()
-
-
 def to_cn_date(value: Any) -> str:
     """The CN-local (UTC+8) calendar date ``YYYY-MM-DD`` of a timestamp.
 

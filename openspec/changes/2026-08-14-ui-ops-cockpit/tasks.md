@@ -45,10 +45,17 @@
 - [x] `resolve_model_path` 一并上移 incumbent.py（驾驶舱也要用）  ← 再 re-export
 - [x] 续行符修复（heredoc 曾吞掉一个反斜杠，命令印成字面 `\n`）  ← 新增钉守真续行
 
+## W8 codex #431 r2（P1 + P2，均属实）
+- [x] **P1** 两条门命令显式携带 `--provider` / `--namechange`  ← CLI 默认写死且工件不记录数据路径
+- [x] provider 全页只解析一次，④ 与 ⑤ 用同一个值  ← 两次解析可能指向不同 bundle
+- [x] 新增 `QUANT_NAMECHANGE_PATH` 解析器 + 登记进环境变量文档  ← 此前全仓未登记
+- [x] **P2** 认证判定改用执行器的 UTC 时钟（默认即是，非调用点选择）  ← 边界处曾会与执行器相反
+- [x] 移除 `cn_now_iso`（引入它的唯一调用点已改）  ← 不留死代码
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C15 十五处全落地全咬红(C11 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C19 十九处全落地全咬红(C11 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

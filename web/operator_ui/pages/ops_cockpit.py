@@ -25,7 +25,7 @@ from web.operator_ui.bundle_health import (
     resolve_default_provider_uri,
     summarise_bundle_health,
 )
-from web.operator_ui.formatting import cn_now_iso, cn_today
+from web.operator_ui.formatting import cn_today
 from web.operator_ui.incumbent import resolve_incumbent, resolve_model_path
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._ops_cockpit_helpers import (
@@ -35,6 +35,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     morning_command,
     read_gate_cards,
     resolve_delisted_registry,
+    resolve_namechange_path,
     retrain_window,
     rotation_commands,
 )
@@ -63,6 +64,9 @@ def _render_command(cmd: OpsCommand) -> None:
 # ---------------------------------------------------------------------------
 st.subheader("① 现任生产模型")
 _incumbent = resolve_incumbent()
+# Resolved once, up front: section ④'s gate commands must name the SAME
+# bundle section ⑤ reports on — two resolutions could disagree.
+_provider = resolve_default_provider_uri()
 if _incumbent.kind == "unresolvable":
     st.error(
         "⚠ 现任 manifest 无法解析(本页绝不退回单模型形态顶替):"
@@ -155,7 +159,10 @@ else:
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("③ 再认证状态与有效期")
-_recert = probe_recert_health(now_iso=cn_now_iso())
+# No clock argument: the probe defaults to the executor's own UTC
+# instant, so this page cannot disagree with the machine decision
+# it transcribes (codex #431 r2).
+_recert = probe_recert_health()
 if not _recert.known:
     st.error(
         f"⚠ **无法判定**再认证状态:{_recert.reason}。"
@@ -223,7 +230,12 @@ else:
 
 st.markdown("**季度重训操作卡**（前提：上方 ③ 认证有效；执行器会机器校验）")
 for _cmd in rotation_commands(
-    str(_incumbent.manifest_path) if _incumbent.is_ensemble else None
+    str(_incumbent.manifest_path) if _incumbent.is_ensemble else None,
+    # Both gate scopes read these; retrain_gate.py has hardcoded defaults and
+    # the gate artifact records neither, so an omitted flag can produce a PASS
+    # on a different bundle than the one shown above (codex #431 r2).
+    provider_uri=_provider,
+    namechange_path=resolve_namechange_path(),
 ):
     _render_command(_cmd)
 
@@ -232,7 +244,6 @@ for _cmd in rotation_commands(
 # ---------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("⑤ 数据 bundle 新鲜度")
-_provider = resolve_default_provider_uri()
 _summary: Any = summarise_bundle_health(_provider)
 _fresh = bundle_freshness(
     today=cn_today(),

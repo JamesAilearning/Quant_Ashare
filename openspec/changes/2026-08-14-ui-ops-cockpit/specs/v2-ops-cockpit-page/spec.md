@@ -38,6 +38,15 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **THEN** 晨跑命令为 `--model <已解析模型路径>` 形态
 - **AND** MUST NOT 出现 `--ensemble-manifest`，MUST NOT 把 `none` 当路径传入
 
+#### Scenario: 门命令必须显式携带已解析的数据路径
+
+- **GIVEN** 部署覆盖了 `QUANT_PROVIDER_URI` 或 `QUANT_NAMECHANGE_PATH`
+- **WHEN** 页面给出 `retrain_gate.py` 的两条 scope 命令
+- **THEN** 两条命令 MUST 显式携带 `--provider` 与 `--namechange`，
+  取值为本页解析到的路径
+- **AND** MUST NOT 依赖 CLI 的硬编码默认值——gate 工件不记录任何数据路径，
+  用错 bundle 产出的 PASS 事后无从分辨，却足以授权一次生产轮换
+
 #### Scenario: 现任不可解析时不给出可运行命令
 
 - **GIVEN** 现任指针不可解析
@@ -102,6 +111,14 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 
 - **WHEN** 页面读取 recert 状态
 - **THEN** 状态正文与有效期锚日期取自同一个被 pin 的 commit
+
+#### Scenario: 判定所用的时钟必须与执行器一致
+
+- **GIVEN** `recert_validity` 以 `now.date()` 比较到期日且不做时区归一，
+  而轮换执行器传入的是 UTC 瞬时
+- **WHEN** 页面判定有效期
+- **THEN** MUST 使用同一 UTC 时钟，MUST NOT 传入本地时区瞬时——
+  否则在到期日边界上，页面会与执行器给出相反的结论
 
 #### Scenario: git 探针不可用
 

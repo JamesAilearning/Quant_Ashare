@@ -79,7 +79,7 @@ class IrreversibleCommandTests(unittest.TestCase):
         self.assertTrue(
             data_update_command(provider_uri="P", delisted_registry="R"
                                 ).irreversible, "换库是不可逆的")
-        execute = [c for c in rotation_commands("M") if "execute" in c.command]
+        execute = [c for c in rotation_commands("M", provider_uri="P", namechange_path="N") if "execute" in c.command]
         self.assertEqual(1, len(execute))
         self.assertTrue(execute[0].irreversible, "轮换执行改写生产 manifest")
         # ...and the read-only one is NOT flagged, so the flag keeps meaning
@@ -128,7 +128,9 @@ class ResolvedCommandTests(unittest.TestCase):
                             model_path="/srv/m.pkl"),
             data_update_command(provider_uri="/srv/bundle",
                                 delisted_registry="/srv/reg.parquet"),
-            *rotation_commands("/srv/prod_manifest.json"),
+            *rotation_commands("/srv/prod_manifest.json",
+                              provider_uri="/srv/bundle",
+                              namechange_path="/srv/nc.parquet"),
         ]
         for cmd in commands:
             with self.subTest(cmd=cmd.title):
@@ -186,6 +188,51 @@ class ResolvedCommandTests(unittest.TestCase):
         cmd = data_update_command(provider_uri="P", delisted_registry="R")
         self.assertIn("\\\n", cmd.command)
         self.assertNotIn("\\n ", cmd.command)
+
+    def test_both_gate_commands_name_the_resolved_data_paths(self) -> None:
+        # codex #431 r2 (P1): retrain_gate.py has hardcoded
+        # --provider/--namechange defaults that BOTH scopes consume, and the
+        # gate artifact records NEITHER path. Omit the flags on a deployment
+        # that overrides the bundle and the gate PASSes on different data
+        # than the cockpit is describing — then authorizes a production
+        # rotation, with nothing downstream able to notice.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            rotation_commands,
+        )
+        gates = [c for c in rotation_commands(
+            "M", provider_uri="/srv/bundle", namechange_path="/srv/nc.parquet")
+            if "retrain_gate.py" in c.command]
+        self.assertEqual(2, len(gates), "member 与 ensemble 两道 scope")
+        for cmd in gates:
+            with self.subTest(cmd=cmd.title):
+                self.assertIn("--provider /srv/bundle", cmd.command)
+                self.assertIn("--namechange /srv/nc.parquet", cmd.command)
+
+    def test_the_page_feeds_gate_commands_the_bundle_it_reports_on(self) -> None:
+        # One resolution, used by both section ④ and section ⑤: two calls
+        # could name two different bundles on the same screen.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertEqual(
+            1, page.count("resolve_default_provider_uri()"),
+            "provider 只应解析一次")
+        self.assertIn("provider_uri=_provider,", page)
+        self.assertIn("namechange_path=resolve_namechange_path()", page)
+
+    def test_namechange_resolver_follows_the_env_var(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            DEFAULT_NAMECHANGE_PATH,
+            ENV_NAMECHANGE_PATH,
+            resolve_namechange_path,
+        )
+        with patch.dict(os.environ, {ENV_NAMECHANGE_PATH: ""}, clear=False):
+            self.assertEqual(
+                DEFAULT_NAMECHANGE_PATH, resolve_namechange_path())
+        with patch.dict(os.environ, {ENV_NAMECHANGE_PATH: "/x/nc.parquet"},
+                        clear=False):
+            self.assertEqual("/x/nc.parquet", resolve_namechange_path())
 
     def test_delisted_registry_resolver_follows_the_env_var(self) -> None:
         import os
@@ -491,6 +538,35 @@ class RecertProbeTests(unittest.TestCase):
             now_iso="2026-08-14T12:00:00+08:00", run=run)
         self.assertFalse(health.known)
         self.assertIsNone(health.verdict)
+
+    def test_the_default_clock_is_the_executors_utc_one(self) -> None:
+        # codex #431 r2: recert_validity compares now.date() WITHOUT
+        # normalizing zones, and the executor passes UTC. A +08:00 instant
+        # makes the page disagree with the machine for eight hours around
+        # the expiry boundary — reporting rotation frozen while the executor
+        # would still permit it.
+        from datetime import datetime, timezone
+
+        from web.operator_ui.recert_health import executor_now_iso
+        stamp = datetime.fromisoformat(executor_now_iso())
+        self.assertIsNotNone(stamp.tzinfo)
+        self.assertEqual(timezone.utc, stamp.tzinfo)
+
+    def test_the_page_passes_no_clock_of_its_own(self) -> None:
+        # Every caller getting the clock right is weaker than there being
+        # nothing to get wrong.
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("probe_recert_health()", page)
+        self.assertNotIn("cn_now_iso", page)
+
+    def test_the_probe_defaults_to_the_executor_clock(self) -> None:
+        from unittest.mock import patch
+
+        from web.operator_ui import recert_health
+        with patch.object(recert_health, "executor_now_iso",
+                          return_value="2026-08-14T04:00:00+00:00") as fake:
+            recert_health.probe_recert_health(run=lambda cmd: "")
+        fake.assert_called_once_with()
 
     def test_the_page_never_shows_a_previous_answer(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
