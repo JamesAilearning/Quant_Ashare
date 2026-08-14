@@ -505,7 +505,11 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        from web.operator_ui.pages import _daily_decision_helpers as H
+        # Patch where the resolver LIVES (web.operator_ui.incumbent), not
+        # where 今日推荐 re-exports it from: the resolver moved to package
+        # level so 生产运维 asks the same code, and a page-local patch would
+        # no longer intercept the call it is meant to observe.
+        from web.operator_ui import incumbent as H
 
         with patch.dict(os.environ, {H.ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
             with patch.object(H, "load_ensemble_manifest_identity") as fake:

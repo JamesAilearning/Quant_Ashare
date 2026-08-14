@@ -15,6 +15,29 @@ from typing import Any
 
 from web.operator_ui._path_guard import output_path
 
+# The incumbent resolver now lives at package level so 今日推荐 and 生产运维
+# resolve production identity through the SAME code — two copies could name
+# two different models. Re-exported here so this module's existing import
+# surface (and the pins on it) stay unchanged.
+from web.operator_ui.incumbent import (
+    DEFAULT_ENSEMBLE_MANIFEST as DEFAULT_ENSEMBLE_MANIFEST,
+)
+from web.operator_ui.incumbent import (
+    ENV_ENSEMBLE_MANIFEST as ENV_ENSEMBLE_MANIFEST,
+)
+from web.operator_ui.incumbent import (
+    SINGLE_MODEL_SENTINEL as SINGLE_MODEL_SENTINEL,
+)
+from web.operator_ui.incumbent import (
+    IncumbentIdentity as IncumbentIdentity,
+)
+from web.operator_ui.incumbent import (
+    load_ensemble_manifest_identity as load_ensemble_manifest_identity,
+)
+from web.operator_ui.incumbent import (
+    resolve_incumbent as resolve_incumbent,
+)
+
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").
 RECOMMEND_OUT_DIRNAME = "daily_recommend"
@@ -44,109 +67,10 @@ BANNER_FIELDS: tuple[str, ...] = (
 ROUND_TRIP_COST = 0.0030
 
 
-# The INCUMBENT ensemble manifest, read-side only. Production switched to a
-# 3-member csi800 N5 ensemble on 2026-08-05; before this pointer existed the
-# banner had no way to know that and kept describing the retired single model
-# (docs/operations-env-vars.md explains why the CLI deliberately does NOT
-# inherit this default).
-ENV_ENSEMBLE_MANIFEST = "QUANT_ENSEMBLE_MANIFEST"
-# Default = the production manifest written by the 2026-08-05 cutover, per
-# this repo's env-var convention ("each QUANT_* default equals the historical
-# hardcoded path, so behaviour is unchanged where they are unset").
-#
-# Treating an UNSET pointer as "production is a single model" would be a
-# fabricated fact (codex #430 r1): on any deployment that upgrades the UI
-# without also setting a new variable, the page would both keep showing the
-# retired model AND tell the operator not to use the CORRECT ensemble lists.
-# Absence of configuration is not evidence about what production serves.
-DEFAULT_ENSEMBLE_MANIFEST = (
-    "D:/stock/phase_b_artifacts/csi800_n5_ensemble_manifest.json"
-)
-# The documented opt-out for a deployment that genuinely serves ONE model:
-# an explicit statement, never an inference from a missing variable.
-SINGLE_MODEL_SENTINEL = "none"
-
-
 def resolve_model_path() -> str:
     """The production model path: env override > documented default."""
     return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
 
-
-@dataclass(frozen=True)
-class IncumbentIdentity:
-    """Which model production is ACTUALLY serving, as far as the UI can tell.
-
-    Three states, and the third is the point:
-
-    * ``ensemble``     — a manifest the SERVING validator accepts. Reached by
-      the documented default (unset pointer) or an explicit path.
-    * ``single``       — reached ONLY by the explicit ``none`` opt-out. An
-      unset pointer is NOT this state: "nobody configured this box" is not
-      evidence that production retired the ensemble (codex #430 r1).
-    * ``unresolvable`` — a pointer that resolves to something the validator
-      refuses. It must never degrade to ``single``: that would show a model
-      which may not be serving, the exact failure this page prevents.
-    """
-
-    kind: str                       # "ensemble" | "single" | "unresolvable"
-    manifest_path: str | None = None
-    manifest_sha256: str | None = None
-    members: tuple[dict[str, str], ...] = ()
-    error: str | None = None
-
-    @property
-    def is_ensemble(self) -> bool:
-        return self.kind == "ensemble"
-
-
-def load_ensemble_manifest_identity(manifest_path: str) -> IncumbentIdentity:
-    """Read a manifest into a bannerable identity, or say why not.
-
-    Delegates to the SERVING loader — the canonical validator
-    (``src.inference.ensemble_serving.load_ensemble_manifest``). A
-    hand-rolled parser here would be a second, weaker interpretation of
-    the same file: it could call a manifest "current" that the actual
-    serving path refuses (wrong schema version, wrong member count,
-    broken hash chain, bad staggering), so the banner would vouch for a
-    model production could not even load (codex #430). Reusing the
-    validator also inherits its single-read digest — the digest is of
-    the very bytes that were parsed, so a rotation mid-read cannot
-    produce old windows carrying a new sha.
-    """
-    from src.inference.ensemble_serving import (  # noqa: PLC0415
-        EnsembleServingError,
-        load_ensemble_manifest,
-    )
-
-    try:
-        members, manifest_sha = load_ensemble_manifest(manifest_path)
-    except EnsembleServingError as exc:
-        return IncumbentIdentity(
-            kind="unresolvable", manifest_path=manifest_path, error=str(exc))
-    except OSError as exc:  # pragma: no cover - defensive
-        return IncumbentIdentity(
-            kind="unresolvable", manifest_path=manifest_path,
-            error=f"{type(exc).__name__}: {exc}")
-    return IncumbentIdentity(
-        kind="ensemble", manifest_path=manifest_path,
-        manifest_sha256=manifest_sha,
-        members=tuple({"fit_start": m.fit_start, "fit_end": m.fit_end}
-                      for m in members))
-
-
-def resolve_incumbent() -> IncumbentIdentity:
-    """What is production serving right now — ensemble, single, or unknown.
-
-    Unset falls back to the DOCUMENTED production manifest, not to
-    "single model": production cut over on 2026-08-05, so a missing
-    variable means "nobody configured this box", never "the ensemble was
-    retired". The single-model state requires the explicit ``none``
-    opt-out — a claim someone made, not one this code inferred.
-    """
-    pointer = os.environ.get(ENV_ENSEMBLE_MANIFEST, "").strip()
-    if pointer.lower() == SINGLE_MODEL_SENTINEL:
-        return IncumbentIdentity(kind="single")
-    return load_ensemble_manifest_identity(pointer or DEFAULT_ENSEMBLE_MANIFEST)
 
 
 def model_meta_paths(model_path: str) -> tuple[Path, Path]:
