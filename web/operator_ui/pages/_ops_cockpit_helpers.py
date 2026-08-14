@@ -49,9 +49,12 @@ from web.operator_ui.config_forms import (
 from web.operator_ui.config_forms import (
     resolve_namechange_path as resolve_namechange_path,
 )
+from web.operator_ui.incumbent import PROJECT_ROOT as _INCUMBENT_ROOT
 from web.operator_ui.incumbent import IncumbentIdentity
+from web.operator_ui.incumbent import anchored_to_repo as anchored_to_repo
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# The checkout — reused, not derived a second time (r23/r26/r27).
+PROJECT_ROOT = Path(_INCUMBENT_ROOT)
 
 # `resolve_default_provider_uri()` is deliberately lenient — a missing,
 # unparsable, or provider_uri-less config.yaml yields "" so the rest of the

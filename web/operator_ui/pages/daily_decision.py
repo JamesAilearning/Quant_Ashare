@@ -43,6 +43,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_OK,
     VERDICT_SINGLE_SHA_UNKNOWN,
     VERDICT_V1_UNKNOWN,
+    anchored_to_repo,
     artifact_kind_of,
     artifact_meta_status,
     banner_status,
@@ -68,7 +69,7 @@ render_page_header(
 # ---------------------------------------------------------------------------
 # 模型元信息横幅(常驻页顶)— 缺任一字段 → 醒目 WARN,绝不默认值
 # ---------------------------------------------------------------------------
-_model_path = resolve_model_path()
+_model_path = anchored_to_repo(resolve_model_path())
 # Which model is production ACTUALLY serving? Before this, the banner always
 # described the single model behind QUANT_MODEL_PATH — after the 2026-08-05
 # ensemble cutover that named a RETIRED model on every render.

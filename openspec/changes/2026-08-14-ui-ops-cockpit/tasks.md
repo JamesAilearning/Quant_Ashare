@@ -259,10 +259,23 @@
       有效。这个工作目录依赖页面**控制不了**,故显式声明  ← C84 咬住
       (能控制的那一个是修掉,不是写文档 —— 两者处置不同)
 
+## W33 codex #431 r27（**P1**，属实；r26 只修了探针,没扫到被读的路径本身）
+- [x] 新增 `anchored_to_repo()`:相对路径按**命令将要执行的目录**(仓库根)解析
+      —— 即机器真正会有的 CWD。绝对路径与空值原样返回  ← C86/C87 咬住
+      (锚定只许消歧义,不许发明 CLI 不共享的规范化 —— r23/r24 的教训)
+- [x] 覆盖全部「既被读又被印」的路径,不只被点名的 provider:
+      - `_provider`(日历/完整性/健康三个读取器 + 三条命令)  ← C85 咬住
+      - 现任 manifest:在 `load_ensemble_manifest_identity` **读之前**锚定  ← C88 咬住
+      - 单模型 `--model`:今日推荐页在其旁读 sidecar  ← C89 咬住
+- [x] 只被印不被读的路径(registry / name-source / namechange)**不动**:
+      它们原样交给一个已被告知站在仓库根的 shell,与机器一致
+- [x] 仓库根第四次派生取消,统一复用执行器的常量(incumbent / helpers / recert)
+- [x] 页面 import 钉改为钉**属性**而非某一种书写(多行 import 让原钉误红)
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C84(C57/C58/C68 随重构作废):80 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C89(C57/C58/C68 随重构作废):85 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

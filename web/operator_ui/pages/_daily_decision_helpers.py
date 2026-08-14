@@ -37,6 +37,9 @@ from web.operator_ui.incumbent import (
     IncumbentIdentity as IncumbentIdentity,
 )
 from web.operator_ui.incumbent import (
+    anchored_to_repo as anchored_to_repo,
+)
+from web.operator_ui.incumbent import (
     load_ensemble_manifest_identity as load_ensemble_manifest_identity,
 )
 from web.operator_ui.incumbent import (

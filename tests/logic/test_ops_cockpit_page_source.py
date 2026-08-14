@@ -679,6 +679,70 @@ class ResolvedCommandTests(unittest.TestCase):
             self.assertEqual("", resolve_delisted_registry())
 
 
+class RepoAnchoredPathTests(unittest.TestCase):
+    """A path the page READS and PRINTS must mean one bundle, not two."""
+
+    def test_a_relative_path_is_anchored_where_the_command_will_run(
+            self) -> None:
+        # codex #431 r27 (P1): a relative `provider_uri` was read against
+        # Streamlit's working directory while the SAME relative spelling was
+        # printed into a command the page tells the operator to run from the
+        # repository root. Two different bundles, and nothing downstream can
+        # detect the swap.
+        import os
+        import tempfile
+
+        from web.operator_ui.incumbent import PROJECT_ROOT, anchored_to_repo
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                os.chdir(tmp)
+                got = anchored_to_repo("bundles/live")
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(
+            os.path.normpath(os.path.join(PROJECT_ROOT, "bundles/live")), got,
+            "相对路径必须锚在 checkout,而不是 Streamlit 的启动目录")
+        self.assertTrue(os.path.isabs(got))
+
+    def test_absolute_and_blank_values_are_left_alone(self) -> None:
+        # Inventing a normalization the CLI does not share is the mistake
+        # r23/r24 were about — anchoring may only touch what is ambiguous.
+        from web.operator_ui.incumbent import anchored_to_repo
+        for untouched in ("D:/qlib_data/my_cn_data_pit", "", "   ", "/srv/b"):
+            with self.subTest(value=repr(untouched)):
+                self.assertEqual(untouched, anchored_to_repo(untouched))
+
+    def test_every_read_and_printed_path_goes_through_the_anchor(self) -> None:
+        # The three the page BOTH reads and prints. Paths it only prints
+        # (registry / name-source / namechange) carry the operator's own
+        # spelling to a shell already told to stand at the repo root.
+        page = _PAGE.read_text(encoding="utf-8")
+        daily = (_ROOT / "web" / "operator_ui" / "pages"
+                 / "daily_decision.py").read_text(encoding="utf-8")
+        incumbent = (_ROOT / "web" / "operator_ui"
+                     / "incumbent.py").read_text(encoding="utf-8")
+        self.assertIn(
+            "_provider = anchored_to_repo(resolve_default_provider_uri())",
+            page)
+        self.assertIn("model_path=anchored_to_repo(resolve_model_path())", page)
+        self.assertIn(
+            "_model_path = anchored_to_repo(resolve_model_path())", daily)
+        # the manifest is anchored BEFORE the read, inside the resolver
+        self.assertIn("load_ensemble_manifest_identity(\n"
+                      "        anchored_to_repo(pointer or "
+                      "DEFAULT_ENSEMBLE_MANIFEST))", incumbent)
+
+    def test_the_repo_root_is_reused_not_derived_again(self) -> None:
+        from scripts import rotate_ensemble_member
+        from web.operator_ui import incumbent
+        from web.operator_ui.pages import _ops_cockpit_helpers as helpers
+        self.assertEqual(rotate_ensemble_member.PROJECT_ROOT,
+                         incumbent.PROJECT_ROOT)
+        self.assertEqual(Path(rotate_ensemble_member.PROJECT_ROOT),
+                         helpers.PROJECT_ROOT)
+
+
 class SharedIncumbentTests(unittest.TestCase):
     """今日推荐 and 生产运维 must be incapable of naming different models."""
 
@@ -686,8 +750,12 @@ class SharedIncumbentTests(unittest.TestCase):
         page = _PAGE.read_text(encoding="utf-8")
         daily = (_ROOT / "web" / "operator_ui" / "pages"
                  / "daily_decision.py").read_text(encoding="utf-8")
-        self.assertIn(
-            "from web.operator_ui.incumbent import resolve_incumbent", page)
+        # The import may be a one-liner or a parenthesized block, so pin the
+        # PROPERTY (this page's resolver comes from the shared module) rather
+        # than one spelling of it.
+        self.assertIn("from web.operator_ui.incumbent import", page)
+        self.assertIn("resolve_incumbent", page)
+        self.assertNotIn("def resolve_incumbent(", page)
         # 今日推荐 keeps its existing import surface, which now re-exports
         # from the same shared module rather than defining a second copy.
         self.assertIn("resolve_incumbent", daily)

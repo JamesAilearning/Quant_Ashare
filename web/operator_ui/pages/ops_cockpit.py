@@ -27,7 +27,11 @@ from web.operator_ui.bundle_health import (
     summarise_bundle_health,
 )
 from web.operator_ui.formatting import cn_today
-from web.operator_ui.incumbent import resolve_incumbent, resolve_model_path
+from web.operator_ui.incumbent import (
+    anchored_to_repo,
+    resolve_incumbent,
+    resolve_model_path,
+)
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._ops_cockpit_helpers import (
     GATE_STATUS_FAILED,
@@ -89,7 +93,7 @@ st.subheader("① 现任生产模型")
 _incumbent = resolve_incumbent()
 # Resolved once, up front: section ④'s gate commands must name the SAME
 # bundle section ⑤ reports on — two resolutions could disagree.
-_provider = resolve_default_provider_uri()
+_provider = anchored_to_repo(resolve_default_provider_uri())
 if not provider_is_resolved(_provider):
     # Said ONCE, here, rather than left for the operator to infer from four
     # separate 无法判定 cards further down. The resolver returns "" for a
@@ -128,7 +132,7 @@ else:
 # the operator's terminal environment (codex #431 r5).
 _render_command(morning_command(
     _incumbent,
-    model_path=resolve_model_path(),
+    model_path=anchored_to_repo(resolve_model_path()),
     provider_uri=_provider,
     delisted_registry=resolve_delisted_registry(),
     name_source=resolve_name_source(),

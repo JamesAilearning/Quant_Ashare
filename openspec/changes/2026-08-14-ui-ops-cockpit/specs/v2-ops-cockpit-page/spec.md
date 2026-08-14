@@ -318,6 +318,19 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
 - **AND** 若不指定，健康的部署会一路报「无法判定」——一个本可作答却答不出的
   「不知道」，和一个错误答案一样是缺陷
 
+#### Scenario: 既被读又被印的相对路径必须锚在命令执行处
+
+- **GIVEN** `config.yaml` 里的 `provider_uri` 是合法的**相对**路径，且
+  Streamlit 从 checkout 之外启动
+- **THEN** 页面 MUST 把它按**命令将要执行的目录**（仓库根）解析后再读、再印，
+  MUST NOT 用 Streamlit 的工作目录读、却把同一串相对写法印进命令
+- **AND** 否则页面描述的是一个 bundle、命令跑的是另一个，且下游**无从察觉**
+  这次调包
+- **AND** 同一规则 MUST 覆盖所有「既被读又被印」的路径（provider、现任
+  manifest、单模型 `--model`）；manifest MUST 在**读之前**就锚定
+- **AND** 绝对路径与空值 MUST 原样返回——锚定只许消除歧义，不许发明 CLI 不
+  共享的规范化
+
 #### Scenario: 命令的工作目录依赖必须说明
 
 - **GIVEN** 生成的命令以 `scripts/…` 这样的仓库相对路径命名脚本

@@ -13,7 +13,40 @@ No Streamlit imports: plain, unit-testable Python.
 from __future__ import annotations
 
 import os
+import os.path
 from dataclasses import dataclass
+
+from scripts import rotate_ensemble_member as _rotate
+
+# The checkout — the executor's OWN constant, not a fourth derivation of the
+# same directory (codex #431 r23/r26).
+PROJECT_ROOT = _rotate.PROJECT_ROOT
+
+
+def anchored_to_repo(path: str) -> str:
+    """A path the UI both READS and PRINTS, resolved where the command runs.
+
+    A ``provider_uri`` (or model / manifest path) may legitimately be
+    RELATIVE. The page then reads it against Streamlit's working directory,
+    while the command it prints carries the same relative spelling to a
+    terminal the page tells the operator to open **at the repository root**.
+    Those are two different bundles, and nothing downstream can detect the
+    swap: the page would describe one and the command would run on the other
+    (codex #431 r27).
+
+    So relative paths are resolved against the checkout — the CWD the machine
+    will actually have, per the runbook and per this page's own instruction.
+    Absolute paths are returned UNTOUCHED: there is nothing to disambiguate,
+    and inventing a normalization the CLI does not share is the mistake r23
+    and r24 were about. A blank value is likewise untouched — the command
+    boundary refuses it (r21).
+    """
+    if not path.strip():
+        return path
+    if os.path.isabs(os.path.expanduser(path)):
+        return path
+    return os.path.normpath(
+        os.path.join(PROJECT_ROOT, os.path.expanduser(path)))
 
 # The RETIRED single model — still the incumbent on a deployment that
 # explicitly opted out of the ensemble. Mirrors the CLI default
@@ -134,4 +167,7 @@ def resolve_incumbent() -> IncumbentIdentity:
     pointer = os.environ.get(ENV_ENSEMBLE_MANIFEST, "").strip()
     if pointer.lower() == SINGLE_MODEL_SENTINEL:
         return IncumbentIdentity(kind="single")
-    return load_ensemble_manifest_identity(pointer or DEFAULT_ENSEMBLE_MANIFEST)
+    # Anchored BEFORE the read, so the manifest this identity was built from
+    # is the same file the printed `--ensemble-manifest` will open (r27).
+    return load_ensemble_manifest_identity(
+        anchored_to_repo(pointer or DEFAULT_ENSEMBLE_MANIFEST))
