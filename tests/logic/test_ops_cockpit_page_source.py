@@ -194,14 +194,46 @@ class ResolvedCommandTests(unittest.TestCase):
         self.assertIn(TUSHARE_DIR_PLACEHOLDER, cmd.command)
         self.assertIn("不读", cmd.note)
 
-    def test_line_continuations_are_real(self) -> None:
-        # A literal backslash-n would paste as one broken line.
+    def test_commands_paste_into_the_operators_shell(self) -> None:
+        # codex #431 r15: this repo's documented platform is Windows /
+        # PowerShell, where a trailing `\` is NOT a line continuation —
+        # verified empirically that PowerShell errors on the next line
+        # ("Missing expression after unary operator '--'"). The whole value
+        # of this page is commands that can be pasted, so they are rendered
+        # single-line: correct in PowerShell, cmd AND a POSIX shell.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+            morning_command,
+            rotation_commands,
+        )
+        commands = [
+            data_update_command(provider_uri="P", delisted_registry="R"),
+            morning_command(
+                IncumbentIdentity(kind="ensemble", manifest_path="/m.json",
+                                  manifest_sha256="a" * 64),
+                model_path="/x.pkl", provider_uri="/b",
+                delisted_registry="/r", name_source="/n",
+                bundle_max_age_days=14),
+            *rotation_commands("/m.json", provider_uri="/b",
+                               namechange_path="/n"),
+        ]
+        for cmd in commands:
+            with self.subTest(cmd=cmd.title):
+                self.assertNotIn("\\", cmd.command, "不得有 POSIX 续行符")
+                self.assertNotIn("\n", cmd.command, "命令本体必须单行")
+
+    def test_a_single_quote_in_a_path_is_refused_not_faked(self) -> None:
+        # POSIX and PowerShell escape an embedded single quote differently
+        # ('"'"' vs ''), so no one rendering is correct in both. Say so
+        # rather than emit something silently wrong in the operator's shell.
         from web.operator_ui.pages._ops_cockpit_helpers import (
             data_update_command,
         )
-        cmd = data_update_command(provider_uri="P", delisted_registry="R")
-        self.assertIn("\\\n", cmd.command)
-        self.assertNotIn("\\n ", cmd.command)
+        cmd = data_update_command(
+            provider_uri="D:/it's here/live", delisted_registry="R")
+        self.assertIn("无法给出 PowerShell 与 POSIX 通用的写法", cmd.command)
+        self.assertNotIn('"' + "'" + '"', cmd.command)
 
     def test_both_gate_commands_name_the_resolved_data_paths(self) -> None:
         # codex #431 r2 (P1): retrain_gate.py has hardcoded
@@ -275,7 +307,7 @@ class ResolvedCommandTests(unittest.TestCase):
             cases.append((gate, "--namechange", hostile_file))
         for cmd, flag, want in cases:
             with self.subTest(cmd=cmd.title, flag=flag):
-                tokens = shlex.split(cmd.command.replace("\\\n", " "))
+                tokens = shlex.split(cmd.command)
                 self.assertIn(flag, tokens)
                 self.assertEqual(want, tokens[tokens.index(flag) + 1],
                                  "路径必须是单个 shell 参数")

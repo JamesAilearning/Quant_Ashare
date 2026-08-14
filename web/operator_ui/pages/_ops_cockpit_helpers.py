@@ -816,11 +816,23 @@ def _arg(value: object) -> str:
     legitimately contain a space (``/srv/qlib bundles/live``) — raw
     interpolation would split it into two argv entries and the gate would
     silently run against something else, or a metacharacter would execute
-    as shell syntax (codex #431 r3). The runbook's commands are POSIX
-    (``$VAR`` expansion, ``\`` continuations), so POSIX quoting is the
-    matching dialect. Ordinary paths come back unchanged.
+    as shell syntax (codex #431 r3).
+
+    Single-quoting is used because BOTH shells this page must serve accept
+    it: the operator runs PowerShell (this repo's documented platform) and
+    the runbook is written POSIX. Verified by executing a generated command
+    through ``powershell.exe`` — a space-bearing path arrives as one argv
+    entry. Ordinary paths come back unchanged.
+
+    The one form that cannot be rendered for both is an embedded single
+    quote: POSIX closes and re-opens (``'"'"'``), PowerShell doubles
+    (``''``). Rather than emit something correct in one shell and silently
+    wrong in the other, say so (codex #431 r15).
     """
-    return shlex.quote(str(value))
+    text = str(value)
+    if "'" in text:
+        return f"<路径含单引号，无法给出 PowerShell 与 POSIX 通用的写法：{text}>"
+    return shlex.quote(text)
 
 
 def morning_command(
@@ -843,10 +855,10 @@ def morning_command(
     # RecommendationConfig.bundle_max_age_days that section ⑤ reads. Omit the
     # flag and the page predicts a refusal against one number while the pasted
     # command applies another (codex #431 r14).
-    data_flags = (f" \\\n  --provider-uri {_arg(provider_uri)}"
-                  f" \\\n  --delisted-registry {_arg(delisted_registry)}"
-                  f" \\\n  --name-source {_arg(name_source)}"
-                  f" \\\n  --bundle-max-age-days {bundle_max_age_days}")
+    data_flags = (f" --provider-uri {_arg(provider_uri)}"
+                  f" --delisted-registry {_arg(delisted_registry)}"
+                  f" --name-source {_arg(name_source)}"
+                  f" --bundle-max-age-days {bundle_max_age_days}")
     if incumbent.kind == "single":
         return OpsCommand(
             title="晨跑出单（每交易日早晨，手动）",
@@ -886,12 +898,12 @@ def data_update_command(
     return OpsCommand(
         title="数据更新（fetch → 快照 → 重建 → 校验 → 原子换库）",
         command=(
-            "python scripts/daily_update.py \\\n"
-            f"  --tushare-dir {_arg(tushare_dir)} \\\n"
-            f"  --provider-dir {_arg(provider_uri)} \\\n"
-            f"  --delisted-registry {_arg(delisted_registry)} \\\n"
-            "  --reference-cases tests/pit/reference_cases.yaml \\\n"
-            "  --start-date 20180101"
+            "python scripts/daily_update.py "
+            f"--tushare-dir {_arg(tushare_dir)} "
+            f"--provider-dir {_arg(provider_uri)} "
+            f"--delisted-registry {_arg(delisted_registry)} "
+            "--reference-cases tests/pit/reference_cases.yaml "
+            "--start-date 20180101"
         ),
         note=(f"daily_update.py **不读** QUANT_* 环境变量,四个路径必须显式传;"
               f"上面已填入本页解析到的值。{TUSHARE_DIR_PLACEHOLDER} 无对应环境变量,"
@@ -918,8 +930,8 @@ def rotation_commands(
     (codex #431 r2). Print both flags explicitly.
     """
     target = manifest_path or "<现任 manifest（当前不可解析）>"
-    data_flags = (f"  --provider {_arg(provider_uri)} \\\n"
-                  f"  --namechange {_arg(namechange_path)} \\\n")
+    data_flags = (f"--provider {_arg(provider_uri)} "
+                  f"--namechange {_arg(namechange_path)} ")
     return (
         OpsCommand(
             title="① 训练新成员（GPU，操作人点火）",
@@ -930,44 +942,44 @@ def rotation_commands(
         OpsCommand(
             title="② 成员级门（trainer_integrity + ic_direction）",
             command=(
-                "python scripts/retrain_gate.py --scope member \\\n"
-                "  --member-pkl <新成员.pkl> --member-meta <新成员.pkl.meta.json> \\\n"
-                "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
-                "  --valid-start <valid 起> --valid-end <valid 终> \\\n"
+                "python scripts/retrain_gate.py --scope member "
+                "--member-pkl <新成员.pkl> --member-meta <新成员.pkl.meta.json> "
+                "--fit-start <训窗起> --fit-end <训窗终> "
+                "--valid-start <valid 起> --valid-end <valid 终> "
                 + data_flags
-                + "  --out output/retrain_gates/<季度>_member_gate.json"
+                + "--out output/retrain_gates/<季度>_member_gate.json"
             ),
             note="四个窗口参数照抄该成员训练所用 preset——门必须评的是同一个窗。",
         ),
         OpsCommand(
             title="③ 候选 manifest",
             command=(
-                "python scripts/rotate_ensemble_member.py plan \\\n"
-                f"  --manifest {_arg(target)} \\\n"
-                "  --new-pkl <新成员.pkl> --new-meta <新成员.pkl.meta.json> \\\n"
-                "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
-                "  --out output/retrain_gates/<季度>_candidate_manifest.json"
+                "python scripts/rotate_ensemble_member.py plan "
+                f"--manifest {_arg(target)} "
+                "--new-pkl <新成员.pkl> --new-meta <新成员.pkl.meta.json> "
+                "--fit-start <训窗起> --fit-end <训窗终> "
+                "--out output/retrain_gates/<季度>_candidate_manifest.json"
             ),
             note="plan 只写候选文件，不动生产 manifest。",
         ),
         OpsCommand(
             title="④ ensemble 级门（degeneracy + constraint_dry_run + serving_veto）",
             command=(
-                "python scripts/retrain_gate.py --scope ensemble \\\n"
-                "  --manifest output/retrain_gates/<季度>_candidate_manifest.json \\\n"
-                "  --window-start <上季度首交易日> --window-end <上季度末> \\\n"
+                "python scripts/retrain_gate.py --scope ensemble "
+                "--manifest output/retrain_gates/<季度>_candidate_manifest.json "
+                "--window-start <上季度首交易日> --window-end <上季度末> "
                 + data_flags
-                + "  --out output/retrain_gates/<季度>_ensemble_gate.json"
+                + "--out output/retrain_gates/<季度>_ensemble_gate.json"
             ),
         ),
         OpsCommand(
             title="⑤ 轮换执行",
             command=(
-                "python scripts/rotate_ensemble_member.py execute \\\n"
-                f"  --manifest {_arg(target)} \\\n"
-                "  --candidate output/retrain_gates/<季度>_candidate_manifest.json \\\n"
-                "  --member-gate output/retrain_gates/<季度>_member_gate.json \\\n"
-                "  --ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json"
+                "python scripts/rotate_ensemble_member.py execute "
+                f"--manifest {_arg(target)} "
+                "--candidate output/retrain_gates/<季度>_candidate_manifest.json "
+                "--member-gate output/retrain_gates/<季度>_member_gate.json "
+                "--ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json"
             ),
             note=("改写生产 manifest。两门工件必须均 PASS，任一缺失/FAIL = 执行器拒绝且零写入。"
                   "执行器自动写 <manifest>.pre_rotation_<UTC时间戳> 备份；"

@@ -69,6 +69,19 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 元字符；裸插值会把一个路径拆成多个 argv 项（门于是跑在另一份数据上），
 或让元字符作为 shell 语法执行。
 
+#### Scenario: 命令必须能粘进操作人的 shell
+
+- **GIVEN** 本仓库文档化的平台是 Windows / PowerShell
+- **THEN** 生成的命令 MUST NOT 使用 POSIX 续行符 `\`——PowerShell 不认它，
+  会把下一行当独立语句并报错
+- **AND** 命令 MUST 以在 PowerShell、cmd 与 POSIX shell 中都可粘贴的形式呈现
+
+#### Scenario: 无法跨 shell 表达的路径必须明说
+
+- **GIVEN** 某路径含单引号（POSIX 与 PowerShell 的转义方式不同）
+- **THEN** 页面 MUST 明说无法给出通用写法，MUST NOT 输出一个在其中一种
+  shell 里静默出错的命令
+
 #### Scenario: 路径含空格或元字符
 
 - **GIVEN** `QUANT_PROVIDER_URI` 被覆盖为 `/srv/qlib bundles/live`
