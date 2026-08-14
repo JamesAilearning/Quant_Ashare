@@ -798,15 +798,25 @@ class StampTaxScheduleWarnLoggingTests(unittest.TestCase):
         """
         from unittest.mock import MagicMock, patch
 
+        # Mock qlib.data so the IMPORT succeeds, but make the
+        # STAMP-TAX calendar fetch raise — simulates a misconfigured
+        # provider or a calendar that cannot be loaded. The #213
+        # tail-boundary guard consults D.calendar FIRST (with
+        # ``future=True`` and no start/end trim); let that call
+        # succeed so this test keeps pinning the stamp-tax path's own
+        # no-silent-fallback refusal, not the guard's.
+        import pandas as pd
+
         from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
 
-        # Mock qlib.data so the IMPORT succeeds, but make
-        # D.calendar raise — simulates a misconfigured provider or
-        # a calendar that cannot be loaded.
+        def _calendar(*args, **kwargs):
+            if kwargs.get("future"):
+                return list(pd.date_range("2020-01-01", "2026-12-31",
+                                          freq="7D"))
+            raise RuntimeError("simulated provider misconfiguration")
+
         fake_qlib_data = MagicMock()
-        fake_qlib_data.D.calendar.side_effect = RuntimeError(
-            "simulated provider misconfiguration"
-        )
+        fake_qlib_data.D.calendar.side_effect = _calendar
 
         request = self._make_request(
             start="2022-01-01", end="2024-12-31",  # crosses reform
@@ -912,6 +922,366 @@ class BacktestRunnerRiskConstraintsKwargTests(unittest.TestCase):
             positions={},
         )
         self.assertEqual(out.positions_clipped, {})
+
+
+class CalendarTailBoundaryTests(unittest.TestCase):
+    """Issue #213 — ``run()`` refuses evaluation windows the execution
+    calendar cannot bound, BEFORE qlib's backtest is invoked.
+
+    qlib's ``get_step_time`` reads ``calendar[idx + 1]`` as the closed
+    interval's right-endpoint timestamp unconditionally, so a window
+    ending on the calendar's final bar dies deep in the engine with a
+    raw ``index N is out of bounds``. The guard converts that to a
+    named refusal at the runner boundary (the walk-forward engine
+    already refuses to EMIT such folds — #327; this covers every other
+    caller). The mirror hole — ``evaluation_end`` predating the
+    calendar, which qlib would silently wrap to the ENTIRE calendar —
+    is refused by the same guard.
+
+    The calendar is injected via the ``_load_execution_calendar`` seam
+    (the ``WalkForwardEngine._load_trading_calendar`` idiom), NOT by
+    mocking ``qlib.data.D`` (the PR7 anti-pattern).
+    """
+
+    def _make_predictions(self):
+        import pandas as pd
+
+        idx = pd.MultiIndex.from_tuples(
+            [
+                (pd.Timestamp("2025-10-09"), "SH600000"),
+                (pd.Timestamp("2025-10-10"), "SH600000"),
+            ],
+            names=("datetime", "instrument"),
+        )
+        return pd.Series([0.5, 0.6], index=idx)
+
+    def _run_guarded(self, *, calendar, request=None, deep_qlib=False):
+        """Drive ``run()`` with the seam patched to ``calendar``.
+
+        Returns ``(exc_message, backtest_sentinel, seam_mock)``.
+        ``deep_qlib=True`` additionally fakes ``qlib.data`` (stamp-tax
+        calendar + clean benchmark) so a run that PASSES the guard can
+        proceed to the qlib boundary and stop there with a sentinel
+        error — proving the refusal did not come from the guard.
+        """
+        from unittest.mock import MagicMock, patch
+
+        request = request or _make_request()
+        sentinel = MagicMock(side_effect=RuntimeError("test-stop at qlib"))
+        modules: dict = {
+            "qlib.backtest": MagicMock(backtest=sentinel),
+            "qlib.backtest.executor": MagicMock(),
+            "qlib.contrib.strategy.signal_strategy": MagicMock(),
+            "qlib.utils.time": MagicMock(),
+        }
+        if deep_qlib:
+            import pandas as pd
+
+            fake_qlib_data = MagicMock()
+            fake_qlib_data.D.calendar.return_value = list(
+                pd.date_range("2020-01-01", "2026-12-31", freq="7D"))
+            fake_qlib_data.D.features.return_value = _clean_benchmark_frame()
+            modules["qlib.data"] = fake_qlib_data
+
+        with patch(
+            "src.core.backtest_runner.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+        ) as get_cfg, patch.object(
+            BacktestRunner, "_load_execution_calendar",
+            return_value=calendar,
+        ) as seam, patch.dict("sys.modules", modules):
+            get_cfg.return_value = QlibRuntimeConfig(
+                provider_uri="/tmp/qlib_data",
+                region="cn",
+                data_adjust_mode="pre_adjusted",
+            )
+            with self.assertRaises(BacktestRunnerError) as ctx:
+                BacktestRunner.run(
+                    request=request,
+                    predictions=self._make_predictions(),
+                    topk=5, n_drop=1,
+                )
+        return str(ctx.exception), sentinel, seam
+
+    def test_end_on_final_bar_refused_before_qlib(self) -> None:
+        import pandas as pd
+
+        # bdate_range ends exactly on 2025-12-31 (a Wednesday) — the
+        # default _make_request window's evaluation_end IS the final bar.
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-31"))
+        msg, sentinel, _ = self._run_guarded(calendar=cal)
+        self.assertIn("issue #213", msg)
+        self.assertIn("final bar", msg)
+        self.assertEqual(
+            sentinel.call_count, 0,
+            "the refusal must fire BEFORE qlib's backtest is invoked",
+        )
+
+    def test_refusal_names_all_three_dates_and_walk_forward(self) -> None:
+        import pandas as pd
+
+        # THREE DISTINCT dates. A calendar ending ON the request's
+        # evaluation_end would make the offending-date assertion
+        # ambiguous (the same string satisfies both the
+        # evaluation_end and the calendar-tail interpolation), and a
+        # message that dropped evaluation_end entirely would still
+        # pass. End the calendar EARLIER than evaluation_end so all
+        # three values differ.
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-15"))
+        request = _make_request(evaluation_end="2025-12-31")
+        msg, _, _ = self._run_guarded(calendar=cal, request=request)
+        cal_last = cal[-1].date().isoformat()      # 2025-12-15
+        last_usable = cal[-2].date().isoformat()   # 2025-12-12
+        self.assertEqual(
+            len({"2025-12-31", cal_last, last_usable}), 3,
+            "fixture must produce three DISTINCT dates or the "
+            "assertions below cannot bind each interpolation",
+        )
+        self.assertIn("2025-12-31", msg)   # the offending evaluation_end
+        self.assertIn(cal_last, msg)       # the calendar's final bar
+        self.assertIn(last_usable, msg)    # the last usable end
+        self.assertIn("walk-forward", msg)
+
+    def test_single_entry_calendar_says_no_usable_date(self) -> None:
+        import pandas as pd
+
+        # A one-session calendar passes the empty check, locates onto
+        # index 0 and takes the final-bar branch — but there IS no
+        # earlier bar to name. The message must say so rather than
+        # interpolate a bogus date.
+        cal = [pd.Timestamp("2025-12-31")]
+        msg, sentinel, _ = self._run_guarded(calendar=cal)
+        self.assertIn("fewer than two sessions", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_calendar_load_failure_is_named_not_raw(self) -> None:
+        """A seam failure must surface as a named BacktestRunnerError —
+        never a raw qlib exception escaping run(), and never a skipped
+        guard. Same no-silent-fallback rule the stamp-tax calendar
+        fetch follows."""
+        from unittest.mock import MagicMock, patch
+
+        sentinel = MagicMock(side_effect=RuntimeError("test-stop at qlib"))
+        with patch(
+            "src.core.backtest_runner.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+        ) as get_cfg, patch.object(
+            BacktestRunner, "_load_execution_calendar",
+            side_effect=RuntimeError("simulated calendar load failure"),
+        ), patch.dict("sys.modules", {
+            "qlib.backtest": MagicMock(backtest=sentinel),
+            "qlib.backtest.executor": MagicMock(),
+            "qlib.contrib.strategy.signal_strategy": MagicMock(),
+            "qlib.utils.time": MagicMock(),
+        }):
+            get_cfg.return_value = QlibRuntimeConfig(
+                provider_uri="/tmp/qlib_data",
+                region="cn",
+                data_adjust_mode="pre_adjusted",
+            )
+            with self.assertRaises(BacktestRunnerError) as ctx:
+                BacktestRunner.run(
+                    request=_make_request(),
+                    predictions=self._make_predictions(),
+                    topk=5, n_drop=1,
+                )
+        msg = str(ctx.exception)
+        self.assertIn("failed to load the execution calendar", msg)
+        self.assertIn("simulated calendar load failure", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_iso_week_date_end_stays_a_named_error(self) -> None:
+        """``date.fromisoformat`` (what the contract validates with)
+        accepts ISO week dates on 3.11+, while ``pd.Timestamp`` rejects
+        them. The guard must parse with the CONTRACT's parser, else a
+        contract-valid request escapes run() as a raw pandas
+        DateParseError instead of a named BacktestRunnerError."""
+        import datetime as _dt
+
+        import pandas as pd
+
+        # Python 3.10's ``date.fromisoformat`` RAISES on ISO week dates
+        # (extended parsing landed in 3.11), so this probe must catch —
+        # a bare comparison would error out the test on the 3.10 CI legs
+        # instead of skipping.
+        try:
+            week_date_supported = (
+                _dt.date.fromisoformat("2026-W01-1") == _dt.date(2025, 12, 29))
+        except ValueError:
+            week_date_supported = False
+        if not week_date_supported:
+            self.skipTest("ISO week dates not accepted by this Python")
+        # End the calendar on the date the CONTRACT's parser yields
+        # (2025-12-29) so the guard must both (a) parse the week date
+        # at all — ``pd.Timestamp`` would raise DateParseError here —
+        # and (b) resolve it to the right day, landing on the tail.
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-29"))
+        self.assertEqual(cal[-1].date(), _dt.date(2025, 12, 29))
+        msg, sentinel, _ = self._run_guarded(
+            calendar=cal,
+            request=_make_request(evaluation_end="2026-W01-1"),
+        )
+        # assertRaises(BacktestRunnerError) in the harness already
+        # proves no raw DateParseError escaped; the #213 text proves
+        # the week date resolved to the tail rather than passing through.
+        self.assertIn("issue #213", msg)
+        self.assertIn("final bar", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_whitespace_padded_end_stays_a_named_error(self) -> None:
+        """The contract's ``parse_iso_date`` ``.strip()``s before
+        parsing, so a padded date is contract-VALID. A guard using bare
+        ``date.fromisoformat`` rejects it with a raw ValueError — the
+        same unnamed-escape class as the ISO-week case, on a far more
+        likely input (a hand-edited YAML or CLI value). Unlike the week
+        date, this case is version-independent."""
+        import pandas as pd
+
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-31"))
+        msg, sentinel, _ = self._run_guarded(
+            calendar=cal,
+            request=_make_request(evaluation_end="  2025-12-31  "),
+        )
+        # Named refusal, NOT ValueError — and the padding must not have
+        # changed which day it resolved to (still the calendar tail).
+        self.assertIn("issue #213", msg)
+        self.assertIn("final bar", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_end_beyond_calendar_tail_refused(self) -> None:
+        import pandas as pd
+
+        # An end FAR beyond the calendar (not merely one bar past it):
+        # locate_index snaps it back onto the final bar, so it must hit
+        # the same refusal rather than sail through. Kept distinct from
+        # the three-dates fixture above so the two are not the same
+        # input twice.
+        cal = list(pd.bdate_range("2025-09-01", "2025-10-31"))
+        msg, sentinel, _ = self._run_guarded(
+            calendar=cal,
+            request=_make_request(evaluation_end="2026-06-30"),
+        )
+        self.assertIn("issue #213", msg)
+        self.assertIn("2025-10-31", msg)   # the calendar's final bar
+        self.assertIn("2026-06-30", msg)   # the offending end, echoed back
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_end_predating_calendar_refused(self) -> None:
+        import pandas as pd
+
+        # Window entirely before the calendar's first session: qlib's
+        # locate_index would compute end index -1 and numpy-wrap it to
+        # calendar[-1] — silently backtesting the ENTIRE calendar.
+        cal = list(pd.bdate_range("2025-10-01", "2026-03-31"))
+        msg, sentinel, _ = self._run_guarded(
+            calendar=cal,
+            request=_make_request(
+                evaluation_start="2025-01-02",
+                evaluation_end="2025-06-30",
+            ),
+        )
+        self.assertIn("predates", msg)
+        self.assertIn("issue #213", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_empty_calendar_refused(self) -> None:
+        msg, sentinel, _ = self._run_guarded(calendar=[])
+        self.assertIn("empty", msg)
+        self.assertEqual(sentinel.call_count, 0)
+
+    def test_non_trading_day_end_with_later_bars_passes(self) -> None:
+        import pandas as pd
+
+        # 2025-12-31 is a bdate; use a Sunday end (2025-12-28) with the
+        # calendar extending into January — the guard must NOT refuse a
+        # non-trading-day end while later bars exist. The run then
+        # proceeds and fails PAST the guard (any non-#213 error proves
+        # the pass-through).
+        cal = list(pd.bdate_range("2025-09-01", "2026-01-15"))
+        msg, _, seam = self._run_guarded(
+            calendar=cal,
+            request=_make_request(evaluation_end="2025-12-28"),
+            deep_qlib=True,
+        )
+        self.assertTrue(seam.called, "guard must consult the seam")
+        self.assertNotIn("#213", msg)
+
+    def test_future_calendar_longer_than_data_passes(self) -> None:
+        import pandas as pd
+
+        # The execution calendar (future=True) may extend past the data
+        # calendar. A window ending on the DATA tail then has its
+        # right-endpoint timestamp available — the guard mirrors the
+        # crash condition exactly and must not refuse (no false
+        # positives by construction).
+        data_tail = pd.Timestamp("2025-12-31")
+        cal = list(pd.bdate_range("2025-09-01", data_tail)) + [
+            pd.Timestamp("2026-01-02")]
+        msg, _, seam = self._run_guarded(calendar=cal, deep_qlib=True)
+        self.assertTrue(seam.called)
+        self.assertNotIn("#213", msg)
+
+    def test_headroom_is_one_bar_regardless_of_lag(self) -> None:
+        """ONE bar of headroom is required — NOT ``signal_to_execution_lag``
+        bars. The lag's external component restamps WITHIN the fold's own
+        prediction index (``_apply_lag`` unstacks/shifts/dropna), so the
+        latest stamp never exceeds the last requested day; only qlib's
+        closed-interval right endpoint needs a bar past it. #327 pinned
+        this on the walk-forward generator (codex P2 corrected an
+        over-strict first version that demanded ``lag`` bars); the runner
+        guard needs its own pin, or a future 'fix' scaling headroom with
+        lag would silently refuse runnable windows."""
+        import pandas as pd
+
+        # EXACTLY one bar past evaluation_end, with lag=3.
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-31")) + [
+            pd.Timestamp("2026-01-02")]
+        request = _make_request(signal_to_execution_lag=3)
+        self.assertEqual(request.evaluation_end, "2025-12-31")
+        msg, _, seam = self._run_guarded(
+            calendar=cal, request=request, deep_qlib=True)
+        self.assertTrue(seam.called, "guard must consult the seam")
+        self.assertNotIn(
+            "#213", msg,
+            "one bar of headroom must suffice at lag=3; a guard demanding "
+            "`lag` bars would refuse a window qlib can actually run",
+        )
+
+    def test_seam_mirrors_trade_calendar_manager(self) -> None:
+        """``_load_execution_calendar`` must pass ``future=True`` and
+        the exchange freq — parameter-for-parameter what qlib's
+        ``TradeCalendarManager.reset`` loads. A guard consulting a
+        different calendar is not a guard."""
+        from unittest.mock import MagicMock, patch
+
+        fake_qlib_data = MagicMock()
+        fake_qlib_data.D.calendar.return_value = ["sentinel-calendar"]
+        with patch.dict("sys.modules", {"qlib.data": fake_qlib_data}):
+            out = BacktestRunner._load_execution_calendar(freq="day")
+        self.assertEqual(out, ["sentinel-calendar"])
+        fake_qlib_data.D.calendar.assert_called_once_with(
+            freq="day", future=True)
+
+    def test_run_passes_the_requests_freq_to_the_seam(self) -> None:
+        """The freq must be READ FROM the request, not hardcoded.
+        ``SUPPORTED_EXCHANGE_FREQUENCIES`` is currently ``("day",)``,
+        so every constructible request carries the same value and a
+        literal ``freq="day"`` in run() would pass every other test.
+        Inject a sentinel freq past the frozen dataclass's validation
+        to bind the read for real."""
+        import pandas as pd
+
+        request = _make_request()
+        object.__setattr__(request.exchange_config, "freq", "sentinel-freq")
+        # Tail-boundary calendar so run() refuses AT the guard — the
+        # sentinel freq never reaches qlib's executor.
+        cal = list(pd.bdate_range("2025-09-01", "2025-12-31"))
+        _, _, seam = self._run_guarded(calendar=cal, request=request)
+        seam.assert_called_once_with(freq="sentinel-freq")
 
 
 class PositionsSerializationTests(unittest.TestCase):
