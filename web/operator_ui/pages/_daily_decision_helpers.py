@@ -44,9 +44,109 @@ BANNER_FIELDS: tuple[str, ...] = (
 ROUND_TRIP_COST = 0.0030
 
 
+# The INCUMBENT ensemble manifest, read-side only. Production switched to a
+# 3-member csi800 N5 ensemble on 2026-08-05; before this pointer existed the
+# banner had no way to know that and kept describing the retired single model
+# (docs/operations-env-vars.md explains why the CLI deliberately does NOT
+# inherit this default).
+ENV_ENSEMBLE_MANIFEST = "QUANT_ENSEMBLE_MANIFEST"
+# Default = the production manifest written by the 2026-08-05 cutover, per
+# this repo's env-var convention ("each QUANT_* default equals the historical
+# hardcoded path, so behaviour is unchanged where they are unset").
+#
+# Treating an UNSET pointer as "production is a single model" would be a
+# fabricated fact (codex #430 r1): on any deployment that upgrades the UI
+# without also setting a new variable, the page would both keep showing the
+# retired model AND tell the operator not to use the CORRECT ensemble lists.
+# Absence of configuration is not evidence about what production serves.
+DEFAULT_ENSEMBLE_MANIFEST = (
+    "D:/stock/phase_b_artifacts/csi800_n5_ensemble_manifest.json"
+)
+# The documented opt-out for a deployment that genuinely serves ONE model:
+# an explicit statement, never an inference from a missing variable.
+SINGLE_MODEL_SENTINEL = "none"
+
+
 def resolve_model_path() -> str:
     """The production model path: env override > documented default."""
     return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
+
+
+@dataclass(frozen=True)
+class IncumbentIdentity:
+    """Which model production is ACTUALLY serving, as far as the UI can tell.
+
+    Three states, and the third is the point:
+
+    * ``ensemble``     — a manifest the SERVING validator accepts. Reached by
+      the documented default (unset pointer) or an explicit path.
+    * ``single``       — reached ONLY by the explicit ``none`` opt-out. An
+      unset pointer is NOT this state: "nobody configured this box" is not
+      evidence that production retired the ensemble (codex #430 r1).
+    * ``unresolvable`` — a pointer that resolves to something the validator
+      refuses. It must never degrade to ``single``: that would show a model
+      which may not be serving, the exact failure this page prevents.
+    """
+
+    kind: str                       # "ensemble" | "single" | "unresolvable"
+    manifest_path: str | None = None
+    manifest_sha256: str | None = None
+    members: tuple[dict[str, str], ...] = ()
+    error: str | None = None
+
+    @property
+    def is_ensemble(self) -> bool:
+        return self.kind == "ensemble"
+
+
+def load_ensemble_manifest_identity(manifest_path: str) -> IncumbentIdentity:
+    """Read a manifest into a bannerable identity, or say why not.
+
+    Delegates to the SERVING loader — the canonical validator
+    (``src.inference.ensemble_serving.load_ensemble_manifest``). A
+    hand-rolled parser here would be a second, weaker interpretation of
+    the same file: it could call a manifest "current" that the actual
+    serving path refuses (wrong schema version, wrong member count,
+    broken hash chain, bad staggering), so the banner would vouch for a
+    model production could not even load (codex #430). Reusing the
+    validator also inherits its single-read digest — the digest is of
+    the very bytes that were parsed, so a rotation mid-read cannot
+    produce old windows carrying a new sha.
+    """
+    from src.inference.ensemble_serving import (  # noqa: PLC0415
+        EnsembleServingError,
+        load_ensemble_manifest,
+    )
+
+    try:
+        members, manifest_sha = load_ensemble_manifest(manifest_path)
+    except EnsembleServingError as exc:
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path, error=str(exc))
+    except OSError as exc:  # pragma: no cover - defensive
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path,
+            error=f"{type(exc).__name__}: {exc}")
+    return IncumbentIdentity(
+        kind="ensemble", manifest_path=manifest_path,
+        manifest_sha256=manifest_sha,
+        members=tuple({"fit_start": m.fit_start, "fit_end": m.fit_end}
+                      for m in members))
+
+
+def resolve_incumbent() -> IncumbentIdentity:
+    """What is production serving right now — ensemble, single, or unknown.
+
+    Unset falls back to the DOCUMENTED production manifest, not to
+    "single model": production cut over on 2026-08-05, so a missing
+    variable means "nobody configured this box", never "the ensemble was
+    retired". The single-model state requires the explicit ``none``
+    opt-out — a claim someone made, not one this code inferred.
+    """
+    pointer = os.environ.get(ENV_ENSEMBLE_MANIFEST, "").strip()
+    if pointer.lower() == SINGLE_MODEL_SENTINEL:
+        return IncumbentIdentity(kind="single")
+    return load_ensemble_manifest_identity(pointer or DEFAULT_ENSEMBLE_MANIFEST)
 
 
 def model_meta_paths(model_path: str) -> tuple[Path, Path]:
@@ -342,3 +442,164 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
     nxt_str = str(nxt) if isinstance(nxt, str) and nxt else None
     return HoldState(is_hold=(raw is False), next_rebalance_date=nxt_str,
                      malformed=None)
+
+
+# ---------------------------------------------------------------------------
+# Provenance verdict — the incumbent × artifact matrix as DATA, not as a
+# chain of elifs (codex #430 r1..r4 leaked four different cells of it: a
+# single-model artifact under an ensemble incumbent, a v1 artifact called
+# "single-model shaped", an unset pointer read as "single", and an
+# unresolvable incumbent falling through to the retired model's sidecar).
+# Ordered branches give no structural guarantee that every combination is
+# covered; a table does, and the test asserts the table is total.
+#
+# Coverage is necessary, not sufficient: r5 found a cell that WAS covered and
+# answered too weakly. Hence the explicit precedence rule in
+# ``classify_provenance`` — definite refusals outrank unknowns — instead of
+# whichever order the branches happened to end up in.
+# ---------------------------------------------------------------------------
+
+# Artifact shapes, as classified by ``artifact_meta_status``.
+ARTIFACT_KINDS: tuple[str, ...] = (
+    "ensemble",          # v2, meta.ensemble carries manifest_sha256
+    "ensemble_no_sha",   # v2, marked ensemble but manifest_sha256 missing
+    "v1",                # no meta block at all — provenance unknown
+    "single",            # v2, self-describing single-model
+)
+INCUMBENT_KINDS: tuple[str, ...] = ("ensemble", "single", "unresolvable")
+
+# The SHAPE each side declares, independent of whether its identity can be
+# bound. ``None`` = the shape itself is unknown, so no comparison is possible.
+# An artifact missing ``manifest_sha256`` has still DECLARED itself ensemble
+# (the ``meta.ensemble`` block is there) — losing the identity does not lose
+# the shape (codex #430 r5).
+_ARTIFACT_SHAPE: dict[str, str | None] = {
+    "ensemble": "ensemble",
+    "ensemble_no_sha": "ensemble",
+    "v1": None,
+    "single": "single",
+}
+_INCUMBENT_SHAPE: dict[str, str | None] = {
+    "ensemble": "ensemble",
+    "single": "single",
+    "unresolvable": None,
+}
+
+# Verdicts the page renders. Each is one message; none means "say nothing".
+VERDICT_MATCHES_INCUMBENT = "matches_incumbent"
+VERDICT_OTHER_MANIFEST = "other_manifest"
+VERDICT_ENSEMBLE_SHA_MISSING = "ensemble_sha_missing"
+VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE = "shape_single_under_ensemble"
+VERDICT_ENSEMBLE_UNDER_SINGLE = "ensemble_under_single"
+VERDICT_V1_UNKNOWN = "v1_unknown_provenance"
+VERDICT_INCUMBENT_UNRESOLVED = "incumbent_unresolved"
+VERDICT_SINGLE_SHA_MISMATCH = "single_sha_mismatch"
+VERDICT_SINGLE_SHA_UNKNOWN = "single_sha_unknown"
+VERDICT_SINGLE_SHA_OK = "single_sha_ok"
+
+
+def classify_provenance(
+    *,
+    incumbent_kind: str,
+    artifact_kind: str,
+    ensemble_sha_matches: bool | None = None,
+    single_sha_mismatch: bool | None = None,
+) -> str:
+    """Which provenance statement is TRUE for this (incumbent, artifact) pair.
+
+    Pure and total over ``INCUMBENT_KINDS × ARTIFACT_KINDS`` — an unknown
+    combination raises rather than silently returning "nothing to say",
+    because "no warning" is exactly how a non-incumbent artifact gets
+    presented as safe.
+
+    The rule the four steps below encode: **a shape mismatch is the only
+    DEFINITE refusal derivable without any identity at all, so it outranks
+    every kind of "unknown".** Ordering it after the unknowns is what made
+    ``single`` × ``ensemble_no_sha`` under-warn — a provably-non-incumbent
+    artifact got the mild "identity unbindable" notice instead of "请勿据此
+    下单" (codex #430 r5).
+    """
+    if incumbent_kind not in INCUMBENT_KINDS:
+        raise ValueError(f"unknown incumbent kind: {incumbent_kind!r}")
+    if artifact_kind not in ARTIFACT_KINDS:
+        raise ValueError(f"unknown artifact kind: {artifact_kind!r}")
+
+    # 1. Both shapes known and different → provably not the incumbent's
+    #    output. No identity needed, and no later "unknown" can soften it.
+    art_shape = _ARTIFACT_SHAPE[artifact_kind]
+    inc_shape = _INCUMBENT_SHAPE[incumbent_kind]
+    if art_shape is not None and inc_shape is not None and art_shape != inc_shape:
+        return (VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE if art_shape == "single"
+                else VERDICT_ENSEMBLE_UNDER_SINGLE)
+
+    # 2. v1 carries no meta at all — even its SHAPE is unknown, so there was
+    #    nothing to compare above and nothing to compare below.
+    if artifact_kind == "v1":
+        return VERDICT_V1_UNKNOWN
+
+    # 3. Shape agrees (or the incumbent's shape is unknown) but the artifact
+    #    declares no identity. Unbindable whatever production serves. When the
+    #    incumbent is ALSO unresolvable this deliberately reports the
+    #    artifact-side defect rather than repeating the incumbent one — the
+    #    page banner already renders a prominent st.error for that.
+    if artifact_kind == "ensemble_no_sha":
+        return VERDICT_ENSEMBLE_SHA_MISSING
+
+    # 4. An incumbent we could not confirm cannot vouch for — or against —
+    #    anything. It must never fall through to the retired model's sidecar.
+    if incumbent_kind == "unresolvable":
+        return VERDICT_INCUMBENT_UNRESOLVED
+
+    # 5. Shapes agree and both sides are identifiable — down to the digests.
+    if incumbent_kind == "ensemble":
+        return (VERDICT_MATCHES_INCUMBENT if ensemble_sha_matches
+                else VERDICT_OTHER_MANIFEST)
+    if single_sha_mismatch is True:
+        return VERDICT_SINGLE_SHA_MISMATCH
+    if single_sha_mismatch is None:
+        return VERDICT_SINGLE_SHA_UNKNOWN
+    return VERDICT_SINGLE_SHA_OK
+
+
+def artifact_kind_of(status: ArtifactMetaStatus) -> str:
+    """Map the meta-status flags onto exactly one ``ARTIFACT_KINDS`` value."""
+    if status.artifact_is_ensemble:
+        return "ensemble" if status.artifact_ensemble_sha else "ensemble_no_sha"
+    if status.artifact_is_v1:
+        return "v1"
+    return "single"
+
+
+def provenance_verdict(
+    incumbent: IncumbentIdentity, status: ArtifactMetaStatus,
+) -> str:
+    """The verdict for a resolved incumbent and a selected artifact.
+
+    The wiring lives here rather than in the page because a source-level
+    pin cannot tell ``incumbent_kind=incumbent.kind`` from a plausible
+    miswiring like ``"ensemble" if incumbent.is_ensemble else "single"`` —
+    which silently collapses ``unresolvable`` into ``single`` and revives
+    the r4 failure (the page then compares against the RETIRED model and
+    says nothing when the digests happen to agree). As a function it is
+    driven by real ``IncumbentIdentity``/``ArtifactMetaStatus`` values in
+    the tests, so a miswiring fails behaviourally instead of surviving
+    because the page still contains the right words somewhere.
+    """
+    art_sha = str(status.artifact_ensemble_sha or "")
+    inc_sha = str(incumbent.manifest_sha256 or "")
+    return classify_provenance(
+        incumbent_kind=incumbent.kind,
+        artifact_kind=artifact_kind_of(status),
+        # An incumbent with no digest can confirm nothing — never let two
+        # empty strings compare equal into a green "与现任一致".
+        #
+        # Belt-and-braces today: ``artifact_kind_of`` routes every
+        # digest-less ensemble artifact to ``ensemble_no_sha``, which the
+        # matrix answers before any comparison, so ``art_sha`` is non-empty
+        # by the time this is read. That invariant is what makes the guard
+        # redundant, so it is pinned directly
+        # (test_a_bindable_digest_is_a_precondition_of_the_comparison) —
+        # break the routing and this guard becomes load-bearing again.
+        ensemble_sha_matches=bool(inc_sha) and art_sha == inc_sha,
+        single_sha_mismatch=status.sha_mismatch,
+    )

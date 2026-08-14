@@ -18,7 +18,9 @@ PR #389 签署；PR-A' #390 服务机制；PR-B' 门工装 + 轮换执行器）�
 
 ## 周节奏服务卡（每交易日早晨）
 
-1. `python scripts/daily_recommend.py --ensemble-manifest <生产 manifest>`
+> `$QUANT_ENSEMBLE_MANIFEST` = 现任生产 manifest 路径（`docs/operations-env-vars.md` 登记）。运维 UI 用它显示现任身份并核对工件出处；**CLI 这一侧仍须显式传参，不吃该默认值**——出单侧不该隐式选模型。
+
+1. `python scripts/daily_recommend.py --ensemble-manifest $QUANT_ENSEMBLE_MANIFEST`
    （PR-C' 切换后；切换前仍为单模型 `--model` 路径）。ensemble 模式
    下宇宙/节奏/topk **自动从钉死的
    `config/serving/csi800_n5_production.yaml` 绑定**
@@ -91,7 +93,7 @@ manifest 的错峰与 24 月窗 pins。
    第二级，治理测试钉死其与认证胜者的同值性；
    2026-08-05-ensemble-serving-bound-params）：
    ```bash
-   python scripts/daily_recommend.py --ensemble-manifest <生产 manifest>
+   python scripts/daily_recommend.py --ensemble-manifest $QUANT_ENSEMBLE_MANIFEST
    ```
    显式传 `--instruments`/`--rebalance-cadence-days`/`--topk` 仍
    允许但必须与绑定值相等，不等即拒；绑定源缺失/畸形也拒（绝不

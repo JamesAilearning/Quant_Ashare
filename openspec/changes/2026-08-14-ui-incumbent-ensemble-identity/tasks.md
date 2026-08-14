@@ -1,0 +1,44 @@
+# Tasks: 2026-08-14-ui-incumbent-ensemble-identity
+
+## W1 现任身份事实源
+- [x] `docs/operations-env-vars.md` 登记 `QUANT_ENSEMBLE_MANIFEST`  ← 已登记(含读侧专用说明)
+      （含「只服务读侧、CLI 不吃默认值」的说明）
+- [x] runbook 晨跑命令的 `<生产 manifest>` 占位符换成该变量  ← 已替换 + 加说明块
+- [x] 治理钉：`scripts/daily_recommend.py` 的 `--ensemble-manifest`  ← test_cli_ensemble_manifest_has_no_implicit_default
+      仍无默认值（防后来者顺手加）
+
+## W2 横幅认 ensemble
+- [x] helpers 新增 `resolve_incumbent()`：ensemble / 单模型 / 不可解析 三态  ← IncumbentIdentity 三态 + 4 个运行时钉
+- [x] ensemble 态横幅：manifest 名 + sha256 + 成员数 + 各成员 fit 窗  ← test_ensemble_banner_shows_manifest_identity
+- [x] 不可解析 → WARN，不回退单模型、不填占位值  ← test_banner_refuses_to_fall_back_when_unresolvable
+- [x] 单模型态：既有晋升 meta 横幅逐字不变（回归钉守）  ← 既有 26 钉全绿 + test_single_model_banner_suppressed_under_ensemble
+
+## W3 现任交叉核对
+- [x] ensemble 工件 sha 与现任 manifest sha 比对：相同 / 不同 / 无法核对  ← 三分支已实现
+- [x] 删除「当前生产为单模型形态…随 PR-C' 落地」的过期陈述  ← test_incumbent_cross_check_replaces_the_expired_claim
+- [x] 保留单模型侧既有告警文案（「其他模型」「旧版工件」钉守）  ← 既有 test_stale_artifact_cross_check_present 仍绿
+
+## W4 判定穷举（codex #430 r4 后的裁决：抽成纯函数，而非再补一个分支）
+- [x] 判定从页面 elif 链抽成纯函数 `classify_provenance()`  ← helpers,3 态 × 4 形
+- [x] 形态分类 `artifact_kind_of()`：meta 标志 → 唯一工件形态  ← 与 ARTIFACT_KINDS 一一对应
+- [x] 页面只做裁定→文案的分发；未渲染裁定 → 醒目 st.error  ← 不留 `else: pass`
+- [x] 补上 r4 漏格：现任不可解析 × 单模型工件不再回落旧 sidecar 比对  ← 该路径 sha 相符时静默
+- [x] 表驱动测试：12 格全覆盖 + 表自身完整性 + 未知输入抛错  ← 表与 KINDS 双向对齐
+- [x] r5:形态不符优先于一切「未知」（覆盖到位≠答得对）  ← 声明形态与身份分离,缺 sha 不丢形态
+- [x] `("single","ensemble_no_sha")` 改判确定拒绝 + 缺摘要不渲染假 sha  ← M7/M8/M9 咬住
+
+## W5 自审补钉（推送后对抗自审:15 条发现、12 条被反驳、3 条存活,全是钉子太弱）
+- [x] 接线也搬进 helpers(`provenance_verdict`)——源码钉分不出接线对错  ← 改由行为测试驱动
+- [x] 渲染钉从「常量名出现」改成「按分支切段 + 每格自己的话」  ← 掏空分支再也过不去
+- [x] 「请勿据此下单」首次入钉（此前 5 处全删掉套件仍全绿，而 spec 写的是 MUST）
+- [x] 三元两臂绑定入钉（此前互换两臂全绿，正好印出不存在的 sha256）
+- [x] 固定 1400 窗口换成按分支切片（旧窗口离邻格只剩 193 字符余量）
+- [x] M14 判定为**等价变异**并写明理由;改钉它所依赖的不变量（M17 咬住）
+
+## 验证
+- [x] 既有 26 个 daily_decision 钉全绿（改动不得破坏既有契约）  ← 26 passed
+- [x] 新增钉：三态横幅 / 三态交叉核对 / CLI 无默认值  ← +10 钉,合计 36 passed
+- [x] 关键守卫突变验证（每次先自检突变真落地）  ← 四处咬住(M3 首轮分隔符撞车致假绿,已重做)
+- [x] 矩阵抽取后重做突变验证  ← M1..M6 六处全落地全咬红(含"复活 r4 漏格"与"新增裁定无渲染")
+- [x] 全量快速套件 + ruff + mypy(CI 对齐)  ← 见末次运行记录
+- [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
