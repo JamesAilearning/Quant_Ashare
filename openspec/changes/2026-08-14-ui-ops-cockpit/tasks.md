@@ -209,10 +209,27 @@
 - [x] 补源码级钉:该函数任何 `known=False` 的返回都不得写 `accepted=`
 - [x] 「看过是坏的」(`known=True, accepted=False`)与「没看过」对照钉
 
+## W29 codex #431 r23（P2，属实；与 W1 同一类，我只在现任解析器上做了)
+- [x] `resolve_namechange_path` 改为**复用** `config_forms` 的那一份(同一性钉,
+      不是取值相等)  ← C74 咬住;两份实现漂移时,门命令与 UI 作业会选中不同 ST 历史
+- [x] 同类扫一遍,不只修被点名的那一处:
+      - `resolve_name_source` 改为调用 `RecommendationConfig` 自己的
+        `default_factory`  ← C75 咬住
+      - `resolve_delisted_registry` / `resolve_model_path` 仓库中无单一 owner
+        可复用,并入既有路径默认值治理表锁死  ← C76 咬住(需把该测试纳入范围)
+- [x] 顺手删掉本页自造的规范化:出单侧 factory **不** `.strip()`、不把 `""` 当未设。
+      本页要印的是机器会用的值,不是本页认为应该用的值 —— `QUANT_NAME_SOURCE=""`
+      现在照实传出并被命令边界拒绝
+- [x] factory 形状变了就 fail loud,不退回字面量(静默退回正是这份重复的来路)
+- [x] 复用钉改为**结构钉**(无本地 def + 显式从 owner import + 行为一致),
+      不用 `assertIs`:`test_operator_ui_config_validation` 会把 config_forms
+      踢出 `sys.modules` 再重导,同一函数存在两代对象 —— 单跑绿、全量红。
+      「看起来更强的断言」前提不成立时反而更弱
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C73(C57/C58/C68 随重构作废):69 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C76(C57/C58/C68 随重构作废):72 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

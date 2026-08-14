@@ -169,6 +169,38 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **WHEN** 页面渲染任一含该路径的命令
 - **THEN** 该路径在命令中 MUST 解析为单个 shell 参数
 
+### Requirement: 驾驶舱印出的每条路径都不得是第二份实现
+
+每条被本页印出的路径 MUST 来自其既有 owner，MUST NOT 在本页另立一份实现或
+复述其字面量。本页把已解析路径**印进操作人要跑的命令**，且是以显式 flag 的
+形式，所以一份漂移的默认值不只是显示错——它会用陈旧路径**覆盖**真正的默认
+值，照跑即生效。
+
+#### Scenario: 已有 owner 的解析器必须复用
+
+- **GIVEN** `web/operator_ui/config_forms.py` 已拥有 `resolve_namechange_path()`
+  且配置作业路径仍在用它
+- **THEN** 本页 MUST 复用同一个可调用物（同一性，不是「取值相等」），
+  MUST NOT 另写一份
+- **AND** 理由:两份实现在默认值或规范化方式任一漂移时，驾驶舱印出的门命令
+  与 UI 生成的作业会选中**不同的 ST 历史**，且没有任何东西会报出这个分歧
+
+#### Scenario: 生产侧默认值必须来自生产侧自己
+
+- **GIVEN** `RecommendationConfig.name_source_parquet` 的 `default_factory`
+  是出单侧真正读到的那份默认值
+- **THEN** 本页 MUST 调用它，MUST NOT 复述其字面量
+- **AND** 页面 MUST NOT 顺手加出单侧没有的规范化(`.strip()`、把 `""` 当未设)
+  ——本页要印的是机器会用的值，不是本页认为应该用的值
+- **AND** 该字段若不再是 `default_factory`，本页 MUST fail loud，
+  MUST NOT 退回字面量
+
+#### Scenario: 没有 owner 可复用的默认值必须被机器锁住
+
+- **GIVEN** 某路径默认值在仓库中没有单一 owner 可复用
+- **THEN** 它 MUST 被并入既有的路径默认值治理表一起校验，
+  MUST NOT 只靠人眼保持一致
+
 ### Requirement: 现任身份由两页共用的同一解析器给出
 
 驾驶舱与今日推荐页 MUST 通过**同一个**现任解析器取得生产模型身份，

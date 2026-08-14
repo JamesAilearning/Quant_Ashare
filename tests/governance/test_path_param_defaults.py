@@ -114,6 +114,28 @@ class PathParamDefaultsTests(unittest.TestCase):
         self.assertEqual(mod._DEFAULT_REGISTRY, _REGISTRY)
         self.assertEqual(mod._DEFAULT_NAME_SOURCE, _NAME_SOURCE)
 
+    # --- Operator-UI side: the ops cockpit PRINTS these paths into the
+    # commands it tells the operator to run, so a cockpit default that drifts
+    # from the canonical one would hand out a command that explicitly
+    # OVERRIDES the real default with a stale path (codex #431 r23). The
+    # namechange and name-source resolvers are reused from their owners
+    # (config_forms / RecommendationConfig) and are pinned to that by
+    # tests/logic/test_ops_cockpit_page_source.py; the two below have no
+    # single owner to reuse, so they are locked here instead.
+    def test_ops_cockpit_path_defaults(self) -> None:
+        from web.operator_ui.incumbent import resolve_model_path
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            resolve_delisted_registry,
+            resolve_name_source,
+            resolve_namechange_path,
+        )
+        self.assertEqual(_REGISTRY, resolve_delisted_registry())
+        self.assertEqual(_MODEL, resolve_model_path())
+        # reused resolvers — checked here too, so the canonical literals for
+        # every path the cockpit prints live in exactly one table
+        self.assertEqual(_NAMECHANGE, resolve_namechange_path())
+        self.assertEqual(_NAME_SOURCE, resolve_name_source())
+
     def test_env_override_reaches_dataclass(self) -> None:
         # And a SET var actually overrides (proves the wiring, not just default).
         os.environ["QUANT_NAME_SOURCE"] = "E:/custom/active.parquet"

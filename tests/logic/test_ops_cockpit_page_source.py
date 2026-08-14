@@ -572,34 +572,85 @@ class ResolvedCommandTests(unittest.TestCase):
         self.assertIn("provider_uri=_provider,", block)
         self.assertIn("name_source=resolve_name_source()", block)
 
-    def test_name_source_resolver_follows_the_env_var(self) -> None:
+    def test_name_source_resolver_matches_the_serving_config(self) -> None:
+        # codex #431 r23: the page must not restate the serving default. It
+        # is pinned to RecommendationConfig's OWN factory, so this asserts
+        # agreement with the machine rather than with a literal — including
+        # the case where the page used to normalize and the machine does not.
         import os
         from unittest.mock import patch
 
+        from src.inference.daily_recommend import RecommendationConfig
         from web.operator_ui.pages._ops_cockpit_helpers import (
-            DEFAULT_NAME_SOURCE,
             ENV_NAME_SOURCE,
             resolve_name_source,
         )
-        with patch.dict(os.environ, {ENV_NAME_SOURCE: ""}, clear=False):
-            self.assertEqual(DEFAULT_NAME_SOURCE, resolve_name_source())
-        with patch.dict(os.environ, {ENV_NAME_SOURCE: "/x/ns.parquet"},
-                        clear=False):
-            self.assertEqual("/x/ns.parquet", resolve_name_source())
+
+        def serving_value() -> str | None:
+            return RecommendationConfig(
+                model_path="m", provider_uri="p", delisted_registry_path="r",
+                fit_start="2018-01-02", fit_end="2023-12-20",
+            ).name_source_parquet
+
+        for value in ("/x/ns.parquet", ""):
+            with self.subTest(env=repr(value)):
+                with patch.dict(os.environ, {ENV_NAME_SOURCE: value},
+                                clear=False):
+                    self.assertEqual(serving_value(), resolve_name_source())
+        env = dict(os.environ)
+        env.pop(ENV_NAME_SOURCE, None)
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(serving_value(), resolve_name_source())
+
+    def test_the_namechange_resolver_is_the_config_forms_one(self) -> None:
+        # codex #431 r23: `config_forms` already owns this resolver and the
+        # config-run path still uses it. A second implementation would let
+        # the cockpit's printed gate command and the UI-generated job select
+        # DIFFERENT ST histories as soon as either default drifted, with
+        # nothing flagging the divergence.
+        #
+        # Pinned STRUCTURALLY, not by object identity: comparing the two
+        # function objects with assertIs looks stronger but is not sound in
+        # this suite — test_operator_ui_config_validation evicts
+        # `web.operator_ui.config_forms` from sys.modules and re-imports it,
+        # so two generations of the same function coexist and `is` fails for
+        # a module that is in fact reusing it. What actually rules out a
+        # second implementation is: no local `def`, and an explicit import
+        # from the owner.
+        source = _HELPERS.read_text(encoding="utf-8")
+        self.assertNotIn("def resolve_namechange_path", source)
+        self.assertIn(
+            "from web.operator_ui.config_forms import (\n"
+            "    resolve_namechange_path as resolve_namechange_path,\n)",
+            source)
+        # …and it behaves as the owner's does, whatever the env says.
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui import config_forms
+        from web.operator_ui.pages import _ops_cockpit_helpers as helpers
+        for value in ("/x/nc.parquet", ""):
+            with self.subTest(env=repr(value)):
+                with patch.dict(os.environ,
+                                {"QUANT_NAMECHANGE_PATH": value}, clear=False):
+                    self.assertEqual(config_forms.resolve_namechange_path(),
+                                     helpers.resolve_namechange_path())
 
     def test_namechange_resolver_follows_the_env_var(self) -> None:
         import os
         from unittest.mock import patch
 
+        # The env-var name is config_forms' contract, not a cockpit constant
+        # any more — the cockpit no longer owns a copy to name (r23).
         from web.operator_ui.pages._ops_cockpit_helpers import (
             DEFAULT_NAMECHANGE_PATH,
-            ENV_NAMECHANGE_PATH,
             resolve_namechange_path,
         )
-        with patch.dict(os.environ, {ENV_NAMECHANGE_PATH: ""}, clear=False):
+        with patch.dict(os.environ, {"QUANT_NAMECHANGE_PATH": ""},
+                        clear=False):
             self.assertEqual(
                 DEFAULT_NAMECHANGE_PATH, resolve_namechange_path())
-        with patch.dict(os.environ, {ENV_NAMECHANGE_PATH: "/x/nc.parquet"},
+        with patch.dict(os.environ, {"QUANT_NAMECHANGE_PATH": "/x/nc.parquet"},
                         clear=False):
             self.assertEqual("/x/nc.parquet", resolve_namechange_path())
 

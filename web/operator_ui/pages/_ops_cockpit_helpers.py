@@ -43,6 +43,12 @@ from src.inference.ensemble_serving import (
     MEMBER_SPACING_DAYS_MAX,
     MEMBER_SPACING_DAYS_MIN,
 )
+from web.operator_ui.config_forms import (
+    DEFAULT_NAMECHANGE_PATH as DEFAULT_NAMECHANGE_PATH,
+)
+from web.operator_ui.config_forms import (
+    resolve_namechange_path as resolve_namechange_path,
+)
 from web.operator_ui.incumbent import IncumbentIdentity
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -813,26 +819,48 @@ def resolve_delisted_registry() -> str:
 
 # The active-stocks snapshot the recommender needs for the ST filter.
 ENV_NAME_SOURCE = "QUANT_NAME_SOURCE"
-DEFAULT_NAME_SOURCE = "D:/qlib_data/tushare_raw/active_stocks.parquet"
 
 
 def resolve_name_source() -> str:
-    """Active-stocks snapshot: env override > documented default."""
-    return (os.environ.get(ENV_NAME_SOURCE, "").strip()
-            or DEFAULT_NAME_SOURCE)
+    """Active-stocks snapshot — from the SERVING config's own default.
+
+    ``RecommendationConfig.name_source_parquet`` is a ``default_factory``
+    that reads ``QUANT_NAME_SOURCE`` itself, so calling it yields exactly
+    what ``recommend()`` would use. Restating the literal here would let the
+    page print ``--name-source <stale>`` on the very command whose purpose is
+    to name the deployment — and an explicit flag OVERRIDES the new default,
+    so the drift would not merely mislead, it would take effect
+    (codex #431 r23, same class as the namechange duplicate).
+
+    Note this also drops a normalization the page had invented: the factory
+    does NOT ``.strip()`` or treat ``""`` as unset, so ``QUANT_NAME_SOURCE=""``
+    now yields ``""`` here — exactly what ``recommend()`` would receive, and
+    exactly what the command boundary then refuses to render.
+    """
+    from src.inference.daily_recommend import (  # noqa: PLC0415
+        RecommendationConfig,
+    )
+    factory = (RecommendationConfig
+               .__dataclass_fields__["name_source_parquet"].default_factory)
+    if not callable(factory):                 # pragma: no cover - shape guard
+        # Fail loud rather than fall back to a literal: a silent fallback is
+        # how the duplicate this replaced got there in the first place.
+        raise TypeError(
+            "RecommendationConfig.name_source_parquet 不再是 default_factory,"
+            "本页无法再复用出单侧默认值——请重接,不要在此复制字面量。")
+    return str(factory())
 
 
 # The name-change history the gates mask ST/renamed instruments with.
-# `config.yaml` already expands `${QUANT_NAMECHANGE_PATH:-…}`; the default
-# below is that same historical path.
-ENV_NAMECHANGE_PATH = "QUANT_NAMECHANGE_PATH"
-DEFAULT_NAMECHANGE_PATH = "D:/qlib_data/tushare_raw/all_namechanges.parquet"
-
-
-def resolve_namechange_path() -> str:
-    """Name-change history path: env override > documented default."""
-    return (os.environ.get(ENV_NAMECHANGE_PATH, "").strip()
-            or DEFAULT_NAMECHANGE_PATH)
+#
+# RE-EXPORTED from `config_forms` (see the import block at the top of this
+# module), not re-implemented: that module already owns this resolver and the
+# config-run path still uses it to write job configs. A second copy here
+# would let the cockpit's printed gate command and the UI-generated job
+# select DIFFERENT ST histories the moment either default or its
+# normalization drifted — and nothing would flag the divergence
+# (codex #431 r23). Same reasoning as W1's shared incumbent resolver: two
+# surfaces that can disagree about production are worse than one.
 
 
 # ---------------------------------------------------------------------------
