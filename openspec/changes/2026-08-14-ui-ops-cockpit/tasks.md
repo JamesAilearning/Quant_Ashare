@@ -226,10 +226,25 @@
       踢出 `sys.modules` 再重导,同一函数存在两代对象 —— 单跑绿、全量红。
       「看起来更强的断言」前提不成立时反而更弱
 
+## W30 codex #431 r24（P2，属实；r23 我只删了 name_source 那一处规范化）
+- [x] `resolve_model_path` / `resolve_delisted_registry` 改为裸
+      `os.environ.get(VAR, DEFAULT)`,与 CLI 完全同语义  ← C77/C78 咬住
+      显式 flag 会**覆盖**默认值,多余的规范化不是显示问题,是跑在另一个工件上
+- [x] 对拍覆盖**空值与带空白值**(两种拼写的分歧点),不只对拍未设时的默认值
+      实测四态(未设/""/"  "/" /x/y ")UI 与 CLI 逐一相符
+- [x] 处理该改动引出的空路径:`Path("").with_suffix()` 抛 empty name,
+      会把今日推荐页打成 traceback  ← C79 咬住(44 个既有钉同时红)
+      两个读取器返回 None(契约本就是 best-effort-or-None);
+      `model_meta_paths` 拒绝空输入,不臆造一对指向工作目录的路径
+- [x] 今日推荐页直接指明「QUANT_MODEL_PATH 被设为空值」,不让操作人从一条
+      数据源为空的「元信息缺失」告警里反推
+- [x] `config_forms.resolve_namechange_path` **不动**:它的消费者是 YAML 的
+      `${VAR:-default}` 与 UI 作业写入,不是这个 CLI;归属别的模块与别的测试
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C76(C57/C58/C68 随重构作废):72 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C79(C57/C58/C68 随重构作废):75 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

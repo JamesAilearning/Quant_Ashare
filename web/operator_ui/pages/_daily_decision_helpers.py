@@ -78,7 +78,16 @@ def model_meta_paths(model_path: str) -> tuple[Path, Path]:
     (the source of truth for the two sidecar names):
     1. ``<stem>.meta.json``      — hand-curated PROMOTION meta (banner source)
     2. ``<model>.pkl.meta.json`` — ModelTrainer sidecar (carries pkl_sha256)
+
+    PRECONDITION: ``model_path`` names a model. A blank path has no sidecars
+    to name and raises here rather than inventing a pair rooted at the
+    working directory — callers that can see a blank value handle it before
+    asking (see :func:`load_promotion_meta`).
     """
+    if not model_path.strip():
+        raise ValueError(
+            "model_path 为空,没有可命名的 meta 旁文件——调用方应先判空,"
+            "不要在此臆造一对指向工作目录的路径。")
     p = Path(model_path)
     return (p.with_suffix(".meta.json"), p.with_name(p.name + ".meta.json"))
 
@@ -105,12 +114,22 @@ def load_promotion_meta(model_path: str) -> dict[str, Any] | None:
     #330). The trainer sidecar is consumed separately, for the sha cross-check
     only (:func:`load_trainer_sidecar_sha`).
     """
+    if not model_path.strip():
+        # No model path configured at all. `model_meta_paths("")` would raise
+        # (``Path("").with_suffix`` → "empty name") and take the page down
+        # with a traceback; this contract is best-effort-or-None, and "there
+        # is no model to read a sidecar beside" is exactly None. Reachable
+        # since r24 made the resolver stop substituting the default for an
+        # empty QUANT_MODEL_PATH.
+        return None
     promotion_sidecar = model_meta_paths(model_path)[0]
     return _read_json_file(promotion_sidecar)
 
 
 def load_trainer_sidecar_sha(model_path: str) -> str | None:
     """``pkl_sha256`` from the ModelTrainer sidecar (cross-check source)."""
+    if not model_path.strip():
+        return None                      # see load_promotion_meta (r24)
     trainer_sidecar = model_meta_paths(model_path)[1]
     meta = _read_json_file(trainer_sidecar)
     if meta is None:

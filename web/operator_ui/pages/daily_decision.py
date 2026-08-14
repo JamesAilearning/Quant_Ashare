@@ -69,6 +69,16 @@ render_page_header(
 # 模型元信息横幅(常驻页顶)— 缺任一字段 → 醒目 WARN,绝不默认值
 # ---------------------------------------------------------------------------
 _model_path = resolve_model_path()
+if not _model_path.strip():
+    # `QUANT_MODEL_PATH` set but empty. The resolver mirrors the CLI, which
+    # does NOT substitute the default for an empty value (r24), so say the
+    # cause once instead of leaving the operator to read it out of a
+    # "元信息缺失" warning whose data source renders as an empty backtick.
+    st.error(
+        "⚠ **`QUANT_MODEL_PATH` 被设为空值**——出单侧 CLI 同样不会用默认值顶替,"
+        "它会拿着空路径失败。单模型形态下的晋升 meta 因此无从读起。"
+        "请把该环境变量取消设置(用文档默认)或指向真实模型。"
+    )
 # Which model is production ACTUALLY serving? Before this, the banner always
 # described the single model behind QUANT_MODEL_PATH — after the 2026-08-05
 # ensemble cutover that named a RETIRED model on every render.

@@ -23,8 +23,18 @@ DEFAULT_MODEL_PATH = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 
 
 def resolve_model_path() -> str:
-    """The production model path: env override > documented default."""
-    return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
+    """The production model path, with the CLI's EXACT env semantics.
+
+    Raw ``os.environ.get(VAR, DEFAULT)`` — no ``.strip()``, and ``""`` is
+    NOT treated as unset, because ``scripts/daily_recommend._DEFAULT_MODEL``
+    does neither. The ops cockpit prints this value as an explicit
+    ``--model`` flag, so a UI-side normalization the CLI does not share would
+    make the page hand out a command that runs against a DIFFERENT artifact
+    than the one it is describing — the flag overrides, so the divergence
+    would take effect rather than merely mislead (codex #431 r24, same class
+    as the name-source normalization removed in r23).
+    """
+    return os.environ.get(ENV_MODEL_PATH, DEFAULT_MODEL_PATH)
 
 
 # The INCUMBENT ensemble manifest, read-side only. Production switched to a

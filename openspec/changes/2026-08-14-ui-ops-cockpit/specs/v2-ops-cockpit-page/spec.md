@@ -195,6 +195,27 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **AND** 该字段若不再是 `default_factory`，本页 MUST fail loud，
   MUST NOT 退回字面量
 
+#### Scenario: 复用不了 owner 的，必须连环境变量语义一起对齐
+
+- **GIVEN** `scripts/daily_recommend.py` 以裸 `os.environ.get(VAR, DEFAULT)`
+  取值——不 `.strip()`，也不把 `""` 当未设
+- **WHEN** 本页解析 `QUANT_MODEL_PATH` / `QUANT_DELISTED_REGISTRY`
+- **THEN** 本页 MUST 采用同一语义，MUST NOT 自加规范化
+- **AND** 理由:本页把该值印成**显式 flag**，显式 flag 会覆盖默认值——所以
+  多出来的规范化不是「显示得更好看」，而是让照跑的命令作用在**另一个工件**上
+- **AND** 对齐 MUST 覆盖空值与带空白的取值（两种拼写正是分歧所在），
+  MUST NOT 只对拍未设时的默认值
+
+#### Scenario: 语义对齐引出的空值必须被安全处理
+
+- **GIVEN** `QUANT_MODEL_PATH` 被设为空串——本页不再顶替，故空路径可达
+- **THEN** 读取旁文件的可调用物 MUST 返回「没有」，MUST NOT 抛异常把页面
+  打成 traceback（`Path("").with_suffix(...)` 会抛 empty name）
+- **AND** 构造旁文件路径的可调用物 MUST 拒绝空输入，MUST NOT 臆造一对
+  指向工作目录的路径
+- **AND** 页面 MUST 直接指明是该环境变量为空，MUST NOT 只留一条数据源为空的
+  「元信息缺失」告警让操作人自己反推
+
 #### Scenario: 没有 owner 可复用的默认值必须被机器锁住
 
 - **GIVEN** 某路径默认值在仓库中没有单一 owner 可复用

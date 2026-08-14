@@ -812,9 +812,14 @@ TUSHARE_DIR_PLACEHOLDER = "<tushare 原始目录>"
 
 
 def resolve_delisted_registry() -> str:
-    """Delisted registry path: env override > documented default."""
-    return (os.environ.get(ENV_DELISTED_REGISTRY, "").strip()
-            or DEFAULT_DELISTED_REGISTRY)
+    """Delisted registry path, with the CLI's EXACT env semantics.
+
+    Raw ``os.environ.get(VAR, DEFAULT)`` — see
+    :func:`web.operator_ui.incumbent.resolve_model_path` for why the page
+    must not normalize where ``scripts/daily_recommend._DEFAULT_REGISTRY``
+    does not (codex #431 r24).
+    """
+    return os.environ.get(ENV_DELISTED_REGISTRY, DEFAULT_DELISTED_REGISTRY)
 
 
 # The active-stocks snapshot the recommender needs for the ST filter.

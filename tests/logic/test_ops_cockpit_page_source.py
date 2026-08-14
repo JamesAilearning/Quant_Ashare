@@ -663,12 +663,20 @@ class ResolvedCommandTests(unittest.TestCase):
             ENV_DELISTED_REGISTRY,
             resolve_delisted_registry,
         )
-        with patch.dict(os.environ, {ENV_DELISTED_REGISTRY: ""}, clear=False):
+        env = dict(os.environ)
+        env.pop(ENV_DELISTED_REGISTRY, None)
+        with patch.dict(os.environ, env, clear=True):
             self.assertEqual(
                 DEFAULT_DELISTED_REGISTRY, resolve_delisted_registry())
         with patch.dict(os.environ, {ENV_DELISTED_REGISTRY: "/x/y.parquet"},
                         clear=False):
             self.assertEqual("/x/y.parquet", resolve_delisted_registry())
+        # An EMPTY value is not "unset" — the CLI does not substitute the
+        # default for it, so neither may this page (r24). Full four-state
+        # parity against the CLI lives in
+        # tests/governance/test_path_param_defaults.py.
+        with patch.dict(os.environ, {ENV_DELISTED_REGISTRY: ""}, clear=False):
+            self.assertEqual("", resolve_delisted_registry())
 
 
 class SharedIncumbentTests(unittest.TestCase):

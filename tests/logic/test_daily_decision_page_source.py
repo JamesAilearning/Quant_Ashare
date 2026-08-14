@@ -350,6 +350,35 @@ class HelpersRuntimeTests(unittest.TestCase):
             self.assertIsNone(load_promotion_meta(str(model)))
             self.assertEqual(load_trainer_sidecar_sha(str(model)), "ab" * 32)
 
+    def test_a_blank_model_path_reads_no_sidecar_and_does_not_crash(
+            self) -> None:
+        # codex #431 r24: the resolver now mirrors the CLI, which does NOT
+        # substitute the default for an empty QUANT_MODEL_PATH — so a blank
+        # path became reachable here. `Path("").with_suffix(...)` raises
+        # "empty name", which would replace this page with a traceback.
+        # These loaders are best-effort-or-None, and "no model to read a
+        # sidecar beside" is exactly None.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_promotion_meta,
+            load_trainer_sidecar_sha,
+            model_meta_paths,
+        )
+        for blank in ("", "   "):
+            with self.subTest(model_path=repr(blank)):
+                self.assertIsNone(load_promotion_meta(blank))
+                self.assertIsNone(load_trainer_sidecar_sha(blank))
+                # …and the path builder refuses rather than inventing a pair
+                # rooted at the working directory
+                with self.assertRaises(ValueError):
+                    model_meta_paths(blank)
+
+    def test_the_page_names_an_empty_model_path_env_as_the_cause(self) -> None:
+        # Otherwise the operator sees only "元信息缺失" with an empty
+        # backtick where the data source should be (r24).
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("if not _model_path.strip():", page)
+        self.assertIn("`QUANT_MODEL_PATH` 被设为空值", page)
+
     def test_picks_shape_violation_raises_not_empty(self) -> None:
         # codex P2 on #330: missing/non-list picks is a corrupt artifact —
         # it must fail loud, never masquerade as the benign empty state.
