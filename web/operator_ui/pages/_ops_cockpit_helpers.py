@@ -23,6 +23,7 @@ Concretely that means:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -808,6 +809,60 @@ def resolve_namechange_path() -> str:
 # The page already knows the real values; it should print those.
 # ---------------------------------------------------------------------------
 
+# Characters that make a value impossible to render safely for BOTH shells:
+# a single quote (POSIX and PowerShell escape it differently) and any line
+# break (which would end the single-line command and start a new one).
+_UNRENDERABLE_CHARS = ("'", "\n", "\r")
+
+
+class _UnrenderablePath(ValueError):
+    """A resolved value that cannot be put into a cross-shell command.
+
+    Carries the value for the page to DISPLAY (as text, never as command
+    bytes) so the operator can still see which path is the problem.
+    """
+
+    def __init__(self, value: str) -> None:
+        super().__init__(value)
+        self.value = value
+
+
+def _refuses_unrenderable(fn: Any) -> Any:
+    """Turn an unrenderable path into a comment-only stand-in.
+
+    Applied at the BOUNDARY so no builder has to remember: refusing is a
+    property of "this page will not print an unsafe command", not of any
+    single command's construction.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except _UnrenderablePath as exc:
+            refusal = _refused(fn.__name__, "某个已解析路径", exc.value)
+            # rotation_commands returns a tuple; the others a single command.
+            returns_many = "tuple" in str(fn.__annotations__.get("return", ""))
+            return (refusal,) if returns_many else refusal
+    return wrapper
+
+
+def _refused(title: str, what: str, value: str) -> OpsCommand:
+    """A wholly non-runnable stand-in for a command we will not render.
+
+    Every line is a comment in both PowerShell and POSIX, and the offending
+    value appears only in ``note`` — rendered as page text, never as
+    something the operator could paste into a shell.
+    """
+    return OpsCommand(
+        title=f"{title}（无法生成可粘贴命令）",
+        command=("# 本页拒绝为该部署渲染命令:某个已解析路径含无法跨 shell 安全\n"
+                 "# 表达的字符(单引号或换行)。该路径**未**写入命令文本——把它\n"
+                 "# 放进来会让这段「拒绝」本身可执行。请见下方说明。"),
+        note=(f"{what} 的取值无法安全渲染:{value!r}。"
+              "请改用不含单引号/换行的路径,或手工构造该命令。"),
+    )
+
+
 def _arg(value: object) -> str:
     r"""A resolved path, safe to paste as ONE shell argument.
 
@@ -836,8 +891,14 @@ def _arg(value: object) -> str:
     wrong in the other, say so (codex #431 r15).
     """
     text = str(value)
-    if "'" in text:
-        return f"<路径含单引号，无法给出 PowerShell 与 POSIX 通用的写法：{text}>"
+    if any(ch in text for ch in _UNRENDERABLE_CHARS):
+        # NEVER describe the offending value inside the command. The first
+        # attempt did — `<路径含单引号…：{text}>` — and that text is itself
+        # executable: a value like ``a'b' ; touch /tmp/x #`` closes the
+        # quote, runs the command after `;`, and comments out the rest.
+        # Verified locally: the file was created. A refusal that executes
+        # the thing it refuses is worse than no refusal (codex #431 r20).
+        raise _UnrenderablePath(text)
     # UNCONDITIONAL, not shlex.quote's "does this need quoting?" judgement —
     # that judgement is POSIX's. A path named ``@bundle`` needs no quoting in
     # POSIX, so shlex returns it bare, and PowerShell then reads a leading
@@ -848,6 +909,7 @@ def _arg(value: object) -> str:
     return f"'{text}'"
 
 
+@_refuses_unrenderable
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
     provider_uri: str, delisted_registry: str, name_source: str,
@@ -903,6 +965,7 @@ def morning_command(
     )
 
 
+@_refuses_unrenderable
 def data_update_command(
     *, provider_uri: str, delisted_registry: str,
     tushare_dir: str = TUSHARE_DIR_PLACEHOLDER,
@@ -928,6 +991,7 @@ def data_update_command(
     )
 
 
+@_refuses_unrenderable
 def rotation_commands(
     manifest_path: str | None, *, provider_uri: str, namechange_path: str,
 ) -> tuple[OpsCommand, ...]:

@@ -270,17 +270,48 @@ class ResolvedCommandTests(unittest.TestCase):
         toks = shlex.split(cmd.command)
         self.assertEqual("@bundle", toks[toks.index("--provider-dir") + 1])
 
-    def test_a_single_quote_in_a_path_is_refused_not_faked(self) -> None:
-        # POSIX and PowerShell escape an embedded single quote differently
-        # ('"'"' vs ''), so no one rendering is correct in both. Say so
-        # rather than emit something silently wrong in the operator's shell.
+    def test_an_unrenderable_path_yields_a_wholly_inert_command(self) -> None:
+        # codex #431 r20 (P1): the first refusal embedded the raw value —
+        # `<路径含单引号…：{value}>` — and THAT TEXT IS EXECUTABLE. A value
+        # like `a'b' ; touch /tmp/x #` closes the quote, runs the command
+        # after `;`, and comments out the rest; verified locally that the
+        # file was created. A refusal that executes what it refuses is
+        # worse than no refusal at all.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+            rotation_commands,
+        )
+        payload = "a'b' ; touch /tmp/pwned #"
+        for label, cmd in (
+            ("data update",
+             data_update_command(provider_uri=payload, delisted_registry="R")),
+            ("rotation",
+             rotation_commands(payload, provider_uri="P",
+                               namechange_path="N")[0]),
+        ):
+            with self.subTest(command=label):
+                lines = [ln for ln in cmd.command.splitlines() if ln.strip()]
+                self.assertTrue(lines, "拒绝也要有内容")
+                for line in lines:
+                    self.assertTrue(
+                        line.lstrip().startswith("#"),
+                        f"每一行都必须是注释(两种 shell 通用):{line!r}")
+                # the payload must not appear in shell text at all
+                self.assertNotIn(payload, cmd.command)
+                self.assertNotIn(";", cmd.command)
+                self.assertNotIn("touch", cmd.command)
+                # ...but the operator still gets to see it, as page text
+                self.assertIn(payload, cmd.note)
+
+    def test_a_newline_in_a_path_is_unrenderable_too(self) -> None:
+        # A line break would end the single-line command and start another.
         from web.operator_ui.pages._ops_cockpit_helpers import (
             data_update_command,
         )
         cmd = data_update_command(
-            provider_uri="D:/it's here/live", delisted_registry="R")
-        self.assertIn("无法给出 PowerShell 与 POSIX 通用的写法", cmd.command)
-        self.assertNotIn('"' + "'" + '"', cmd.command)
+            provider_uri="D:/a" + chr(10) + "rm -rf x", delisted_registry="R")
+        self.assertNotIn("rm -rf", cmd.command)
+        self.assertIn("无法生成可粘贴命令", cmd.title)
 
     def test_both_gate_commands_name_the_resolved_data_paths(self) -> None:
         # codex #431 r2 (P1): retrain_gate.py has hardcoded
