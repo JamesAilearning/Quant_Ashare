@@ -16,15 +16,30 @@ forward-fill from the announcement day itself, and SHALL NOT impute a missing
 value (no 0, no cross-sectional median, no latest, no future). Missing stays
 missing.
 
-#### Scenario: a filing is invisible before its availability date
-- **WHEN** a report period's `available_from_trade_date` is `D`
-- **THEN** the panel value for that instrument is NA on every trade date before `D`
-- **AND** it equals the disclosure-of-record value on `D` and thereafter (until a
-  newer period becomes available)
+"Not yet available" applies to the PERIOD, never to the cell: while a newer
+filing is pending, the cell continues to serve the latest period that IS
+available. Blanking the cell around each filing would manufacture artificial
+missing intervals that move both coverage and factor values, and it is not what
+"missing stays missing" means — that phrase forbids IMPUTING an absent value,
+not serving a genuinely available older one.
 
-#### Scenario: the announcement day itself is still invisible
+#### Scenario: a new filing is not served before its availability date
+- **WHEN** a report period's `available_from_trade_date` is `D`
+- **THEN** on every trade date before `D` the panel does NOT serve that period —
+  it serves the latest EARLIER period whose availability date has passed
+- **AND** it serves the new period's disclosure-of-record value on `D` and
+  thereafter (until a newer period becomes available)
+
+#### Scenario: a cell is NA only when nothing has become available yet
+- **WHEN** an instrument has no report period whose `available_from_trade_date`
+  is on or before trade date `T`
+- **THEN** the panel value at `T` is NA — a filing being pending never blanks a
+  cell that an earlier available period can still serve
+
+#### Scenario: the announcement day itself does not yet serve the new filing
 - **WHEN** a filing is announced on trade date `A` (post-close assumption)
-- **THEN** the panel value on `A` is NA — availability starts strictly after `A`
+- **THEN** the panel on `A` still serves the previous available period, not the
+  newly announced one — the new period's availability starts strictly after `A`
 
 #### Scenario: a restated period still serves its original disclosure
 - **WHEN** a report period has both an `update_flag=0` and an `update_flag=1` row
@@ -273,9 +288,13 @@ adjacent-period difference.
 
 ### Requirement: The run-bound data contract SHALL record everything needed to rebuild the panel
 
-A run's persisted data contract SHALL carry every input the fundamental panel
-is built from, so a later stage can reconstruct the SAME panel from the run
-alone. The promotion path passes only its persisted data config to the panel
+A run's persisted data contract SHALL carry every DATA input the fundamental
+panel is built from, so a later stage can reconstruct the SAME panel from the
+run alone. The BUILDER itself is the one exception, and it is not a loophole:
+it arrives by injection (see the injection-seam requirement) because the
+isolation gate forbids the alternative, and it is bound instead by its recorded
+identity. Data comes from the contract; the builder comes from the seam; both
+are verified. The promotion path passes only its persisted data config to the panel
 builder, while the view requires a financial store location, a calendar
 identity, and the financial-issuer exclusion set at construction — none of
 which the current contract records. Without them the panel can only be rebuilt
@@ -315,8 +334,9 @@ refusal must land before production is touched at all.
 
 #### Scenario: promotion rebuilds the mined panel from the run alone
 - **WHEN** promotion loads a run and rebuilds its fundamental panel
-- **THEN** every input comes from the run's own persisted contract, with no
-  ambient path, environment default, or global fallback
+- **THEN** every DATA input comes from the run's own persisted contract, with no
+  ambient path, environment default, or global fallback — the builder arrives by
+  injection and is bound by its recorded identity instead
 
 #### Scenario: the run hash covers the fundamental inputs
 - **WHEN** two runs differ only in a fundamental panel input (store, calendar,
@@ -462,8 +482,11 @@ point receives in a real run; only the recorded identity does.
 #### Scenario: a factory cannot certify its own extended output
 - **WHEN** the only evidence offered for an extended promotion is a digest of
   the promoted factory's own effective-window output
-- **THEN** promotion refuses — the baseline must come from mining or from an
-  independently trusted process, never from the factory being checked
+- **THEN** promotion refuses — for an extended window the only admissible
+  output-digest baseline is the independently trusted pre-authorized one;
+  mining cannot supply it, since mining could only ever have covered the
+  original window (the implementation/dependency digest remains the separate
+  admissible route)
 
 #### Scenario: a run with no recorded factory identity is refused
 - **WHEN** a fundamental run predates factory-identity recording
