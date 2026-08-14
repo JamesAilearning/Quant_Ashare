@@ -525,6 +525,11 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     calendar parser need not; accepting them here would hand out a
     confident tail for bytes ``D.calendar()`` rejects, breaking the very
     guarantee this docstring makes (codex #431 r8).
+
+    The shape check runs on the RAW row. Stripping first and validating the
+    stripped value would certify bytes nobody validated (codex #431 r9) —
+    the rule is: **validate what is actually in the file, never a
+    normalization of it.**
     """
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
@@ -532,8 +537,13 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     except OSError as exc:
         return CalendarTail(
             known=False, reason=f"读不到交易日历 {path}:{type(exc).__name__}")
-    rows = [line.strip() for line in raw.splitlines()]
-    while rows and not rows[-1]:
+    # RAW rows — no strip() before validation. Normalizing first and then
+    # checking the normalized value certifies bytes nobody validated: a row
+    # like " 2026-08-03" or "2026-08-03	" would pass the shape check while
+    # qlib's acceptance of that padding is not established (codex #431 r9).
+    # splitlines() only removes the line terminator itself.
+    rows = raw.splitlines()
+    while rows and rows[-1] == "":
         rows.pop()
     if not rows:
         return CalendarTail(known=False, reason=f"交易日历为空:{path}")
@@ -547,7 +557,7 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
             return CalendarTail(
                 known=False,
                 reason=(f"交易日历第 {index} 行不是规范的 YYYY-MM-DD 写法"
-                        f"({value!r});本页不猜测 qlib 会如何解读它"))
+                        f"({value!r};含首尾空白也算);本页不猜测 qlib 会如何解读它"))
         try:
             parsed.append(date.fromisoformat(value))
         except ValueError:

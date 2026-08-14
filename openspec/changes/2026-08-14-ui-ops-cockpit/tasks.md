@@ -92,10 +92,16 @@
 - [x] 补 shape 合法但日期非法的用例（2026-13-45 / 2026-02-30）  ← C35 首轮存活的真实覆盖缺口
 - [x] C39(search vs fullmatch) 经枚举验证为**等价变异**,显式标注  ← 无字符串能 search 过而 fromisoformat 也过
 
+## W15 codex #431 r9（P2，属实；与 r8 同类:校验前先规范化）
+- [x] shape 校验改为作用于**原始行**,不再先 strip  ← C40 咬住
+- [x] 首尾空白用例（前导空格/尾随空格/尾随 tab）  ← 都判不规范
+- [x] 反向钉:真实 CRLF bundle 仍须被接受  ← 生产 day.txt 实为 CRLF,过严会永久「无法判定」
+- [x] C41(read_text vs read_bytes) 经五种行尾验证为**等价变异**,显式标注
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C39:38 杀 + 1 已论证等价(C11/C20/C35 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C41:39 杀 + 2 已论证等价(C11/C20/C35 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

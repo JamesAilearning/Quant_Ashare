@@ -1037,6 +1037,45 @@ class BundleFreshnessTests(unittest.TestCase):
                 self.assertIsNone(got.tail)
                 self.assertTrue(got.reason)
 
+    def _calendar_bytes(self, body: bytes) -> str:
+        # Exact bytes — write_text() would translate \n to os.linesep on
+        # Windows and silently change the fixture out from under the test.
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        (root / "calendars").mkdir()
+        (root / "calendars" / "day.txt").write_bytes(body)
+        return str(root)
+
+    def test_whitespace_padded_rows_are_refused(self) -> None:
+        # codex #431 r9: stripping BEFORE the shape check certifies bytes
+        # nobody validated — qlib's acceptance of a padded row is not
+        # established, so answering known=True for one breaks the
+        # sound-not-exact contract.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        for name, body in (
+            ("leading space", b"2026-07-30\n 2026-08-03\n"),
+            ("trailing space", b"2026-07-30\n2026-08-03 \n"),
+            ("trailing tab", b"2026-07-30\n2026-08-03\t\n"),
+        ):
+            with self.subTest(case=name):
+                got = bundle_calendar_tail(self._calendar_bytes(body))
+                self.assertFalse(got.known, "首尾空白也不是规范写法")
+
+    def test_a_crlf_calendar_is_still_accepted(self) -> None:
+        # Guards against over-strictness in the other direction: the REAL
+        # production bundle writes CRLF, and Python's universal-newline read
+        # normalizes the terminator itself (not the row content). Refusing
+        # those would leave section ⑤ permanently 无法判定 on this machine.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        got = bundle_calendar_tail(
+            self._calendar_bytes(b"2026-07-30\r\n2026-08-03\r\n"))
+        self.assertTrue(got.known, "CRLF 是生产 bundle 的真实格式")
+        self.assertEqual(date(2026, 8, 3), got.tail)
+
     def test_non_canonical_spellings_parse_but_are_still_refused(self) -> None:
         # Guards the REASON the shape check exists: these strings are valid
         # inputs to date.fromisoformat, so a parse-only reader accepts them.
