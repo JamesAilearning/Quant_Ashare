@@ -660,16 +660,28 @@ guarding test suite.
 
 A shift-sensitivity diagnostic SHALL rebuild the panel with every effective
 announcement date shifted later by `N` trading days and compare against the
-baseline. The hash compared SHALL cover the PROVENANCE-BEARING output — values
-AND their availability evidence together — and SHALL change whenever at least
-one SHIFTED disclosure's availability interval CROSSES a sampled trade date (as
-defined below).
+baseline.
 
-Hashing values alone would refuse a correct builder: a delayed filing that
-repeats the preceding period's value for the requested field, or whose field is
-NA in both periods, leaves the value panel identical while its availability
-provenance moves. Including the evidence in the hash keeps the assertion
-unconditional without that false failure.
+The assertion SHALL be on WHICH RECORD IS SERVED, not on a combined hash. For
+each crossing established from the source data (below), at each sampled date
+inside that crossing interval, the shifted rebuild SHALL serve the PREDECESSOR
+disclosure — the latest record still available under the shifted dates — or NA
+where none exists, while the baseline serves the crossing record. The served
+report-period / record provenance is what must move; the diagnostic SHALL
+REFUSE when it does not.
+
+A values-plus-evidence hash is NOT sufficient on its own, and the reason is the
+defect this exists to catch: a report-period-keyed builder can keep serving the
+SAME (still-future) disclosure and its value while copying that record's newly
+shifted `available_from_trade_date` into the evidence. The evidence bytes then
+change, the combined hash changes, and an announcement-BLIND value selection
+passes. Evidence movement can be copied; a change in WHICH PERIOD IS SERVED
+cannot be, without actually consuming the announcement date.
+
+Values MAY legitimately be equal across the shift — a delayed filing may repeat
+the preceding period's value, or the field may be NA in both — so value
+inequality SHALL NOT be required. The hash MAY still be recorded as a
+convenience, but it SHALL NOT be the criterion.
 
 "Falls within the measured window" is NOT the right precondition: a shifted
 filing need not touch any requested field, endpoint, or instrument. A
@@ -682,14 +694,21 @@ sampled trade date lying in the half-open interval between its ORIGINAL
 `available_from_trade_date` and its SHIFTED one — a date at which a correct
 builder must serve it before the shift and not after.
 
+The source rows SHALL first be reduced by the CANONICAL DISCLOSURE-OF-RECORD
+SELECTION (preferred version, earliest effective announcement) before the
+crossing is tested. Raw rows include re-announcements and `update_flag=1`
+restatements that the view never serves; letting one of those establish
+relevance would demand movement a correct panel must not make, and the
+diagnostic would REFUSE the builder for obeying the serve-rule.
+
 That determination SHALL be made from the SOURCE DATA — the store's disclosure
 dates, the shift, the requested fields, and the sampled calendar — and SHALL NOT
 consult the rebuilt panel. Defining relevance as "the baseline serves it and the
 shifted rebuild does not" is circular against exactly the defect this diagnostic
 exists to catch: an announcement-BLIND builder (one keyed on report period)
 keeps serving the same disclosure after the shift, so relevance would never be
-established, the diagnostic would return INCONCLUSIVE, and the unchanged-hash
-refusal below would never fire. The panel output SHALL be used only for the
+established, the diagnostic would return INCONCLUSIVE, and the
+unmoved-served-record refusal below would never fire. The panel output SHALL be used only for the
 sensitivity assertion, never to decide whether the assertion applies.
 
 Merely being served on some sampled date is not enough either — if a
@@ -702,35 +721,51 @@ widen the sample or use the deterministic fixture, not a verdict on the
 builder. Running the assertion on a
 deterministic relevant-record fixture satisfies this by construction.
 
-Given a relevant shifted disclosure, an unchanged panel SHALL be treated as
-proof that the builder does not consume the announcement date at all (e.g. it
-keys on report period) and SHALL REFUSE — a behavioural check that no amount of
-correct-looking code can substitute for.
+Given a relevant shifted disclosure, a served record that does not move SHALL
+be treated as proof that the builder does not consume the announcement date at
+all (e.g. it keys on report period) and SHALL REFUSE — a behavioural check that
+no amount of correct-looking code can substitute for.
 
 #### Scenario: an irrelevant shifted filing does not refuse the builder
 - **WHEN** every shifted disclosure belongs to a field, endpoint, or instrument
   the requested panel does not serve
-- **THEN** the diagnostic reports INCONCLUSIVE rather than REFUSE — the
-  unchanged hash is expected, not evidence of an announcement-blind builder
+- **THEN** the diagnostic reports INCONCLUSIVE rather than REFUSE — an
+  unmoved served record is expected here, not evidence of an announcement-blind
+  builder
 
 #### Scenario: a served filing whose shift crosses no sampled date is inconclusive
 - **WHEN** a shifted disclosure is of a requested field, but its original and
   shifted availability dates fall on the same side of every sampled date
 - **THEN** the diagnostic reports INCONCLUSIVE — no sampled cell could have
-  moved, so the unchanged hash says nothing about the builder
+  moved, so an unmoved served record says nothing about the builder
 
-#### Scenario: a shift that crosses a sampled date must move the hash
-- **WHEN** the source data shows a sampled trade date falling between a shifted
-  disclosure's original and shifted availability dates
-- **THEN** the values-plus-evidence hash differs from the baseline, and an
-  unchanged hash REFUSES
+#### Scenario: a crossing must change which record is served
+- **WHEN** the source data — after disclosure-of-record selection — shows a
+  sampled trade date falling between a shifted disclosure's original and
+  shifted availability dates
+- **THEN** at that date the shifted rebuild serves the predecessor disclosure
+  (or NA if none) while the baseline serves the crossing one, and a served
+  record that does not move REFUSES
 
 #### Scenario: an announcement-blind builder cannot escape via INCONCLUSIVE
 - **WHEN** the builder keys on report period, so the shifted rebuild keeps
   serving the same disclosure as the baseline
 - **THEN** relevance is still established from the source data, the diagnostic
-  reaches its assertion, and the unchanged hash REFUSES — it does not report
-  INCONCLUSIVE
+  reaches its assertion, and the unmoved served record REFUSES — it does not
+  report INCONCLUSIVE
+
+#### Scenario: copied evidence does not satisfy the assertion
+- **WHEN** a rebuild keeps serving the same disclosure but stamps it with the
+  shifted availability date, so values-plus-evidence bytes differ
+- **THEN** the diagnostic still REFUSES — the served report period did not move,
+  and a changed hash is not the criterion
+
+#### Scenario: a restatement row cannot establish relevance
+- **WHEN** the only source row whose shift crosses a sampled date is one the
+  disclosure-of-record selection never serves (a restatement or later
+  re-announcement)
+- **THEN** the diagnostic reports INCONCLUSIVE — a correct panel is unchanged
+  there, and demanding movement would refuse it for obeying the serve-rule
 
 The IC-series assertion SHALL be required only on a DETERMINISTIC FIXTURE
 constructed so that the shift necessarily alters evaluated values or their
@@ -740,22 +775,17 @@ disclosures may fall between sampled evaluation dates, preserve every rank, or
 feed a constant/all-missing candidate — so requiring both unconditionally would
 refuse valid implementations.
 
-#### Scenario: shifting announcements changes the panel
-- **WHEN** the panel is rebuilt with effective announcement dates shifted by
-  `N` trading days AND at least one shifted disclosure's shift CROSSES a
-  sampled date
-- **THEN** the hash of the values-plus-evidence output differs from the baseline
-
 #### Scenario: an announcement-insensitive builder is refused
-- **WHEN** a shifted rebuild whose relevance is established produces identical
-  values AND identical evidence
+- **WHEN** a shifted rebuild whose relevance is established keeps serving the
+  same report period at the crossing dates
 - **THEN** the diagnostic REFUSES, reporting that the announcement date is unused
 
-#### Scenario: an unchanged value with moved evidence is not a failure
-- **WHEN** a served, delayed filing whose shift crosses a sampled date repeats
-  the previous period's value (or the field is NA in both), leaving values
-  identical AT THAT SAMPLED DATE while the evidence moves
-- **THEN** the hash still differs and the diagnostic does not refuse
+#### Scenario: an unchanged value with a moved served period is not a failure
+- **WHEN** at a crossing date the shifted rebuild serves the predecessor period
+  but that period repeats the same value (or the field is NA in both), leaving
+  values identical
+- **THEN** the diagnostic does not refuse — the served record moved, which is
+  what is asserted; value inequality is not required
 
 #### Scenario: IC movement is asserted on a fixture built to move it
 - **WHEN** the shift is applied to the deterministic fixture whose evaluated
