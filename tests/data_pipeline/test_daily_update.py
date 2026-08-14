@@ -1,6 +1,7 @@
 """Orchestrator red-line tests (P3-6a). All fake runners + temp dirs — no real
 fetch, no real qlib build, no real paths."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,7 @@ from src.data_pipeline.daily_update import (  # noqa: E402
     DailyUpdateConfig,
     _run_date_is_non_trading,
     build_plan,
+    default_status_path,
     run_daily_update,
 )
 
@@ -470,6 +472,107 @@ class TradingCalendarGateTests(unittest.TestCase):
             rc = run_daily_update(cfg, rec.all())
             self.assertEqual(rc, EXIT_OK)
             self.assertEqual(rec.calls, [])
+
+
+class StatusArtifactTests(unittest.TestCase):
+    """2026-08-14-daily-update-run-status: every non-dry-run run persists ONE
+    machine-readable terminal record; a write failure never changes the exit
+    code; --dry-run writes nothing."""
+
+    @staticmethod
+    def _read(cfg: DailyUpdateConfig) -> dict:
+        return json.loads(
+            default_status_path(cfg.provider_dir).read_text(encoding="utf-8"))
+
+    def test_success_writes_finished_status(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            st = self._read(cfg)
+            self.assertEqual(st["schema_version"], 1)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_OK)
+            self.assertIsNone(st["failed_stage"])
+            self.assertEqual(st["run_date"], TODAY.isoformat())
+            self.assertTrue(st["started_at"])
+            self.assertTrue(st["finished_at"])
+            self.assertIn("complete", st["detail"])
+
+    def test_running_state_visible_mid_run(self) -> None:
+        # A fake fetch runner reads the artifact MID-RUN: the "running" record
+        # must already be on disk (start-write precedes every stage).
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            seen: dict = {}
+
+            def fetch(argv: list[str]) -> int:
+                seen.update(self._read(cfg))
+                return 1  # hard-fail so the run stops after fetch
+
+            rc = run_daily_update(cfg, {**_Recorder().all(), "fetch": fetch})
+            self.assertEqual(rc, EXIT_FETCH_HARD)
+            self.assertEqual(seen.get("state"), "running")
+            self.assertNotIn("exit_code", seen)
+            # ...and the terminal record overwrote it with the failure.
+            st = self._read(cfg)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_FETCH_HARD)
+            self.assertEqual(st["failed_stage"], "fetch")
+
+    def test_rebuild_failure_records_the_stage_key(self) -> None:
+        # exit 14 covers five stages; the artifact must name WHICH one died.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            _write_snapshot(cfg.tushare_dir)
+            rec = _Recorder(codes={"bins": 2})
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_REBUILD)
+            st = self._read(cfg)
+            self.assertEqual(st["exit_code"], EXIT_REBUILD)
+            self.assertEqual(st["failed_stage"], "bins")
+
+    def test_dry_run_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), dry_run=True)
+            rc = run_daily_update(cfg, _Recorder().all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertFalse(default_status_path(cfg.provider_dir).exists())
+
+    def test_status_write_failure_keeps_exit_code(self) -> None:
+        # status_path's parent is a FILE -> mkdir/rename raises OSError ->
+        # ERROR log, run still reports its own exit code (observability never
+        # flips the data-update result).
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            blocker = tmp / "blocker"
+            blocker.write_text("not a dir", encoding="utf-8")
+            cfg = _config(tmp, status_path=blocker / "status.json")
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            with self.assertLogs("src.data_pipeline.daily_update", level="ERROR"):
+                rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # swap still happened
+
+    def test_weekend_noop_records_exit_0(self) -> None:
+        # The calendar-gate no-op is a deliberate "ran correctly, did nothing" —
+        # the artifact MUST record it so operators can tell it apart from
+        # "the task never fired".
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rc = run_daily_update(cfg, _Recorder().all())
+            self.assertEqual(rc, EXIT_OK)
+            st = self._read(cfg)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_OK)
+            self.assertIsNone(st["failed_stage"])
+            self.assertIn("no-op", st["detail"])
 
 
 if __name__ == "__main__":

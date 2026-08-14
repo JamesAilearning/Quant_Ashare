@@ -29,6 +29,10 @@ from web.operator_ui.bundle_health import (
     summarise_bundle_health,
 )
 from web.operator_ui.page_header import render_page_header
+from web.operator_ui.update_status import (
+    read_update_status,
+    status_path_for_provider,
+)
 
 render_page_header(
     "数据检视",
@@ -58,6 +62,48 @@ provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
 if not provider_dir.exists():
     st.error(f"目录不存在:{provider_dir}")
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Section 0: last data-update run status (2026-08-14-daily-update-run-status).
+# The scheduled overnight refresh writes one machine-readable record per run as
+# a SIBLING of the provider dir; this section renders it read-only so the
+# operator sees "did the last refresh succeed, and if not, where did it die"
+# without leaving the UI. Missing file = never recorded (fresh machine), not an
+# error; a corrupt record is shown loud, never defaulted.
+# ---------------------------------------------------------------------------
+st.subheader("上次数据更新")
+_update_status = read_update_status(status_path_for_provider(provider_dir))
+if _update_status.kind == "missing":
+    st.info(
+        "从未记录数据更新运行（状态文件不存在）。新机或首跑前属正常；"
+        "若计划任务已在运行，请确认其写权限。"
+    )
+elif _update_status.kind == "corrupt":
+    st.error(
+        f"⚠ 更新状态记录损坏（绝不用默认值顶替）：{_update_status.error}"
+        f"（文件：{_update_status.path}）"
+    )
+elif _update_status.kind == "running":
+    st.info(
+        f"🔄 数据更新**正在运行**：始于 {_update_status.started_at or '?'} "
+        f"（run_date={_update_status.run_date or '?'}）。完成后本小节显示终态。"
+    )
+elif _update_status.ok:
+    st.success(
+        f"🟢 上次更新成功（exit 0 — {_update_status.exit_meaning}）："
+        f"run_date={_update_status.run_date or '?'}，"
+        f"{_update_status.started_at or '?'} → {_update_status.finished_at or '?'}"
+        f"{('。' + _update_status.detail) if _update_status.detail else ''}"
+    )
+else:
+    st.error(
+        f"🔴 上次更新**失败**：exit {_update_status.exit_code} "
+        f"（{_update_status.exit_meaning}），"
+        f"失败阶段：**{_update_status.failed_stage or '?'}** — "
+        f"{_update_status.detail or '（无详情）'}。"
+        f"run_date={_update_status.run_date or '?'}，"
+        f"失败于 {_update_status.finished_at or '?'}。排查后重跑。"
+    )
 
 # ---------------------------------------------------------------------------
 # Section 1: fetch-integrity stamp (P3-4c) — was this bundle built from a

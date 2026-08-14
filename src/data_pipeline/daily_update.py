@@ -52,9 +52,11 @@ Stage notes:
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -69,6 +71,18 @@ from src.data_pipeline.bundle_swap import (
 )
 
 _logger = get_logger(__name__)
+
+# Operator-facing timestamps use fixed +08:00, mirroring the repo convention
+# (src/inference/daily_recommend.py, web/operator_ui/formatting.py). No DST in
+# China, so the fixed offset is exact and avoids a tzdata dependency.
+_CN_TZ = timezone(timedelta(hours=8))
+
+# Run-status artifact (2026-08-14-daily-update-run-status): one machine-readable
+# JSON per run so operators (and the read-only UI) can answer "did last night's
+# update succeed, and if not, where did it die" without parsing the rolling log.
+# Observability only — never a canonical input; see the proposal's Non-goals.
+STATUS_FILENAME = "daily_update_status.json"
+_STATUS_SCHEMA_VERSION = 1
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "data_pipeline"
 
@@ -91,6 +105,40 @@ class DailyUpdateError(RuntimeError):
     """Configuration / orchestration failure (fail-loud)."""
 
 
+def default_status_path(provider_dir: Path) -> Path:
+    """The run-status artifact's default location: a SIBLING of the provider
+    dir (``<provider>.parent/daily_update_status.json``), so it survives the
+    atomic swap (which only renames the provider dir itself) and is derivable
+    from the one path every consumer already knows (``QUANT_PROVIDER_URI`` /
+    ``--provider-dir``)."""
+    return provider_dir.parent / STATUS_FILENAME
+
+
+def _write_status(path: Path, payload: Mapping[str, object]) -> None:
+    """Atomic status write (temp + rename): a killed process must never leave
+    a half-written JSON that the UI would read as corrupt."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _record_status(path: Path, payload: Mapping[str, object]) -> None:
+    """Best-effort status write: an observability failure SHALL NOT change the
+    run's exit code (reverse coupling). Logged ERROR so the gap is visible."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_status(path, payload)
+    except OSError as exc:
+        _logger.error(
+            "run-status artifact write FAILED (%s): %s — the run's exit code "
+            "is unaffected; the UI will keep showing the previous record.",
+            path, exc,
+        )
+
+
 @dataclass(frozen=True)
 class DailyUpdateConfig:
     """Inputs for one daily update run. All paths explicit — no env coupling."""
@@ -110,6 +158,10 @@ class DailyUpdateConfig:
     allow_holey_fetch: bool = False
     dry_run: bool = False
     rate_limit_sleep_ms: int | None = None  # None -> 01's own default
+    # Run-status artifact location. None -> default_status_path(provider_dir)
+    # (sibling of the provider dir, surviving the swap). Explicit override via
+    # the CLI's --status-path keeps the chain's "paths explicit" discipline.
+    status_path: Path | None = None
     # Injectable "today" (value-injection): drives end_date's default and the
     # snapshot-freshness verification. Production leaves None -> system date.
     now: date | None = None
@@ -319,8 +371,45 @@ def run_daily_update(
 ) -> int:
     """Run the full daily update; returns the process exit code.
 
+    Also persists the run-status artifact (schema v1, see STATUS_FILENAME):
+    ``state="running"`` at start, ``state="finished"`` + exit_code +
+    failed_stage at every terminal state. A ``--dry-run`` mutates nothing —
+    including this artifact — so it returns before any status write.
+    """
+    if config.dry_run:
+        return _execute_daily_update(config, runners)[0]
+    status_path = config.status_path or default_status_path(config.provider_dir)
+    run_date = config.now if config.now is not None else date.today()
+    started_at = datetime.now(tz=_CN_TZ)
+    base = {
+        "schema_version": _STATUS_SCHEMA_VERSION,
+        "run_date": run_date.isoformat(),
+        "started_at": started_at.isoformat(),
+    }
+    _record_status(status_path, {**base, "state": "running"})
+    exit_code, failed_stage, detail = _execute_daily_update(config, runners)
+    _record_status(status_path, {
+        **base,
+        "state": "finished",
+        "finished_at": datetime.now(tz=_CN_TZ).isoformat(),
+        "exit_code": exit_code,
+        "failed_stage": failed_stage,
+        "detail": detail,
+    })
+    return exit_code
+
+
+def _execute_daily_update(
+    config: DailyUpdateConfig,
+    runners: Mapping[str, Runner] | None = None,
+) -> tuple[int, str | None, str]:
+    """The orchestration body; returns ``(exit_code, failed_stage, detail)``.
+
     ``runners`` overrides the per-stage entry points (tests inject fakes; the
-    default loads the real numbered scripts).
+    default loads the real numbered scripts). ``failed_stage`` is the stage key
+    (``fetch`` / ``snapshot`` / ``registry`` / … / ``validate`` / ``swap`` /
+    ``startup_repair``), ``None`` on success; ``detail`` is a one-line
+    human-readable summary for the status artifact.
     """
     active = dict(_default_runners())
     if runners:
@@ -340,7 +429,7 @@ def run_daily_update(
         _logger.info("  [dry-run] startup bundle state: %s", state)
         _logger.info("  [dry-run] swap: %s -> %s", new_dir(config.provider_dir),
                      config.provider_dir)
-        return EXIT_OK
+        return EXIT_OK, None, "dry-run (nothing executed)"
 
     # Stage 0: resolve any crash-interrupted prior swap BEFORE the calendar gate. A
     # Friday swap that crashed mid-rename leaves the LIVE provider missing; repair either
@@ -357,7 +446,8 @@ def run_daily_update(
         action = check_and_repair(config.provider_dir)
     except OSError as exc:
         _logger.error("Startup bundle-state repair FAILED: %s", exc)
-        return EXIT_UNREPAIRABLE
+        return EXIT_UNREPAIRABLE, "startup_repair", (
+            f"startup bundle-state repair failed: {exc}")
     if action != "healthy":
         _logger.warning("Startup bundle-state action: %s", action)
 
@@ -387,7 +477,8 @@ def run_daily_update(
                 "(calendar gate; pass --end-date to force a backfill/catch-up).",
                 run_date.isoformat(),
             )
-            return EXIT_OK
+            return EXIT_OK, None, (
+                f"non-trading-day calendar gate no-op ({run_date.isoformat()})")
         _logger.warning(
             "daily_update: %s is a non-trading day but NO usable live bundle exists at "
             "%s — skipping the weekend no-op and running the full pipeline to BOOTSTRAP "
@@ -407,15 +498,17 @@ def run_daily_update(
             "Re-run to self-heal the holes, or pass --allow-holey-fetch to "
             "build a research bundle from partial data."
         )
-        return EXIT_FETCH_HOLES
+        return EXIT_FETCH_HOLES, "fetch", (
+            "fetch completed with holes; --allow-holey-fetch not given")
     if rc not in (0, 3):
         _logger.error("Fetch FAILED (exit %d); aborting the update.", rc)
-        return EXIT_FETCH_HARD
+        return EXIT_FETCH_HARD, "fetch", f"fetch failed hard (exit {rc})"
 
     # Stage 2: prove the active-stocks snapshot was refreshed today.
     rc = _verify_snapshot_refreshed(config, run_date)
     if rc != EXIT_OK:
-        return rc
+        return rc, "snapshot", (
+            "active-stocks snapshot not refreshed to the run date")
 
     # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04 -> 07;
     # 05 must precede 03/04/07 because its staging-promote REPLACES the output
@@ -427,7 +520,8 @@ def run_daily_update(
         if rc != 0:
             _logger.error("Rebuild stage %r FAILED (exit %d); the live bundle "
                           "is untouched.", stage, rc)
-            return EXIT_REBUILD
+            return EXIT_REBUILD, stage, (
+                f"rebuild stage {stage!r} failed (exit {rc})")
 
     # Stage 4: validate the STAGED bundle. Only a pass reaches the swap.
     # 06's exit convention: 0 = clean, 1 = WARNINGS ONLY (every check passed —
@@ -446,13 +540,14 @@ def run_daily_update(
             "Validation FAILED (exit %d) on %s; NOT swapping — the live "
             "bundle stays as it was.", rc, new_dir(config.provider_dir),
         )
-        return EXIT_VALIDATE
+        return EXIT_VALIDATE, "validate", (
+            f"validation failed (exit {rc}) on the staged bundle; not swapping")
 
     # Stage 5: atomic two-stage swap.
     try:
         swap(config.provider_dir)
     except (BundleSwapError, OSError) as exc:
         _logger.error("Swap FAILED: %s", exc)
-        return EXIT_SWAP
+        return EXIT_SWAP, "swap", f"swap failed: {exc}"
     _logger.info("Daily update complete: %s is live.", config.provider_dir)
-    return EXIT_OK
+    return EXIT_OK, None, f"daily update complete; {config.provider_dir} is live"

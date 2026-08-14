@@ -1,0 +1,43 @@
+# Delta for v2-daily-data-update
+
+## ADDED Requirements
+
+### Requirement: 每次运行 SHALL 落盘一份机器可读的终态状态工件
+
+`run_daily_update` SHALL persist a run-status JSON artifact at
+`<provider_dir>.parent/daily_update_status.json` (overridable via the CLI
+`--status-path`): written with `state: "running"` at run start, and rewritten
+with `state: "finished"`, the run's `exit_code`, the failing stage key
+(`failed_stage`, `null` on success) and a human-readable `detail` at every
+terminal state OF THE ORCHESTRATOR — including the non-trading-day
+calendar-gate no-op (exit 0). CLI-level exits that never enter the orchestrator
+(config error exit 2; single-flight conflict exit 17) SHALL NOT write the
+artifact: a refused second run must not clobber the record of the legitimate
+run holding the lock. The write SHALL be atomic (temp file + rename). A
+`--dry-run` SHALL NOT write the artifact. A failure to write the artifact
+SHALL be logged as an error and SHALL NOT change the run's exit code — the
+artifact is observability, never a canonical input, and no module outside
+`src/data_pipeline/daily_update.py` SHALL consume it inside `src/`.
+
+#### Scenario: 成功运行留下 finished/0 记录
+- **WHEN** 一次完整运行全部阶段通过并完成 swap
+- **THEN** 状态工件为 `state: "finished"`、`exit_code: 0`、
+  `failed_stage: null`，且 `started_at`/`finished_at` 齐全
+
+#### Scenario: 失败运行记录失败阶段与退出码
+- **WHEN** 任一阶段失败并短路（如 fetch 硬失败 exit 11、validate 失败
+  exit 15、swap 失败 exit 16）
+- **THEN** 状态工件为 `state: "finished"`、对应该阶段的 `exit_code` 与
+  `failed_stage` 阶段键，且不出现后续阶段的记录
+
+#### Scenario: 干跑与日历门 no-op 的写入边界
+- **WHEN** `--dry-run` 运行
+- **THEN** 状态工件不被创建或修改
+- **WHEN** 非交易日日历门 no-op（exit 0）
+- **THEN** 状态工件照常记录该次运行（exit 0、无 failed_stage），操作人
+  能看到「任务按时跑了且正确地没做事」
+
+#### Scenario: 状态写失败不反转运行结果
+- **WHEN** 状态工件写入本身失败（如目标目录不可写）
+- **THEN** 运行以原有退出码结束并记录 ERROR 日志——可观测性故障绝不
+  改变数据更新的成败
