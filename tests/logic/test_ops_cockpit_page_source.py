@@ -1306,6 +1306,34 @@ class SpecSelfConsistencyTests(unittest.TestCase):
                 / "specs" / "v2-ops-cockpit-page"
                 / "spec.md").read_text(encoding="utf-8")
 
+    @staticmethod
+    def _clauses(text: str) -> list[str]:
+        """Logical clauses, the way Markdown actually groups them.
+
+        Three earlier shapes of this guard each missed a different way of
+        writing the same contradictory mandate (all found by mutation on
+        this pin):
+
+        * per PARAGRAPH — satisfied by a ``MUST NOT`` elsewhere in it;
+        * per PUNCTUATION over the whole file — headings and bullets carry
+          no 。/，, so one "clause" ran across dozens of lines;
+        * per LINE — an ordinary Markdown reflow splits
+          ``尾部日期 MUST 使用`` from ``summarise_bundle_health()`` and
+          neither line holds both terms (codex #431 r13).
+
+        So: blank lines separate blocks, a new bullet or heading starts a
+        new statement, wrapped continuation lines are rejoined, and only
+        then is the statement split on Chinese sentence punctuation.
+        """
+        import re
+        out: list[str] = []
+        for block in re.split(r"\n\s*\n", text):
+            for statement in re.split(r"\n(?=\s*[-*#])", block):
+                joined = " ".join(
+                    line.strip() for line in statement.split("\n"))
+                out.extend(re.split(r"[。；，]", joined))
+        return out
+
     def test_the_other_tail_source_only_ever_appears_as_a_prohibition(self) -> None:
         # Encode the contradiction risk itself rather than "every paragraph
         # must name the file": the byte-CONTRACT scenario legitimately talks
@@ -1313,23 +1341,44 @@ class SpecSelfConsistencyTests(unittest.TestCase):
         # is `summarise_bundle_health` appearing as a POSITIVE mandate for
         # the tail, which is exactly the stale MUST codex found.
         #
-        # Scoped per LINE, then per clause. Two earlier attempts were fooled:
-        # a paragraph-level check is satisfied by a MUST NOT elsewhere in the
-        # same paragraph, and punctuation-only splitting does not isolate
-        # anything in markdown — headings and bullets carry no 。/，, so one
-        # "clause" ran across dozens of lines and swallowed an unrelated
-        # MUST NOT (both caught by mutation C46 on this pin).
-        import re
         offenders = [
             clause.strip()[:80]
-            for line in self._spec().split("\n")
-            for clause in re.split(r"[。；，]", line)
+            for clause in self._clauses(self._spec())
             if "尾部日期" in clause
             and "summarise_bundle_health" in clause
             and "MUST NOT" not in clause
         ]
         self.assertEqual([], offenders,
                          "identity tail 只能以禁止形式出现在尾部来源的规定里")
+
+    def test_the_clause_parser_survives_every_way_of_writing_it(self) -> None:
+        # The guard is only as good as its notion of "one statement". Drive
+        # the parser directly with each shape that fooled an earlier version
+        # — same line, reflowed across lines, and inside a bullet — so a
+        # future rewrite of the spec cannot smuggle the mandate back in
+        # through formatting alone.
+        offending_shapes = (
+            "尾部日期 MUST 使用 `summarise_bundle_health()`。",
+            "尾部日期 MUST 使用\n`summarise_bundle_health()`。",
+            "- **THEN** 尾部日期 MUST 使用\n  `summarise_bundle_health()`。",
+            "页面 MUST 用 `summarise_bundle_health()` 取 bundle 尾部日期，\n"
+            "MUST NOT 新造第二个阈值。",
+        )
+        for shape in offending_shapes:
+            with self.subTest(shape=shape.replace("\n", "\\n")[:50]):
+                bad = [
+                    c for c in self._clauses(shape)
+                    if "尾部日期" in c and "summarise_bundle_health" in c
+                    and "MUST NOT" not in c
+                ]
+                self.assertTrue(bad, "这种写法必须被判为违规")
+        # ...and the legitimate prohibition is NOT flagged.
+        allowed = "尾部日期 MUST 读自 `calendars/day.txt`，MUST NOT 取自 " \
+                  "`summarise_bundle_health()` 偏好的 identity tail。"
+        self.assertEqual(
+            [], [c for c in self._clauses(allowed)
+                 if "尾部日期" in c and "summarise_bundle_health" in c
+                 and "MUST NOT" not in c])
 
     def test_the_calendar_file_is_named_as_the_tail_source(self) -> None:
         # ...and the positive side is stated somewhere, so the prohibition
