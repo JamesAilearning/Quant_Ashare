@@ -15,6 +15,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# The RETIRED single model — still the incumbent on a deployment that
+# explicitly opted out of the ensemble. Mirrors the CLI default
+# (scripts/daily_recommend._DEFAULT_MODEL) and docs/operations-env-vars.md.
+ENV_MODEL_PATH = "QUANT_MODEL_PATH"
+DEFAULT_MODEL_PATH = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
+
+
+def resolve_model_path() -> str:
+    """The production model path: env override > documented default."""
+    return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
+
+
 # The INCUMBENT ensemble manifest, read-side only. Production switched to a
 # 3-member csi800 N5 ensemble on 2026-08-05; before this pointer existed the
 # banner had no way to know that and kept describing the retired single model

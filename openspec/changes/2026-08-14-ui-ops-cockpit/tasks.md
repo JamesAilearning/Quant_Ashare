@@ -37,10 +37,18 @@
 - [x] `docs/operations-env-vars.md`：`QUANT_ENSEMBLE_MANIFEST` 的  ← 已补第二个消费者 + QUANT_PROVIDER_URI 行
       「Consumed by: operator UI ONLY (今日推荐 …)」一行需同步（新增消费者）
 
+## W7 codex #431 r1（两条 P2，均属实）
+- [x] gate 读取改为**单次读**：摘要与解析取自同一 buffer  ← 原实现先哈希后重读,中间可被换文件
+- [x] 命令改由**已解析部署状态**生成，不印 `$QUANT_*`  ← 未设时 shell 展开成空串
+- [x] 单模型 opt-out → `--model` 形态（`none` 不能当路径传）  ← C13 咬住
+- [x] 现任不可解析 → 不给可运行命令  ← C14 咬住;不交出指向未确认模型的命令
+- [x] `resolve_model_path` 一并上移 incumbent.py（驾驶舱也要用）  ← 再 re-export
+- [x] 续行符修复（heredoc 曾吞掉一个反斜杠，命令印成字面 `\n`）  ← 新增钉守真续行
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C10 十处全落地全咬红
-- [x] 全量快速套件 + openspec validate --strict  ← 4189 passed;openspec 45/45
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C15 十五处全落地全咬红(C11 首轮存活已补钉)
+- [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

@@ -70,37 +70,138 @@ class IrreversibleCommandTests(unittest.TestCase):
     must not read like the read-only ones next to it."""
 
     def test_the_two_irreversible_commands_are_flagged(self) -> None:
+        from web.operator_ui.incumbent import IncumbentIdentity
         from web.operator_ui.pages._ops_cockpit_helpers import (
-            DATA_UPDATE_COMMAND,
-            MORNING_COMMAND,
-            ROTATION_COMMANDS,
+            data_update_command,
+            morning_command,
+            rotation_commands,
         )
-        self.assertTrue(DATA_UPDATE_COMMAND.irreversible, "换库是不可逆的")
-        execute = [c for c in ROTATION_COMMANDS if "execute" in c.command]
+        self.assertTrue(
+            data_update_command(provider_uri="P", delisted_registry="R"
+                                ).irreversible, "换库是不可逆的")
+        execute = [c for c in rotation_commands("M") if "execute" in c.command]
         self.assertEqual(1, len(execute))
         self.assertTrue(execute[0].irreversible, "轮换执行改写生产 manifest")
         # ...and the read-only one is NOT flagged, so the flag keeps meaning
         # something.
-        self.assertFalse(MORNING_COMMAND.irreversible)
+        self.assertFalse(morning_command(
+            IncumbentIdentity(kind="ensemble", manifest_path="m.json",
+                              manifest_sha256="a" * 64),
+            model_path="x.pkl").irreversible)
 
     def test_the_page_renders_the_irreversible_marker(self) -> None:
         page = _PAGE.read_text(encoding="utf-8")
         self.assertIn("cmd.irreversible", page)
         self.assertIn("不可逆", page)
 
-    def test_commands_carry_no_hardcoded_local_paths(self) -> None:
-        # The repo's rule for tracked files. Command text uses documented
-        # env vars or <placeholders>; the runbook's machine-specific forms
-        # stay in the runbook.
+
+class ResolvedCommandTests(unittest.TestCase):
+    """Commands are built from the deployment state the page RESOLVED.
+
+    codex #431 r1: printing `$QUANT_PROVIDER_URI` looks portable and is
+    worse than useless — only ``daily_recommend.py`` reads QUANT_* itself, so
+    on the supported layout (variables unset, UI falling back to documented
+    defaults) the operator's shell expands it to an empty string. Under the
+    single-model opt-out the variable's literal value is ``none``, so the
+    pasted command is rejected outright. The page already knows the real
+    values.
+    """
+
+    def _ensemble(self) -> object:
+        from web.operator_ui.incumbent import IncumbentIdentity
+        return IncumbentIdentity(
+            kind="ensemble", manifest_path="/srv/prod_manifest.json",
+            manifest_sha256="a" * 64)
+
+    def test_no_generated_command_prints_a_shell_variable(self) -> None:
+        from web.operator_ui.incumbent import IncumbentIdentity
         from web.operator_ui.pages._ops_cockpit_helpers import (
-            DATA_UPDATE_COMMAND,
-            MORNING_COMMAND,
-            ROTATION_COMMANDS,
+            data_update_command,
+            morning_command,
+            rotation_commands,
         )
-        for cmd in (MORNING_COMMAND, DATA_UPDATE_COMMAND, *ROTATION_COMMANDS):
+        commands = [
+            morning_command(self._ensemble(), model_path="/srv/m.pkl"),  # type: ignore[arg-type]
+            morning_command(IncumbentIdentity(kind="single"),
+                            model_path="/srv/m.pkl"),
+            morning_command(IncumbentIdentity(kind="unresolvable", error="x"),
+                            model_path="/srv/m.pkl"),
+            data_update_command(provider_uri="/srv/bundle",
+                                delisted_registry="/srv/reg.parquet"),
+            *rotation_commands("/srv/prod_manifest.json"),
+        ]
+        for cmd in commands:
             with self.subTest(cmd=cmd.title):
-                self.assertNotIn("D:/", cmd.command)
-                self.assertNotIn("D:\\", cmd.command)
+                self.assertNotIn("$QUANT", cmd.command,
+                                 "未设时 shell 会展开成空串")
+
+    def test_ensemble_deployment_gets_the_resolved_manifest(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl")  # type: ignore[arg-type]
+        self.assertIn("--ensemble-manifest /srv/prod_manifest.json", cmd.command)
+
+    def test_single_model_deployment_gets_a_single_model_command(self) -> None:
+        # The opt-out's pointer value is literally `none`; passing that to
+        # --ensemble-manifest is rejected by the CLI.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        cmd = morning_command(
+            IncumbentIdentity(kind="single"), model_path="/srv/m.pkl")
+        self.assertIn("--model /srv/m.pkl", cmd.command)
+        self.assertNotIn("--ensemble-manifest", cmd.command)
+        self.assertNotIn("none", cmd.command)
+
+    def test_unresolvable_incumbent_gets_no_runnable_command(self) -> None:
+        # Naming a manifest here would hand over a command to score with a
+        # model the page just refused to vouch for.
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        cmd = morning_command(
+            IncumbentIdentity(kind="unresolvable",
+                              manifest_path="/srv/broken.json", error="boom"),
+            model_path="/srv/m.pkl")
+        self.assertTrue(cmd.command.lstrip().startswith("#"))
+        self.assertNotIn("/srv/broken.json", cmd.command)
+        self.assertNotIn("daily_recommend.py --", cmd.command)
+
+    def test_data_update_embeds_every_resolved_path(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            TUSHARE_DIR_PLACEHOLDER,
+            data_update_command,
+        )
+        cmd = data_update_command(
+            provider_uri="/srv/bundle", delisted_registry="/srv/reg.parquet")
+        self.assertIn("--provider-dir /srv/bundle", cmd.command)
+        self.assertIn("--delisted-registry /srv/reg.parquet", cmd.command)
+        # The one argument with no documented env var stays an honest
+        # placeholder rather than a variable that expands to nothing.
+        self.assertIn(TUSHARE_DIR_PLACEHOLDER, cmd.command)
+        self.assertIn("不读", cmd.note)
+
+    def test_line_continuations_are_real(self) -> None:
+        # A literal backslash-n would paste as one broken line.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+        )
+        cmd = data_update_command(provider_uri="P", delisted_registry="R")
+        self.assertIn("\\\n", cmd.command)
+        self.assertNotIn("\\n ", cmd.command)
+
+    def test_delisted_registry_resolver_follows_the_env_var(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            DEFAULT_DELISTED_REGISTRY,
+            ENV_DELISTED_REGISTRY,
+            resolve_delisted_registry,
+        )
+        with patch.dict(os.environ, {ENV_DELISTED_REGISTRY: ""}, clear=False):
+            self.assertEqual(
+                DEFAULT_DELISTED_REGISTRY, resolve_delisted_registry())
+        with patch.dict(os.environ, {ENV_DELISTED_REGISTRY: "/x/y.parquet"},
+                        clear=False):
+            self.assertEqual("/x/y.parquet", resolve_delisted_registry())
 
 
 class SharedIncumbentTests(unittest.TestCase):
@@ -192,6 +293,47 @@ class GateCardTests(unittest.TestCase):
         self.assertEqual(1, len(cards))
         self.assertFalse(cards[0].evidence_intact)
         self.assertIsNone(cards[0].overall, "未与授权绑定的文件不得陈述结论")
+
+    def test_the_parsed_bytes_are_the_hashed_bytes(self) -> None:
+        # codex #431 r1: hashing the path and then re-READING it to parse
+        # leaves a window — the baseline's recorded path is under the mutable
+        # output/ tree — in which a swapped file passes the digest check and
+        # then supplies the verdict that gets displayed as authorized.
+        #
+        # Simulated deterministically: the file on disk holds the authorized
+        # bytes, but any second read returns different content. A single-read
+        # implementation never sees the swap; a re-reading one shows FAIL
+        # while still claiming the evidence is intact.
+        import hashlib
+        import tempfile
+        from unittest.mock import patch
+
+        from web.operator_ui.pages._ops_cockpit_helpers import read_gate_cards
+        authorized = json.dumps(self._gate(overall="PASS")).encode("utf-8")
+        swapped = json.dumps(self._gate(overall="FAIL")).encode("utf-8")
+        real_read_text = Path.read_text
+
+        def swapping(self_path: Path, *a: object, **kw: object) -> str:
+            if self_path.name == "g.json":
+                return swapped.decode("utf-8")
+            return real_read_text(self_path, *a, **kw)  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "g.json").write_bytes(authorized)
+            bl = tmp / "baseline.json"
+            bl.write_text(json.dumps(self._baseline({"member[0]": {
+                "path": "g.json",
+                "sha256": hashlib.sha256(authorized).hexdigest()}})),
+                encoding="utf-8")
+            with patch.object(Path, "read_text", swapping):
+                cards, _ = read_gate_cards(
+                    baseline_path=bl, evidence_dir=tmp, root=tmp)
+        self.assertEqual(1, len(cards))
+        self.assertTrue(cards[0].evidence_intact)
+        self.assertEqual(
+            "PASS", cards[0].overall,
+            "显示的必须是被授权的那份字节,不是之后被换上去的")
 
     def test_a_missing_gate_block_is_reported(self) -> None:
         import hashlib

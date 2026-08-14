@@ -20,6 +20,30 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **WHEN** 页面展示会改写生产 manifest 或不可逆的命令
 - **THEN** 该命令 MUST 带显著的不可逆标注，MUST NOT 与只读命令同等呈现
 
+### Requirement: 命令由已解析的部署状态生成
+
+页面展示的命令 MUST 由本页**已解析**的部署状态构造，MUST NOT 印出
+`$QUANT_*` 这类环境变量拼写——出单侧之外的脚本并不读这些变量，未设时
+操作人的 shell 会把它展开成空串，得到一条静默做错事的「可复制」命令。
+无对应环境变量的参数 MUST 以显式占位符呈现，并说明其来源。
+
+#### Scenario: 未设变量的默认部署
+
+- **GIVEN** `QUANT_*` 均未设，页面按文档化默认解析
+- **THEN** 命令中出现的是解析后的真实路径，MUST NOT 出现 `$QUANT_*`
+
+#### Scenario: 单模型 opt-out 部署
+
+- **GIVEN** `QUANT_ENSEMBLE_MANIFEST` 显式为 `none`
+- **THEN** 晨跑命令为 `--model <已解析模型路径>` 形态
+- **AND** MUST NOT 出现 `--ensemble-manifest`，MUST NOT 把 `none` 当路径传入
+
+#### Scenario: 现任不可解析时不给出可运行命令
+
+- **GIVEN** 现任指针不可解析
+- **THEN** 页面 MUST NOT 给出一条指向该 manifest 的可运行命令——
+  那等于交给操作人一条用无法确认之模型出单的命令
+
 ### Requirement: 现任身份由两页共用的同一解析器给出
 
 驾驶舱与今日推荐页 MUST 通过**同一个**现任解析器取得生产模型身份，
@@ -54,6 +78,13 @@ MUST NOT 显示 PASS。
 
 - **GIVEN** 某作用域的工件缺少 `expected_gates(scope)` 中的某一道门
 - **THEN** 页面显示缺门清单，该卡片 MUST NOT 呈现为通过
+
+#### Scenario: 转录的必须是被哈希的那份字节
+
+- **GIVEN** 基线记录路径下的工件在两次读取之间被替换
+- **WHEN** 页面渲染该 gate 卡片
+- **THEN** 每个候选文件 MUST 只读取一次，摘要与解析 MUST 取自同一块 buffer
+- **AND** MUST NOT 出现「摘要按旧字节通过、结论来自新字节」的状态
 
 #### Scenario: 贴边余量必须可见
 

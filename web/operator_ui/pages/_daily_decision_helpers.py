@@ -7,7 +7,6 @@ No Streamlit imports here — everything is unit-testable plain Python
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +22,13 @@ from web.operator_ui.incumbent import (
     DEFAULT_ENSEMBLE_MANIFEST as DEFAULT_ENSEMBLE_MANIFEST,
 )
 from web.operator_ui.incumbent import (
+    DEFAULT_MODEL_PATH as DEFAULT_MODEL_PATH,
+)
+from web.operator_ui.incumbent import (
     ENV_ENSEMBLE_MANIFEST as ENV_ENSEMBLE_MANIFEST,
+)
+from web.operator_ui.incumbent import (
+    ENV_MODEL_PATH as ENV_MODEL_PATH,
 )
 from web.operator_ui.incumbent import (
     SINGLE_MODEL_SENTINEL as SINGLE_MODEL_SENTINEL,
@@ -37,17 +42,15 @@ from web.operator_ui.incumbent import (
 from web.operator_ui.incumbent import (
     resolve_incumbent as resolve_incumbent,
 )
+from web.operator_ui.incumbent import (
+    resolve_model_path as resolve_model_path,
+)
 
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").
 RECOMMEND_OUT_DIRNAME = "daily_recommend"
 
 _ARTIFACT_RE = re.compile(r"daily_recommendation_(\d{4}-\d{2}-\d{2})\.json")
-
-# The production model the banner describes. Mirrors the CLI default
-# (scripts/daily_recommend._DEFAULT_MODEL) and docs/operations-env-vars.md.
-ENV_MODEL_PATH = "QUANT_MODEL_PATH"
-DEFAULT_MODEL_PATH = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
 
 # The banner contract fields (工单 §2 / spec v2-daily-decision-page: model
 # identity = model_path + model_type). Missing ANY of them renders a prominent
@@ -65,11 +68,6 @@ BANNER_FIELDS: tuple[str, ...] = (
 # NOT a backtest input — a per-row visual anchor comparing the predicted
 # score against a realistic in-and-out cost.
 ROUND_TRIP_COST = 0.0030
-
-
-def resolve_model_path() -> str:
-    """The production model path: env override > documented default."""
-    return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
 
 
 

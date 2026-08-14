@@ -26,16 +26,17 @@ from web.operator_ui.bundle_health import (
     summarise_bundle_health,
 )
 from web.operator_ui.formatting import cn_now_iso, cn_today
-from web.operator_ui.incumbent import resolve_incumbent
+from web.operator_ui.incumbent import resolve_incumbent, resolve_model_path
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._ops_cockpit_helpers import (
-    DATA_UPDATE_COMMAND,
-    MORNING_COMMAND,
-    ROTATION_COMMANDS,
     OpsCommand,
     bundle_freshness,
+    data_update_command,
+    morning_command,
     read_gate_cards,
+    resolve_delisted_registry,
     retrain_window,
+    rotation_commands,
 )
 from web.operator_ui.recert_health import probe_recert_health
 
@@ -84,7 +85,8 @@ else:
         with _col:
             st.caption("成员 fit 窗")
             st.markdown(f"**{_mem['fit_start']} ~ {_mem['fit_end']}**")
-_render_command(MORNING_COMMAND)
+_render_command(morning_command(
+    _incumbent, model_path=resolve_model_path()))
 
 # ---------------------------------------------------------------------------
 # ② 授权门工件 — 权威是入库 baseline 的摘要,页面只做转录
@@ -220,7 +222,9 @@ else:
         )
 
 st.markdown("**季度重训操作卡**（前提：上方 ③ 认证有效；执行器会机器校验）")
-for _cmd in ROTATION_COMMANDS:
+for _cmd in rotation_commands(
+    str(_incumbent.manifest_path) if _incumbent.is_ensemble else None
+):
     _render_command(_cmd)
 
 # ---------------------------------------------------------------------------
@@ -266,4 +270,6 @@ st.caption(
     "qlib 运行时 `calendar[-1]`——两者通常一致，但不是同一个读取器。"
     f"拒绝阈值 {_fresh.max_age_days} 天取自 RecommendationConfig,非本页字面量。"
 )
-_render_command(DATA_UPDATE_COMMAND)
+_render_command(data_update_command(
+    provider_uri=str(_fresh.provider_uri or _provider),
+    delisted_registry=resolve_delisted_registry()))

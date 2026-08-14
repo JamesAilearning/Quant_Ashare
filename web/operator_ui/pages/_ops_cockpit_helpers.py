@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -57,10 +58,6 @@ EVIDENCE_DIR = (
     PROJECT_ROOT / "docs" / "research" / "evidence" / "csi800_n5_runs"
     / "bootstrap_v2_gates"
 )
-
-
-def _sha256_of(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -196,28 +193,32 @@ def _transcribe(payload: dict[str, Any]) -> tuple[
 
 def _locate_by_digest(
     digest: str, recorded: str, *, evidence_dir: Path, root: Path,
-) -> Path | None:
-    """Find a file whose CONTENT is the authorized one.
+) -> tuple[Path, bytes] | None:
+    """Find a file whose CONTENT is the authorized one, and RETURN those bytes.
 
     Tries the recorded path first, then content-scans the tracked evidence
     directory. Matching by digest rather than by name is what keeps the
     superseded v1 gate batch — same naming scheme, different bytes — from
     being displayed as the authorization.
+
+    Each candidate is read exactly ONCE and the digest is taken from that
+    buffer, which is then what gets parsed. Hashing the path and re-reading
+    it to parse would leave a window — the baseline's recorded path is under
+    the mutable ``output/`` tree — in which a swapped file passes the digest
+    check and then supplies the verdict that gets displayed as authorized
+    (codex #431 r1; the same single-read rule the serving manifest loader
+    follows).
     """
-    candidate = root / recorded
-    try:
-        if candidate.is_file() and _sha256_of(candidate) == digest:
-            return candidate
-    except OSError:
-        pass
-    if not evidence_dir.is_dir():
-        return None
-    for path in sorted(evidence_dir.glob("*.json")):
+    candidates = [root / recorded]
+    if evidence_dir.is_dir():
+        candidates.extend(sorted(evidence_dir.glob("*.json")))
+    for path in candidates:
         try:
-            if _sha256_of(path) == digest:
-                return path
+            raw = path.read_bytes()
         except OSError:
             continue
+        if hashlib.sha256(raw).hexdigest() == digest:
+            return path, raw
     return None
 
 
@@ -263,18 +264,20 @@ def read_gate_cards(
                 key=str(key), authorized_sha256=digest, authorized_path=recorded,
                 evidence_intact=False, error="基线记录的摘要不是 64 位十六进制"))
             continue
-        found = _locate_by_digest(
+        located = _locate_by_digest(
             digest, recorded, evidence_dir=evidence_dir, root=root)
-        if found is None:
+        if located is None:
             cards.append(GateCard(
                 key=str(key), authorized_sha256=digest, authorized_path=recorded,
                 evidence_intact=False,
                 error=(f"未找到内容摘要为 {digest[:12]}… 的工件"
                        f"(已查:{recorded} 与 {evidence_dir})")))
             continue
+        found, raw_bytes = located
         try:
-            payload: Any = json.loads(found.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # The SAME buffer the digest was taken from — never a re-read.
+            payload: Any = json.loads(raw_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             cards.append(GateCard(
                 key=str(key), authorized_sha256=digest, authorized_path=recorded,
                 evidence_intact=False, resolved_path=str(found),
@@ -446,85 +449,147 @@ class OpsCommand:
     irreversible: bool = False
 
 
-# Transcribed from docs/csi800-n5-production-runbook.md and
-# docs/runbook_daily_update_scheduling.md. `$VAR` is expanded by the SHELL —
-# only daily_recommend.py reads QUANT_* itself; daily_update.py and the
-# gate/rotation scripts take every path as an explicit argument.
-MORNING_COMMAND = OpsCommand(
-    title="晨跑出单（每交易日早晨，手动）",
-    command=(
-        "python scripts/daily_recommend.py "
-        "--ensemble-manifest $QUANT_ENSEMBLE_MANIFEST"
-    ),
-    note=("ensemble 模式下宇宙/节奏/topk 自动绑定 "
-          "config/serving/csi800_n5_production.yaml；显式传参必须与绑定值相等。"),
-)
 
-DATA_UPDATE_COMMAND = OpsCommand(
-    title="数据更新（fetch → 快照 → 重建 → 校验 → 原子换库）",
-    command=(
-        "python scripts/daily_update.py \\\n"
-        "  --tushare-dir <tushare 原始目录> \\\n"
-        "  --provider-dir $QUANT_PROVIDER_URI \\\n"
-        "  --delisted-registry $QUANT_DELISTED_REGISTRY \\\n"
-        "  --reference-cases tests/pit/reference_cases.yaml \\\n"
-        "  --start-date 20180101"
-    ),
-    note=("会原子替换在用的 provider bundle。单飞锁：并发第二个进程退出 17 且不动任何东西。"
-          "加 --dry-run 可只验不改。完整 Windows 计划任务写法见 "
-          "docs/runbook_daily_update_scheduling.md。"),
-    irreversible=True,
-)
 
-ROTATION_COMMANDS = (
-    OpsCommand(
-        title="① 训练新成员（GPU，操作人点火）",
-        command="# 同族配置：Alpha158/LGB/csi800 + campaign 三守卫，24 个月训窗 + 3 个月 valid",
-        note="训窗终点必须落在下方推导出的可接受窗口内，否则轮换产出的 manifest 加载不了。",
-    ),
-    OpsCommand(
-        title="② 成员级门（trainer_integrity + ic_direction）",
+# The delisted registry the data update rebuilds against. Same env-var
+# convention as the rest (documented default == the historical hardcoded
+# path, docs/operations-env-vars.md).
+ENV_DELISTED_REGISTRY = "QUANT_DELISTED_REGISTRY"
+DEFAULT_DELISTED_REGISTRY = "D:/qlib_data/tushare_raw/delisted_registry.parquet"
+
+# No env var exists for the raw tushare dump, so it stays an honest
+# placeholder rather than a variable the operator's shell would expand to
+# nothing.
+TUSHARE_DIR_PLACEHOLDER = "<tushare 原始目录>"
+
+
+def resolve_delisted_registry() -> str:
+    """Delisted registry path: env override > documented default."""
+    return (os.environ.get(ENV_DELISTED_REGISTRY, "").strip()
+            or DEFAULT_DELISTED_REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# Command text. Built from the RESOLVED deployment state, not from `$VAR`
+# spellings (codex #431 r1): only ``daily_recommend.py`` reads QUANT_* itself,
+# so on the supported default layout — variables unset, UI resolving the
+# documented defaults — a printed `$QUANT_PROVIDER_URI` expands to an empty
+# string in the operator's shell and the "copyable" command silently does the
+# wrong thing. Worse for the single-model opt-out, where the pointer's literal
+# value is `none`: pasting `--ensemble-manifest none` gets rejected outright.
+# The page already knows the real values; it should print those.
+# ---------------------------------------------------------------------------
+
+def morning_command(
+    incumbent: IncumbentIdentity, *, model_path: str,
+) -> OpsCommand:
+    """The morning list command for THIS deployment's actual shape."""
+    if incumbent.kind == "single":
+        return OpsCommand(
+            title="晨跑出单（每交易日早晨，手动）",
+            command=f"python scripts/daily_recommend.py --model {model_path}",
+            note=("现任为单模型形态（QUANT_ENSEMBLE_MANIFEST 显式设为 `none`），"
+                  "故为 --model 形态而非 --ensemble-manifest。"),
+        )
+    if not incumbent.is_ensemble:
+        # Refusing to print a runnable command is the point: the incumbent
+        # could not be confirmed, so any manifest path here would hand the
+        # operator a command to score with a model this page just declined
+        # to name.
+        return OpsCommand(
+            title="晨跑出单（现任不可解析，暂不给出命令）",
+            command="# 现任 manifest 不可解析——命令待现任身份可确认后再给出",
+            note=("本页不会印出一条指向无法确认之模型的命令。"
+                  "请先修复 QUANT_ENSEMBLE_MANIFEST 指向的 manifest。"),
+        )
+    return OpsCommand(
+        title="晨跑出单（每交易日早晨，手动）",
+        command=("python scripts/daily_recommend.py "
+                 f"--ensemble-manifest {incumbent.manifest_path}"),
+        note=("路径为本机已解析的现任 manifest（而非 $QUANT_ENSEMBLE_MANIFEST 的字面量："
+              "该变量未设时 shell 会展开成空串）。ensemble 模式下宇宙/节奏/topk "
+              "自动绑定 config/serving/csi800_n5_production.yaml；显式传参必须与绑定值相等。"),
+    )
+
+
+def data_update_command(
+    *, provider_uri: str, delisted_registry: str,
+    tushare_dir: str = TUSHARE_DIR_PLACEHOLDER,
+) -> OpsCommand:
+    """The bundle rebuild, with every path already resolved."""
+    return OpsCommand(
+        title="数据更新（fetch → 快照 → 重建 → 校验 → 原子换库）",
         command=(
-            "python scripts/retrain_gate.py --scope member \\\n"
-            "  --member-pkl <新成员.pkl> --member-meta <新成员.pkl.meta.json> \\\n"
-            "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
-            "  --valid-start <valid 起> --valid-end <valid 终> \\\n"
-            "  --out output/retrain_gates/<季度>_member_gate.json"
+            "python scripts/daily_update.py \\\n"
+            f"  --tushare-dir {tushare_dir} \\\n"
+            f"  --provider-dir {provider_uri} \\\n"
+            f"  --delisted-registry {delisted_registry} \\\n"
+            "  --reference-cases tests/pit/reference_cases.yaml \\\n"
+            "  --start-date 20180101"
         ),
-        note="四个窗口参数照抄该成员训练所用 preset——门必须评的是同一个窗。",
-    ),
-    OpsCommand(
-        title="③ 候选 manifest",
-        command=(
-            "python scripts/rotate_ensemble_member.py plan \\\n"
-            "  --manifest $QUANT_ENSEMBLE_MANIFEST \\\n"
-            "  --new-pkl <新成员.pkl> --new-meta <新成员.pkl.meta.json> \\\n"
-            "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
-            "  --out output/retrain_gates/<季度>_candidate_manifest.json"
-        ),
-        note="plan 只写候选文件，不动生产 manifest。",
-    ),
-    OpsCommand(
-        title="④ ensemble 级门（degeneracy + constraint_dry_run + serving_veto）",
-        command=(
-            "python scripts/retrain_gate.py --scope ensemble \\\n"
-            "  --manifest output/retrain_gates/<季度>_candidate_manifest.json \\\n"
-            "  --window-start <上季度首交易日> --window-end <上季度末> \\\n"
-            "  --out output/retrain_gates/<季度>_ensemble_gate.json"
-        ),
-    ),
-    OpsCommand(
-        title="⑤ 轮换执行",
-        command=(
-            "python scripts/rotate_ensemble_member.py execute \\\n"
-            "  --manifest $QUANT_ENSEMBLE_MANIFEST \\\n"
-            "  --candidate output/retrain_gates/<季度>_candidate_manifest.json \\\n"
-            "  --member-gate output/retrain_gates/<季度>_member_gate.json \\\n"
-            "  --ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json"
-        ),
-        note=("改写生产 manifest。两门工件必须均 PASS，任一缺失/FAIL = 执行器拒绝且零写入。"
-              "执行器自动写 <manifest>.pre_rotation_<UTC时间戳> 备份；"
-              "回滚 = 把备份复制回 manifest 路径，不需要其他任何操作。"),
+        note=(f"daily_update.py **不读** QUANT_* 环境变量,四个路径必须显式传;"
+              f"上面已填入本页解析到的值。{TUSHARE_DIR_PLACEHOLDER} 无对应环境变量,"
+              "请自行填写(runbook 示例为 tushare_raw 目录)。"
+              "会原子替换在用的 provider bundle;单飞锁下并发的第二个进程退出 17 且不动任何东西;"
+              "加 --dry-run 可只验不改。完整 Windows 计划任务写法见 "
+              "docs/runbook_daily_update_scheduling.md。"),
         irreversible=True,
-    ),
-)
+    )
+
+
+def rotation_commands(manifest_path: str | None) -> tuple[OpsCommand, ...]:
+    """The quarterly retrain card, pointed at the resolved manifest."""
+    target = manifest_path or "<现任 manifest（当前不可解析）>"
+    return (
+        OpsCommand(
+            title="① 训练新成员（GPU，操作人点火）",
+            command=("# 同族配置：Alpha158/LGB/csi800 + campaign 三守卫，"
+                     "24 个月训窗 + 3 个月 valid"),
+            note="训窗终点必须落在上方推导出的可接受窗口内，否则轮换产出的 manifest 加载不了。",
+        ),
+        OpsCommand(
+            title="② 成员级门（trainer_integrity + ic_direction）",
+            command=(
+                "python scripts/retrain_gate.py --scope member \\\n"
+                "  --member-pkl <新成员.pkl> --member-meta <新成员.pkl.meta.json> \\\n"
+                "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
+                "  --valid-start <valid 起> --valid-end <valid 终> \\\n"
+                "  --out output/retrain_gates/<季度>_member_gate.json"
+            ),
+            note="四个窗口参数照抄该成员训练所用 preset——门必须评的是同一个窗。",
+        ),
+        OpsCommand(
+            title="③ 候选 manifest",
+            command=(
+                "python scripts/rotate_ensemble_member.py plan \\\n"
+                f"  --manifest {target} \\\n"
+                "  --new-pkl <新成员.pkl> --new-meta <新成员.pkl.meta.json> \\\n"
+                "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
+                "  --out output/retrain_gates/<季度>_candidate_manifest.json"
+            ),
+            note="plan 只写候选文件，不动生产 manifest。",
+        ),
+        OpsCommand(
+            title="④ ensemble 级门（degeneracy + constraint_dry_run + serving_veto）",
+            command=(
+                "python scripts/retrain_gate.py --scope ensemble \\\n"
+                "  --manifest output/retrain_gates/<季度>_candidate_manifest.json \\\n"
+                "  --window-start <上季度首交易日> --window-end <上季度末> \\\n"
+                "  --out output/retrain_gates/<季度>_ensemble_gate.json"
+            ),
+        ),
+        OpsCommand(
+            title="⑤ 轮换执行",
+            command=(
+                "python scripts/rotate_ensemble_member.py execute \\\n"
+                f"  --manifest {target} \\\n"
+                "  --candidate output/retrain_gates/<季度>_candidate_manifest.json \\\n"
+                "  --member-gate output/retrain_gates/<季度>_member_gate.json \\\n"
+                "  --ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json"
+            ),
+            note=("改写生产 manifest。两门工件必须均 PASS，任一缺失/FAIL = 执行器拒绝且零写入。"
+                  "执行器自动写 <manifest>.pre_rotation_<UTC时间戳> 备份；"
+                  "回滚 = 把备份复制回 manifest 路径，不需要其他任何操作。"),
+            irreversible=True,
+        ),
+    )
