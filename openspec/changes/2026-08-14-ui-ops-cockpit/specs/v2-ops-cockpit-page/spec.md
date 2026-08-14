@@ -53,6 +53,19 @@ GPU、轮换或推断，MUST NOT 写入任何文件。运维命令 MUST 以**可
 - **THEN** 页面 MUST NOT 给出一条指向该 manifest 的可运行命令——
   那等于交给操作人一条用无法确认之模型出单的命令
 
+### Requirement: 命令中的已解析路径必须是单个 shell 参数
+
+页面把已解析路径插入命令文本时 MUST 按目标 shell 转义，使每个路径构成
+**单个**参数。路径来自文件系统或环境覆盖，合法地可能含空格或 shell
+元字符；裸插值会把一个路径拆成多个 argv 项（门于是跑在另一份数据上），
+或让元字符作为 shell 语法执行。
+
+#### Scenario: 路径含空格或元字符
+
+- **GIVEN** `QUANT_PROVIDER_URI` 被覆盖为 `/srv/qlib bundles/live`
+- **WHEN** 页面渲染任一含该路径的命令
+- **THEN** 该路径在命令中 MUST 解析为单个 shell 参数
+
 ### Requirement: 现任身份由两页共用的同一解析器给出
 
 驾驶舱与今日推荐页 MUST 通过**同一个**现任解析器取得生产模型身份，
@@ -156,6 +169,14 @@ MUST NOT 新造第二个阈值。页面 MUST 写明尾部日期取自哪一条�
 
 - **WHEN** bundle 尾部日期可读
 - **THEN** 显示尾部日期、落后天数、距拒绝阈值的余量
+
+#### Scenario: 判定所用的「今天」必须与出单侧一致
+
+- **GIVEN** `daily_recommend.py` 以宿主本地 `date.today()` 判定过期
+- **WHEN** 页面预测「今天出单会不会被拒」
+- **THEN** MUST 使用同一语义的「今天」，MUST NOT 使用面向操作人的
+  CN 本地日期——两者在 UTC 宿主上的 CN 零点至 08:00 相差一天，
+  恰在阈值边界会给出相反的结论
 
 #### Scenario: 阈值不得硬编码
 

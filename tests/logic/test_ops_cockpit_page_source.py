@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -217,6 +217,49 @@ class ResolvedCommandTests(unittest.TestCase):
             "provider 只应解析一次")
         self.assertIn("provider_uri=_provider,", page)
         self.assertIn("namechange_path=resolve_namechange_path()", page)
+
+    def test_resolved_paths_survive_as_single_shell_arguments(self) -> None:
+        # codex #431 r3: every path here comes from a filesystem or an env
+        # override, so a space is legal (`/srv/qlib bundles/live`). Raw
+        # interpolation splits it into two argv entries — the gate then runs
+        # against a different bundle than the one shown — and a
+        # metacharacter would execute as shell syntax.
+        import shlex
+
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            data_update_command,
+            morning_command,
+            rotation_commands,
+        )
+        hostile_dir = "/srv/qlib bundles/live"
+        hostile_file = "/srv/a b;touch pwned/x.json"
+        cases = [
+            (morning_command(  # type: ignore[arg-type]
+                IncumbentIdentity(kind="ensemble", manifest_path=hostile_file,
+                                  manifest_sha256="a" * 64),
+                model_path="/srv/m.pkl"), "--ensemble-manifest", hostile_file),
+            (morning_command(IncumbentIdentity(kind="single"),
+                             model_path=hostile_file), "--model", hostile_file),
+            (data_update_command(provider_uri=hostile_dir,
+                                 delisted_registry=hostile_file),
+             "--provider-dir", hostile_dir),
+            (data_update_command(provider_uri=hostile_dir,
+                                 delisted_registry=hostile_file),
+             "--delisted-registry", hostile_file),
+        ]
+        gates = [c for c in rotation_commands(
+            hostile_file, provider_uri=hostile_dir,
+            namechange_path=hostile_file) if "retrain_gate.py" in c.command]
+        for gate in gates:
+            cases.append((gate, "--provider", hostile_dir))
+            cases.append((gate, "--namechange", hostile_file))
+        for cmd, flag, want in cases:
+            with self.subTest(cmd=cmd.title, flag=flag):
+                tokens = shlex.split(cmd.command.replace("\\\n", " "))
+                self.assertIn(flag, tokens)
+                self.assertEqual(want, tokens[tokens.index(flag) + 1],
+                                 "路径必须是单个 shell 参数")
 
     def test_namechange_resolver_follows_the_env_var(self) -> None:
         import os
@@ -692,6 +735,88 @@ class BundleFreshnessTests(unittest.TestCase):
             today=date(2026, 8, 20), tail_date="2026-08-03",
             provider_uri="X", max_age_days=14)
         self.assertTrue(stale.refuses_today)
+
+    def test_the_clock_matches_the_recommenders_not_the_operators(self) -> None:
+        # codex #431 r3: daily_recommend.py judges staleness against
+        # host-local date.today(); a CN-local clock puts the cockpit a day
+        # ahead on a UTC host between CN midnight and 08:00, so at exactly
+        # the 14-day boundary it predicts a refusal that will not happen.
+        #
+        # Asserting `recommender_today() == date.today()` is NOT enough: this
+        # dev box runs at +08:00, where the CN clock and the host clock agree,
+        # so that comparison passes with the bug reintroduced (caught by
+        # mutation C20 on this very pin). Assert the CALL instead.
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import _ops_cockpit_helpers as h
+        with patch.object(h, "date") as fake_date:
+            fake_date.today.return_value = date(2026, 1, 1)
+            got = h.recommender_today()
+        fake_date.today.assert_called_once_with()
+        self.assertEqual(date(2026, 1, 1), got)
+
+    def test_the_helpers_never_reach_for_the_cn_display_clock(self) -> None:
+        # A second, independent guard on the same rule: the module that
+        # reproduces machine decisions must not IMPORT the operator-facing
+        # date-bucketing clock. (Naming it in prose is fine — the docstring
+        # explains why it is the wrong clock here.)
+        import ast
+        tree = ast.parse(_HELPERS.read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+        self.assertNotIn("cn_today", imported)
+        self.assertNotIn("cn_now_iso", imported)
+
+    def test_the_page_passes_no_freshness_clock_of_its_own(self) -> None:
+        page = _PAGE.read_text(encoding="utf-8")
+        section = page[page.index('st.subheader("⑤'):]
+        self.assertNotIn("cn_today()", section)
+
+    def test_freshness_defaults_to_the_recommender_clock(self) -> None:
+        from unittest.mock import patch
+
+        from web.operator_ui.pages import _ops_cockpit_helpers as h
+        with patch.object(h, "recommender_today",
+                          return_value=date(2026, 8, 14)) as fake:
+            fresh = h.bundle_freshness(
+                tail_date="2026-08-03", provider_uri="X", max_age_days=14)
+        fake.assert_called_once_with()
+        self.assertEqual(11, fresh.days_behind)
+
+    def test_the_boundary_day_is_the_recommenders_boundary(self) -> None:
+        # The whole point of matching clocks: at exactly max_age_days the
+        # recommender still accepts, and one day later it refuses. A page
+        # off by one day flips a live go/no-go.
+        from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
+        exactly = bundle_freshness(today=date(2026, 8, 17),
+                                   tail_date="2026-08-03",
+                                   provider_uri="X", max_age_days=14)
+        self.assertEqual(14, exactly.days_behind)
+        self.assertFalse(exactly.refuses_today, "恰好等于阈值不拒绝")
+        past = bundle_freshness(today=date(2026, 8, 18), tail_date="2026-08-03",
+                                provider_uri="X", max_age_days=14)
+        self.assertEqual(15, past.days_behind)
+        self.assertTrue(past.refuses_today)
+
+    def test_the_page_agrees_with_the_recommenders_own_predicate(self) -> None:
+        # Not a restatement of my own arithmetic: drive the SERVING module's
+        # staleness predicate with the same inputs and require the same
+        # answer on both sides of the boundary.
+        from src.inference.daily_recommend import _bundle_is_stale
+        from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
+        tail = date(2026, 8, 3)
+        for offset in range(12, 18):
+            today = tail + timedelta(days=offset)
+            with self.subTest(days_behind=offset):
+                mine = bundle_freshness(
+                    today=today, tail_date=tail.isoformat(),
+                    provider_uri="X", max_age_days=14)
+                self.assertEqual(
+                    _bundle_is_stale(tail, today, 14), mine.refuses_today)
 
     def test_unreadable_tail_is_unknown_not_zero(self) -> None:
         from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness

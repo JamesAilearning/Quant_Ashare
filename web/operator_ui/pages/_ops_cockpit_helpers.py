@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -398,6 +399,25 @@ class BundleFreshness:
     message: str = ""
 
 
+def recommender_today() -> date:
+    """The calendar day the RECOMMENDER judges bundle staleness against.
+
+    ``src/inference/daily_recommend.py`` compares the bundle tail to
+    ``date.today()`` — the HOST's local day, not a CN-local one. On a host
+    running in UTC, CN-local midnight to 08:00 falls on the previous host
+    day, so a CN clock here puts the cockpit a day ahead of the recommender
+    and, exactly at the 14-day boundary, has it predict a refusal that will
+    not happen (codex #431 r3).
+
+    Deliberately NOT :func:`web.operator_ui.formatting.cn_today` — that one
+    is the right clock for operator-facing date bucketing, and this one is
+    the right clock for reproducing a machine decision. The retrain window
+    keeps the CN clock precisely because nothing downstream judges it
+    against a "today" at all.
+    """
+    return date.today()
+
+
 def serving_bundle_max_age_days() -> int:
     """The threshold the RECOMMENDER refuses on — read, not restated.
 
@@ -413,13 +433,16 @@ def serving_bundle_max_age_days() -> int:
 
 def bundle_freshness(
     *,
-    today: date,
+    today: date | None = None,
     tail_date: str | None,
     provider_uri: str | None,
     message: str = "",
     max_age_days: int | None = None,
 ) -> BundleFreshness:
     limit = serving_bundle_max_age_days() if max_age_days is None else max_age_days
+    # Default to the recommender's clock rather than the caller's: every call
+    # site getting it right is weaker than there being nothing to get wrong.
+    today = today if today is not None else recommender_today()
     if not tail_date:
         return BundleFreshness(
             known=False, max_age_days=limit, provider_uri=provider_uri,
@@ -493,6 +516,20 @@ def resolve_namechange_path() -> str:
 # The page already knows the real values; it should print those.
 # ---------------------------------------------------------------------------
 
+def _arg(value: object) -> str:
+    r"""A resolved path, safe to paste as ONE shell argument.
+
+    Every path here comes from a filesystem or an env override, so it may
+    legitimately contain a space (``/srv/qlib bundles/live``) — raw
+    interpolation would split it into two argv entries and the gate would
+    silently run against something else, or a metacharacter would execute
+    as shell syntax (codex #431 r3). The runbook's commands are POSIX
+    (``$VAR`` expansion, ``\`` continuations), so POSIX quoting is the
+    matching dialect. Ordinary paths come back unchanged.
+    """
+    return shlex.quote(str(value))
+
+
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
 ) -> OpsCommand:
@@ -500,7 +537,7 @@ def morning_command(
     if incumbent.kind == "single":
         return OpsCommand(
             title="晨跑出单（每交易日早晨，手动）",
-            command=f"python scripts/daily_recommend.py --model {model_path}",
+            command=f"python scripts/daily_recommend.py --model {_arg(model_path)}",
             note=("现任为单模型形态（QUANT_ENSEMBLE_MANIFEST 显式设为 `none`），"
                   "故为 --model 形态而非 --ensemble-manifest。"),
         )
@@ -518,7 +555,7 @@ def morning_command(
     return OpsCommand(
         title="晨跑出单（每交易日早晨，手动）",
         command=("python scripts/daily_recommend.py "
-                 f"--ensemble-manifest {incumbent.manifest_path}"),
+                 f"--ensemble-manifest {_arg(incumbent.manifest_path)}"),
         note=("路径为本机已解析的现任 manifest（而非 $QUANT_ENSEMBLE_MANIFEST 的字面量："
               "该变量未设时 shell 会展开成空串）。ensemble 模式下宇宙/节奏/topk "
               "自动绑定 config/serving/csi800_n5_production.yaml；显式传参必须与绑定值相等。"),
@@ -534,9 +571,9 @@ def data_update_command(
         title="数据更新（fetch → 快照 → 重建 → 校验 → 原子换库）",
         command=(
             "python scripts/daily_update.py \\\n"
-            f"  --tushare-dir {tushare_dir} \\\n"
-            f"  --provider-dir {provider_uri} \\\n"
-            f"  --delisted-registry {delisted_registry} \\\n"
+            f"  --tushare-dir {_arg(tushare_dir)} \\\n"
+            f"  --provider-dir {_arg(provider_uri)} \\\n"
+            f"  --delisted-registry {_arg(delisted_registry)} \\\n"
             "  --reference-cases tests/pit/reference_cases.yaml \\\n"
             "  --start-date 20180101"
         ),
@@ -565,8 +602,8 @@ def rotation_commands(
     (codex #431 r2). Print both flags explicitly.
     """
     target = manifest_path or "<现任 manifest（当前不可解析）>"
-    data_flags = (f"  --provider {provider_uri} \\\n"
-                  f"  --namechange {namechange_path} \\\n")
+    data_flags = (f"  --provider {_arg(provider_uri)} \\\n"
+                  f"  --namechange {_arg(namechange_path)} \\\n")
     return (
         OpsCommand(
             title="① 训练新成员（GPU，操作人点火）",
@@ -590,7 +627,7 @@ def rotation_commands(
             title="③ 候选 manifest",
             command=(
                 "python scripts/rotate_ensemble_member.py plan \\\n"
-                f"  --manifest {target} \\\n"
+                f"  --manifest {_arg(target)} \\\n"
                 "  --new-pkl <新成员.pkl> --new-meta <新成员.pkl.meta.json> \\\n"
                 "  --fit-start <训窗起> --fit-end <训窗终> \\\n"
                 "  --out output/retrain_gates/<季度>_candidate_manifest.json"
@@ -611,7 +648,7 @@ def rotation_commands(
             title="⑤ 轮换执行",
             command=(
                 "python scripts/rotate_ensemble_member.py execute \\\n"
-                f"  --manifest {target} \\\n"
+                f"  --manifest {_arg(target)} \\\n"
                 "  --candidate output/retrain_gates/<季度>_candidate_manifest.json \\\n"
                 "  --member-gate output/retrain_gates/<季度>_member_gate.json \\\n"
                 "  --ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json"

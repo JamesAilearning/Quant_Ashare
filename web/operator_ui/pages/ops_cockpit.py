@@ -246,7 +246,9 @@ st.markdown("---")
 st.subheader("⑤ 数据 bundle 新鲜度")
 _summary: Any = summarise_bundle_health(_provider)
 _fresh = bundle_freshness(
-    today=cn_today(),
+    # No clock argument: defaults to the RECOMMENDER's own (host-local)
+    # today, so this refusal prediction cannot disagree with the machine
+    # that actually refuses (codex #431 r3).
     tail_date=_summary.tail_date,
     provider_uri=_summary.provider_uri,
     message=_summary.message,
