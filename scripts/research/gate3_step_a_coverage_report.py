@@ -511,12 +511,17 @@ def build_report(args: argparse.Namespace) -> str:
           f"{res.overall_differing_fraction():.4%} | "
           f"{len(res.differing)} |")
     a("")
-    a(f"## 5. 附表:Gate-1 可比口径({universe_label} 含金融,分母=当期 anchor 有披露的名字)"
-      + ("+ Δ vs Gate-1 pooled" if args.floors_universe == "csi300" else ""))
+    # Gate-1's pooled table is a CSI300-ever measurement, so every Gate-1
+    # comparison below is gated on the run's universe (codex #425 P2).
+    gate1_comparable = args.floors_universe == "csi300"
+    a("## 5. 附表:"
+      + ("Gate-1 可比口径" if gate1_comparable else "含金融的 anchor 分母口径")
+      + f"({universe_label} 含金融,分母=当期 anchor 有披露的名字)"
+      + ("+ Δ vs Gate-1 pooled" if gate1_comparable else ""))
     a("")
     a("anchor: income→revenue / balancesheet→total_assets / cashflow→n_cashflow_act"
       "(anchor 自身行恒 100%,仅作分母定义)。")
-    if args.floors_universe == "csi300":
+    if gate1_comparable:
         a("Gate-1 §4 是行级 pooled,本表是 as-of 横截面 — Δ 为方向参考,预期 as-of ≤ pooled。")
     else:
         # GATE1_POOLED is a CSI300-ever measurement; differencing another
@@ -526,7 +531,6 @@ def build_report(args: argparse.Namespace) -> str:
           f"{universe_label} —— 两者 issuer 集合不同,相减得到的是宇宙差异而非覆盖差异,"
           "故本表只列本宇宙的 as-of 值,不做 Δ 对比。")
     a("")
-    gate1_comparable = args.floors_universe == "csi300"
     a("| field | " + " | ".join(str(y) for y in YEARS)
       + (" | Δ vs Gate-1 (mean) |" if gate1_comparable else " |"))
     a("|---" * (len(YEARS) + (2 if gate1_comparable else 1)) + "|")
@@ -573,7 +577,15 @@ def build_report(args: argparse.Namespace) -> str:
     a("注: C3 需两期(Δ应计)→ 有效首个横截面比起始年再晚一个报告期;C2 缺 rd_exp "
       "的处理(不可算 vs 视 0)按 charter 仍须在 Gate-3 预注册中显式冻结。")
     a("")
-    a("## 7. 偏离 Gate-1 memo 的意外(如实记录)")
+    # §7's frame is "deviations from the Gate-1 memo", and Gate-1 is a
+    # CSI300-ever measurement. Off that universe, every Gate-1-derived number
+    # is another universe's finding: stating it here would contradict §5's own
+    # "not comparable" note and pass CSI300 conclusions off as this universe's
+    # (codex #425 P2). So off csi300 the section reports only THIS universe's
+    # measured facts.
+    a("## 7. " + ("偏离 Gate-1 memo 的意外(如实记录)" if gate1_comparable
+                  else f"{universe_label} as-of 口径要点(如实记录;"
+                       "Gate-1 memo 为 CSI300-ever 口径,本节不与之对比)"))
     a("")
     total_holes = sum(len(info.missing_names) for info in residuals.values())
     a(f"1. **提供方歧义重复(已消歧)→ 现存 {total_holes} 个 ingest hole**"
@@ -581,18 +593,21 @@ def build_report(args: argparse.Namespace) -> str:
       "两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec "
       "`fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日"
       "(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,"
-      "record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,如 "
-      "000627.SZ 天茂同日双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖"
-      "(诚实方向)。")
-    a("2. **rd_exp 的 2018 年 as-of 断崖**: 行级 pooled 显示 2018=55%,但 as-of "
-      f"横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
+      "record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,例如同日"
+      "双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖(诚实方向);具体名单"
+      "见 §8。")
+    a("2. **rd_exp 的 2018 年 as-of 断崖**: "
+      + ("行级 pooled 显示 2018=55%,但 " if gate1_comparable else "")
+      + f"as-of 横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
       f"{pct(rd_quarters[2018][2])}、Q4 {pct(rd_quarters[2018][3])} —— 单列研发"
-      "费用自 2018 Q3 报告才开始批量披露。**C2 最早可靠期 = 2019**(Gate-1 的"
-      "『2018 早窗弱』在 as-of 口径下更硬)。2019+ 无季报缺失效应(§3)。")
+      "费用自 2018 Q3 报告才开始批量披露。**C2 最早可靠期 = 2019**"
+      + ("(Gate-1 的『2018 早窗弱』在 as-of 口径下更硬)" if gate1_comparable else "")
+      + "。2019+ 无季报缺失效应(§3)。")
     int_rng = [cov_exfin["int_exp"][y] for y in YEARS]
     fin_rng = [cov_exfin["fin_exp"][y] for y in YEARS]
-    a(f"3. **int_exp as-of 覆盖({pct(min(int_rng))}-{pct(max(int_rng))})显著低于 "
-      "pooled(13-18%)** —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项"
+    a(f"3. **int_exp as-of 覆盖 {pct(min(int_rng))}-{pct(max(int_rng))}**"
+      + ("(显著低于 pooled 13-18%)" if gate1_comparable else "(年报为主的稀疏科目)")
+      + " —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项"
       f"定为 fin_exp(as-of {pct(min(fin_rng))}-{pct(max(fin_rng))})。")
     res_note = " / ".join(
         f"{ep} {info.residual.overall_differing_fraction():.2%}"
@@ -600,8 +615,12 @@ def build_report(args: argparse.Namespace) -> str:
     a(f"4. **全宇宙重述残差非零但极小**(§4: {res_note},"
       "含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为"
       "诚信包络的已量化界。")
-    a("5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
-      "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
+    if gate1_comparable:
+        # Gate-1 Δ figures are CSI300-ever measurements; off that universe the
+        # whole claim (and its fixed -5.9pp / -3.9pp numbers) belongs to a
+        # different issuer set and is therefore omitted rather than restated.
+        a("5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
+          "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
     a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
       f"{len(fin_issuers)} 名,逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
