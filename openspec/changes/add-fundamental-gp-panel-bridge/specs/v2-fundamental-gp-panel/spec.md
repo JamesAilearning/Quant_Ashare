@@ -61,10 +61,20 @@ not serving a genuinely available one.
   available (NA if none), not the newly announced one — the new period's
   availability starts strictly after `A`
 
-#### Scenario: a restated period still serves its original disclosure
+#### Scenario: a restated period resolves to its original disclosure
 - **WHEN** a report period has both an `update_flag=0` and an `update_flag=1` row
-- **THEN** the panel serves the `update_flag=0` value — a restatement never
-  overrides its original
+- **THEN** that period RESOLVES to the `update_flag=0` value — a restatement
+  never overrides its original
+- **AND** that resolved value is what the panel serves only where the period is
+  itself the winner; version selection decides WHICH VALUE a period has, never
+  WHICH PERIOD is served
+
+#### Scenario: a period recorded only as update_flag=1 is served normally
+- **WHEN** a report period's only rows are `update_flag=1`, and it is the winner
+  at trade date `T`
+- **THEN** the panel serves it — that row IS the period's disclosure of record,
+  and treating `update_flag=1` as categorically unservable would stale the cell
+  by falling back to an older period
 
 ### Requirement: The panel SHALL carry machine-verifiable availability evidence from the view
 
@@ -728,11 +738,22 @@ every crossing record would REFUSE a correct builder. Comparing winners asks
 exactly the question the serve-rule answers.
 
 The source rows SHALL be reduced by the CANONICAL DISCLOSURE-OF-RECORD
-SELECTION (preferred version, earliest effective announcement) before either
-winner is computed. Raw rows include re-announcements and `update_flag=1`
-restatements the view never serves; letting one of those move a winner would
+SELECTION before either winner is computed — per `report_period`: prefer the
+`update_flag=0` row, fall back to `update_flag=1` when the period has NO
+`update_flag=0` row, and within the selected version take the
+EARLIEST-ANNOUNCED disclosure.
+
+What is discarded is precisely the NON-SELECTED rows: an `update_flag=1` row
+that sits ALONGSIDE a preferred `update_flag=0` row for the same period, and
+later re-announcements of an already-selected version. `update_flag=1` is NOT
+categorically excluded — a period whose only rows are `update_flag=1` IS its own
+disclosure of record and IS served, and dropping such periods would erase recent
+filings from relevance entirely, letting the diagnostic report INCONCLUSIVE for
+an announcement-blind builder. Letting a non-selected row move a winner would
 demand movement a correct panel must not make, and the diagnostic would REFUSE
-the builder for obeying the serve-rule.
+the builder for obeying the serve-rule; dropping a selected one disarms the
+diagnostic. Both errors are avoided by applying the canonical selection exactly
+as the view does.
 
 Both winners SHALL be computed from the SOURCE DATA — the store's disclosure
 dates, the shift, the requested fields, and the sampled calendar — and SHALL NOT
@@ -800,12 +821,20 @@ no amount of correct-looking code can substitute for.
 - **THEN** the diagnostic still REFUSES — the served report period did not move,
   and a changed hash is not the criterion
 
-#### Scenario: a restatement row cannot establish relevance
+#### Scenario: a non-selected row cannot establish relevance
 - **WHEN** the only source row whose shift would move anything is one the
-  disclosure-of-record selection never serves (a restatement or later
-  re-announcement)
+  canonical selection discards — an `update_flag=1` row alongside a preferred
+  `update_flag=0` row for the same period, or a later re-announcement of the
+  selected version
 - **THEN** the diagnostic reports INCONCLUSIVE — a correct panel is unchanged
   there, and demanding movement would refuse it for obeying the serve-rule
+
+#### Scenario: an update-flag-1-only period still participates in relevance
+- **WHEN** a report period's only rows are `update_flag=1`, so that row IS its
+  disclosure of record
+- **THEN** it takes part in the winner computation like any other selected
+  record — it is NOT discarded as a restatement, and a shift that moves the
+  winner through it establishes relevance
 
 The IC-series assertion SHALL be required only on a DETERMINISTIC FIXTURE
 constructed so that the shift necessarily alters evaluated values or their
