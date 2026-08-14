@@ -333,13 +333,21 @@ def _git(*args: str) -> str:
         # UTF-8 pin does not govern (#410 r30; verified: git rejects a
         # late ``--ext-diff`` as "must come before non-option
         # arguments").
-        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
+        # BINARY + explicit decode: ``show`` prints CONTENT — the blob
+        # for REF:PATH — and git never transcodes it (#410 r51). This
+        # tool compares Python SOURCE, which this repo keeps in UTF-8,
+        # so it decodes strictly and a genuinely non-UTF-8 tracked file
+        # fails loudly here rather than being silently mangled.
+        raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
+                              "-c", "core.hooksPath=/dev/null",
+                              "-c", "i18n.logOutputEncoding=utf-8",
+                              "-c", "log.showSignature=false",
                               "-c", "core.quotePath=true",
                               "-C", str(_REPO), "show",
                               "--no-ext-diff", "--no-textconv",
                               "--end-of-options", *rest],
-                             capture_output=True, text=True,
-                             encoding="utf-8", check=True)
+                             capture_output=True, check=True)
+        return raw.stdout.decode("utf-8")
     elif sub == "diff-name-status":
         # BINARY + explicit decode: an attributes ``clean`` filter is an
         # external program that writes to stderr on a worktree diff, and
@@ -356,13 +364,11 @@ def _git(*args: str) -> str:
                               "--end-of-options", *rest],
                              capture_output=True, check=True)
         return raw.stdout.decode("utf-8")
-    else:
-        raise SystemExit(
-            f"unsupported git subcommand {sub!r} — each needs its own "
-            "literal spawn site so the UTF-8 output pin cannot be "
-            "overridden; add one."
-        )
-    return out.stdout
+    raise SystemExit(
+        f"unsupported git subcommand {sub!r} — each needs its own "
+        "literal spawn site so the UTF-8 output pin cannot be "
+        "overridden; add one."
+    )
 
 
 def _detect_renames(base: str) -> tuple[list[tuple[str, str]],

@@ -171,6 +171,11 @@ _GIT_REVPARSE_SAFE_OPTS = frozenset({
 _GIT_FILTER_CAPABLE = frozenset({
     "diff", "update-index", "hash-object", "cat-file", "add", "checkout",
     "stash", "apply", "restore",
+    # ``show`` prints CONTENT by default — a patch for a commit, the
+    # blob for ``REF:PATH`` — and git never transcodes content (codex
+    # P2 r51 on #410, reproduced with a tracked 0xff). Capture binary
+    # and decode explicitly if you know your files' encoding.
+    "show",
     # ``status`` too (codex P2 r37 on #410; reproduced): when stat info
     # cannot settle a comparison — same size, racy mtime — git compares
     # CONTENT, which runs the clean filter and puts its stderr in the
@@ -222,6 +227,12 @@ _GIT_DECORATION_OPTS = ("--decorate", "--source")
 # Options that make log/show print FILE PATHS. Paths are escaped only
 # while ``core.quotePath`` is on (reproduced with both settings), so
 # these carry the same quoting requirement as ls-files (codex P2 r45).
+# Options that make the log family print PATCH CONTENT — raw blob
+# bytes, untranscoded by any pin (codex P2 r51, reproduced).
+_GIT_PATCH_OPTS = frozenset({
+    "-p", "-u", "--patch", "--patch-with-raw", "--patch-with-stat",
+    "--cc", "--unified", "--full-diff", "--first-parent-patch",
+})
 _GIT_PATH_OUTPUT_OPTS = frozenset({
     "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
     "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
@@ -867,6 +878,8 @@ def _git_output_safe(call: ast.Call) -> bool:
                 head_opt, eq_opt, val_opt = later.partition("=")
                 if head_opt in _GIT_SIGNATURE_OPTS:
                     return False  # explicit signature verification
+                if head_opt in _GIT_PATCH_OPTS:
+                    return False  # raw patch content
                 if head_opt == _GIT_ENCODING_OPT:
                     # Its value is the next element when separated; an
                     # opaque or non-UTF-8 codec refuses.
@@ -1737,11 +1750,26 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      ' "-c", "log.showSignature=false",'
      ' "-C", str(repo), "log", "--no-ext-diff", "--no-textconv", *args],'
      ' text=True, encoding="utf-8")', True),
+    ("text-mode git show is refused — it prints raw content",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-C", str(repo), "show",'
+     ' "--no-ext-diff", "--no-textconv", "--end-of-options", *args],'
+     ' text=True, encoding="utf-8")', True),
+    ("...while a binary show is untouched",
+     'subprocess.run(["git", "show", "HEAD:x"], capture_output=True)',
+     False),
     ("--end-of-options closes the region for a dynamic rev",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
-     ' "-c", "log.showSignature=false",'
-     ' "-C", str(repo), "show", "--no-ext-diff", "--no-textconv",'
-     ' "--end-of-options", *args], text=True, encoding="utf-8")', False),
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-C", str(repo), "log", "--no-ext-diff",'
+     ' "--no-textconv", "--end-of-options", *args], text=True,'
+     ' encoding="utf-8")', False),
+    ("log -p prints raw patch content, so refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    ("--patch is the same option",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--patch", "-1"], text=True, encoding="utf-8")', True),
+    ("-U3 counts too",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
+     ' "--unified=3", "-1"], text=True, encoding="utf-8")', True),
     ("-- closes it for a dynamic pathspec",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
      ' "-c", "log.showSignature=false",'
