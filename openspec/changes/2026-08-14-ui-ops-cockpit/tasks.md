@@ -27,7 +27,7 @@
 ## W5 数据新鲜度
 - [x] 复用 `summarise_bundle_health` + `RecommendationConfig.bundle_max_age_days`  ← 实测尾 2026-08-03,落后 11,余 3
 - [x] 钉：阈值来自配置字段而非页面字面量  ← C6 首轮因 14==14 巧合空过,已改为挪动配置验证跟随
-- [x] 写明 tail 的取数路径（provider 元数据，非出单侧 calendar[-1]）  ← provider 元数据,非出单侧 calendar[-1]
+- [x] 写明尾部日期的取数路径  ← 见规格「尾部日期必须与出单侧同源」；初稿写的 provider 元数据口径已于 W9/W11 推翻，此处不复述契约以免二次漂移
 
 ## W6 页面与注册
 - [x] `pages/ops_cockpit.py`（薄渲染）+ `pages/_ops_cockpit_helpers.py`（纯）  ← + _ops_cockpit_helpers.py(纯)+ recert_health.py(探针)
@@ -112,7 +112,7 @@
 - [x] 契约六条逐条入规格,不再逐轮补丁
 
 ## W18 codex #431 r12（P2，属实；规格自相矛盾——我自己的纪律没做到）
-- [x] 正文那条 MUST（用 summarise_bundle_health 取尾部）与场景直接冲突,已改  ← 两条并存无法同时满足
+- [x] 规格正文与其场景直接冲突,已改（两条并存无法同时满足）  ← 见规格,此处不复述其内容
 - [x] 全篇读回,确认三处提法一致
 - [x] **加机器守卫**:identity tail 只能以禁止形式出现在尾部来源的规定里  ← C46 咬住
 - [x] 守卫本身被 C46 空过两次(段落级被别处 MUST NOT 骗;纯标点切分在 markdown 里
@@ -152,10 +152,18 @@
 - [x] 自洽守卫扩到该 change 的**全部** .md（不只 spec.md）  ← C55 咬住
 - [x] 命令类断言改为按 shlex token 比对,对引用方式不敏感
 
+## W24 codex #431 r18（P2，属实；同一矛盾第三次换了措辞藏起来）
+- [x] tasks.md 的 W5 行改写；两处历史行**不再复述契约**  ← 少一份可漂移的散文
+- [x] 守卫词表**钉成数据**（尾部/tail/calendar[-1] × 五种被否决来源的说法）  ← C56 咬住
+- [x] 判据改为「正面 mandate」:对比句/GIVEN/历史注记不再被误伤
+- [x] 语句级 + 子句级**两级并用**  ← C57/C58 各咬一级
+      (语句级抓跨子句写法;子句级抓「同语句内正面 mandate + 无关否定」)
+- [x] 词表测试改用**共享判据**,不再自带一份实现
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C55:54 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C58:57 杀 + 1 已论证等价(C11/C20/C35/C44/C46/C48/C58 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

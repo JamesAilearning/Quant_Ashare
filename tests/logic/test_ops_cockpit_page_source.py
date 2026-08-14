@@ -1409,6 +1409,22 @@ class SpecSelfConsistencyTests(unittest.TestCase):
 
     _CHANGE = (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit")
 
+    # Every way this change's artifacts refer to the bundle's last trading
+    # day, and every way they name the source that was REJECTED for it.
+    # Pinned as data because a guard keyed to one phrasing is exactly how
+    # the contradiction survived three rounds in three documents.
+    TAIL_TERMS = ("尾部日期", "尾部", "tail", "calendar[-1]")
+    REJECTED_SOURCE_TERMS = (
+        "summarise_bundle_health", "identity tail", "provider 元数据",
+        "coverage_end_date", "_fetch_integrity",
+    )
+    # Only a POSITIVE mandate is a defect. Contrasts ("use day.txt, 不用 the
+    # identity tail"), GIVEN clauses describing the divergence, and history
+    # notes are all legitimate mentions — the guard must not force the
+    # documents to stop explaining themselves.
+    MANDATE_MARKERS = ("MUST", "SHALL", "读自", "取自")
+    NEGATION_MARKERS = ("MUST NOT", "不用", "不得", "非出单侧", "推翻", "冲突")
+
     def _spec(self) -> str:
         # EVERY governance artifact of the change, not just spec.md. r12's
         # fix corrected the spec and left the proposal still naming the
@@ -1419,37 +1435,65 @@ class SpecSelfConsistencyTests(unittest.TestCase):
             for path in sorted(self._CHANGE.rglob("*.md")))
 
     @staticmethod
-    def _clauses(text: str) -> list[str]:
-        """Logical clauses, the way Markdown actually groups them.
-
-        Three earlier shapes of this guard each missed a different way of
-        writing the same contradictory mandate (all found by mutation on
-        this pin):
-
-        * per PARAGRAPH — satisfied by a ``MUST NOT`` elsewhere in it;
-        * per PUNCTUATION over the whole file — headings and bullets carry
-          no 。/，, so one "clause" ran across dozens of lines;
-        * per LINE — an ordinary Markdown reflow splits
-          ``尾部日期 MUST 使用`` from ``summarise_bundle_health()`` and
-          neither line holds both terms (codex #431 r13).
-
-        So: blank lines separate blocks, a new bullet or heading starts a
-        new statement, wrapped continuation lines are rejoined, and only
-        then is the statement split on Chinese sentence punctuation.
-        """
+    def _statements(text: str) -> list[str]:
+        """Markdown's own grouping: blank lines separate blocks, a new list
+        marker or heading starts a statement, wrapped lines rejoin."""
         import re
         out: list[str] = []
         for block in re.split(r"\n\s*\n", text):
-            # Every Markdown list marker starts a new statement: `-`, `*`,
-            # `+`, ordered `1.`/`1)`, and headings. Recognising only `-*#`
-            # let a positive mandate merge with an unrelated MUST NOT item
-            # once the spec was reformatted as an ordered list (codex r14).
             for statement in re.split(
                     r"\n(?=\s*(?:[-*+#]|\d+[.)]))", block):
-                joined = " ".join(
-                    line.strip() for line in statement.split("\n"))
-                out.extend(re.split(r"[。；，]", joined))
+                out.append(" ".join(
+                    line.strip() for line in statement.split("\n")))
         return out
+
+    @staticmethod
+    def _split_clauses(statement: str) -> list[str]:
+        import re
+        return re.split(r"[。；，]", statement)
+
+    @classmethod
+    def _clauses(cls, text: str) -> list[str]:
+        """Every clause of every statement — see :meth:`_statements` for why
+        Markdown grouping has to come first."""
+        return [c for st in cls._statements(text)
+                for c in cls._split_clauses(st)]
+
+    def _names_rejected_source_as_the_tail(self, text: str) -> list[str]:
+        """Statements that TELL a maintainer to take the tail from the
+        rejected source.
+
+        Two scopes, because the contradiction used both:
+
+        * per CLAUSE — r12/r18 put mandate and source in one clause, and a
+          statement-level check is satisfied by an unrelated ``MUST NOT``
+          elsewhere in the same paragraph;
+        * per STATEMENT with NO negation anywhere in it — r17 split them
+          ("`summarise_bundle_health()` 给 tail_date；尾部日期取自它"), which
+          no clause sees whole.
+
+        A mention is only a defect when it MANDATES. Contrasts, GIVEN
+        clauses describing the divergence, and history notes are how these
+        documents explain themselves; flagging those would trade one kind
+        of damage for another.
+        """
+        def hit(fragment: str) -> bool:
+            return (any(t in fragment for t in self.TAIL_TERMS)
+                    and any(x in fragment for x in self.REJECTED_SOURCE_TERMS)
+                    and any(m in fragment for m in self.MANDATE_MARKERS))
+
+        bad: list[str] = []
+        for statement in self._statements(text):
+            negated = any(n in statement for n in self.NEGATION_MARKERS)
+            if hit(statement) and not negated:
+                bad.append(statement.strip()[:80])
+                continue
+            bad.extend(
+                clause.strip()[:80]
+                for clause in self._split_clauses(statement)
+                if hit(clause)
+                and not any(n in clause for n in self.NEGATION_MARKERS))
+        return bad
 
     def test_the_other_tail_source_only_ever_appears_as_a_prohibition(self) -> None:
         # Encode the contradiction risk itself rather than "every paragraph
@@ -1458,13 +1502,13 @@ class SpecSelfConsistencyTests(unittest.TestCase):
         # is `summarise_bundle_health` appearing as a POSITIVE mandate for
         # the tail, which is exactly the stale MUST codex found.
         #
-        offenders = [
-            clause.strip()[:80]
-            for clause in self._clauses(self._spec())
-            if "尾部日期" in clause
-            and "summarise_bundle_health" in clause
-            and "MUST NOT" not in clause
-        ]
+        # The trigger vocabulary is PINNED (below) rather than ad-hoc: the
+        # same contradiction hid in three artifacts under three different
+        # wordings — spec.md said 尾部日期 + summarise_bundle_health (r12),
+        # proposal.md said the same (r17), and tasks.md said "tail" +
+        # "provider 元数据" with neither function name, which the first two
+        # versions of this guard could not see at all (codex #431 r18).
+        offenders = self._names_rejected_source_as_the_tail(self._spec())
         self.assertEqual([], offenders,
                          "identity tail 只能以禁止形式出现在尾部来源的规定里")
 
@@ -1505,6 +1549,48 @@ class SpecSelfConsistencyTests(unittest.TestCase):
             [], [c for c in self._clauses(allowed)
                  if "尾部日期" in c and "summarise_bundle_health" in c
                  and "MUST NOT" not in c])
+
+    def test_the_guard_sees_every_wording_that_hid_the_contradiction(self) -> None:
+        # The same contradiction survived three rounds by wearing three
+        # different vocabularies (codex #431 r12 / r17 / r18). Drive the
+        # guard with each of them, and with the legitimate mentions it must
+        # NOT flag — a guard that forces the documents to stop explaining
+        # themselves is its own kind of damage.
+        # The SHARED predicate — testing a private re-implementation would
+        # pass while the guard in use stayed blind.
+        def offends(text: str) -> bool:
+            return bool(self._names_rejected_source_as_the_tail(text))
+
+        for name, text in (
+            ("r12 spec wording",
+             "页面 MUST 用 `summarise_bundle_health()` 取 bundle 尾部日期。"),
+            ("r17 proposal wording",
+             "`bundle_health.summarise_bundle_health()` 给 tail_date；"
+             "尾部日期取自它。"),
+            ("r18 tasks wording",
+             "- [x] 写明 tail 的取数路径 MUST 取自 provider 元数据"),
+            # The shape that makes the CLAUSE scope necessary: a positive
+            # mandate sitting in the same statement as an unrelated
+            # negation. Statement scope alone is satisfied by that negation
+            # — which is exactly how r12 survived (caught by mutation C58
+            # on this pin: without the clause scope this case escapes).
+            ("r12 paragraph shape (mandate + unrelated negation)",
+             "页面 MUST 用 `summarise_bundle_health()` 取 bundle 尾部日期，"
+             "MUST NOT 新造第二个阈值。"),
+        ):
+            with self.subTest(offending=name):
+                self.assertTrue(offends(text), "这种写法必须被判为违规")
+
+        for name, text in (
+            ("contrast", "尾部日期 MUST 读自 `calendars/day.txt`，"
+                         "**不用** `summarise_bundle_health()` 的 identity tail。"),
+            ("GIVEN describing divergence",
+             "- **GIVEN** `_fetch_integrity` 的 identity tail 与 qlib 日历尾分歧"),
+            ("history note",
+             "- [x] 初稿的 provider 元数据口径已于 W9 推翻"),
+        ):
+            with self.subTest(legitimate=name):
+                self.assertFalse(offends(text), "合法说明不得被误伤")
 
     def test_the_calendar_file_is_named_as_the_tail_source(self) -> None:
         # ...and the positive side is stated somewhere, so the prohibition
