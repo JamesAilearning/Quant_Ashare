@@ -1,11 +1,15 @@
 """Canonical financial-PIT coverage floors (阶段8 Gate-3 Step-A).
 
-THE canonical field->floor mapping the spec's coverage-acceptance requirement
+THE canonical field->floor mappings the spec's coverage-acceptance requirement
 refers to — closing the codex #343 gap ("no canonical list of required
 fields/floors; a real coverage regression could pass by omitting or
-mis-supplying the intended floors"). Consumers MUST pass ``COVERAGE_FLOORS``
-to :meth:`FinancialPITDataView.assert_coverage_floor` rather than inventing
-ad-hoc floors.
+mis-supplying the intended floors"). Consumers MUST pass the REGISTERED BUNDLE
+MATCHING THE UNIVERSE THEY MEASURE to
+:meth:`FinancialPITDataView.assert_coverage_floor` — never an ad-hoc floor set,
+and never another universe's bundle. ``COVERAGE_FLOORS`` is the CSI300 bundle
+specifically; a CSI800 consumer takes :data:`CSI800_COVERAGE_FLOORS` (report
+callers resolve it via
+``gate3_step_a_coverage_report.resolve_floor_bundle``).
 
 Floors are AS-OF measured values (what the view actually serves under the
 disclosure-of-record rule), set from the Gate-3 Step-A canonical report
@@ -90,8 +94,9 @@ FLOOR_PROVENANCE: Final[str] = (
 # keeps a tripwire calibrated on its own issuer mix.
 #
 # Measured outcome, recorded because it inverts the prior expectation that
-# mid/small caps would disclose worse: 14 of 19 CSI800 floors are TIGHTER than
-# or equal to their CSI300 counterparts (accounts_receiv 0.94->0.96,
+# mid/small caps would disclose worse: 16 of the 19 floors (18 fields + the
+# coalesce) are TIGHTER than or equal to their CSI300 counterparts — i.e. all
+# but the three listed as looser below (accounts_receiv 0.94->0.96,
 # accounts_pay/inventories 0.95->0.96, oper_cost/fin_exp 0.97->0.98,
 # prepayment 0.96->0.97, adv_receipts 0.31->0.34, coalesce 0.96->0.97). Only
 # three are looser, each a KNOWN-WEAK field in a known-weak year rather than a

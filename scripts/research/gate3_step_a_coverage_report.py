@@ -495,7 +495,13 @@ def build_report(args: argparse.Namespace) -> str:
     a(f"# Gate-3 Step-A · canonical as-of 覆盖率报告(全量 {universe_label} 财报 PIT store)")
     a("")
     a("> 生成: `scripts/research/gate3_step_a_coverage_report.py`(fail-loud,可复现)。")
-    a(f"> Store: `{store_dir}`;universe: {universe_label} n={len(ever)};金融排除 n={len(fin_issuers)}({basic_note})。")
+    # fin_issuers is the FULL-MARKET classifier set; the number excluded from
+    # THIS universe is its intersection with the universe's members. Reporting
+    # the classifier size as the universe's exclusion count overstates it
+    # (codex #425 r5).
+    universe_fin = sorted(set(ever) & set(fin_issuers))
+    a(f"> Store: `{store_dir}`;universe: {universe_label} n={len(ever)};"
+      f"金融排除 n={len(universe_fin)}(全市场金融分类器 n={len(fin_issuers)};{basic_note})。")
     a("> 口径: **view 实际服务值**(修正后 disclosure-of-record serve-rule 的 as-of 横截面),每年 4 个季度末快照取均值 —— 不是 ingest 行级非空率。")
     a(f"> Coverage-floor 检查: {floor_note}。")
     a("")
@@ -647,7 +653,8 @@ def build_report(args: argparse.Namespace) -> str:
           "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
     a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
-      f"{len(fin_issuers)} 名,逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
+      f"{len(universe_fin)} 名(全市场金融分类器 {len(fin_issuers)} 名,与本宇宙成分"
+      f"求交后为前者),逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
       "(§2)—— 以本表为准。")
     a("")
     a("## 8. ingest holes(缺 store 文件的名字 — 显式列出,绝不静默)")
