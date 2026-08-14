@@ -41,6 +41,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_promotion_meta,
     load_trainer_sidecar_sha,
     picks_table_rows,
+    resolve_incumbent,
     resolve_model_path,
 )
 
@@ -56,8 +57,44 @@ render_page_header(
 # 模型元信息横幅(常驻页顶)— 缺任一字段 → 醒目 WARN,绝不默认值
 # ---------------------------------------------------------------------------
 _model_path = resolve_model_path()
+# Which model is production ACTUALLY serving? Before this, the banner always
+# described the single model behind QUANT_MODEL_PATH — after the 2026-08-05
+# ensemble cutover that named a RETIRED model on every render.
+_incumbent = resolve_incumbent()
+
+if _incumbent.kind == "unresolvable":
+    # The pointer says "production is an ensemble" and we cannot confirm
+    # which one. Falling back to the single-model banner here would show a
+    # model that may not be serving — the exact failure this page exists to
+    # prevent — so refuse to describe an incumbent at all.
+    st.error(
+        "⚠ 现任 ensemble manifest 无法解析(本页绝不退回单模型形态顶替):"
+        f"`{_incumbent.manifest_path}` — {_incumbent.error}。"
+        "请核查 QUANT_ENSEMBLE_MANIFEST 指向的生产 manifest;"
+        "在此之前,下方候选的出处无法确认。"
+    )
+elif _incumbent.is_ensemble:
+    st.caption("现任生产模型(ensemble)")
+    _mf_name = Path(str(_incumbent.manifest_path)).name
+    _mf_sha = str(_incumbent.manifest_sha256 or "")
+    st.markdown(
+        f"**{_mf_name}** — sha256 `{_mf_sha[:12]}…`,"
+        f"{len(_incumbent.members)} 名成员"
+    )
+    _member_cols = st.columns(len(_incumbent.members))
+    for _col, _mem in zip(_member_cols, _incumbent.members, strict=True):
+        with _col:
+            st.caption("成员 fit 窗")
+            st.markdown(f"**{_mem['fit_start']} ~ {_mem['fit_end']}**")
+
 _promo_meta = load_promotion_meta(_model_path)
 _banner_values, _banner_missing = banner_status(_promo_meta)
+
+# The single-model promotion banner applies only when production IS a single
+# model; under an ensemble incumbent it would describe an unrelated artifact.
+if _incumbent.kind != "single":
+    _banner_missing = ()
+    _banner_values = {}
 
 if _banner_missing:
     st.error(
@@ -158,12 +195,30 @@ if _meta_status.artifact_is_ensemble:
     # sidecar 交叉核对是类别错误(codex #390 r3)——不误报"其他模型",
     # 如实披露形态差异;现任 manifest 交叉核对随 PR-C' 切换落地。
     if _meta_status.artifact_ensemble_sha:
-        st.info(
-            "ℹ 该工件由 **ensemble(manifest)** 生成:manifest sha256 "
-            f"`{str(_meta_status.artifact_ensemble_sha)[:12]}…`。"
-            "当前生产为单模型形态,单模型 sidecar 交叉核对不适用;"
-            "ensemble 形态的现任 manifest 核对随生产切换(PR-C')落地。"
-        )
+        _art_sha = str(_meta_status.artifact_ensemble_sha)
+        if _incumbent.is_ensemble:
+            # The cross-check PR-C' promised and 2026-08-05 made possible.
+            if _art_sha == _incumbent.manifest_sha256:
+                st.info(
+                    "ℹ 该工件由 **现任 ensemble manifest** 生成:sha256 "
+                    f"`{_art_sha[:12]}…` — 与现任一致。"
+                )
+            else:
+                st.warning(
+                    "⚠ 该工件出自**另一份 manifest**(非现任):工件 "
+                    f"`{_art_sha[:12]}…` vs 现任 "
+                    f"`{str(_incumbent.manifest_sha256 or '')[:12]}…`。"
+                    "它不是当前生产模型给出的建议,请勿据此下单。"
+                )
+        else:
+            # No incumbent to compare against — say so rather than let the
+            # absence of a warning read as "checked and fine".
+            st.warning(
+                "⚠ 该工件由 **ensemble(manifest)** 生成:sha256 "
+                f"`{_art_sha[:12]}…`,但**未能确定现任 manifest**"
+                "(QUANT_ENSEMBLE_MANIFEST 未设或不可解析),"
+                "无法核对它是否出自当前生产模型。"
+            )
     else:
         st.warning(
             "⚠ 该工件标记为 ensemble 生成,但 meta.ensemble 块缺 "

@@ -44,9 +44,90 @@ BANNER_FIELDS: tuple[str, ...] = (
 ROUND_TRIP_COST = 0.0030
 
 
+# The INCUMBENT ensemble manifest, read-side only. Production switched to a
+# 3-member csi800 N5 ensemble on 2026-08-05; before this pointer existed the
+# banner had no way to know that and kept describing the retired single model
+# (docs/operations-env-vars.md explains why the CLI deliberately does NOT
+# inherit this default).
+ENV_ENSEMBLE_MANIFEST = "QUANT_ENSEMBLE_MANIFEST"
+
+
 def resolve_model_path() -> str:
     """The production model path: env override > documented default."""
     return os.environ.get(ENV_MODEL_PATH, "").strip() or DEFAULT_MODEL_PATH
+
+
+@dataclass(frozen=True)
+class IncumbentIdentity:
+    """Which model production is ACTUALLY serving, as far as the UI can tell.
+
+    Three states, and the third is the point: an unset pointer means "no
+    ensemble configured, the single-model banner applies", but a pointer that
+    is SET and unreadable must not degrade to that — it means the operator
+    told us production is an ensemble and we cannot confirm which one. The
+    page WARNs instead of showing a model that may not be serving.
+    """
+
+    kind: str                       # "ensemble" | "single" | "unresolvable"
+    manifest_path: str | None = None
+    manifest_sha256: str | None = None
+    members: tuple[dict[str, str], ...] = ()
+    error: str | None = None
+
+    @property
+    def is_ensemble(self) -> bool:
+        return self.kind == "ensemble"
+
+
+def _sha256_of(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_ensemble_manifest_identity(manifest_path: str) -> IncumbentIdentity:
+    """Read a manifest into a bannerable identity, or say why not."""
+    p = Path(manifest_path)
+    if not p.is_file():
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path,
+            error="文件不存在")
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path,
+            error=f"不可解析({type(exc).__name__})")
+    if not isinstance(payload, dict):
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path,
+            error="顶层不是 JSON object")
+    raw_members = payload.get("members")
+    if not isinstance(raw_members, list) or not raw_members:
+        return IncumbentIdentity(
+            kind="unresolvable", manifest_path=manifest_path,
+            error="members 缺失或为空")
+    members: list[dict[str, str]] = []
+    for m in raw_members:
+        if not isinstance(m, dict):
+            return IncumbentIdentity(
+                kind="unresolvable", manifest_path=manifest_path,
+                error="members 内含非 object 条目")
+        members.append({
+            "fit_start": str(m.get("fit_start", "")),
+            "fit_end": str(m.get("fit_end", "")),
+        })
+    return IncumbentIdentity(
+        kind="ensemble", manifest_path=manifest_path,
+        manifest_sha256=_sha256_of(p), members=tuple(members))
+
+
+def resolve_incumbent() -> IncumbentIdentity:
+    """What is production serving right now — ensemble, single, or unknown."""
+    pointer = os.environ.get(ENV_ENSEMBLE_MANIFEST, "").strip()
+    if not pointer:
+        return IncumbentIdentity(kind="single")
+    return load_ensemble_manifest_identity(pointer)
 
 
 def model_meta_paths(model_path: str) -> tuple[Path, Path]:

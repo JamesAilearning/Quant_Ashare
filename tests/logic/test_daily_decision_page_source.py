@@ -400,3 +400,112 @@ class HelpersRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IncumbentEnsembleIdentityTests(unittest.TestCase):
+    """2026-08-14: production switched to a 3-member ensemble on 2026-08-05,
+    but the page kept describing the retired single model and printed a
+    now-false claim ("当前生产为单模型形态") plus a TODO that had already come
+    due. These pin the three states the banner and the cross-check must have."""
+
+    def setUp(self) -> None:
+        self.page = _PAGE.read_text(encoding="utf-8")
+        self.helpers = _HELPERS.read_text(encoding="utf-8")
+
+    # --- runtime: the three incumbent states -------------------------------
+
+    def _identity(self, payload, *, name="m.json"):
+        import json
+        import tempfile
+
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_ensemble_manifest_identity,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / name
+            p.write_text(json.dumps(payload) if not isinstance(payload, str)
+                         else payload, encoding="utf-8")
+            return load_ensemble_manifest_identity(str(p))
+
+    def test_readable_manifest_yields_ensemble_identity(self) -> None:
+        ident = self._identity({"schema_version": "csi800_n5_ensemble_manifest_v1",
+                                "members": [
+                                    {"fit_start": "2023-09-28", "fit_end": "2025-09-29"},
+                                    {"fit_start": "2023-12-29", "fit_end": "2025-12-30"},
+                                    {"fit_start": "2024-04-01", "fit_end": "2026-04-01"}]})
+        self.assertEqual("ensemble", ident.kind)
+        self.assertTrue(ident.is_ensemble)
+        self.assertEqual(3, len(ident.members))
+        self.assertEqual(64, len(str(ident.manifest_sha256)))
+        self.assertEqual("2026-04-01", ident.members[-1]["fit_end"])
+
+    def test_unreadable_or_malformed_manifest_is_unresolvable(self) -> None:
+        # Every malformed shape must land in "unresolvable", NEVER degrade to
+        # the single-model banner (that would name a possibly-retired model).
+        for payload in ("{not json", {"members": []}, {"members": "x"},
+                        {"members": [1, 2]}, {"schema_version": "v1"}, []):
+            with self.subTest(payload=str(payload)[:24]):
+                ident = self._identity(payload)
+                self.assertEqual("unresolvable", ident.kind)
+                self.assertIsNotNone(ident.error)
+                self.assertFalse(ident.is_ensemble)
+
+    def test_missing_file_is_unresolvable(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_ensemble_manifest_identity,
+        )
+        ident = load_ensemble_manifest_identity("Z:/nonexistent/manifest.json")
+        self.assertEqual("unresolvable", ident.kind)
+
+    def test_unset_pointer_means_single_model(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from web.operator_ui.pages._daily_decision_helpers import (
+            ENV_ENSEMBLE_MANIFEST,
+            resolve_incumbent,
+        )
+        with patch.dict(os.environ, {ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
+            self.assertEqual("single", resolve_incumbent().kind)
+
+    # --- source: banner + cross-check must honour those states -------------
+
+    def test_banner_refuses_to_fall_back_when_unresolvable(self) -> None:
+        self.assertIn('_incumbent.kind == "unresolvable"', self.page)
+        self.assertIn("绝不退回单模型形态顶替", self.page)
+
+    def test_ensemble_banner_shows_manifest_identity(self) -> None:
+        self.assertIn("现任生产模型(ensemble)", self.page)
+        self.assertIn("_incumbent.manifest_sha256", self.page)
+        self.assertIn("_incumbent.members", self.page)
+
+    def test_single_model_banner_suppressed_under_ensemble(self) -> None:
+        # Leaving the promotion banner on under an ensemble incumbent is
+        # exactly the bug: it describes a model that is not serving.
+        self.assertIn('if _incumbent.kind != "single"', self.page)
+
+    def test_incumbent_cross_check_replaces_the_expired_claim(self) -> None:
+        # The false statement and the come-due TODO must be gone...
+        self.assertNotIn("当前生产为单模型形态", self.page)
+        self.assertNotIn("随生产切换(PR-C')落地", self.page)
+        # ...replaced by a real three-way comparison.
+        self.assertIn("_art_sha == _incumbent.manifest_sha256", self.page)
+        self.assertIn("另一份 manifest", self.page)
+        self.assertIn("未能确定现任 manifest", self.page)
+
+    # --- the read-side-only asymmetry --------------------------------------
+
+    def test_env_var_documented_as_read_side_only(self) -> None:
+        doc = _ENV_DOC.read_text(encoding="utf-8")
+        self.assertIn("QUANT_ENSEMBLE_MANIFEST", doc)
+        self.assertIn("Read-side only", doc)
+
+    def test_cli_ensemble_manifest_has_no_implicit_default(self) -> None:
+        # The side that PRODUCES a list must never pick its model implicitly.
+        # A future "convenience" default here would make a wrong order list
+        # possible from a stale environment variable.
+        cli = (_ROOT / "scripts" / "daily_recommend.py").read_text(encoding="utf-8")
+        import re
+        m = re.search(r'"--ensemble-manifest",\s*default=([^,\)]+)', cli)
+        self.assertIsNotNone(m, "--ensemble-manifest 的 default 未找到")
+        self.assertEqual("None", m.group(1).strip())
