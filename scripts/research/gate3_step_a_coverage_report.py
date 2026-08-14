@@ -617,16 +617,29 @@ def build_report(args: argparse.Namespace) -> str:
                   else f"{universe_label} as-of 口径要点(如实记录;"
                        "Gate-1 memo 为 CSI300-ever 口径,本节不与之对比)"))
     a("")
-    total_holes = sum(len(info.missing_names) for info in residuals.values())
-    a(f"1. **提供方歧义重复(已消歧)→ 现存 {total_holes} 个 ingest hole**"
+    # §7 items are numbered at emission, not hardcoded: item 5 is emitted only
+    # when the Gate-1 comparison applies, so a literal "6." would leave a
+    # visible 4 -> 6 gap off csi300.
+    findings: list[str] = []
+    note = findings.append
+    total_missing = sum(len(info.missing_names) for info in residuals.values())
+    # A missing store file is NOT evidence of a fail-loud ingest hole: the
+    # ingestor treats a legitimately EMPTY provider frame as success and writes
+    # nothing, so "no file" covers both refusals and genuine no-data responses.
+    # The report can observe only the absence; classifying every absence as a
+    # true-ambiguity hole overstates the hole count (codex #425 r6). The
+    # authoritative split lives in the ingest run's own hole counter/log.
+    note(f"**提供方歧义重复(已消歧)+ 现存 {total_missing} 个缺失 store 文件**"
       "(§8 名单)。原 27 hole 的主因 —— 同一 `(ts_code, end_date, update_flag)` "
       "两行不同内容、仅公告日可区分(例五粮液)—— 已由 OpenSpec "
       "`fix-financial-ingest-ambiguous-duplicates` 消歧:版本身份 = 有效公告日"
       "(f_ann_date 缺则 ann_date),同三元组不同公告日 = 两个独立披露事件都保留,"
-      "record = 最早披露。剩余 hole 为**真歧义**(同一有效公告日双内容,例如同日"
-      "双 comp_type 报表)—— 保留 fail-loud,覆盖率计为未覆盖(诚实方向);具体名单"
-      "见 §8。")
-    a("2. **rd_exp 的 2018 年 as-of 断崖**: "
+      "record = 最早披露。**缺文件有两类成因,本报告无法从'文件不在'本身区分**:"
+      "①ingest 对真歧义 fail-loud 拒写(同一有效公告日双内容,例如同日双 comp_type "
+      "报表);②提供方对该 instrument/endpoint 返回空数据 —— ingest 视为成功且不写"
+      "文件(如早年退市、非股票代码)。判定成因须看该次 ingest 的 hole 计数/日志。"
+      "两类在覆盖率分母中一律**保留并计为未覆盖**(诚实方向);具体名单见 §8。")
+    note("**rd_exp 的 2018 年 as-of 断崖**: "
       + ("行级 pooled 显示 2018=55%,但 " if gate1_comparable else "")
       + f"as-of 横截面 2018 H1 仅 {pct(rd_quarters[2018][1])}、Q3 "
       f"{pct(rd_quarters[2018][2])}、Q4 {pct(rd_quarters[2018][3])} —— 单列研发"
@@ -635,33 +648,37 @@ def build_report(args: argparse.Namespace) -> str:
       + "。2019+ 无季报缺失效应(§3)。")
     int_rng = [cov_exfin["int_exp"][y] for y in YEARS]
     fin_rng = [cov_exfin["fin_exp"][y] for y in YEARS]
-    a(f"3. **int_exp as-of 覆盖 {pct(min(int_rng))}-{pct(max(int_rng))}**"
+    note(f"**int_exp as-of 覆盖 {pct(min(int_rng))}-{pct(max(int_rng))}**"
       + ("(显著低于 pooled 13-18%)" if gate1_comparable else "(年报为主的稀疏科目)")
       + " —— 财报中仅年报披露居多。无影响: charter 已把 C2 利息项"
       f"定为 fin_exp(as-of {pct(min(fin_rng))}-{pct(max(fin_rng))})。")
     res_note = " / ".join(
         f"{ep} {info.residual.overall_differing_fraction():.2%}"
         for ep, info in residuals.items())
-    a(f"4. **全宇宙重述残差非零但极小**(§4: {res_note},"
+    note(f"**全宇宙重述残差非零但极小**(§4: {res_note},"
       "含 NA↔非NA transition)。serve-rule 恒取 uf0/最早披露 → 无前视;残差为"
       "诚信包络的已量化界。")
     if gate1_comparable:
         # Gate-1 Δ figures are CSI300-ever measurements; off that universe the
         # whole claim (and its fixed -5.9pp / -3.9pp numbers) belongs to a
         # different issuer set and is therefore omitted rather than restated.
-        a("5. **其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
+        note("**其余字段 Gate-1 数字大体坐实**(§5 Δ 多在 ±1pp;rd_exp -5.9pp 与 "
           "contract_liab -3.9pp 均由 2018-2020 过渡期 as-of 滞后驱动,非数据缺失)。")
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
-    a(f"6. **金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
+    note(f"**金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
       f"{len(universe_fin)} 名(全市场金融分类器 {len(fin_issuers)} 名,与本宇宙成分"
       f"求交后为前者),逐年在册金融 {min(fin_counts)}-{max(fin_counts)} 名"
       "(§2)—— 以本表为准。")
+    for idx, item in enumerate(findings, start=1):
+        a(f"{idx}. {item}")
     a("")
-    a("## 8. ingest holes(缺 store 文件的名字 — 显式列出,绝不静默)")
+    a("## 8. 缺失的 store 文件(显式列出,绝不静默)")
     a("")
-    a("缺文件 = ingest 对该 instrument/endpoint fail-loud 后留下的 hole(如提供方"
-      "同一 logical key 双内容的歧义重复)。这些名字在覆盖率分母中**保留并计为未覆盖**"
-      "(诚实方向:压低而非抬高覆盖率)。")
+    a("缺文件 = 该 (instrument, endpoint) 在 store 中没有 parquet。成因有两类,"
+      "**从文件缺失本身无法区分**:①ingest fail-loud 拒写(提供方同一 logical key "
+      "双内容的歧义重复);②提供方返回空数据 —— ingest 视为成功、不写文件。"
+      "无论哪类,这些名字在覆盖率分母中**保留并计为未覆盖**(诚实方向:压低而非抬高"
+      "覆盖率)。要判定成因,查该次 ingest 的 hole 计数/日志,而非本表。")
     a("")
     for endpoint, info in residuals.items():
         names = info.missing_names
