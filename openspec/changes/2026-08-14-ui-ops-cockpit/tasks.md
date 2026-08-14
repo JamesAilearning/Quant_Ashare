@@ -343,10 +343,26 @@
 - [x] 建立**可信的 POSIX 仿真**(只换 `_host_isabs`,并把机器自身真实路径视为
       绝对——POSIX 上本就如此):全套 170 passed,Ubuntu 腿有实证支撑
 
+## W38 codex #431 r32（**P1**，属实；判据本身选错了函数）
+- [x] `ntpath.isabs("/srv/bundle")` 为 True,但它只是「有根」,按**当前盘**解析。
+      实测:`join("D:/checkout", "/srv/bundle")` -> `D:\srv\bundle`;
+      `join("C:/checkout", …)` -> `C:\srv\bundle` —— Streamlit 在 C: 启动、
+      命令在 D: 的 checkout 里跑,又是两个位置
+- [x] 判据由 `os.path.isabs` 换成「本机**完全限定**」
+      (`PureWindowsPath`/`PurePosixPath` 按 `os.name` 选)  ← C101/C102 咬住
+- [x] 该写法在 Windows 拒绝、在 POSIX 正常 —— 判据随宿主变,是因为
+      「同一串字符指不指一处」本就随宿主变
+- [x] C101 **首轮存活**:我的新测试打了桩去验,没驱动真实实现。改为直接断言
+      真函数(该性质本就平台相关,分支显式写出,不藏在 mock 后面)
+- [x] 命令渲染类测试改为在 setUp 固定宿主判据:没有任何字面量在两个宿主上都
+      完全限定(`D:/x` 对 POSIX 是外来,`/srv/x` 在 Windows 是盘符相对),
+      渲染与分类必须分开考
+- [x] 可信 POSIX 仿真复跑:171 passed
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C100(C57/C58/C68 随重构作废):96 杀 + 1 已论证等价
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C102(C57/C58/C68 随重构作废):98 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

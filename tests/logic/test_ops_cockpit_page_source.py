@@ -110,6 +110,22 @@ class ResolvedCommandTests(unittest.TestCase):
     values.
     """
 
+    def setUp(self) -> None:
+        # These tests are about COMMAND RENDERING, not about classifying a
+        # spelling. No literal is fully qualified on both hosts — `D:/x` is
+        # foreign to POSIX and `/srv/x` is drive-RELATIVE on Windows
+        # (`ntpath.isabs` says True, but it resolves against whichever drive
+        # is current — codex #431 r32). So pin the host rule here and let
+        # RepoAnchoredPathTests own the classification, where it is exercised
+        # under both platforms' rules explicitly.
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+        patcher = patch.object(inc, "_host_is_fully_qualified",
+                               lambda path: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _ensemble(self) -> object:
         from web.operator_ui.incumbent import IncumbentIdentity
         return IncumbentIdentity(
@@ -756,12 +772,12 @@ class RepoAnchoredPathTests(unittest.TestCase):
         value = "D:/qlib_data/my_cn_data_pit"
         # On the documented platform this is a perfectly good absolute path
         # and nothing may change.
-        with patch.object(inc, "_host_isabs", lambda p: True):
+        with patch.object(inc, "_host_is_fully_qualified", lambda p: True):
             self.assertIsNone(inc.foreign_absolute_reason(value))
             ok = data_update_command(provider_uri=value, delisted_registry="R")
             self.assertNotIn("无法生成可粘贴命令", ok.title)
         # …on a host where the spelling is foreign, every surface refuses.
-        with patch.object(inc, "_host_isabs", posixpath.isabs):
+        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs):
             reason = inc.foreign_absolute_reason(value)
             self.assertIsNotNone(reason)
             cmd = data_update_command(provider_uri=value,
@@ -793,7 +809,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
             loaded.append(path)
             raise AssertionError("外来写法的 manifest 绝不该被读取")
 
-        with patch.object(inc, "_host_isabs", posixpath.isabs), \
+        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs), \
                 patch.dict(os.environ,
                            {"QUANT_ENSEMBLE_MANIFEST": "D:/prod/manifest.json"},
                            clear=False), \
@@ -814,7 +830,7 @@ class RepoAnchoredPathTests(unittest.TestCase):
 
         import web.operator_ui.incumbent as inc
         value = "D:/qlib_data/my_cn_data_pit"
-        with patch.object(inc, "_host_isabs", posixpath.isabs):
+        with patch.object(inc, "_host_is_fully_qualified", posixpath.isabs):
             self.assertEqual(value, inc.anchored_to_repo(value))
 
     def test_the_page_names_a_foreign_provider_as_the_cause(self) -> None:
@@ -822,6 +838,51 @@ class RepoAnchoredPathTests(unittest.TestCase):
         self.assertIn(
             "elif foreign_absolute_reason(_provider) is not None:", page)
         self.assertIn("provider 路径在本机不可用", page)
+
+    def test_a_drive_relative_rooted_path_is_refused_on_windows(self) -> None:
+        # codex #431 r32 (P1): `ntpath.isabs("/srv/bundle")` is True, but the
+        # path is rooted on WHICHEVER DRIVE IS CURRENT — Streamlit started on
+        # `C:` inspects `C:\srv\bundle` while the command, run from a checkout
+        # on `D:`, reads `D:\srv\bundle`. `os.path.isabs` therefore cannot be
+        # the host rule; "fully qualified" (drive + root) is.
+        import ntpath
+        import posixpath
+        from pathlib import PurePosixPath, PureWindowsPath
+        from unittest.mock import patch
+
+        import web.operator_ui.incumbent as inc
+
+        # the quirk itself, so the pin does not rest on my description of it
+        self.assertTrue(ntpath.isabs("/srv/bundle"))
+        self.assertFalse(PureWindowsPath("/srv/bundle").is_absolute())
+        self.assertTrue(PurePosixPath("/srv/bundle").is_absolute())
+        self.assertEqual(
+            ntpath.normpath(ntpath.join("D:/checkout", "/srv/bundle")),
+            ntpath.normpath(ntpath.join("D:/elsewhere", "/srv/bundle")))
+        self.assertNotEqual(
+            ntpath.normpath(ntpath.join("D:/checkout", "/srv/bundle")),
+            ntpath.normpath(ntpath.join("C:/checkout", "/srv/bundle")))
+
+        # The REAL rule, unpatched. This property is genuinely
+        # platform-specific, so the branch is explicit rather than hidden
+        # behind a mock — a stubbed rule would leave the implementation
+        # itself unpinned (it did: the mutation survived until this).
+        import os
+        if os.name == "nt":
+            self.assertFalse(inc._host_is_fully_qualified("/srv/bundle"))
+            self.assertTrue(inc._host_is_fully_qualified("D:/srv/bundle"))
+            self.assertIsNotNone(inc.foreign_absolute_reason("/srv/bundle"))
+            self.assertIsNone(inc.foreign_absolute_reason("D:/srv/bundle"))
+        else:
+            self.assertTrue(inc._host_is_fully_qualified("/srv/bundle"))
+            self.assertFalse(inc._host_is_fully_qualified("D:/srv/bundle"))
+            self.assertIsNone(inc.foreign_absolute_reason("/srv/bundle"))
+            self.assertIsNotNone(inc.foreign_absolute_reason("D:/srv/bundle"))
+        # …and the rule must be the pure-path one on BOTH hosts
+        self.assertIs(
+            inc._HOST_PURE,
+            PureWindowsPath if os.name == "nt" else PurePosixPath)
+        del patch, posixpath  # only the real rule is under test here
 
     def test_the_absoluteness_test_is_not_asked_of_the_host(self) -> None:
         # A SOURCE pin, deliberately, because no behavioural one is possible

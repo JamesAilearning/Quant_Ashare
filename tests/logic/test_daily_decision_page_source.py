@@ -578,7 +578,7 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # no longer intercept the call it is meant to observe.
         from web.operator_ui import incumbent as H
         with patch.dict(os.environ, {H.ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
-            with patch.object(H, "_host_isabs", ntpath.isabs), \
+            with patch.object(H, "_host_is_fully_qualified", ntpath.isabs), \
                     patch.object(H, "load_ensemble_manifest_identity") as fake:
                 fake.return_value = H.IncumbentIdentity(kind="ensemble")
                 H.resolve_incumbent()
@@ -586,7 +586,7 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
             # …and on a host where that spelling is NOT usable it still must
             # not degrade to the single-model shape — the actual invariant.
             import posixpath
-            with patch.object(H, "_host_isabs", posixpath.isabs):
+            with patch.object(H, "_host_is_fully_qualified", posixpath.isabs):
                 self.assertEqual("unresolvable", H.resolve_incumbent().kind)
 
     def test_single_model_requires_the_explicit_opt_out(self) -> None:

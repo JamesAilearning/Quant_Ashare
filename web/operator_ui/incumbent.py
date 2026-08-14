@@ -30,18 +30,32 @@ def _is_absolute_under_either_convention(path: str) -> bool:
             or PurePosixPath(path).is_absolute())
 
 
-# The HOST's own absoluteness rule, bound once so tests can substitute the
-# other platform's without mutating `os.path` — which on Windows IS `ntpath`,
-# so a global swap also rewrites the very function a test imports to restore
-# Windows semantics (that made an "as POSIX" simulation silently unsound).
-_host_isabs = os.path.isabs
+# Whether a spelling is FULLY QUALIFIED on this host — drive + root on
+# Windows, a leading `/` on POSIX. Bound once so tests can substitute the
+# other platform's rule without mutating `os.path`, which on Windows IS
+# `ntpath`: a global swap also rewrites the very function a test imports to
+# restore Windows semantics, which made an "as POSIX" simulation silently
+# unsound (codex #431 r31).
+#
+# NOT `os.path.isabs`. On Windows `ntpath.isabs("/srv/bundle")` is True even
+# though the path is rooted on WHICHEVER DRIVE IS CURRENT — Streamlit started
+# on `C:` inspects `C:\srvundle` while the command, run from a checkout on
+# `D:`, reads `D:\srvundle`. Same page-says-one / command-runs-another
+# split, one more spelling (codex #431 r32).
+_HOST_PURE = PureWindowsPath if os.name == "nt" else PurePosixPath
+
+
+def _host_is_fully_qualified(path: str) -> bool:
+    """Names exactly one location on this host, from any working directory."""
+    return _HOST_PURE(path).is_absolute()
 
 
 # Message shown when a spelling names nothing resolvable on THIS host.
 FOREIGN_ABSOLUTE_REASON = (
-    "该路径是**另一套约定**下的绝对路径(如 Windows 的 `D:/…` 出现在 POSIX 主机上)"
-    "——本机的读取器会把它当相对路径,按各自的工作目录解析成不同位置,"
-    "本页无法让它只指一处"
+    "该路径在本机**不是完全限定**的写法——要么是另一套约定下的绝对路径"
+    "(如 Windows 的 `D:/…` 出现在 POSIX 主机上),要么是 Windows 上缺盘符的"
+    "`/srv/…`(按**当前盘**解析)。两种情况下,不同工作目录的读取器会解析到"
+    "不同位置,本页无法让它只指一处"
 )
 
 
@@ -65,7 +79,7 @@ def foreign_absolute_reason(path: str) -> str | None:
     """
     if not path.strip():
         return None
-    if _host_isabs(path):
+    if _host_is_fully_qualified(path):
         return None
     return (FOREIGN_ABSOLUTE_REASON
             if _is_absolute_under_either_convention(path) else None)
@@ -112,7 +126,7 @@ def anchored_to_repo(path: str) -> str:
         return path
     if foreign_absolute_reason(expanded) is not None:
         return expanded
-    if _host_isabs(expanded):
+    if _host_is_fully_qualified(expanded):
         return expanded
     return os.path.normpath(os.path.join(PROJECT_ROOT, expanded))
 

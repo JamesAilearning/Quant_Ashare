@@ -353,6 +353,17 @@ recert 状态与 15 个月有效期 MUST 由 `scripts.rotation_lib` 的
   一个不存在的位置，会把操作人引去查「bundle 丢了」而不是「路径配错了」
 - **AND** 在该写法本就成立的宿主上（Windows），一切 MUST 保持不变
 
+#### Scenario: 判据是「本机完全限定」，不是 `os.path.isabs`
+
+- **GIVEN** Windows 上 `provider_uri` 写作 `/srv/bundle`
+- **AND** `ntpath.isabs("/srv/bundle")` 为 **True**，但该路径只是「有根」，
+  它按**当前盘**解析（实测：`join("D:/checkout", "/srv/bundle")` 得
+  `D:\srv\bundle`，`join("C:/checkout", …)` 得 `C:\srv\bundle`）
+- **THEN** 本页 MUST 以「本机**完全限定**」（Windows 要盘符 + 根，POSIX 要
+  前导 `/`）为判据，MUST NOT 用 `os.path.isabs`
+- **AND** 该写法在 Windows 上 MUST 被拒绝、在 POSIX 上 MUST 正常可用——
+  判据随宿主变，是因为「同一串字符指不指一处」本就随宿主变
+
 #### Scenario: `~` 必须展开后再同时用于读与印
 
 - **GIVEN** `QUANT_MODEL_PATH=~/model.pkl`
