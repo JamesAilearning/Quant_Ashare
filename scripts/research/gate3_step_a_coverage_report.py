@@ -141,6 +141,50 @@ CANDIDATE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Both the VERDICT and the CAUSE are derived from the measured deltas, never
+# asserted: which fields deviate most, and whether the deviation actually
+# concentrates in the 2018-2020 transition, change with the inputs. A sentence
+# reading "大体坐实, 由过渡期滞后驱动" regardless of the numbers printed beside
+# it is a conclusion the report has not earned (codex #425 r11). Extracted as a
+# pure function so both branches are unit-testable — on the current membership
+# the Gate-1 comparison is suppressed entirely, so an inline version would ship
+# untested.
+GATE1_TRANSITION_LAST_YEAR = 2020
+GATE1_CAUSE_CONCENTRATION = 0.60
+
+
+def gate1_delta_note(per_year: dict[str, dict[int, float]]) -> str:
+    """Render §7's Gate-1 deviation finding from the deltas actually computed.
+
+    ``per_year`` maps field -> {year -> delta in percentage points}.
+    """
+    mean_deltas = {f: sum(d.values()) / len(d) for f, d in per_year.items()}
+    within = sum(1 for d in mean_deltas.values() if abs(d) <= 1.0)
+    worst = sorted(mean_deltas.items(), key=lambda kv: -abs(kv[1]))[:2]
+    worst_txt = "、".join(f"{f} {d:+.1f}pp" for f, d in worst)
+    headline = ("**其余字段 Gate-1 数字大体坐实**"
+                if within * 2 >= len(mean_deltas)
+                else "**其余字段与 Gate-1 的偏离已不算小**")
+    shares: list[float] = []
+    for wf, _ in worst:
+        abs_total: float = sum(abs(v) for v in per_year[wf].values())
+        abs_early: float = sum(
+            abs(v) for y, v in per_year[wf].items()
+            if y <= GATE1_TRANSITION_LAST_YEAR)
+        shares.append(abs_early / abs_total if abs_total > 0 else 0.0)
+    # The transition-window cause is claimed only when the early years really
+    # do carry most of the deviation for EVERY field named above.
+    if shares and min(shares) >= GATE1_CAUSE_CONCENTRATION:
+        cause = (f"—— 偏离的 {pct(min(shares))}+ 集中在 "
+                 f"2018-{GATE1_TRANSITION_LAST_YEAR} 过渡期(as-of 滞后),"
+                 "非数据缺失")
+    else:
+        cause = (f"—— 本报告**不对成因下结论**:偏离并未集中在 "
+                 f"2018-{GATE1_TRANSITION_LAST_YEAR} 过渡期,成因须另行查证")
+    return (f"{headline}(§5 的 {len(mean_deltas)} 个可比字段中 {within} 个 Δ 在 "
+            f"±1pp 内;偏离最大的是 {worst_txt} {cause})。")
+
+
 class ReportError(RuntimeError):
     """Fail-loud: the report must abort rather than print optimistic numbers."""
 
@@ -738,17 +782,10 @@ def build_report(args: argparse.Namespace) -> str:
         # Derived from the deltas actually computed above, never hardcoded: a
         # narrative pinned to yesterday's numbers contradicts the table printed
         # directly above it the moment the inputs move (codex #425 r10).
-        mean_deltas = {
-            f: 100.0 * sum(cov_cmp[f][y] - GATE1_POOLED[f][y] for y in YEARS)
-            / len(YEARS)
+        note(gate1_delta_note({
+            f: {y: 100.0 * (cov_cmp[f][y] - GATE1_POOLED[f][y]) for y in YEARS}
             for f in all_fields if f in GATE1_POOLED
-        }
-        within = sum(1 for d in mean_deltas.values() if abs(d) <= 1.0)
-        worst = sorted(mean_deltas.items(), key=lambda kv: -abs(kv[1]))[:2]
-        worst_txt = "、".join(f"{f} {d:+.1f}pp" for f, d in worst)
-        note(f"**其余字段 Gate-1 数字大体坐实**(§5 的 {len(mean_deltas)} 个可比字段中 "
-             f"{within} 个 Δ 在 ±1pp 内;偏离最大的是 {worst_txt} —— 由 2018-2020 "
-             "过渡期 as-of 滞后驱动,非数据缺失)。")
+        }))
     fin_counts = [fin for _, _, fin, _ in breadth_rows]
     note(f"**金融排除规模**: 行业名单法(stock_basic)在 {universe_label} 上排除 "
       f"{len(universe_fin)} 名(全市场金融分类器 {len(fin_issuers)} 名,与本宇宙成分"
