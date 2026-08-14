@@ -1063,6 +1063,19 @@ class BundleFreshnessTests(unittest.TestCase):
                 got = bundle_calendar_tail(self._calendar_bytes(body))
                 self.assertFalse(got.known, "首尾空白也不是规范写法")
 
+    def test_undecodable_calendar_bytes_are_unknown_not_a_traceback(self) -> None:
+        # codex #431 r10: UnicodeDecodeError is a ValueError, NOT an
+        # OSError. Corrupt or partially-copied bytes would escape the read
+        # guard and take the whole Streamlit page down with a traceback,
+        # instead of the 无法判定 state this function promises.
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+        )
+        got = bundle_calendar_tail(
+            self._calendar_bytes(b"2026-07-30\n\xff\xfe not utf-8\n"))
+        self.assertFalse(got.known)
+        self.assertIn("UnicodeDecodeError", got.reason)
+
     def test_a_crlf_calendar_is_still_accepted(self) -> None:
         # Guards against over-strictness in the other direction: the REAL
         # production bundle writes CRLF, and Python's universal-newline read
@@ -1084,11 +1097,20 @@ class BundleFreshnessTests(unittest.TestCase):
         from web.operator_ui.pages._ops_cockpit_helpers import (
             bundle_calendar_tail,
         )
+        import sys
         for spelling in ("2026-W32-1", "20260803"):
             with self.subTest(spelling=spelling):
-                self.assertEqual(_date(2026, 8, 3),
-                                 _date.fromisoformat(spelling),
-                                 "前提:这些拼写确实能被解析")
+                if sys.version_info >= (3, 11):
+                    # The PREMISE only holds from 3.11, where
+                    # date.fromisoformat gained "most ISO 8601 formats";
+                    # on 3.10 it raises. CI runs 3.10/3.11/3.12, so
+                    # asserting it unconditionally fails the 3.10 leg —
+                    # and the premise is not what this test is for.
+                    self.assertEqual(_date(2026, 8, 3),
+                                     _date.fromisoformat(spelling),
+                                     "前提:这些拼写在 3.11+ 确实能被解析")
+                # The BEHAVIOUR holds on every version: refused as
+                # non-canonical, whatever the parser would have done.
                 got = bundle_calendar_tail(
                     self._calendar(f"2026-07-30\n{spelling}\n"))
                 self.assertFalse(got.known)

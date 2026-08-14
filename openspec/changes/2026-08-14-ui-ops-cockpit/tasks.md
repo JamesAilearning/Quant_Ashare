@@ -98,10 +98,16 @@
 - [x] 反向钉:真实 CRLF bundle 仍须被接受  ← 生产 day.txt 实为 CRLF,过严会永久「无法判定」
 - [x] C41(read_text vs read_bytes) 经五种行尾验证为**等价变异**,显式标注
 
+## W16 codex #431 r10 + CI 3.10 红
+- [x] `UnicodeDecodeError` 是 ValueError 不是 OSError,原会把整页打成 traceback  ← C42 咬住
+- [x] **CI ubuntu-3.10 失败已定位并修**:我那条「前提」断言依赖 3.11 才有的
+      `date.fromisoformat` 宽松拼写;3.10 上必然抛。改为按版本守前提,行为断言不变
+- [x] 补不可解码字节用例(非 UTF-8)
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
-- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C41:39 杀 + 2 已论证等价(C11/C20/C35 首轮存活已补钉)
+- [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C42:40 杀 + 2 已论证等价(C11/C20/C35 首轮存活已补钉)
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
 - [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge

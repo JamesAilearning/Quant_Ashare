@@ -534,7 +534,11 @@ def bundle_calendar_tail(provider_uri: str) -> CalendarTail:
     path = Path(provider_uri) / "calendars" / "day.txt"
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, NOT an OSError — corrupt or
+        # partially-copied bytes would otherwise escape and take the whole
+        # Streamlit page down with a traceback instead of producing the
+        # 无法判定 state this function promises (codex #431 r10).
         return CalendarTail(
             known=False, reason=f"读不到交易日历 {path}:{type(exc).__name__}")
     # RAW rows — no strip() before validation. Normalizing first and then
