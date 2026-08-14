@@ -226,6 +226,13 @@ _GIT_PATH_OUTPUT_OPTS = frozenset({
     "--name-only", "--name-status", "--stat", "--numstat", "--shortstat",
     "--dirstat", "--raw", "--summary", "--patch-with-raw", "--patch-with-stat",
 })
+# ``log.showSignature=true`` makes the log family run ``gpg.program``,
+# whose bytes land in the captured stream (codex P2 r49 on #410;
+# reproduced with a verifier emitting 0xff, silenced by the false pin).
+# The explicit ``--show-signature`` option does the same.
+_GIT_SIGNATURE_KEY = "log.showsignature"
+_GIT_SIGNATURE_OFF_VALUES = frozenset({"false", "0", "off", ""})
+_GIT_SIGNATURE_OPTS = ("--show-signature",)
 _GIT_QUOTEPATH_KEY = "core.quotepath"
 _GIT_QUOTEPATH_ON_VALUES = frozenset({"true", "1", "on"})
 _GIT_DIFF_CAPABLE = frozenset({
@@ -686,6 +693,7 @@ def _git_output_safe(call: ast.Call) -> bool:
     fsmonitor_off = False
     hooks_off = False
     quotepath_on = False
+    signature_off = False
     i = 1
     while i < len(argv):
         el = argv[i]
@@ -726,10 +734,13 @@ def _git_output_safe(call: ast.Call) -> bool:
                     fsmonitor_off = False
                     hooks_off = False
                     quotepath_on = False
+                    signature_off = False
                 elif key == _GIT_FSMONITOR_KEY:
                     fsmonitor_off = val in _GIT_FSMONITOR_OFF_VALUES
                 elif key == _GIT_HOOKS_KEY:
                     hooks_off = val in _GIT_HOOKS_OFF_VALUES
+                elif key == _GIT_SIGNATURE_KEY:
+                    signature_off = val in _GIT_SIGNATURE_OFF_VALUES
                 elif key == _GIT_QUOTEPATH_KEY:
                     # Boolean TRUE — the valueless form — is quoting ON.
                     quotepath_on = (val is None
@@ -839,6 +850,14 @@ def _git_output_safe(call: ast.Call) -> bool:
         if not known_text_free and not pin_seen:
             return False
         if el in _GIT_DIFF_CAPABLE:
+            if not signature_off:
+                return False  # gpg.program output is ungoverned
+            for later in argv[i + 1:]:
+                if later in ("--", "--end-of-options"):
+                    break
+                if (later is not None
+                        and later.split("=")[0] in _GIT_SIGNATURE_OPTS):
+                    return False  # explicit signature verification
             # The flags count only in the subcommand's OPTION REGION
             # (codex P2 r28 on #410): ``git diff -- --no-ext-diff`` is a
             # PATHSPEC, not an option, so a repo file by that name would
@@ -1666,13 +1685,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      True),
     ("git log pinned but with diff drivers live is refused",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "-1"], text=True, encoding="utf-8")', True),
     ("git log pinned with the drivers off is accepted",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', False),
     ("git log with a non-utf8 pin is refused",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "-1"], text=True, encoding="utf-8")', True),
     ("git show stays in the risky set",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "show", "HEAD"], text=True,'
@@ -1686,6 +1708,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # pre-subcommand region must be literal.
     ("pinned prefix does not rescue a spliced git call",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-C", str(repo), *args], text=True, encoding="utf-8")', True),
     ("unpinned spliced git call fails closed",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args], text=True,'
@@ -1694,18 +1717,22 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # is the subcommand's own argv, so a splice there is harmless.
     ("a splice inside the option region can re-enable the driver",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-C", str(repo), "log", "--no-ext-diff", "--no-textconv", *args],'
      ' text=True, encoding="utf-8")', True),
     ("--end-of-options closes the region for a dynamic rev",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-C", str(repo), "show", "--no-ext-diff", "--no-textconv",'
      ' "--end-of-options", *args], text=True, encoding="utf-8")', False),
     ("-- closes it for a dynamic pathspec",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H",'
      ' "--", *args], text=True, encoding="utf-8")', False),
     ("an opaque rev before the closer fails closed",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "show", "--no-ext-diff", "--no-textconv", ref], text=True,'
      ' encoding="utf-8")', True),
     ("an opaque rev-parse arg could be --show-toplevel",
@@ -1727,6 +1754,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      True),
     ("...and not even the pin plus driver-off flags rescue it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "lg", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # a "!"-prefixed alias runs an arbitrary shell command whose bytes
@@ -1734,6 +1762,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # a fully pinned call), so the known-built-in sets are the ceiling.
     ("a shell-backed alias name is refused however pinned",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "raw", "--no-ext-diff", "--no-textconv"], text=True,'
      ' encoding="utf-8")', True),
     # a LITERAL dynamic import hands back the module with no import
@@ -1798,18 +1827,20 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # the codec from a file this gate cannot read (verified both orders).
     ("an include AFTER the pin invalidates it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
-     ' "-c", "i18n.logOutputEncoding=utf-8", "-c", "include.path=x.cfg",'
+     ' "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "include.path=x.cfg",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     ("an include BEFORE both switches is overridden by them",
      'subprocess.run(["git", "-c", "include.path=x.cfg",'
      ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', False),
     ("...but a switch before the include does not survive it",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "include.path=x.cfg", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     ("an include AFTER the fsmonitor kill switch invalidates it",
@@ -1823,6 +1854,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("includeIf counts the same",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-c", "includeIf.gitdir:/x/.path=y.cfg",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
@@ -1830,6 +1862,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      '__import__("json").dumps({})', False),
     ("a known built-in with the same shape still passes",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1", "--format=%H"],'
      ' text=True, encoding="utf-8")', False),
     # an operator-configured diff.external / textconv driver writes
@@ -1839,68 +1872,81 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--name-status"], text=True,'
      ' encoding="utf-8")', True),
     ("log with both driver-off flags is accepted",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
      ' "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', False),
     ("text-mode git diff is refused — filters have no kill switch",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "diff",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "diff",'
      ' "--no-ext-diff", "--no-textconv", "--name-status"], text=True,'
+     ' encoding="utf-8")', True),
+    # log.showSignature=true runs gpg.program, whose bytes reach the
+    # captured stream (reproduced with a verifier emitting 0xff).
+    ("log without the signature pin is refused",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     ' "-1"], text=True, encoding="utf-8")', True),
+    ("an explicit --show-signature refuses even with the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff",'
+     ' "--no-textconv", "--show-signature", "-1"], text=True,'
+     ' encoding="utf-8")', True),
+    ("a later showSignature=true undoes the pin",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "log.showSignature=true",'
+     ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # value-bearing spellings of the path-output options (reproduced
     # with --stat=80) must be recognized by their HEAD.
     ("--stat=80 is still path output",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--stat=80", "-1"], text=True, encoding="utf-8")', True),
     ("--dirstat=lines too",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--dirstat=lines", "-1"], text=True, encoding="utf-8")', True),
     ("...and with the quoting pin they pass",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
      ' "--stat=80", "-1"], text=True, encoding="utf-8")', False),
     ("a value-bearing --decorate spelling refuses too",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--decorate=short", "--format=%H", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # format placeholders are an ALLOW-LIST: %D/%d print ref names raw
     # (reproduced), as do the decoration options.
     ("a %D ref decoration is refused",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%D", "-1"], text=True, encoding="utf-8")', True),
     ("--decorate is the same hazard",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--decorate", "--format=%H", "-1"], text=True,'
      ' encoding="utf-8")', True),
     ("an identity placeholder is not proven ASCII either",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%an", "-1"], text=True, encoding="utf-8")', True),
     ("a locale-formattable date placeholder refuses",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%ad", "-1"], text=True, encoding="utf-8")', True),
     ("the proven set still passes",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H%n%cI%n%ct", "-1"], text=True, encoding="utf-8")',
      False),
     # %N prints the commit NOTE body untranscoded (reproduced), while
     # %n is just a newline — the check is case-sensitive there.
     ("a %N note placeholder is refused",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%N", "-1"], text=True, encoding="utf-8")', True),
     ("a %n newline stays acceptable",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H%n%cI", "-1"], text=True, encoding="utf-8")', False),
     # log/show print PATHS when asked to, and paths are escaped only
     # while core.quotePath is on (reproduced with both settings).
     ("log --name-only without the quoting pin is refused",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--name-only", "-1"], text=True, encoding="utf-8")', True),
     ("...and accepted with it",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "-c", "core.quotePath=true", "log", "--no-ext-diff", "--no-textconv",'
      ' "--name-only", "-1"], text=True, encoding="utf-8")', False),
     ("--stat counts as path output too",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "show", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "show", "--no-ext-diff", "--no-textconv",'
      ' "--stat", "HEAD"], text=True, encoding="utf-8")', True),
     ("--raw as well",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--raw", "-1"], text=True, encoding="utf-8")', True),
     # rev-parse's name/path-printing options emit raw bytes, and
     # symbolic-ref prints a ref name verbatim (both reproduced).
@@ -1926,16 +1972,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     # git's format language writes raw bytes: %xFF emits 0xff even
     # through a fully pinned call (verified).
     ("a %x escape in --format is refused",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%xFF", "-1"], text=True, encoding="utf-8")', True),
     ("--pretty carries the same escape",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--pretty=%xff%H", "-1"], text=True, encoding="utf-8")', True),
     ("an ordinary format stays acceptable",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format=%H", "-1"], text=True, encoding="utf-8")', False),
     ("a separated format value cannot be read, so refuses",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--no-ext-diff", "--no-textconv",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv",'
      ' "--format", fmt, "-1"], text=True, encoding="utf-8")', True),
     # argv may arrive as the documented ``args=`` keyword.
     ("keyword argv proves the python child",
@@ -1952,14 +1998,18 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null",'
      ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
      ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', False),
     ("...and a later GBK undoes an earlier utf-8",
      'subprocess.run(["git", "-c", "core.fsmonitor=false",'
      ' "-c", "core.hooksPath=/dev/null",'
      ' "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false",'
      ' "-c", "i18n.logOutputEncoding=GBK",'
+     ' "-c", "log.showSignature=false",'
      ' "log", "--no-ext-diff", "--no-textconv", "-1"], text=True,'
      ' encoding="utf-8")', True),
     # ``-c key`` (no =) is boolean TRUE and ``-c key=`` is FALSE —
@@ -2064,7 +2114,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", sep, "--no-ext-diff",'
      ' "--no-textconv"], text=True, encoding="utf-8")', True),
     ("flags before -- are real options",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",'
      ' "--no-ext-diff", "--no-textconv", "--", path], text=True,'
      ' encoding="utf-8")', False),
     # each driver is a last-one-wins toggle (verified: --no-ext-diff
@@ -2076,7 +2126,7 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff", "--no-ext-diff", "--no-textconv",'
      ' "--textconv"], text=True, encoding="utf-8")', True),
     ("a later disable wins over an earlier enable",
-     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log", "--ext-diff",'
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--ext-diff",'
      ' "--textconv", "--no-ext-diff", "--no-textconv", "-1"],'
      ' text=True, encoding="utf-8")', False),
     # reflective access reaches the spawners without naming them

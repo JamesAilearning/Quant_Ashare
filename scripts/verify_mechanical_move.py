@@ -333,7 +333,7 @@ def _git(*args: str) -> str:
         # UTF-8 pin does not govern (#410 r30; verified: git rejects a
         # late ``--ext-diff`` as "must come before non-option
         # arguments").
-        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",
+        out = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
                               "-c", "core.quotePath=true",
                               "-C", str(_REPO), "show",
                               "--no-ext-diff", "--no-textconv",
@@ -348,7 +348,7 @@ def _git(*args: str) -> str:
         # strict while a filter's diagnostics cannot crash the parse.
         raw = subprocess.run(["git", "-c", "core.fsmonitor=false",
                               "-c", "core.hooksPath=/dev/null",
-                              "-c", "i18n.logOutputEncoding=utf-8",
+                              "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false",
                               "-c", "core.quotePath=true",
                               "-C", str(_REPO), "diff",
                               "--no-ext-diff", "--no-textconv",

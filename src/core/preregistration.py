@@ -110,7 +110,7 @@ def _git(args: list[str], *, cwd: str | Path) -> str:
             # driver whose output the UTF-8 pin does not govern (#410
             # r30). ``rest`` is therefore the path, nothing else.
             completed = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "log",
+                ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log",
                  "--no-ext-diff", "--no-textconv", "-n", "1",
                  "--format=%H", "--", *rest], cwd=str(cwd),
                 capture_output=True, text=True, encoding="utf-8",
