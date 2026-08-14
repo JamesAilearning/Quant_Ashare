@@ -49,7 +49,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.core.child_env import utf8_child_env  # noqa: E402
+from scripts.child_env import utf8_child_env  # noqa: E402
 
 GATE = "scripts/research/gate3_prereg_gate.py"
 MANIFEST_REL = "docs/prereg/quality_profitability_store_manifest.json"

@@ -1,4 +1,4 @@
-"""Behavioral proof for src/core/child_env.py.
+"""Behavioral proof for scripts/child_env.py.
 
 The governance gate can only check that a spawn PASSES
 ``env=utf8_child_env()``; whether that env actually makes a child emit
@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.child_env import (  # noqa: E402
+from scripts.child_env import (  # noqa: E402
     CHILD_ENCODING,
     CHILD_ENCODING_VAR,
     utf8_child_env,

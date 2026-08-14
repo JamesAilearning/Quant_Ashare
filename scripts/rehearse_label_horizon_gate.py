@@ -39,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.child_env import utf8_child_env  # noqa: E402
+from scripts.child_env import utf8_child_env  # noqa: E402
 
 PLAN = "docs/prereg/label_horizon.yaml"
 CLI = PROJECT_ROOT / "scripts" / "compare_walk_forward_runs.py"
@@ -47,10 +47,15 @@ REHEARSAL_ROOT = PROJECT_ROOT / "output" / "stage6" / "rehearsal"
 
 
 def _head_commit() -> str:
+    # BINARY + safe decode: the inherited git environment can point
+    # GIT_DIR at a non-UTF-8 path that git echoes on stderr, and a
+    # strict decode would raise instead of surfacing the git failure
+    # (#410 r64) — same treatment as src/core/git_provenance's probe.
     return subprocess.run(
-        ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"], cwd=PROJECT_ROOT,
-        capture_output=True, text=True, encoding="utf-8", check=True,
-    ).stdout.strip()
+        ["git", "-c", "core.fsmonitor=false",
+         "-c", "core.hooksPath=/dev/null", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT, capture_output=True, check=True,
+    ).stdout.decode("utf-8", errors="replace").strip()
 
 
 def _write_run(root: Path, *, delta: float, git_commit: str,
@@ -106,7 +111,7 @@ def _compare(a: Path, b: Path, variant: str) -> tuple[int, str]:
     # GBK-locale Windows box a mixed encoding misaligns the multi-byte decode
     # and corrupts ASCII downstream of the first dash — the assertions below
     # would then fail on perfectly correct CLI output. The child's half is
-    # src.core.child_env's job (one implementation, behaviorally tested).
+    # scripts.child_env's job (one implementation, behaviorally tested).
     proc = subprocess.run(
         [sys.executable, "--", str(CLI), str(a), str(b),
          "--prereg-plan", PLAN, "--variant", variant],

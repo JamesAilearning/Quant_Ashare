@@ -136,12 +136,12 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+from scripts.child_env import utf8_child_env  # noqa: E402
 from scripts.research.gate3_step_a_coverage_report import (  # noqa: E402
     fetch_financial_issuers,
     members_on,
     parse_membership,
 )
-from src.core.child_env import utf8_child_env  # noqa: E402
 from src.core.microstructure_mask import (  # noqa: E402
     MicrostructureMaskResult,
     compute_unavailable_mask,
