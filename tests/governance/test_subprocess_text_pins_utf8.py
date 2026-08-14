@@ -894,10 +894,17 @@ def _git_output_safe(call: ast.Call) -> bool:
         # ls-files/ls-tree keep their own closer rule for pathspecs,
         # which git does NOT echo when they simply fail to match.
         if el not in _GIT_PATH_PRODUCING:
+            # ``merge-base`` treats everything as a REVISION, closer or
+            # not, and echoes an invalid one back (codex P2 r61 on #410,
+            # reproduced past ``--``), so its whole tail is scanned. For
+            # the rest, elements past the closer are pathspecs that git
+            # does not echo when they simply fail to match.
+            stop_at_closer = el != "merge-base"
             for later in argv[i + 1:]:
                 if later in ("--", "--end-of-options"):
-                    break  # past the closer they are PATHSPECS, which
-                    # git does not echo when they fail to match
+                    if stop_at_closer:
+                        break
+                    continue
                 if later is None:
                     return False  # echoed verbatim on a bad value
         if el == "rev-parse":
@@ -1869,6 +1876,16 @@ _DECISION_TABLE: tuple[tuple[str, str, bool], ...] = (
     ("log -p prints raw patch content, so refuses",
      'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8", "-c", "log.showSignature=false", "log", "--no-ext-diff", "--no-textconv", "--no-notes",'
      ' "-p", "-1"], text=True, encoding="utf-8")', True),
+    # merge-base treats everything as a REVISION, so a closer is no
+    # licence there either (verified: it echoes a bad post-`--` operand).
+    ("an opaque merge-base operand past -- still refuses",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", "HEAD", "--",'
+     ' rev], text=True, encoding="utf-8")', True),
+    ("...while log keeps its dynamic pathspec past --",
+     'subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "i18n.logOutputEncoding=utf-8",'
+     ' "-c", "log.showSignature=false", "log", "--no-ext-diff",'
+     ' "--no-textconv", "--format=%H", "--", path], text=True,'
+     ' encoding="utf-8")', False),
     # a literal carrying lone SURROGATES is not resolvable text: POSIX
     # encodes them back to raw bytes, and git echoes them (verified).
     # The source below spells the escape, so this table file itself

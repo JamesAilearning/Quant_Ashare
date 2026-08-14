@@ -33,10 +33,16 @@ def capture_git_provenance() -> dict[str, str | bool | None]:
     when git or a repo is unavailable (detached bundle env, no ``.git``, git not
     on PATH, a timeout on rev-parse itself)."""
     try:
+        # BINARY + safe decode, like the status probe below: the
+        # inherited environment can point GIT_DIR at a non-UTF-8 path
+        # that git echoes on stderr, and a strict decode would raise
+        # past this function's never-raise contract (#410 r61).
         commit: str | None = subprocess.run(
-            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", timeout=5, check=True,
-        ).stdout.strip() or None
+            ["git", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=/dev/null",
+             "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True, timeout=5, check=True,
+        ).stdout.decode("utf-8", errors="replace").strip() or None
     except (OSError, subprocess.SubprocessError):
         return {"commit": None, "dirty": None}
     try:
