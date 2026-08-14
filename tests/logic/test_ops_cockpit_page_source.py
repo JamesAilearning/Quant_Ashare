@@ -771,9 +771,18 @@ class RepoAnchoredPathTests(unittest.TestCase):
 
         # …but when `~` cannot be resolved, do NOT anchor it as if it were a
         # directory name — say nothing rather than guess.
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("HOME", "USERPROFILE", "HOMEPATH", "HOMEDRIVE")}
-        with patch.dict(os.environ, env, clear=True):
+        #
+        # Simulated by making expanduser a no-op, NOT by unsetting HOME:
+        # posixpath.expanduser falls back to the password database, so on
+        # every POSIX leg `~` still resolves and the env trick asserts
+        # nothing (codex #431 r29).
+        #
+        # `~unknownuser` is NOT usable as the real-world stand-in either: it
+        # is itself platform-divergent — ntpath happily builds
+        # `C:\Users\nosuchuser/…` while posixpath returns the string
+        # unchanged. Mocking the expansion is the only spelling of "could not
+        # resolve" that means the same thing on both hosts.
+        with patch("os.path.expanduser", side_effect=lambda p: p):
             self.assertEqual("~/model.pkl", anchored_to_repo("~/model.pkl"))
 
     def test_every_read_and_printed_path_goes_through_the_anchor(self) -> None:
@@ -1126,19 +1135,24 @@ class RecertProbeTests(unittest.TestCase):
             seen["cwd"] = kwargs.get("cwd")
             return real_run(cmd, **kwargs)
 
+        from_repo = recert_health.probe_recert_health()
         cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 os.chdir(tmp)
                 with patch.object(recert_health.subprocess, "run", spy):
-                    health = recert_health.probe_recert_health()
+                    from_elsewhere = recert_health.probe_recert_health()
             finally:
                 os.chdir(cwd)
         self.assertEqual(rotate_ensemble_member.PROJECT_ROOT, seen.get("cwd"))
-        # …and the answer survives being started from elsewhere
-        self.assertTrue(
-            health.known,
-            f"从别处启动就答不出认证状态:{health.reason}")
+        # The property is CWD-INDEPENDENCE, asserted by comparing the two
+        # answers — NOT `known is True`, which was a premise about the
+        # machine, not about this code: CI checks out a PR ref and has no
+        # `origin/main`, so the probe legitimately answers "unknown" there and
+        # that assertion failed on all six legs (codex #431 r26 → r29). Same
+        # class as the 3.11-only `date.fromisoformat` premise in W16.
+        self.assertEqual(from_repo, from_elsewhere,
+                         "从别处启动得到的答案必须与在仓库内启动完全一致")
 
     def test_the_page_says_where_the_commands_must_be_run(self) -> None:
         # The commands name scripts by repo-relative path, so they only

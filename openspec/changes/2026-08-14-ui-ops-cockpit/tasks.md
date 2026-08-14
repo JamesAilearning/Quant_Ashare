@@ -286,6 +286,29 @@
       —— 文本扫描会匹配到解释「为何不能用 isabs」的 docstring,正确实现也报红
       (这个错是变异 harness 通过一个无关等价变异转红暴露的)
 
+## W35 codex #431 r29（**P1**，属实；CI 三处红一次性收口）
+- [x] 拿到 a524779 的完整 CI 失败清单(三处,不是一处),一并修:
+      1. `RecertProbeTests` 断言 `known is True` —— **六条腿全红**:CI 检出的是
+         PR ref,没有 `origin/main`,探针在那里报 unknown 是**正确**行为。
+         我钉的是「这台机器的状态」,不是「这段代码的性质」
+      2. `RepoAnchoredPathTests` POSIX 红 —— r28 已修
+      3. `IncumbentEnsembleIdentityTests` 期望调用不符 —— 同为 `D:/…` 在
+         Linux 被误锚所致,r28 一并解决
+- [x] 探针钉改为钉 **CWD 无关性**:同一次运行内比较「仓库内启动」与「别处启动」
+      两个答案必须相等 —— 无论 `origin/main` 在不在都成立
+      实测(模拟 CI 无 origin/main):known=False,两处答案一致
+- [x] `~` 不可解析的模拟改为 mock `expanduser`,不再靠删 HOME  ← codex 指出
+      `posixpath.expanduser` 会回落到 password database,删 HOME 在 POSIX 上
+      什么也证明不了
+- [x] `~unknownuser` 也**不能**当替代:它本身平台分歧(ntpath 照造
+      `C:\\Users\\nosuchuser`,posixpath 原样返回)。我写完立刻被自己的测试打回
+- [x] 逐条复核本战役新增的**全部**测试有无环境前提:
+      OSError→BundleIntegrityError 两平台一致;`Path("").with_suffix` 两平台同抛;
+      其余为纯函数/源码钉
+- [x] 教训入档:本机全绿 ≠ 无环境前提。**跨平台/跨环境的前提断言必须先问
+      「这条在 CI 上还成立吗」**——W16 已犯一次(3.11-only fromisoformat),
+      这次连犯三处
+
 ## 验证
 - [x] 新页面自己的 source-pin 只读测试（禁作业/训练/写侧 API 清单）  ← 29 passed / 22 subtests
 - [x] 既有 63 个 daily_decision 钉全绿（上移不得破坏任何契约）  ← 63 passed(patch 点随函数搬家同步)
