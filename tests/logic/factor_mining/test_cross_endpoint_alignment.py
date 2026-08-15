@@ -148,3 +148,79 @@ def test_masking_is_opt_in_for_price_volume_callers():
     expr = parse_expression("div_safe($revenue, $total_assets)")
     got = evaluate_expression(expr, panel)
     assert got.notna().all().all()
+
+
+# --- 公开验证路径必须真的用上 provenance（codex #437 P1）--------------------
+#
+# 只测 `align_periods_at_terminals` 不够：`validate_pool` 曾经**接了参数却没往
+# 下传**，两段 periods 都是 None，遮蔽完全没生效而单元测试全绿。回归必须打在
+# 公开入口上。
+
+def _pool_with(expr_text):
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.factor_pool import FactorPool, PoolEntry
+
+    pool = FactorPool()
+    pool.add(PoolEntry(
+        expr=parse_expression(expr_text), fitness=1.0, ic_mean=0.0,
+        ic_std=0.1, ir=0.0, rank_ic_mean=0.0, rank_ic_std=0.1, rank_ir=0.0,
+        turnover_daily=0.1, coverage=0.9, n_obs_per_day_min=1, expr_size=5,
+        expr_hash=1, method="rank",
+    ))
+    return pool
+
+
+def _fwd():
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(rng.normal(size=(10, 2)), index=_DAYS, columns=_INST)
+
+
+def test_validate_pool_actually_applies_the_mask():
+    """公开入口：传了 periods 就必须影响指标。
+
+    若 `validate_pool` 没把 periods 转给 `_split_panel`，两段都会是 None、
+    遮蔽不生效 —— 那么"传与不传"的结果会**完全相同**，本例即失败。
+    """
+    from src.factor_mining.validator import ValidationCriteria, validate_pool
+
+    panel, periods = _panel_and_periods(misaligned_on=(5, 6, 7))
+    fwd = _fwd()
+    criteria = ValidationCriteria(is_oos_split_date="2022-05-07")
+    expr = "cs_rank(div_safe($revenue, $total_assets))"
+
+    without = validate_pool(_pool_with(expr), panel, fwd, criteria)
+    with_prov = validate_pool(_pool_with(expr), panel, fwd, criteria,
+                              periods=periods)
+    # 遮蔽掉三天后，参与计算的观测数必须下降 —— 不下降说明 periods 没接通
+    assert with_prov[0].oos_n_obs < without[0].oos_n_obs, (
+        with_prov[0].oos_n_obs, without[0].oos_n_obs)
+
+
+def test_filter_correlated_lets_missing_period_escape():
+    """缺 period 帧是**契约失败**，不能被 best-effort 捕获吞掉。
+
+    吞掉的话该因子会**跳过**相关性过滤，幸存者集合被悄悄改变 —— 而且是往
+    宽松方向改。
+    """
+    from src.factor_mining.validator import (
+        FactorValidationResult,
+        ValidationCriteria,
+        filter_correlated,
+    )
+
+    panel, periods = _panel_and_periods()
+    del periods["$total_assets"]              # 制造契约缺口
+    expr = "cs_rank(div_safe($revenue, $total_assets))"
+    pool = _pool_with(expr)
+    results = [FactorValidationResult(
+        expr_hash=1, expr_str=expr, fitness=1.0, passes=True, reasons=(),
+        is_n_obs=100, is_ir=1.0, is_rank_ic_mean=0.01,
+        oos_n_obs=100, oos_ir=1.0, oos_rank_ic_mean=0.01,
+    )]
+    with pytest.raises(KeyError, match="cross-endpoint alignment needs"):
+        filter_correlated(results, panel,
+                          ValidationCriteria(is_oos_split_date="2022-05-07"),
+                          pool,
+                          periods=periods)

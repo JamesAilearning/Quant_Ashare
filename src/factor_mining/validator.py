@@ -205,6 +205,7 @@ def validate_pool(
     (is_panel, is_fwd, is_periods,
      oos_panel, oos_fwd, oos_periods) = _split_panel(
         panel, forward_return, split_ts, warmup_days=criteria.warmup_days,
+        periods=periods,
     )
 
     # Warn (once per call) if the pool contains entries from a pre-PR2
@@ -331,6 +332,14 @@ def filter_correlated(
 
             factor_values = evaluate_expression(
                 entry.expr, panel, periods=periods)
+        except KeyError:
+            # A DATA-CONTRACT failure, not a best-effort evaluation failure:
+            # `align_periods_at_terminals` raises KeyError when a referenced
+            # terminal has no period frame, i.e. we cannot prove same-period.
+            # Swallowing it here would let the factor SKIP correlation
+            # filtering entirely and change the survivor set — silently, and
+            # in the permissive direction. Let it escape.
+            raise
         except Exception:  # noqa: BLE001
             new_results_by_hash[res.expr_hash] = res
             continue
