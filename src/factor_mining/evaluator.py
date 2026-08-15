@@ -81,9 +81,18 @@ def _canonical_period_token(token: object) -> str | None:
     all comparisons downstream run on the NORMALIZED value, so "20220331.0"
     vs "20220331" is equality, not disagreement.
     """
-    text = str(token)
-    if text.endswith(".0"):
-        text = text[:-2]
+    # Mirrors the CONTRACT's accepted spellings (`_parse_yyyymmdd` in
+    # src/data/pit/financial_pit_contract.py — the isolation direction forbids
+    # importing it here; a governance test pins the two against each other):
+    # surrounding whitespace is trimmed, and a float coercion with an
+    # ALL-ZERO fraction ("20211231.0", "20211231.00") is the integer part —
+    # while a NON-zero fraction is corruption, never truncated into a
+    # valid-looking date. On top of the contract's date rules this layer also
+    # requires a QUARTER END, since a report period can be nothing else.
+    text = str(token).strip()
+    if "." in text:
+        int_part, _, frac = text.partition(".")
+        text = int_part if frac.strip("0") == "" else ""
     if (len(text) == 8 and text.isdigit()
             and text[4:8] in ("0331", "0630", "0930", "1231")):
         return text

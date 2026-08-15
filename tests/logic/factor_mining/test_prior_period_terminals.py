@@ -276,3 +276,48 @@ def test_float_spelling_participates_in_adjacency():
     expr = parse_expression("div_safe($revenue, $total_assets__prior)")
     got = evaluate_expression(expr, panel, periods=periods)
     assert got.notna().all().all()          # 规范化后相邻，不遮
+
+
+def test_normalizer_mirrors_every_contract_accepted_spelling():
+    """求值层不得定义比生产方更窄的 provenance 契约（codex #437 r12 P2）。
+
+    逐一断言：契约 `_parse_yyyymmdd` 接受的拼写，求值层规范化后同为合法；
+    契约拒绝的拼写，求值层同为无效 —— 两份实现由本测试钉住（隔离方向禁止
+    import，见 evaluator 内注释）。
+    """
+    from src.data.pit.financial_pit_contract import (
+        FinancialPITContractError,
+        _parse_yyyymmdd,
+    )
+    from src.factor_mining.evaluator import _canonical_period_token
+
+    accepted = ["20211231", "20211231.0", "20211231.00", " 20211231 ",
+                "20220331.000", 20211231, 20211231.0]
+    for token in accepted:
+        parsed = _parse_yyyymmdd(token)
+        assert parsed is not None, token
+        assert _canonical_period_token(token) == parsed.strftime("%Y%m%d"), \
+            token
+
+    rejected = ["20211231.5", "20220331junk", "2022", "<malformed>"]
+    for token in rejected:
+        try:
+            _parse_yyyymmdd(token)
+            contract_ok = True
+        except FinancialPITContractError:
+            contract_ok = False
+        assert not contract_ok, token
+        assert _canonical_period_token(token) is None, token
+
+    # 求值层额外收紧的一条：合法日期但非季度末 —— 契约收、报告期语义不收
+    assert _parse_yyyymmdd("20220315") is not None
+    assert _canonical_period_token("20220315") is None
+
+
+def test_whitespace_and_multi_zero_fraction_do_not_mask():
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p(" 20220331 "),
+               "$total_assets": _p("20220331.00")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.notna().all().all()
