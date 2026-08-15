@@ -8,7 +8,12 @@ The bundle inspector page SHALL render a "上次数据更新" section (before th
 fetch-integrity stamp section) sourced from the run-status artifact derived
 from the inspected provider path
 (`<provider_dir>.daily_update_status.json` — sibling of, and unique to,
-that provider).
+that provider). Because the updater CLI advertises a `--status-path`
+override, the page SHALL let the operator override the artifact location
+(defaulting to the derived path) — a deployment that schedules the updater
+with a custom `--status-path` must not be shown 从未记录 (or a stale older
+record) while last night's run sits in the custom file; the missing-artifact
+wording SHALL point at this override as a cause to check.
 The section SHALL distinguish: running (state=running), finished-ok
 (exit_code 0), finished-failed (exit_code + failed_stage prominent), missing
 artifact (an explicit "从未记录" informational state, not an error), and

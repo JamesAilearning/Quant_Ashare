@@ -402,6 +402,22 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
         self.assertIsNone(classify_running(
             UpdateRunStatus(kind="finished", path=Path("x")), now))
 
+    def test_the_page_honors_a_status_path_override(self) -> None:
+        # codex #434 r10: the CLI advertises --status-path, but the page
+        # always derived the location — a deployment using the override saw
+        # 从未记录 while last night's run sat in the custom file.
+        page = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
+                / "pages" / "data_inspect.py").read_text(encoding="utf-8")
+        self.assertIn("--status-path", page)
+        # the read goes through the operator-editable value, not the
+        # derivation directly
+        self.assertIn("read_update_status(_status_file)", page)
+        self.assertIn("_status_input", page)
+        self.assertNotIn("read_update_status(status_path_for_provider", page)
+        # …and the missing state names the override as a cause to check
+        missing_at = page.index("从未记录数据更新运行")
+        self.assertIn("--status-path", page[missing_at:missing_at + 300])
+
     def test_the_page_never_asserts_running_it_cannot_verify(self) -> None:
         # Source pins (codex #434 r8/r9): the fresh banner is conditional on
         # the classifier; stale and unverifiable use DIFFERENT wording, and

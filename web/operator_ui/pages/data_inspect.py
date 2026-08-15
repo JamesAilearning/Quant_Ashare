@@ -75,19 +75,35 @@ provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
 # ---------------------------------------------------------------------------
 st.subheader("上次数据更新")
 try:
-    _status_file = status_path_for_provider(provider_dir)
+    _derived_status = status_path_for_provider(provider_dir)
 except ValueError as _exc:
     # A filesystem-root provider has no sibling to derive the artifact from.
     # Say so; a traceback here would take the whole page down (codex #434 r5).
     st.error(f"⚠ {_exc}")
-    _status_file = None
+    _derived_status = None
+# The scheduler may run the updater with the advertised `--status-path`
+# override, and the writer then records somewhere this page's derivation
+# never looks — the operator would see 从未记录 (or a stale older record)
+# while last night's run sits in the custom file (codex #434 r10). Same
+# "paths explicit" discipline as the provider input: default = the derived
+# location, override to mirror the scheduler's flag.
+_status_input = st.text_input(
+    "状态工件路径（若计划任务用了 --status-path 覆盖，请填同一路径）",
+    value=str(_derived_status) if _derived_status else "",
+    help="默认从 provider 路径派生（<provider>.daily_update_status.json）。"
+         "本页对该文件只读。",
+)
+_status_file = Path(_status_input.strip()) if _status_input.strip() else None
+if _status_file is None:
+    st.info("无可用的状态工件路径——请在上方填写计划任务实际写入的位置。")
 _update_status = read_update_status(_status_file) if _status_file else None
 if _update_status is None:
     pass
 elif _update_status.kind == "missing":
     st.info(
         "从未记录数据更新运行（状态文件不存在）。新机或首跑前属正常；"
-        "若计划任务已在运行，请确认其写权限。"
+        "若计划任务已在运行，请确认其写权限；若它用了 --status-path 覆盖，"
+        "请在上方路径框填写同一位置。"
     )
 elif _update_status.kind == "corrupt":
     st.error(
