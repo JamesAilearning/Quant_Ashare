@@ -211,3 +211,16 @@ def test_adjacency_rule_matches_the_research_side():
                           ("20221231", _date(2022, 12, 31))):
         assert _previous_quarter_token(token) == \
             previous_quarter_end(parsed).strftime("%Y%m%d"), token
+
+
+def test_trailing_garbage_in_current_period_cannot_prove_adjacency():
+    """"20220331junk" 只取前 8 位会算出 20211231，恰好等于干净的 prior ——
+    腐坏的 provenance 就此"证明"了邻接（codex #437 r9 P2）。整串必须是
+    8 位纯数字，否则哨兵值、保守遮蔽。
+    """
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("20220331junk"),
+               "$total_assets__prior": _p("20211231")}
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()

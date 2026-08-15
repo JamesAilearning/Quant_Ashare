@@ -79,11 +79,13 @@ def _previous_quarter_token(token: object) -> object:
     two cannot drift. A malformed token returns a sentinel that equals no real
     period, so adjacency can never be PROVEN through corruption.
     """
-    try:
-        text = str(token)
-        year, month_day = int(text[:4]), text[4:8]
-    except (TypeError, ValueError):
+    text = str(token)
+    # The WHOLE token must be a canonical YYYYMMDD — a prefix match would let
+    # "20220331junk" prove adjacency against a clean "20211231": corruption
+    # must never be able to prove anything.
+    if len(text) != 8 or not text.isdigit():
         return "<malformed>"
+    year, month_day = int(text[:4]), text[4:8]
     return {
         "0331": f"{year - 1}1231",
         "0630": f"{year}0331",
@@ -211,8 +213,11 @@ def align_periods_at_terminals(
     if len(generations) == 2:
         current_rep = aligned[generations[False][0]]
         prior_rep = aligned[generations[True][0]]
-        expected_prior = current_rep.map(_previous_quarter_token,
-                                         na_action="ignore")
+        # Per-column Series.map, NOT DataFrame.map: the latter only exists
+        # from pandas 2.1, while pyproject allows >=2.0 — a mixed-generation
+        # expression would raise AttributeError on a legal install.
+        expected_prior = current_rep.apply(
+            lambda col: col.map(_previous_quarter_token, na_action="ignore"))
         # Only cells where BOTH generations actually carry a period are judged
         # here — one-sided absence is already the `unproven` check's job.
         both = expected_prior.notna() & prior_rep.notna()
