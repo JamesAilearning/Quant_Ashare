@@ -291,13 +291,39 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         self.assertNotIn("daily_update.py", runner_src)
 
         seen: set[str] = set()
-        queue = ["pages.data_inspect"]
+        # Package INITIALIZERS run before any submodule import, so they are
+        # part of the closure even though no import statement names them:
+        # `web/__init__.py` and `web/operator_ui/__init__.py` execute on the
+        # page's very first import, and every package traversed on the way
+        # to a queued module executes its own __init__ (codex #434 r26).
+        # Seeded explicitly ("" = the operator_ui package initializer, plus
+        # the out-of-namespace web/__init__.py checked via its real path);
+        # parent-package initializers are enqueued alongside every module.
+        queue = ["pages.data_inspect", "", "pages"]
+        web_init = base.parent / "__init__.py"
+        if web_init.is_file():
+            init_src = web_init.read_text(encoding="utf-8")
+            with self.subTest(module="web.__init__",
+                              check="spawn call shapes"):
+                self.assertIsNone(spawn_shapes.search(init_src))
+            for n in ast.walk(ast.parse(init_src)):
+                if isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for a in n.names:
+                        with self.subTest(module="web.__init__",
+                                          imported=a.name):
+                            self.assertNotIn(
+                                a.name.split(".")[0], spawn_banned)
         while queue:
             rel = queue.pop()
             if rel in seen:
                 continue
             seen.add(rel)
+            for i in range(1, rel.count(".") + 1):
+                queue.append(".".join(rel.split(".")[:i]))
             path = base / (rel.replace(".", "/") + ".py")
+            if not path.is_file():
+                path = (base / rel.replace(".", "/") / "__init__.py"
+                        if rel else base / "__init__.py")
             if not path.is_file():
                 continue
             module_src = path.read_text(encoding="utf-8")
