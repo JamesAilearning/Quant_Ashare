@@ -289,10 +289,21 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                     f"{rel} 出现 os 派生调用形状")
             module_ast = ast.parse(module_src)
             for node in ast.walk(module_ast):
+                # RESOLVED names, not just node.module: `from web.operator_ui
+                # import update_runner` exposes the submodule only through
+                # its alias (module == "web.operator_ui"), and `from
+                # src.data_pipeline import daily_update` names the orchestrator
+                # only as module+alias — checking node.module alone misses
+                # both, leaving the helper outside the closure and the
+                # orchestrator import invisible (codex #434 r19).
                 if isinstance(node, ast.Import):
                     names = [a.name for a in node.names]
                 elif isinstance(node, ast.ImportFrom):
-                    names = [node.module or ""]
+                    prefix = node.module or ""
+                    names = [prefix] + [
+                        f"{prefix}.{a.name}" if prefix else a.name
+                        for a in node.names
+                    ]
                 else:
                     continue
                 for name in names:

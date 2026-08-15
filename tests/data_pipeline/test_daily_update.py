@@ -697,6 +697,48 @@ class StatusPathGuardTests(unittest.TestCase):
             # …and an ordinary sibling override still passes
             _config(tmp, status_path=tmp / "custom_status.json")
 
+    def test_each_status_write_stages_at_a_unique_name(self) -> None:
+        # codex #434 r19: with a FIXED `<target>.tmp`, two providers sharing
+        # an explicit --status-path race through the same staging file — one
+        # writer truncates what the other is about to os.replace, and the
+        # winner publishes an empty or half-written artifact. Unique staging
+        # makes the final atomic replace the only shared step.
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        staged: list[str] = []
+        real_replace = du.os.replace
+
+        def spy(src, dst):
+            staged.append(str(src))
+            return real_replace(src, dst)
+
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            with patch.object(du.os, "replace", spy):
+                du._write_status(target, {"a": 1})
+                du._write_status(target, {"a": 2})
+        self.assertEqual(2, len(staged))
+        self.assertNotEqual(staged[0], staged[1],
+                            "两次写必须用不同的暂存名,否则共用路径的双写会竞速")
+        for name in staged:
+            self.assertTrue(name.endswith(".tmp"))
+            self.assertNotEqual(name, str(target) + ".tmp",
+                                "不得退回固定的 <target>.tmp")
+
+    def test_failed_status_write_leaves_no_staging_litter(self) -> None:
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            with patch.object(du.os, "replace",
+                              side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    du._write_status(target, {"a": 1})
+            leftovers = list(Path(t).glob("*.tmp"))
+            self.assertEqual([], leftovers, "失败后不得留下暂存残骸")
+
     def test_one_run_date_for_the_artifact_and_the_plan(self) -> None:
         # codex #434 r5: the status writer stamped `run_date` from its own
         # `date.today()` and the body froze a SECOND one, so a run crossing

@@ -58,6 +58,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
@@ -146,7 +147,11 @@ def default_status_path(provider_dir: Path) -> Path:
 
 
 def _status_tmp_path(path: Path) -> Path:
-    """The staging file `_write_status` writes before its atomic rename.
+    """The HISTORICAL fixed staging name — a forbidden --status-path alias.
+
+    No longer the actual staging file (writes stage at a unique per-write
+    name since r19), kept because the guard still refuses configs aliasing
+    it — the historical name staying out of the config space costs nothing.
 
     Named (rather than inlined) because the config guard must forbid aliases
     of THIS path too: the `.tmp` sibling is written and then `os.replace`d
@@ -157,14 +162,37 @@ def _status_tmp_path(path: Path) -> Path:
 
 
 def _write_status(path: Path, payload: Mapping[str, object]) -> None:
-    """Atomic status write (temp + rename): a killed process must never leave
-    a half-written JSON that the UI would read as corrupt."""
-    tmp = _status_tmp_path(path)
-    tmp.write_text(
-        json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+    """Atomic status write (unique temp + rename).
+
+    The staging name is UNIQUE PER WRITE (pid + random), not the fixed
+    ``<target>.tmp``: two providers sharing an explicit ``--status-path``
+    write unlocked, and with a fixed staging name one writer can
+    open/truncate the file the other is about to ``os.replace`` — the winner
+    then publishes an empty or half-written artifact (codex #434 r19). With
+    unique names each write stages privately and the final ``os.replace`` is
+    the only shared step, which is atomic. The fixed ``.tmp`` sibling stays
+    FORBIDDEN as a --status-path alias (see ``_status_tmp_path``): it is the
+    historical staging name and keeping it out of the config space costs
+    nothing.
+
+    A killed process must never leave a half-written JSON that the UI would
+    read as corrupt — and on failure the private staging file is removed.
+    """
+    tmp = path.with_name(
+        f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except BaseException:
+        # never leave private staging litter beside the artifact
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _record_status(path: Path, payload: Mapping[str, object]) -> None:
