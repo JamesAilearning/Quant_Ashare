@@ -131,35 +131,53 @@ def align_periods_at_terminals(
         generations.setdefault(
             FeatureRegistry.is_prior(terminal), []).append(terminal)
 
+    # ALL comparisons run on ONE shared set of axes — the union of the
+    # referenced VALUE frames' indices/columns — with every period frame
+    # reindexed onto it first. Two reasons:
+    # * pairwise `.ne()` / `.isna() !=` on differently-labelled frames RAISES
+    #   (pandas refuses to compare non-identically-labelled DataFrames), so an
+    #   asymmetric provenance gap would abort evaluation instead of masking;
+    # * a date/instrument every period frame omits while the value frames
+    #   still carry it has no label to disagree on — cells with NO provenance
+    #   must count as violations, not escape through an early return.
+    ref_index: pd.Index | None = None
+    ref_columns: pd.Index | None = None
+    for terminal in referenced:
+        frame = panel.get(terminal)
+        if not isinstance(frame, pd.DataFrame):
+            continue
+        ref_index = frame.index if ref_index is None else             ref_index.union(frame.index)
+        ref_columns = frame.columns if ref_columns is None else             ref_columns.union(frame.columns)
+    if ref_index is None or ref_columns is None:  # pragma: no cover
+        return panel
+    aligned = {
+        t: periods[t].reindex(index=ref_index, columns=ref_columns)
+        for t in referenced
+    }
+
     disagree = None
     for group in generations.values():
         if len(group) < 2:
             continue
-        first = periods[group[0]]
+        first = aligned[group[0]]
         for other_name in group[1:]:
-            other = periods[other_name]
+            other = aligned[other_name]
             ne = first.ne(other) | (first.isna() != other.isna())
             disagree = ne if disagree is None else (disagree | ne)
 
-    # Pairwise comparison can only speak about cells the period frames COVER.
-    # A date/instrument every period frame omits while the VALUE frames still
-    # carry it has no label to disagree on — the early "no disagreement" return
-    # would leave those values unmasked, and a cell with NO report-period
-    # provenance is exactly an unproven mixed-quarter candidate. So a value
-    # present where its own period frame (reindexed to the value's axes) is
-    # absent/NA counts as a violation in its own right.
     unproven = None
     for terminal in referenced:
         frame = panel.get(terminal)
         if not isinstance(frame, pd.DataFrame):
             continue
-        period = periods[terminal].reindex(
+        period = aligned[terminal].reindex(
             index=frame.index, columns=frame.columns)
         missing = frame.notna() & period.isna()
+        missing = missing.reindex(
+            index=ref_index, columns=ref_columns).fillna(False)
         unproven = missing if unproven is None else (unproven | missing)
     if unproven is not None and bool(unproven.to_numpy().any()):
-        disagree = unproven if disagree is None else (
-            disagree.reindex_like(unproven).fillna(False) | unproven)
+        disagree = unproven if disagree is None else (disagree | unproven)
 
     if disagree is None or not bool(disagree.to_numpy().any()):
         return panel

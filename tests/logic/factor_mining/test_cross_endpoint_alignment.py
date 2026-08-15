@@ -295,3 +295,16 @@ def test_agreeing_absence_does_not_excuse_present_values():
     expr = parse_expression("div_safe($revenue, $total_assets)")
     got = evaluate_expression(expr, panel, periods=periods)
     assert got.iloc[3].isna().all()
+
+
+def test_asymmetric_period_axes_do_not_abort_evaluation():
+    """只有**一个** period 帧缺行时，逐对比较曾直接抛
+    `Can only compare identically-labeled DataFrame objects` —— 不对称的
+    provenance 缺口把求值炸掉，而不是按违规遮蔽（codex #437 r7 P2）。
+    """
+    panel, periods = _panel_and_periods()
+    periods["$total_assets"] = periods["$total_assets"].iloc[:-1]  # 单侧缺行
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)   # 不抛
+    assert got.iloc[-1].isna().all()          # 缺口行按违规遮蔽
+    assert got.iloc[0].notna().all()
