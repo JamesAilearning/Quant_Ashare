@@ -39,8 +39,23 @@ from src.inference.daily_recommend import RecommendationConfig  # noqa: E402
 # test has to move.
 _FACTORY_RESOLVERS = {"name_source_parquet": "default_name_source"}
 
-_ALIASES = {"st_max_age_days": "st_snapshot_max_age_days",
-            "name_source": "name_source_parquet"}
+_ALIASES = {
+    "st_max_age_days": "st_snapshot_max_age_days",
+    "name_source": "name_source_parquet",
+    # These two were MISSING, so `--as-of` / `--ensemble-manifest` were
+    # dropped at the "is this a config field?" step and their entries in
+    # _RESOLVED_ELSEWHERE below were never consulted — dead exemptions that
+    # made the list look like a deliberate decision when it was silently
+    # covering nothing (codex #438 r3). The reachability test keeps that
+    # from recurring.
+    "as_of": "as_of_date",
+    "ensemble_manifest": "ensemble_manifest_path",
+    # Required config fields (no default), so the sweep skips them either
+    # way — mapped anyway so the dest<->field correspondence is complete and
+    # they come under the sweep the day one of them GAINS a default.
+    "model": "model_path",
+    "delisted_registry": "delisted_registry_path",
+}
 
 # Flags that legitimately default to None/False and are resolved elsewhere
 # (serving-parameter binding, or an explicit opt-in switch) rather than from
@@ -82,6 +97,31 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
             elif f.default_factory is not dataclasses.MISSING:
                 out[f.name] = f.default_factory()
         return out
+
+    def test_no_exemption_or_alias_is_dead(self) -> None:
+        """An exemption that can never fire is a false claim of coverage.
+
+        `_RESOLVED_ELSEWHERE` reads as a list of deliberate decisions. Two of
+        its entries (`as_of_date`, `ensemble_manifest_path`) were unreachable
+        because the parser's dest differs from the field name and the alias
+        was missing — so those flags were skipped one step EARLIER, and the
+        exemption documented a decision that was never taken (codex #438 r3).
+        """
+        parser = _cli_module()._build_arg_parser()  # type: ignore[attr-defined]
+        mapped = {_ALIASES.get(a.dest, a.dest) for a in parser._actions}
+        for field in sorted(_RESOLVED_ELSEWHERE):
+            with self.subTest(exemption=field):
+                self.assertIn(
+                    field, mapped,
+                    f"_RESOLVED_ELSEWHERE 里的 {field!r} 对不上任何 flag:"
+                    f"它是死条目,豁免了一个不存在的东西")
+        field_names = {f.name for f in dataclasses.fields(RecommendationConfig)}
+        dests = {a.dest for a in parser._actions}
+        for dest, field in sorted(_ALIASES.items()):
+            with self.subTest(alias=f"{dest}->{field}"):
+                self.assertIn(dest, dests, f"别名左侧 {dest!r} 不是任何 flag 的 dest")
+                self.assertIn(field, field_names,
+                              f"别名右侧 {field!r} 不是 RecommendationConfig 的字段")
 
     def test_no_flag_restates_a_config_default(self) -> None:
         parser = _cli_module()._build_arg_parser()  # type: ignore[attr-defined]
