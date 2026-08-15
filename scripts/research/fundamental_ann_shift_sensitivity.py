@@ -282,6 +282,18 @@ def write_shifted_store(
     if shift_days <= 0:
         raise ShiftDiagnosticError(
             f"shift_days must be positive (got {shift_days}).")
+    src = Path(store_dir).resolve()
+    dst = Path(out_dir).resolve()
+    # Refuse BEFORE any write: with dst == src (or nested inside it) this
+    # function would overwrite the REAL store's parquet files in place —
+    # permanently delaying its announcements — and `_record_frames` would then
+    # derive its baseline expectations from the already-mutated data, so the
+    # verdict compares a corrupted store against itself.
+    if src == dst or src in dst.parents or dst in src.parents:
+        raise ShiftDiagnosticError(
+            f"shifted-store output {dst} overlaps the source store {src} — "
+            "writing would mutate the real store in place and invalidate the "
+            "baseline. Choose a disjoint workdir.")
     out_dir.mkdir(parents=True, exist_ok=True)
     wrote = 0
     for endpoint_dir in sorted(p for p in store_dir.iterdir() if p.is_dir()):
@@ -334,6 +346,14 @@ def _shift_stamp(
     return "" if moved is None else moved.strftime("%Y%m%d")
 
 
+def _canonical_period(raw: object) -> str | None:
+    """A served report-period token in canonical YYYYMMDD spelling, or None."""
+    if raw is None or pd.isna(raw):
+        return None
+    parsed = _parse_yyyymmdd(raw)
+    return None if parsed is None else parsed.strftime("%Y%m%d")
+
+
 def served_periods(
     panel_periods: Mapping[str, pd.DataFrame],
 ) -> dict[tuple[str, str, date], str | None]:
@@ -354,7 +374,15 @@ def served_periods(
         for when in frame.index:
             for inst in frame.columns:
                 raw = frame.loc[when, inst]
-                value = None if pd.isna(raw) else str(raw)
+                # Canonicalise through the contract's strict YYYYMMDD parser,
+                # exactly as the announcement tokens are: a contract-valid
+                # store may spell `end_date` as the exact-`.0` float
+                # `20220331.0`, and the view preserves that raw spelling in
+                # its period frame — while `winner_at()` (parsing through the
+                # contract) emits "20220331". Comparing the two spellings
+                # verbatim would REFUSE a correct bridge over a formatting
+                # difference, not a behavioural one.
+                value = _canonical_period(raw)
                 key = (endpoint, str(inst), pd.Timestamp(when).date())
                 if key in out and out[key] != value:
                     raise ShiftDiagnosticError(

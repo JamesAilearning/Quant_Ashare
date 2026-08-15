@@ -583,3 +583,49 @@ def test_the_diagnostic_passes_on_a_numeric_token_store(tmp_path):
     verdict = _run(tmp_path / "store", tmp_path)
     assert verdict.verdict == OK, verdict.render()
     assert verdict.moves != ()
+
+
+# --- served period token 规范化 + 输出路径重叠（codex #433 r6）--------------
+
+def test_float_spelled_end_dates_do_not_refuse_the_bridge(tmp_path):
+    """end_date 为精确 .0 float 时，view 的 period 帧保留原拼写
+    （"20220331.0"），而 winner_at 走契约给出 "20220331" —— 若逐字比较，
+    正确的桥会因**拼写**差异而非行为差异被 REFUSE。
+    """
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    rows = []
+    for end, ann, rev in (("20211231", "20220331", 100.0),
+                          ("20220331", "20220429", 30.0)):
+        row = _store_row("000001.SZ", end, ann, rev)
+        row["end_date"] = float(end)          # 20220331.0
+        rows.append(row)
+    _pd.DataFrame(rows).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    verdict = _run(tmp_path / "store", tmp_path)
+    assert verdict.verdict == OK, verdict.render()
+    assert verdict.moves != ()
+
+
+def test_overlapping_output_path_is_refused_before_any_write(e2e_store,
+                                                             tmp_path):
+    """输出路径 == 源 store（或互相嵌套）时必须在写之前拒绝。
+
+    否则会**就地改写真实 store** 的公告日，且 `_record_frames` 随后从已被
+    污染的数据推基线 —— 裁决变成拿一个损坏的 store 与它自己比。
+    """
+    before = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    with _pytest.raises(ShiftDiagnosticError, match="overlaps the source"):
+        write_shifted_store(e2e_store, e2e_store, 2, _E2E_DAYS)
+    with _pytest.raises(ShiftDiagnosticError, match="overlaps the source"):
+        write_shifted_store(e2e_store, e2e_store / "income", 2, _E2E_DAYS)
+    with _pytest.raises(ShiftDiagnosticError, match="overlaps the source"):
+        write_shifted_store(e2e_store.parent, e2e_store, 2, _E2E_DAYS)
+    # 源 store 一个字节没动
+    after = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    _pd.testing.assert_frame_equal(before, after)
+
+
+def test_disjoint_output_path_still_works(e2e_store, tmp_path):
+    out = write_shifted_store(e2e_store, tmp_path / "elsewhere", 2, _E2E_DAYS)
+    assert (out / "income" / "000001.SZ.parquet").exists()
