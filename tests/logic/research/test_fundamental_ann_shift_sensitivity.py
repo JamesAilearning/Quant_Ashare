@@ -796,3 +796,45 @@ def test_unmoved_ic_off_the_fixture_is_not_a_failure(ic_fixture):
     # 0509（都是 Q1）—— 该日 IC 必须相同，这是"字节变了但指标没变"的合法情形。
     at = _pd.Timestamp(2022, 5, 9)
     assert ic_base[at] == ic_shift[at]
+
+
+# --- 平移保持记录身份 + 日历归一（codex #433 r12）---------------------------
+
+def test_shift_reduces_to_disclosure_of_record_first(tmp_path):
+    """非单射的交易日映射会把两条独立披露合并成一个逻辑版本。
+
+    同版本、不同公告日（周六/周日）的两条合法披露，平移后落在同一个交易日
+    —— 若对**原始行**平移，resolve_current_versions 会把它们塌成一条，且可能
+    留下较晚的 fetch 而非 disclosure-of-record：一个**值**的变化混进了只承诺
+    改**时间**的诊断。先 DOR 归约（每期恰一行），碰撞无从发生。
+    """
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    r1 = _store_row("000001.SZ", "20211231", "20220331", 100.0)   # 首次披露
+    r2 = _store_row("000001.SZ", "20211231", "20220401", 999.0)   # 同版本再公告
+    r2["_content_hash"] = "h_later"
+    _pd.DataFrame([r1, r2]).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    out = write_shifted_store(tmp_path / "store", tmp_path / "s", 2, _E2E_DAYS)
+    shifted = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
+    # DOR 归约后只剩最早公告那条；它的值必须原样保留
+    assert len(shifted) == 1
+    assert float(shifted["revenue"].iloc[0]) == 100.0
+
+
+def test_unsorted_duplicated_calendar_gives_the_same_shift(tmp_path):
+    """乱序/含重复的日历必须与 view 侧同款归一 —— 否则两侧按不同的
+    N 个交易日平移，诊断为自己的记账差异误拒正确实现。"""
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    _pd.DataFrame([
+        _store_row("000001.SZ", "20211231", "20220331", 100.0),
+    ]).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    messy = list(reversed(_E2E_DAYS)) + [_E2E_DAYS[0], _E2E_DAYS[2]]
+    out1 = write_shifted_store(tmp_path / "store", tmp_path / "a", 2,
+                               _E2E_DAYS)
+    out2 = write_shifted_store(tmp_path / "store", tmp_path / "b", 2, messy)
+    a = _pd.read_parquet(out1 / "income" / "000001.SZ.parquet")
+    b = _pd.read_parquet(out2 / "income" / "000001.SZ.parquet")
+    assert list(a["f_ann_date"]) == list(b["f_ann_date"])

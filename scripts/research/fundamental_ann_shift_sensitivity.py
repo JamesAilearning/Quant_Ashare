@@ -56,6 +56,8 @@ from src.data.pit.financial_pit_contract import (  # noqa: E402
     AVAILABLE_FROM,
     REPORT_PERIOD,
     _parse_yyyymmdd,
+    build_contract_frame,
+    resolve_current_versions,
     select_disclosure_of_record,
 )
 
@@ -181,6 +183,8 @@ def find_winner_moves(
         raise ShiftDiagnosticError(
             f"shift_days must be positive (got {shift_days}) — the diagnostic "
             "delays announcements; a zero or negative shift tests nothing.")
+    if calendar is not None:
+        calendar = _normalized_calendar(calendar)
     moves: list[WinnerMove] = []
     for (endpoint, instrument), raw in store_by_key.items():
         # Canonical selection FIRST: rows the view would never serve must not
@@ -308,12 +312,25 @@ def write_shifted_store(
             "choose a fresh workdir; this function only ever writes into a "
             "directory it created itself.")
     out_dir.mkdir(parents=True)
+    calendar = _normalized_calendar(calendar)
     wrote = 0
     for endpoint_dir in sorted(p for p in store_dir.iterdir() if p.is_dir()):
         target = out_dir / endpoint_dir.name
         target.mkdir(parents=True, exist_ok=True)
         for parquet in sorted(endpoint_dir.glob("*.parquet")):
             frame = pd.read_parquet(parquet)
+            # Reduce to the canonical DISCLOSURE-OF-RECORD rows BEFORE
+            # shifting. The trading-day mapping is NON-INJECTIVE (two legal
+            # same-version disclosures announced on a Saturday and a Sunday
+            # both land on the next Monday), so shifting RAW rows can merge
+            # two distinct disclosures into one logical version — and
+            # `resolve_current_versions` may then keep the later fetch instead
+            # of the record, changing a VALUE in a diagnostic that promises to
+            # change only timing. Served-period adjudication cannot see a
+            # same-period row swap, so the IC delta would be silently
+            # mis-attributed to announcement sensitivity. With one row per
+            # period, no collision is possible.
+            frame = _disclosure_of_record_rows(frame, calendar)
             frame = _shift_announcements(frame, shift_days, calendar)
             frame.to_parquet(target / parquet.name, index=False)
             wrote += 1
@@ -322,6 +339,37 @@ def write_shifted_store(
             f"{store_dir} held no endpoint parquet files — nothing to shift, "
             "so the diagnostic would compare a store against itself.")
     return out_dir
+
+
+def _normalized_calendar(calendar: Sequence[date]) -> list[date]:
+    """One sorted, deduplicated calendar for EVERY consumer in this module.
+
+    ``_shift_forward`` counts entries in caller order; the views construct a
+    ``StaticTradingCalendar`` from the same input, which sorts and
+    deduplicates. Fed an unsorted or duplicated calendar, the two sides would
+    apply DIFFERENT N-trading-day shifts and the diagnostic would refuse a
+    correct builder over its own bookkeeping.
+    """
+    return sorted(set(calendar))
+
+
+def _disclosure_of_record_rows(
+    raw: pd.DataFrame, calendar: Sequence[date],
+) -> pd.DataFrame:
+    """The RAW rows that constitute each period's disclosure of record.
+
+    Selection runs through the contract chain (the same one the view uses) and
+    the surviving rows are taken from the RAW frame by index — the written
+    store keeps the ingest schema, only fewer rows.
+    """
+    from src.data.trading_calendar import StaticTradingCalendar  # noqa: PLC0415
+
+    if raw.empty:
+        return raw
+    record = select_disclosure_of_record(
+        resolve_current_versions(
+            build_contract_frame(raw, StaticTradingCalendar(list(calendar)))))
+    return raw.loc[sorted(record.index)].reset_index(drop=True)
 
 
 def _shift_announcements(
