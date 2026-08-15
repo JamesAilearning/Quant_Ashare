@@ -40,9 +40,15 @@ computed at all (missing / unparseable / timezone-naive `started_at`) the
 page SHALL use distinct wording that asserts **no** age — claiming
 "已超过 N 小时" about an age nobody computed is the same defect as claiming
 the run is active. The classification SHALL be a pure, tested function of
-the read-side module, not inline page logic. The section SHALL remain strictly read-only, and the page source
-SHALL NOT name the orchestrator or swap machinery (`daily_update` /
-`bundle_swap`) — the governance source scan keeps passing.
+the read-side module, not inline page logic. The section SHALL remain strictly read-only, and the page SHALL NOT
+**import or invoke** the orchestrator or swap machinery (`daily_update` /
+`bundle_swap`) — the coupling is what the governance scan forbids. Prose
+references in operator-facing text and comments (e.g. "bundles are made by
+daily_update", the derived artifact filename) are permitted: a requirement
+banning the mere string would contradict the page as shipped — it names the
+pipeline in its docstring, a caption, and the status-path help — while the
+scan it cites checks import lines only, so the spec would demand something
+nothing enforces and nothing satisfies (codex #434 r11).
 
 #### Scenario: 失败一目了然
 - **WHEN** 状态工件记录 `exit_code: 15`、`failed_stage: "validate"`

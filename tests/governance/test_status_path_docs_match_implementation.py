@@ -132,6 +132,27 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
             with self.subTest(clause=required):
                 self.assertIn(required, spec)
 
+    def test_the_ui_spec_forbids_coupling_not_naming(self) -> None:
+        # codex #434 r11: the spec said the page source SHALL NOT *name*
+        # `daily_update`/`bundle_swap`, but the shipped page names them in
+        # prose three times and the governance scan checks IMPORT lines only
+        # — the spec demanded something nothing enforces and nothing
+        # satisfies. It must state the enforced constraint (import/invoke)
+        # and must not drift back to the unenforceable one.
+        spec = (_CHANGE / "specs" / "v2-operator-ui"
+                / "spec.md").read_text(encoding="utf-8")
+        self.assertIn("**import or invoke**", spec)
+        self.assertNotIn("SHALL NOT name the orchestrator", spec)
+        # …and the claim stays TRUE of the page: prose may name it, imports
+        # must not.
+        page = (_PROJECT_ROOT / "web" / "operator_ui" / "pages"
+                / "data_inspect.py").read_text(encoding="utf-8")
+        import_lines = [ln for ln in page.splitlines()
+                        if re.match(r"\s*(import|from)\s", ln)]
+        for name in ("daily_update", "bundle_swap"):
+            for ln in import_lines:
+                self.assertNotIn(name, ln)
+
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must
         # derive it — a second literal in the writer or reader is how the
