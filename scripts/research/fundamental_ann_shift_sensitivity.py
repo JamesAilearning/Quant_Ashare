@@ -574,6 +574,31 @@ def _record_frames(
     return out
 
 
+def daily_rank_ic(values: pd.DataFrame, forward_return: pd.DataFrame) -> pd.Series:
+    """Per-day Spearman rank IC of a value frame against forward returns.
+
+    Used by the DETERMINISTIC-FIXTURE half of defense (iii): the served-record
+    assertion above proves the PANEL consumed the announcement date, and this
+    proves the shift REACHES THE METRIC a campaign adjudicates on — a
+    downstream evaluation that ignored or miswired the shifted panel would
+    leave the IC unchanged on a fixture built to move it.
+
+    The IC assertion is required ONLY on such a fixture (spec): a correct
+    builder can change panel bytes without moving any IC (shift between
+    sampled dates, ranks preserved, constant candidate), so an unconditional
+    IC requirement would refuse valid implementations.
+    """
+    out: dict[object, float] = {}
+    for when in values.index:
+        row = pd.concat(
+            {"v": values.loc[when], "r": forward_return.loc[when]},
+            axis=1).dropna()
+        if len(row) < 3:
+            continue  # Spearman on <3 names is +/-1 by construction — noise
+        out[when] = float(row["v"].rank().corr(row["r"].rank()))
+    return pd.Series(out, dtype="float64")
+
+
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store-dir", required=True)

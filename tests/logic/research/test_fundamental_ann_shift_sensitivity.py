@@ -710,3 +710,82 @@ def test_atomic_shift_still_moves_a_normal_row(tmp_path):
     # 0429 之后的第 1 个交易日 = 0505；两列一致
     assert str(shifted["f_ann_date"].iloc[0]) == "20220505"
     assert str(shifted["ann_date"].iloc[0]) == "20220505"
+
+
+# --- 确定性 IC fixture（codex #433 r10 P2；规格的 IC 断言半边）--------------
+#
+# 被服务记录的断言证明**面板**消费了公告日；这半边证明平移**到达指标层** ——
+# 下游求值若无视或接错了平移面板，IC 在一个"构造成必动"的 fixture 上会纹丝
+# 不动。IC 断言只挂在该 fixture 上：正确实现也可能只改字节不改 IC。
+
+_IC_TOLERANCE = 0.5     # fixture 构造成 baseline IC=+1、shifted IC=-1，Δ=2
+
+
+@_pytest.fixture
+def ic_fixture(tmp_path):
+    """三只票、两期：Q4 排序 A>B>C，Q1 排序反转 C>B>A。
+
+    forward return 构造成与 Q1 排序同向 —— 基线在 0505 服务 Q1（IC=+1），
+    平移 2 日后 0505 仍服务 Q4（排序反转，IC=-1）。
+    """
+    from scripts.research.fundamental_ann_shift_sensitivity import (
+        daily_rank_ic,
+        write_shifted_store,
+    )
+    from src.data.trading_calendar import StaticTradingCalendar
+    from src.research.financial_pit_view import FinancialPITDataView
+    from src.research.fundamental_panel import build_fundamental_panel
+
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    q4 = {"000001.SZ": 30.0, "000002.SZ": 20.0, "000003.SZ": 10.0}
+    q1 = {"000001.SZ": 10.0, "000002.SZ": 20.0, "000003.SZ": 30.0}
+    for ts in q4:
+        _pd.DataFrame([
+            _store_row(ts, "20211231", "20220331", q4[ts]),
+            _store_row(ts, "20220331", "20220429", q1[ts]),
+        ]).to_parquet(inc / f"{ts}.parquet", index=False)
+
+    cal = StaticTradingCalendar(_E2E_DAYS)
+    fwd = _pd.DataFrame(
+        [[1.0, 2.0, 3.0]] * len(_E2E_DAYS),      # 与 Q1 排序同向
+        index=_pd.DatetimeIndex(_E2E_DAYS),
+        columns=["SZ000001", "SZ000002", "SZ000003"])
+
+    def build(store):
+        view = FinancialPITDataView(store, cal, financial_issuers=frozenset())
+        return build_fundamental_panel(
+            view, ["revenue"], _E2E_DAYS,
+            ["000001.SZ", "000002.SZ", "000003.SZ"])
+
+    base = build(tmp_path / "store")
+    shifted_dir = write_shifted_store(
+        tmp_path / "store", tmp_path / "shifted", 2, _E2E_DAYS)
+    shifted = build(shifted_dir)
+    return base, shifted, fwd, daily_rank_ic
+
+
+def test_ic_moves_beyond_tolerance_on_the_deterministic_fixture(ic_fixture):
+    base, shifted, fwd, daily_rank_ic = ic_fixture
+    at = _pd.Timestamp(2022, 5, 5)
+    ic_base = daily_rank_ic(base.panels["$revenue"], fwd)
+    ic_shift = daily_rank_ic(shifted.panels["$revenue"], fwd)
+    # 基线 0505 服务 Q1（同向，IC=+1）；平移后仍服务 Q4（反向，IC=-1）
+    assert ic_base[at] == 1.0
+    assert ic_shift[at] == -1.0
+    assert abs(ic_base[at] - ic_shift[at]) > _IC_TOLERANCE
+
+
+def test_unmoved_ic_off_the_fixture_is_not_a_failure(ic_fixture):
+    """规格另一半：fixture 之外 IC 不动不构成失败。
+
+    0401-0429 两个世界都服务 Q4 —— IC 相同，这是**正确**行为。
+    """
+    base, shifted, fwd, daily_rank_ic = ic_fixture
+    ic_base = daily_rank_ic(base.panels["$revenue"], fwd)
+    ic_shift = daily_rank_ic(shifted.panels["$revenue"], fwd)
+    # 平移的是**公告日**（可用性 = 平移后公告的次一交易日），所以平移世界
+    # Q4 于 0505 才可用、Q1 于 0509 才可用。两个世界服务同一期的日期只有
+    # 0509（都是 Q1）—— 该日 IC 必须相同，这是"字节变了但指标没变"的合法情形。
+    at = _pd.Timestamp(2022, 5, 9)
+    assert ic_base[at] == ic_shift[at]
