@@ -119,6 +119,19 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         self.assertIn("staging sibling", spec)
         self.assertIn("single-flight lock", spec)
 
+    def test_the_ui_spec_records_the_stale_running_distinction(self) -> None:
+        # codex #434 r9: the r8/r9 behaviour (fresh vs stale vs unverifiable,
+        # negative age never fresh, unknown age never worded as "已超过")
+        # must survive archiving, or a spec-compliant implementation may
+        # again render every persisted running record as active.
+        spec = (_CHANGE / "specs" / "v2-operator-ui"
+                / "spec.md").read_text(encoding="utf-8")
+        for required in ("SHALL NOT, by itself, be rendered",
+                         "NEGATIVE age", "unverifiable",
+                         "starting at zero", "no** age"):
+            with self.subTest(clause=required):
+                self.assertIn(required, spec)
+
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must
         # derive it — a second literal in the writer or reader is how the

@@ -21,7 +21,21 @@ non-empty `finished_at` plus the `failed_stage` and `detail` keys the writer
 always emits (`failed_stage` null or a non-empty stage key, `detail` a
 string), honoring the success/failure invariant (exit_code 0 ⇔ failed_stage
 null). An incomplete or invariant-breaking record renders as corrupt, never
-as a green success. The section SHALL remain strictly read-only, and the page source
+as a green success.
+
+A persisted `state=running` record SHALL NOT, by itself, be rendered as an
+actively running update: a killed / power-lost / crashed run leaves it on
+disk until the next invocation overwrites it. The page SHALL render
+正在运行 only when the record's age is computable and within a staleness
+threshold **starting at zero** — a NEGATIVE age (a `started_at` in the
+future: clock skew, or a fabricated timestamp) SHALL be treated as
+unverifiable, never as fresh. Past the threshold the page SHALL say the run
+may have been interrupted and that it cannot tell; when the age cannot be
+computed at all (missing / unparseable / timezone-naive `started_at`) the
+page SHALL use distinct wording that asserts **no** age — claiming
+"已超过 N 小时" about an age nobody computed is the same defect as claiming
+the run is active. The classification SHALL be a pure, tested function of
+the read-side module, not inline page logic. The section SHALL remain strictly read-only, and the page source
 SHALL NOT name the orchestrator or swap machinery (`daily_update` /
 `bundle_swap`) — the governance source scan keeps passing.
 

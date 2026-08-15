@@ -111,6 +111,35 @@ def running_age(
     return (now or datetime.now(tz=timezone.utc)) - started
 
 
+# The three honest answers about a `running` record. Decided HERE (a pure,
+# testable function), not in the page: r8 put the comparison inline and it
+# was wrong twice over — a negative age (system clock moved back, or a future
+# aware timestamp in the artifact) satisfied the upper-bound-only check and
+# rendered 正在运行 until six hours past the FUTURE instant; and the unknown-
+# age fallback shared the stale wording, asserting "已超过 6 小时" about an
+# age nobody computed (codex #434 r9).
+RUNNING_FRESH = "fresh"                # 0 <= age <= RUNNING_STALE_AFTER
+RUNNING_STALE = "stale"                # age > RUNNING_STALE_AFTER
+RUNNING_UNVERIFIABLE = "unverifiable"  # age unknown OR negative
+
+
+def classify_running(
+    status: UpdateRunStatus, now: datetime | None = None,
+) -> str | None:
+    """Fresh / stale / unverifiable — or ``None`` for non-running records.
+
+    A NEGATIVE age is unverifiable, not fresh: a start instant in the future
+    proves the clocks disagree, and a page that cannot place the start in the
+    past cannot claim the run is currently active.
+    """
+    if status.kind != "running":
+        return None
+    age = running_age(status, now)
+    if age is None or age < timedelta(0):
+        return RUNNING_UNVERIFIABLE
+    return RUNNING_FRESH if age <= RUNNING_STALE_AFTER else RUNNING_STALE
+
+
 def status_path_for_provider(provider_dir: Path) -> Path:
     """``<provider>.<FILENAME>`` — sibling of the provider dir, and unique to
     it.

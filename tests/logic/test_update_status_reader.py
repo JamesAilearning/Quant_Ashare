@@ -358,18 +358,73 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
         done = UpdateRunStatus(kind="finished", path=Path("x"))
         self.assertIsNone(running_age(done, now))
 
-    def test_the_page_never_asserts_running_past_the_threshold(self) -> None:
-        # Source pin: the running branch must consult the age and carry the
-        # interrupted/ambiguous wording — an unconditional 正在运行 is
-        # exactly the claim the page cannot make (codex #434 r8).
+    def test_classify_running_three_states(self) -> None:
+        # codex #434 r9: the r8 inline comparison was wrong twice — a
+        # NEGATIVE age (future started_at: clock skew / fabricated stamp)
+        # satisfied the upper-bound-only check and rendered 正在运行 until
+        # six hours past the FUTURE instant; and unknown age shared the
+        # stale wording. Three honest answers, decided in a pure function.
+        from datetime import datetime, timedelta, timezone
+
+        from web.operator_ui.update_status import (
+            RUNNING_FRESH,
+            RUNNING_STALE,
+            RUNNING_STALE_AFTER,
+            RUNNING_UNVERIFIABLE,
+            UpdateRunStatus,
+            classify_running,
+        )
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+
+        def running(started_at: str) -> UpdateRunStatus:
+            return UpdateRunStatus(kind="running", path=Path("x"),
+                                   state="running", started_at=started_at)
+
+        cases = {
+            RUNNING_FRESH: (now - timedelta(hours=1)).isoformat(),
+            RUNNING_STALE: (now - RUNNING_STALE_AFTER
+                            - timedelta(minutes=1)).isoformat(),
+            RUNNING_UNVERIFIABLE: (now + timedelta(hours=2)).isoformat(),
+        }
+        for expected, stamp in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(expected,
+                                 classify_running(running(stamp), now))
+        # unparseable / naive -> unverifiable too
+        for stamp in ("not-a-date", "2026-08-15T10:00:00"):
+            with self.subTest(stamp=stamp):
+                self.assertEqual(RUNNING_UNVERIFIABLE,
+                                 classify_running(running(stamp), now))
+        # exactly at the threshold boundary is still fresh; just past is not
+        self.assertEqual(RUNNING_FRESH, classify_running(
+            running((now - RUNNING_STALE_AFTER).isoformat()), now))
+        # non-running records classify as None
+        self.assertIsNone(classify_running(
+            UpdateRunStatus(kind="finished", path=Path("x")), now))
+
+    def test_the_page_never_asserts_running_it_cannot_verify(self) -> None:
+        # Source pins (codex #434 r8/r9): the fresh banner is conditional on
+        # the classifier; stale and unverifiable use DIFFERENT wording, and
+        # "已超过" may appear only in the stale branch — asserting an age
+        # nobody computed is the same defect as asserting the run is active.
         page = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
                 / "pages" / "data_inspect.py").read_text(encoding="utf-8")
-        self.assertIn("running_age(_update_status)", page)
-        self.assertIn("RUNNING_STALE_AFTER", page)
-        self.assertIn("可能已被中断", page)
-        # the fresh branch is CONDITIONAL on the age check
-        self.assertLess(page.index("_age = running_age"),
+        self.assertIn("classify_running(_update_status)", page)
+        self.assertIn("可能已被中断", page)          # stale wording
+        self.assertIn("无法核实", page)              # unverifiable wording
+        self.assertLess(page.index("_cls = classify_running"),
                         page.index("数据更新**正在运行**"))
+        # The WHOLE unverifiable branch (its `else:` to the next top-level
+        # `elif`) must not claim an elapsed duration. A window anchored after
+        # one keyword missed a spelling that put 已超过 before it — the first
+        # cut of this pin did exactly that and its reverse validation caught
+        # it, not the review.
+        branch_start = page.index("else:", page.index("RUNNING_STALE:"))
+        branch_end = page.index("elif _update_status.ok:")
+        unverifiable_branch = page[branch_start:branch_end]
+        self.assertIn("无法核实", unverifiable_branch)
+        self.assertNotIn("已超过", unverifiable_branch)
+        self.assertNotIn("小时", unverifiable_branch)
 
     def test_an_unreadable_artifact_is_not_reported_missing(self) -> None:
         # codex #434 r7 (P2): `Path.exists()` answers False for a file it
