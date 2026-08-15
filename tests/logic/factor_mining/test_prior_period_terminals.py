@@ -321,3 +321,15 @@ def test_whitespace_and_multi_zero_fraction_do_not_mask():
     expr = parse_expression("div_safe($revenue, $total_assets)")
     got = evaluate_expression(expr, panel, periods=periods)
     assert got.notna().all().all()
+
+
+def test_impossible_calendar_date_cannot_agree():
+    """"00000331" 形状与后缀都对，但年零不是日历日 —— 两个端点带同一个
+    不可能 token 相等即"同期"照样是腐坏互证（codex #437 r13 P2）。
+    形状之外必须证明它是真日期（与契约解析器同款）。
+    """
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p("00000331"), "$total_assets": _p("00000331")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()

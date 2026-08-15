@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -95,6 +96,14 @@ def _canonical_period_token(token: object) -> str | None:
         text = int_part if frac.strip("0") == "" else ""
     if (len(text) == 8 and text.isdigit()
             and text[4:8] in ("0331", "0630", "0930", "1231")):
+        # Shape is not enough: "00000331" has the right shape and suffix, yet
+        # year zero is not a calendar date — and two endpoints both carrying
+        # the same impossible token would compare EQUAL and sail through.
+        # Prove it is a real date, exactly as the contract parser does.
+        try:
+            date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+        except ValueError:
+            return None
         return text
     return None
 
