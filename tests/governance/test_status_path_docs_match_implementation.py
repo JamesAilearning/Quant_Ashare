@@ -164,29 +164,34 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # aliasing cannot hide, so ban that on import lines and keep the
         # call-shape patterns for the os.* primitives (importing os is
         # legitimate).
-        # `os` is on the list because EVERY spawning path starts with an
-        # import, and aliasing (`import os as _o` -> `_o.system(...)`) hides
-        # the call shape from any attribute pattern — this page needs no
-        # `os` at all (it is pathlib-only today; if that ever changes, the
-        # exemption must be argued here, not assumed).
-        for ln in import_lines:
-            # asyncio spawns processes too (create_subprocess_exec/shell),
-            # as do concurrent.futures (ProcessPoolExecutor) and pty — the
-            # list is "modules that can start a process", not "modules I have
-            # seen used" (codex #434 r13).
-            # `posix` / `nt` are os's platform layers and expose system()
-            # DIRECTLY (`from posix import system` — verified nt.system
-            # exists on this host); `_winapi` / `_posixsubprocess` are the
-            # CPython spawn internals (codex #434 r14).
-            for mod in ("subprocess", "runpy", "multiprocessing", "os",
-                        "asyncio", "concurrent", "pty",
-                        "posix", "nt", "_winapi", "_posixsubprocess"):
-                self.assertNotIn(
-                    f"import {mod}", ln,
-                    f"检视页 import 了可派生进程的模块 {mod!r}:{ln.strip()!r}")
-                self.assertNotIn(
-                    f"from {mod}", ln,
-                    f"检视页从 {mod!r} 导入:{ln.strip()!r}")
+        # Parsed with AST, not substring-matched: `import pathlib,
+        # subprocess as _sp` contains neither the substring
+        # `import subprocess` nor any call-shape pattern, so the previous
+        # string scan stayed green while the page could invoke the
+        # orchestrator (codex #434 r15). AST sees the module NAME
+        # regardless of grouping, aliasing, or line layout. `importlib`
+        # and the `__import__` builtin are banned alongside — the
+        # remaining spellings of "get me a module without writing its
+        # import". `os` stays on the list because this page is
+        # pathlib-only; if it ever needs os, the exemption must be argued
+        # here, not assumed.
+        import ast
+        banned = {"subprocess", "runpy", "multiprocessing", "os",
+                  "asyncio", "concurrent", "pty",
+                  "posix", "nt", "_winapi", "_posixsubprocess",
+                  "importlib"}
+        for node in ast.walk(ast.parse(page)):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                with self.subTest(imported=name):
+                    self.assertNotIn(
+                        name.split(".")[0], banned,
+                        f"检视页 import 了可派生进程的模块 {name!r}")
         for pattern, label in (
             (r"subprocess\.\w", "subprocess.<attr>"),
             (r"\bPopen\b", "Popen"),
@@ -194,6 +199,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
             (r"os\.exec\w*\s*\(", "os.exec*("),
             (r"os\.spawn\w*\s*\(", "os.spawn*("),
             (r"\brunpy\b", "runpy"),
+            (r"__import__\s*\(", "__import__("),
         ):
             with self.subTest(primitive=label):
                 self.assertIsNone(
