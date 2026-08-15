@@ -312,6 +312,49 @@ def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
 # ---------------------------------------------------------------------------
 
 
+
+def _refuse_fundamental_pool_in_production(
+    survivor_pool: FactorPool, target_dir: Path,
+) -> None:
+    """Refuse to write a pool containing FINANCIAL-STATEMENT terminals.
+
+    The production materialization path evaluates a promoted pool against a
+    qlib panel with NO report-period provenance. A fundamental pool arriving
+    there would either fail on unresolvable financial terminals or — if a panel
+    were injected — materialize WITHOUT the terminal-level alignment mask that
+    decided its promotion. A factor adjudicated under one definition and served
+    under another is the same defect class as adjudicating on a different
+    metric.
+
+    Wiring that consumer is a separate change. Until it lands this boundary is
+    an EXECUTABLE refusal rather than a documented caveat — a note in a design
+    doc stops nobody.
+    """
+    from .expression import feature_terminals  # noqa: PLC0415
+    from .grammar import FeatureRegistry  # noqa: PLC0415
+
+    financial = set(FeatureRegistry.FINANCIAL_STATEMENT)
+    offenders: dict[str, list[str]] = {}
+    for entry in survivor_pool.all_entries():
+        hit = sorted(feature_terminals(entry.expr) & financial)
+        if hit:
+            offenders[entry.expr.to_qlib_string()] = hit
+    if not offenders:
+        return
+    listed = "\n".join(f"    {expr}  -> {terms}"
+                        for expr, terms in sorted(offenders.items()))
+    raise PromotionError(
+        f"refusing to write a FUNDAMENTAL pool into production ({target_dir}): "
+        f"{len(offenders)} survivor(s) reference financial-statement "
+        f"terminals:\n{listed}\n"
+        "The production materialization path (src/data/mined_factor_handler.py) "
+        "evaluates without report-period provenance, so these factors would be "
+        "served WITHOUT the cross-endpoint alignment mask that decided their "
+        "promotion — adjudicated under one definition, served under another. "
+        "Land the fundamental-panel wiring for that consumer first; nothing was "
+        "written and the version label is untouched."
+    )
+
 def promote_run(
     config: PromotionConfig, *, dry_run: bool = False,
 ) -> PromotionReport:
@@ -392,13 +435,19 @@ def promote_run(
 
     output_dir: Path | None = None
     if not dry_run:
-        target_dir.mkdir(parents=True, exist_ok=True)
         survivor_pool = FactorPool()
         entries_by_hash = {e.expr_hash: e for e in pool.all_entries()}
         for res in survivors:
             entry = entries_by_hash.get(res.expr_hash)
             if entry is not None:
                 survivor_pool.add(entry)
+        # BEFORE mkdir, not merely before save: the directory is created first,
+        # so a refusal placed after it would leave an empty production version
+        # directory behind and the next attempt would fail on "already exists".
+        # A REFUSED promotion must not mutate production at all, nor consume
+        # the version label.
+        _refuse_fundamental_pool_in_production(survivor_pool, target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
         survivor_pool.save(target_dir)
         # Promotion report
         report_payload = {
