@@ -296,9 +296,12 @@ def build_fundamental_panel(
             "the view (financial issuers?) — refusing a zero-column panel "
             "rather than letting vacuous evidence checks pass it.")
     _assert_evidence_gates_every_cell(panels, evidence, "")
+    _assert_period_accompanies_evidence(evidence, periods, "")
     _assert_evidence_is_monotonic(evidence, "")
     if include_prior_period:
         _assert_evidence_gates_every_cell(prior_panels, prior_evidence, "prior ")
+        _assert_period_accompanies_evidence(prior_evidence, prior_periods,
+                                            "prior ")
         # NO monotonicity on the prior leg: it legitimately CHANGES ROLES as
         # the current period advances, so its evidence can go backwards with no
         # leakage at all. Chronology: Q4 current on Apr-1; its late-filed Q3
@@ -412,6 +415,35 @@ def _assert_evidence_gates_every_cell(
                 f"{label}{terminal} carries evidence dated AFTER its trade date "
                 f"at {where} — the panel saw a filing before it was available. "
                 "Refusing; never silently dropping or repairing the cell."
+            )
+
+
+def _assert_period_accompanies_evidence(
+    evidence: Mapping[str, pd.DataFrame],
+    periods: Mapping[str, pd.DataFrame],
+    label: str,
+) -> None:
+    """A served cell without a report period is refused, not returned.
+
+    The contract parser permits a BLANK ``end_date`` as None, and the view can
+    still serve such a row — value and availability present, period NA. The
+    panel's provenance contract makes the period mandatory: downstream
+    alignment decides same-period questions from it, and an unidentifiable
+    observation handed to that logic is exactly the unprovable cell the whole
+    chain exists to keep out. Serving evidence proves WHICH record answered;
+    a record that cannot name its own period cannot be aligned with anything.
+    """
+    for terminal, ev in evidence.items():
+        period = periods[terminal]
+        orphaned = ev.notna() & period.reindex_like(ev).isna()
+        if bool(orphaned.to_numpy().any()):
+            where = _first_true(orphaned)
+            raise FundamentalPanelError(
+                f"{label}{terminal} serves a record at {where} whose report "
+                "period is blank — the value cannot be identified, so it "
+                "cannot be aligned. Refusing the panel; fix the store row's "
+                "end_date rather than letting an unidentifiable observation "
+                "into evaluation."
             )
 
 

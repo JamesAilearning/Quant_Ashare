@@ -425,3 +425,18 @@ def test_mixed_date_types_are_accepted_by_the_builder(view):
     got = build_fundamental_panel(view, ["revenue"], mixed, ["000001.SZ"])
     assert got.panels["$revenue"].shape[0] == 3
     assert got.panels["$revenue"]["SZ000001"][pd.Timestamp(2022, 4, 1)] == 100.0
+
+
+def test_served_cell_with_blank_period_is_refused(tmp_path):
+    """空 end_date：契约容许 None、view 照常服务 —— 值与证据都在、期为 NA。
+
+    对齐逻辑靠期回答同期问题，一个说不出自己期的观测恰是整条链要挡的
+    不可证明 cell（codex #433 r18 P2）。拒绝而不是返回。
+    """
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    row = _row("000001.SZ", "", "0", "20220331", revenue=10.0)   # 空 end_date
+    pd.DataFrame([row]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    with pytest.raises(FundamentalPanelError, match="report .*period is blank"):
+        build_fundamental_panel(v, ["revenue"], _DAYS, ["000001.SZ"])
