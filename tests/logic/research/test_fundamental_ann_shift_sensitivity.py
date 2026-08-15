@@ -534,3 +534,52 @@ def test_qlib_form_financial_exclusion_is_normalised(store_with_extras,
         shift_days=2, workdir=tmp_path / "wq")
     assert verdict.verdict == OK, verdict.render()
     assert {m.instrument for m in verdict.moves} == {"SZ000001"}
+
+
+# --- 公告日 token 的数值形态（codex #433 r5 P1）-----------------------------
+
+@_pytest.mark.parametrize("token_kind", ["str", "int", "float"])
+def test_numeric_announcement_tokens_shift_correctly(tmp_path, token_kind):
+    """store 合法地把 YYYYMMDD 存成 int / 精确 .0 float / str，三者必须等价。
+
+    `pd.Timestamp(20220331)` 会把整数当作**epoch 纳秒**读成 1970-01-01 ——
+    平移后的 store 于是拿到一个落在日历开头的公告日，而源侧仍按 2022-03-31
+    解析，诊断就会为自己制造的缺陷去 REFUSE 一个正确的桥。
+    """
+    cast = {"str": str, "int": int, "float": float}[token_kind]
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    rows = []
+    for end, ann, rev in (("20211231", "20220331", 100.0),
+                          ("20220331", "20220429", 30.0)):
+        row = _store_row("000001.SZ", end, ann, rev)
+        row["ann_date"] = cast(ann)
+        row["f_ann_date"] = cast(ann)
+        rows.append(row)
+    _pd.DataFrame(rows).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    out = write_shifted_store(tmp_path / "store", tmp_path / f"s_{token_kind}",
+                              2, _E2E_DAYS)
+    shifted = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
+    # 平移 2 个交易日：20220331 -> 20220429（日历中 0331 之后的第 2 个交易日）
+    got = sorted(str(v) for v in shifted["ann_date"])
+    assert all(v.startswith("2022") for v in got), got
+    assert not any(v.startswith("1970") for v in got), got
+
+
+def test_the_diagnostic_passes_on_a_numeric_token_store(tmp_path):
+    """端到端：int 形 token 的 store 上，真桥仍判 OK（不误拒）。"""
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    rows = []
+    for end, ann, rev in (("20211231", "20220331", 100.0),
+                          ("20220331", "20220429", 30.0)):
+        row = _store_row("000001.SZ", end, ann, rev)
+        row["ann_date"] = int(ann)
+        row["f_ann_date"] = int(ann)
+        rows.append(row)
+    _pd.DataFrame(rows).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    verdict = _run(tmp_path / "store", tmp_path)
+    assert verdict.verdict == OK, verdict.render()
+    assert verdict.moves != ()

@@ -55,6 +55,7 @@ import pandas as pd  # noqa: E402
 from src.data.pit.financial_pit_contract import (  # noqa: E402
     AVAILABLE_FROM,
     REPORT_PERIOD,
+    _parse_yyyymmdd,
     select_disclosure_of_record,
 )
 
@@ -319,7 +320,16 @@ def _shift_stamp(
         return day
     if isinstance(day, str) and not day.strip():
         return day
-    parsed = day if isinstance(day, date) else pd.Timestamp(day).date()
+    # Parse with the CONTRACT's own strict YYYYMMDD semantics, never with
+    # `pd.Timestamp(...)`: the store legitimately holds these tokens as int or
+    # exact-.0 float, and `pd.Timestamp(20220331)` reads that as nanoseconds
+    # since the epoch — 1970-01-01, not 2022-03-31. The shifted store would then
+    # get an announcement near the start of the calendar while the source side
+    # parses the original correctly, and the diagnostic would REFUSE the real
+    # bridge for a defect of its own making.
+    parsed = day if isinstance(day, date) else _parse_yyyymmdd(day)
+    if parsed is None:  # pragma: no cover - blank handled above
+        return day
     moved = _shift_forward(parsed, n, calendar)
     return "" if moved is None else moved.strftime("%Y%m%d")
 
