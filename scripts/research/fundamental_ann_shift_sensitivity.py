@@ -221,12 +221,22 @@ def adjudicate(
     adjudicated: list[WinnerMove] = []
     for mv in moves:
         adjudicated.append(mv)
-        if mv.key not in served_base and mv.key not in served_shifted:
+        # Membership is checked in EACH map independently, not with `and`.
+        # A one-sided omission is the dangerous case: when the expected
+        # shifted period is legitimately None (delaying the first disclosure
+        # makes nothing available yet), `.get()` on a MISSING key also yields
+        # None — so an absent key would masquerade as a correct explicit NA
+        # and the pair would adjudicate OK.
+        absent = [name for name, served in
+                  (("baseline", served_base), ("shifted", served_shifted))
+                  if mv.key not in served]
+        if absent:
             violations.append(
-                f"{mv.endpoint}/{mv.instrument} @ {mv.trade_date}: the panel "
-                "reported NO served report period — required provenance is "
-                "missing for a key the source scan proved relevant. Refusing "
-                "rather than discarding the expectation.")
+                f"{mv.endpoint}/{mv.instrument} @ {mv.trade_date}: "
+                f"{' and '.join(absent)} reported NO served report period — "
+                "required provenance is missing for a key the source scan "
+                "proved relevant. Refusing rather than letting an absent key "
+                "read as an explicit NA.")
             continue
         got_base = served_base.get(mv.key)
         got_shift = served_shifted.get(mv.key)
@@ -445,7 +455,15 @@ def _record_frames(
         label if "." in label else qlib_to_ts_code(label)
         for label in instruments
     }
-    wanted_ts -= set(financial_issuers)
+    # The exclusion set is normalised the SAME way the view normalises it.
+    # A raw subtraction would miss a qlib-form exclusion (``SH600000``) whose
+    # store file is ``600000.SH``: the view drops that issuer, the panels have
+    # no entry for it, yet the source scan would still emit moves for it and
+    # REFUSE the correct bridge.
+    wanted_ts -= {
+        label if "." in label else qlib_to_ts_code(label)
+        for label in financial_issuers
+    }
 
     endpoints = {_FIELD_ENDPOINT[f] for f in fields if f in _FIELD_ENDPOINT}
     out: dict[tuple[str, str], pd.DataFrame] = {}

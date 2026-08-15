@@ -475,3 +475,62 @@ def test_missing_provenance_is_reported_per_key():
     assert verdict.verdict == REFUSE
     assert len(verdict.violations) == len(moves)
     assert len(verdict.moves) == len(moves)     # 期望没有被丢弃
+
+
+# --- 单侧遗漏必须各自独立检查（codex #433 r4 P1）----------------------------
+
+def test_one_sided_missing_key_cannot_masquerade_as_an_explicit_na():
+    """base 有、shifted 缺，且期望的 shifted_period 恰好是 None。
+
+    用 `and` 连接两侧的成员检查时，这一侧的缺失走不进缺 provenance 分支，
+    随后 `.get()` 把「缺 key」变成 None —— 正好等于期望，判 OK。
+    缺失必须**逐侧**判定，绝不能让"没给"读成"明确的 NA"。
+    """
+    moves = find_winner_moves(
+        {("income", "SZ000001"): _TWO_PERIODS}, _CAL, shift_days=2,
+        calendar=_CAL)
+    # 挑一个期望 shifted_period 为 None 的移动（首期被推迟到采样日之后）
+    target = next(m for m in moves if m.shifted_period is None)
+    base = {target.key: target.base_period}
+    shifted: dict = {}                      # 这一侧整个没给
+    verdict = adjudicate([target], base, shifted)
+    assert verdict.verdict == REFUSE, verdict.render()
+    assert any("shifted reported NO served" in v for v in verdict.violations)
+
+
+def test_missing_baseline_side_alone_is_also_refused():
+    moves = _moves()
+    target = moves[0]
+    verdict = adjudicate([target], {}, {target.key: target.shifted_period})
+    assert verdict.verdict == REFUSE
+    assert any("baseline reported NO served" in v for v in verdict.violations)
+
+
+def test_explicit_na_on_both_sides_still_adjudicates_normally():
+    """非空性：两侧都**明确给出** None 时，不得被误判为缺失。"""
+    moves = find_winner_moves(
+        {("income", "SZ000001"): _TWO_PERIODS}, _CAL, shift_days=2,
+        calendar=_CAL)
+    target = next(m for m in moves if m.shifted_period is None)
+    verdict = adjudicate(
+        [target], {target.key: target.base_period},
+        {target.key: target.shifted_period})     # 明确的 None
+    assert verdict.verdict == OK, verdict.render()
+
+
+# --- 金融排除集的命名空间归一（codex #433 r4 P1）----------------------------
+
+def test_qlib_form_financial_exclusion_is_normalised(store_with_extras,
+                                                     tmp_path):
+    """排除集给 qlib 形（SH600000）时，源侧也必须减掉对应的 600000.SH。
+
+    view 会归一化后剔除该 issuer，面板里没有它；裸减法减不掉，源侧就会为它
+    生成移动，然后拿"面板里没有的条目"去比对 —— 误 REFUSE 正确的桥。
+    """
+    verdict = run_diagnostic(
+        store_dir=store_with_extras, calendar=_E2E_DAYS, trade_dates=_E2E_DAYS,
+        fields=["revenue"], instruments=["000001.SZ", "600000.SH"],
+        financial_issuers=frozenset({"SH600000"}),   # qlib 形
+        shift_days=2, workdir=tmp_path / "wq")
+    assert verdict.verdict == OK, verdict.render()
+    assert {m.instrument for m in verdict.moves} == {"SZ000001"}
