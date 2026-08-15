@@ -70,6 +70,13 @@ def max_abs_corr(
     return max_abs
 
 
+def _is_canonical_period(token: object) -> bool:
+    """Whether a non-null token is a canonical YYYYMMDD CN quarter end."""
+    text = str(token)
+    return (len(text) == 8 and text.isdigit()
+            and text[4:8] in ("0331", "0630", "0930", "1231"))
+
+
 def _previous_quarter_token(token: object) -> object:
     """The calendar-adjacent previous CN quarter end, as a YYYYMMDD token.
 
@@ -179,7 +186,22 @@ def align_periods_at_terminals(
         for t in referenced
     }
 
-    disagree = None
+    # Malformed tokens are flagged INVALID before any equality or adjacency
+    # comparison. Equality is the wrong tool for corruption: two endpoints
+    # both carrying "junk" compare EQUAL and sail through, and a prior frame
+    # literally containing the "<malformed>" sentinel would "prove" adjacency
+    # against a corrupted current token. Matching corruption must never
+    # establish provenance — a non-canonical token is unproven, full stop.
+    invalid = None
+    for terminal in referenced:
+        frame = aligned[terminal]
+        bad = frame.notna() & ~frame.apply(
+            lambda col: col.map(_is_canonical_period, na_action="ignore")
+        ).fillna(True).astype(bool)
+        invalid = bad if invalid is None else (invalid | bad)
+
+    disagree = None if invalid is None or not bool(
+        invalid.to_numpy().any()) else invalid
     for group in generations.values():
         if len(group) < 2:
             continue

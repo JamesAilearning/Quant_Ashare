@@ -224,3 +224,34 @@ def test_trailing_garbage_in_current_period_cannot_prove_adjacency():
     expr = parse_expression("div_safe($revenue, $total_assets__prior)")
     got = evaluate_expression(expr, panel, periods=periods)
     assert got.isna().all().all()
+
+
+def test_matching_corruption_cannot_agree():
+    """两个端点都带同一个畸形 token（"junk"=="junk"）—— 相等不是证明。
+
+    腐坏的 provenance 无论怎么互相吻合都不得确立同期（codex #437 r10 P2）。
+    """
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p("junk"), "$total_assets": _p("junk")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_sentinel_literal_in_prior_cannot_prove_adjacency():
+    """prior 帧字面含 "<malformed>" 时不得与哨兵撞出"邻接"。"""
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("2022bad1"),
+               "$total_assets__prior": _p("<malformed>")}
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_non_quarter_end_dates_are_invalid_provenance():
+    """8 位纯数字但非季度末（20220315）同样不是合法报告期。"""
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p("20220315"), "$total_assets": _p("20220315")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
