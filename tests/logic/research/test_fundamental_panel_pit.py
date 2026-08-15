@@ -272,3 +272,42 @@ def test_empty_inputs_are_refused(view):
 def test_single_string_is_refused(view):
     with pytest.raises(FundamentalPanelError, match="COLLECTIONS"):
         build_fundamental_panel(view, "revenue", _DAYS, ["000001.SZ"])
+
+
+# --- prior 期必须进求值 mapping（codex #433 P1）------------------------------
+
+def test_as_evaluation_mapping_folds_prior_in_as_terminal_keys(view):
+    """prior 只挂在旁边 = AST 引用不到 = Δ 类因子根本写不出来。
+
+    evaluator 按**名字**对值 mapping 解析终端，所以 prior 必须以
+    `$field__prior` 这个 key 出现在同一个 mapping 里。
+    """
+    got = build_fundamental_panel(
+        view, ["revenue"], _DAYS, ["000001.SZ"], include_prior_period=True)
+    values, periods = got.as_evaluation_mapping()
+    assert set(values) == {"$revenue", "$revenue__prior"}
+    assert set(periods) == {"$revenue", "$revenue__prior"}
+
+
+def test_the_folded_prior_frames_carry_the_prior_values_and_periods(view):
+    got = build_fundamental_panel(
+        view, ["revenue"], _DAYS, ["000001.SZ"], include_prior_period=True)
+    values, periods = got.as_evaluation_mapping()
+    at = pd.Timestamp(2022, 5, 5)
+    assert values["$revenue"]["SZ000001"][at] == 30.0
+    assert values["$revenue__prior"]["SZ000001"][at] == 100.0
+    assert periods["$revenue"]["SZ000001"][at] == "20220331"
+    assert periods["$revenue__prior"]["SZ000001"][at] == "20211231"
+
+
+def test_without_prior_the_mapping_is_just_the_current_panel(view):
+    got = _build(view)
+    values, periods = got.as_evaluation_mapping()
+    assert set(values) == {"$revenue"}
+    assert not any(k.endswith("__prior") for k in values)
+    assert not any(k.endswith("__prior") for k in periods)
+
+
+# 注：`PRIOR_SUFFIX` 与 grammar 的 `FeatureRegistry.PRIOR_SUFFIX` 必须一致，
+# 但那个常量在 #437（GP 接线）里。**跨 PR 的守卫现在加就是悬空守卫** ——
+# 待两个 PR 都进 main 后于 PR-4 补上逐字相等的断言。

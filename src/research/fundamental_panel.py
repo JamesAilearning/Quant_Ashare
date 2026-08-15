@@ -59,6 +59,11 @@ from src.research.financial_pit_view import (
 # the mapping is spelled out here and asserted end to end by the tests.
 TERMINAL_PREFIX = "$"
 
+# Suffix for adjacent-prior-period terminals. Must match the grammar's
+# ``FeatureRegistry.PRIOR_SUFFIX`` — pinned by a governance test rather
+# than by hope, since the two live on opposite sides of the isolation gate.
+PRIOR_SUFFIX = "__prior"
+
 
 class FundamentalPanelError(RuntimeError):
     """Raised when a panel cannot be built HONESTLY.
@@ -134,6 +139,31 @@ class FundamentalPanel(NamedTuple):
     prior_panels: dict[str, pd.DataFrame]
     prior_evidence: dict[str, pd.DataFrame]
     prior_periods: dict[str, pd.DataFrame]
+
+    def as_evaluation_mapping(self) -> tuple[
+        dict[str, pd.DataFrame], dict[str, pd.DataFrame],
+    ]:
+        """``(values, periods)`` in the shape the evaluator consumes.
+
+        Prior-period frames are folded in under ``$field__prior`` keys rather
+        than left as side objects. The evaluator resolves terminals by NAME
+        against the value mapping, so a prior value parked beside the panel is
+        unreachable from any AST — the Δ-shaped starter factors (asset growth,
+        the pure-balance-sheet accrual) could not be WRITTEN at all.
+
+        The period frames are folded in the same way, because the alignment
+        mask reads them by the same keys. A prior terminal's period is
+        SUPPOSED to differ from its current counterpart; the masking groups
+        terminals by period generation so that intended difference is not
+        mistaken for a cross-endpoint violation.
+        """
+        values = dict(self.panels)
+        periods = dict(self.periods)
+        for terminal, frame in self.prior_panels.items():
+            values[f"{terminal}{PRIOR_SUFFIX}"] = frame
+        for terminal, frame in self.prior_periods.items():
+            periods[f"{terminal}{PRIOR_SUFFIX}"] = frame
+        return values, periods
 
 
 # A resolver mapping (trade_date, instruments) -> group labels. Reserved for the
