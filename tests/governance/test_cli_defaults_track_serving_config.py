@@ -78,10 +78,29 @@ _RESOLVED_ELSEWHERE = {
 _DEFAULT_CLAIM = r"default(?:\s+value)?\s*(?:[:=]|is\b)?\s*"
 
 
+# The value a claim names: up to the first separator or closing bracket, with
+# a trailing sentence period dropped ("(default 14; covers …)" -> "14";
+# "(default output/daily_recommend)." -> "output/daily_recommend").
+_CLAIMED_VALUE = r"([^\s;,)\]]+)"
+
+
+def advertised_defaults(help_text: str) -> list[str]:
+    """Every value this help text claims is the default, in any spelling.
+
+    Asking "does it advertise the CURRENT value?" cannot see a help that is
+    already wrong by a THIRD value — config 12, prose 7: the current value is
+    not advertised, so the "is it stale?" check finds nothing and the
+    "does it match?" check is skipped, and the wrong sentence survives
+    (codex #438 r5). Extracting the claims and requiring each to equal the
+    current default has no such blind spot.
+    """
+    return [m.rstrip(".") for m in re.findall(
+        _DEFAULT_CLAIM + _CLAIMED_VALUE, help_text, re.IGNORECASE)]
+
+
 def _advertises_default(help_text: str, value: object) -> bool:
     """Does this help text claim ``value`` is the default, in any spelling?"""
-    return re.search(_DEFAULT_CLAIM + re.escape(str(value)) + r"(?!\w)",
-                     help_text, re.IGNORECASE) is not None
+    return str(value) in advertised_defaults(help_text)
 
 
 def _action_help(parser: object, dest: str) -> str:
@@ -127,6 +146,18 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 out[f.name] = f.default_factory()
         return out
 
+    def _assert_help_claims_only(
+            self, rendered: str, expected: object, dest: str) -> None:
+        """EVERY default this help advertises must be the current one."""
+        claims = advertised_defaults(rendered)
+        for claimed in claims:
+            with self.subTest(dest=dest, claimed=claimed):
+                self.assertEqual(
+                    str(expected), claimed,
+                    f"--{dest.replace('_', '-')} 的 help 广告了 "
+                    f"{claimed!r},当前默认值却是 {expected!r}:"
+                    f"{rendered!r}")
+
     def test_no_exemption_or_alias_is_dead(self) -> None:
         """An exemption that can never fire is a false claim of coverage.
 
@@ -162,6 +193,12 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 continue
             checked.append(field)
             with self.subTest(flag=action.option_strings[:1], field=field):
+                # The help as it stands TODAY: a sentence that already names
+                # the wrong value is wrong now, not only after something
+                # moves (codex #438 r5).
+                self._assert_help_claims_only(
+                    _action_help(parser, action.dest),
+                    config_defaults[field], action.dest)
                 self.assertEqual(
                     config_defaults[field], action.default,
                     f"--{action.dest.replace('_', '-')} 的默认值与 "
@@ -210,13 +247,10 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 # (codex #438 r2). Fixed with `%(default)s`, pinned here
                 # rather than by grepping for that spelling: what matters is
                 # that the help follows, not how it is written.
-                self.assertFalse(
-                    _advertises_default(rendered, stale),
-                    f"--{dest.replace('_', '-')} 的 help 仍在广告旧默认值:"
-                    f"{rendered!r}")
+                self._assert_help_claims_only(rendered, moved, dest)
                 if advertises:
-                    self.assertTrue(
-                        _advertises_default(rendered, moved),
+                    self.assertIn(
+                        str(moved), advertised_defaults(rendered),
                         f"--{dest.replace('_', '-')} 的 help 广告了默认值,"
                         f"就必须广告当前那个:{rendered!r}")
 
