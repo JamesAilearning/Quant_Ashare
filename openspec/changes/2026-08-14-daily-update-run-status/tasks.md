@@ -26,13 +26,13 @@
       不调用 `daily_update` / `bundle_swap`——散文提名允许，r11 对齐）
 
 ## 测试与验证
-- [x] `tests/data_pipeline/test_daily_update.py`：状态工件用例 ×5
+- [x] `tests/data_pipeline/test_daily_update.py`：状态工件用例(终稿 +24,27→51)
       （成功/失败阶段键/干跑不写/写失败不改退出码/周末 no-op 记录 exit 0）
       + status-path 防护用例 ×7
 - [x] `tests/logic/test_update_status_reader.py`：读取器纯函数用例
-      + 严格 schema 用例 ×7 + schema 版本读写两侧钉
+      终稿 39 个方法:严格 schema/三态分类/归属比对/读写两侧钉
 - [x] 治理：`test_data_inspect_readonly.py` 保持绿；新增钉——状态工件不得
       被 `src/` 内除 `data_pipeline.daily_update` 外的任何模块引用
 - [x] `openspec validate --strict`；目标测试 + `tests/logic/` +
       `tests/governance/` 全绿；`ruff check` 全绿  ← 每轮修复后重跑,
-      末次:openspec 47/47,全量快速套件 4399 passed / 30 skipped
+      末次:openspec 47/47,全量快速套件 4407 passed / 30 skipped
