@@ -840,3 +840,23 @@ def test_unsorted_duplicated_calendar_gives_the_same_shift(tmp_path):
     a = _pd.read_parquet(out1 / "income" / "000001.SZ.parquet")
     b = _pd.read_parquet(out2 / "income" / "000001.SZ.parquet")
     assert list(a["f_ann_date"]) == list(b["f_ann_date"])
+
+
+# --- 采样日类型归一（codex #433 r15 P2）-------------------------------------
+
+def test_timestamp_sampled_dates_work_end_to_end(e2e_store, tmp_path):
+    """面板索引常见 pd.Timestamp / datetime —— winner_at 拿它们与契约的
+    plain date 比较会 TypeError，且裁决 key 对不上 served_periods 的
+    plain-date key。入口统一归一。
+    """
+    from datetime import datetime as _dt
+
+    mixed = [_pd.Timestamp(d) for d in _E2E_DAYS[:3]] + [
+        _dt(2022, 5, 5), _E2E_DAYS[4], _E2E_DAYS[5]]
+    verdict = run_diagnostic(
+        store_dir=e2e_store, calendar=_E2E_DAYS, trade_dates=mixed,
+        fields=["revenue"], instruments=["000001.SZ"],
+        financial_issuers=frozenset(), shift_days=2,
+        workdir=tmp_path / "wt")
+    assert verdict.verdict == OK, verdict.render()
+    assert verdict.moves != ()

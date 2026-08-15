@@ -43,7 +43,7 @@ import argparse
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -185,6 +185,7 @@ def find_winner_moves(
             "delays announcements; a zero or negative shift tests nothing.")
     if calendar is not None:
         calendar = _normalized_calendar(calendar)
+    sampled_dates = sorted({_as_plain_date(d) for d in sampled_dates})
     moves: list[WinnerMove] = []
     for (endpoint, instrument), raw in store_by_key.items():
         # Canonical selection FIRST: rows the view would never serve must not
@@ -355,7 +356,26 @@ def _normalized_calendar(calendar: Sequence[date]) -> list[date]:
     apply DIFFERENT N-trading-day shifts and the diagnostic would refuse a
     correct builder over its own bookkeeping.
     """
-    return sorted(set(calendar))
+    return sorted({_as_plain_date(d) for d in calendar})
+
+
+def _as_plain_date(value: object) -> date:
+    """A plain ``datetime.date`` from any date-like the callers hand us.
+
+    Panel indices are commonly ``pd.Timestamp`` / ``datetime.datetime``, and
+    the view accepts those too — but ``winner_at`` compares against the
+    contract's plain ``date`` availability values (``date <= datetime``
+    RAISES), and adjudication keys must match the plain-date keys
+    ``served_periods`` builds. One normalization at the entries, instead of a
+    type check at every comparison.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    out = pd.Timestamp(value).date()
+    assert isinstance(out, date)          # pandas stubs say Any; it is a date
+    return out
 
 
 def _disclosure_of_record_rows(
@@ -557,6 +577,12 @@ def run_diagnostic(
     )
 
     factory = build_fundamental_panel if build_panel is None else build_panel
+    # Normalized ONCE at the entry and used for panels, the shifted store and
+    # the source-side winners alike: mixed Timestamp/datetime/date inputs
+    # otherwise fail inside sorted()/comparisons at whichever layer touches
+    # them first, and adjudication keys would not match served_periods' keys.
+    calendar = _normalized_calendar(calendar)
+    trade_dates = sorted({_as_plain_date(d) for d in trade_dates})
     cal = StaticTradingCalendar(list(calendar))
 
     base_view = FinancialPITDataView(store_dir, cal,
