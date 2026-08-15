@@ -42,9 +42,9 @@ expression-aware layer, at the terminals, from the expression's endpoint set.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from datetime import date
-from typing import NamedTuple
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
 
 import pandas as pd
 
@@ -121,12 +121,16 @@ def _view_field_endpoints() -> Mapping[str, str]:
     return _FIELD_ENDPOINT
 
 
-class FundamentalPanel(NamedTuple):
+@dataclass(frozen=True)
+class FundamentalPanel:
     """The bridge's output: values, their evidence, and their report periods.
 
-    A tuple so callers may unpack ``(panels, evidence, periods)``, named so the
-    provenance halves cannot be dropped by accident. ``prior_*`` are populated
-    only when the caller asks for adjacent-period provenance.
+    Iteration yields EXACTLY the documented three-item contract —
+    ``panels, evidence, periods = build_fundamental_panel(...)`` — while the
+    ``prior_*`` halves stay named-attribute-only. (As a six-field NamedTuple
+    the documented unpack raised ``ValueError: too many values to unpack``:
+    positional growth silently rewrote the public contract.) ``prior_*`` are
+    populated only when the caller asks for adjacent-period provenance.
 
     Every mapping is keyed by TERMINAL name and every frame has an identical
     (trade date × instrument) shape, so a caller can align values with their
@@ -139,6 +143,9 @@ class FundamentalPanel(NamedTuple):
     prior_panels: dict[str, pd.DataFrame]
     prior_evidence: dict[str, pd.DataFrame]
     prior_periods: dict[str, pd.DataFrame]
+
+    def __iter__(self) -> Iterator[dict[str, pd.DataFrame]]:
+        return iter((self.panels, self.evidence, self.periods))
 
     def as_evaluation_mapping(self) -> tuple[
         dict[str, pd.DataFrame], dict[str, pd.DataFrame],
@@ -226,7 +233,11 @@ def build_fundamental_panel(
             f"fields contains duplicates {dupes} — each charter field maps to "
             "exactly one terminal key; deduplicate the request.")
 
-    ordered_dates = sorted(set(trade_dates))
+    # Mixed date/datetime/Timestamp inputs satisfy the annotation and the
+    # view accepts them — but sorted(set(...)) on a mixed set raises before
+    # the view is ever called. Normalize at the public entry, same as every
+    # other date-like input in this stack.
+    ordered_dates = sorted({_as_plain_date(d) for d in trade_dates})
     field_list = list(fields)
     terminals = [to_terminal(f) for f in field_list]
 
@@ -302,6 +313,17 @@ def build_fundamental_panel(
         prior_panels=prior_panels, prior_evidence=prior_evidence,
         prior_periods=prior_periods,
     )
+
+
+def _as_plain_date(value: object) -> date:
+    """A plain ``datetime.date`` from any date-like a caller hands us."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    out = pd.Timestamp(value).date()
+    assert isinstance(out, date)
+    return out
 
 
 def _as_qlib(instrument: str) -> str:

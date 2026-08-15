@@ -400,3 +400,28 @@ def test_all_financial_universe_is_refused(tmp_path):
         tmp_path, _CAL, financial_issuers=frozenset({"600000.SH"}))
     with pytest.raises(FundamentalPanelError, match="no effective instruments"):
         build_fundamental_panel(v, ["revenue"], _DAYS, ["600000.SH"])
+
+
+# --- 三元解包契约 + 公开 builder 的日期归一（codex #433 r16 P2 ×2）----------
+
+def test_three_value_unpacking_contract_holds(view):
+    """规格写的就是 `panels, evidence, periods = build_...` —— 六字段
+    NamedTuple 让这句必炸（too many values to unpack），位置字段的增长悄悄
+    改写了公开契约。现在迭代恰好产出三元，prior 只走命名属性。
+    """
+    panels, evidence, periods = build_fundamental_panel(
+        view, ["revenue"], _DAYS, ["000001.SZ"], include_prior_period=True)
+    assert set(panels) == {"$revenue"}
+    assert set(evidence) == {"$revenue"}
+    assert set(periods) == {"$revenue"}
+
+
+def test_mixed_date_types_are_accepted_by_the_builder(view):
+    """date/datetime/Timestamp 混合满足注解且 view 接受 —— 公开 builder
+    不得先在 sorted(set(...)) 上炸掉。"""
+    from datetime import datetime as _dt
+
+    mixed = [pd.Timestamp(_DAYS[0]), _dt(2022, 4, 1), _DAYS[4]]
+    got = build_fundamental_panel(view, ["revenue"], mixed, ["000001.SZ"])
+    assert got.panels["$revenue"].shape[0] == 3
+    assert got.panels["$revenue"]["SZ000001"][pd.Timestamp(2022, 4, 1)] == 100.0
