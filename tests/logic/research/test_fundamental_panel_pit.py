@@ -353,3 +353,50 @@ def test_duplicate_fields_are_refused(view):
     with pytest.raises(FundamentalPanelError, match="duplicates"):
         build_fundamental_panel(
             view, ["revenue", "revenue"], _DAYS, ["000001.SZ"])
+
+
+# --- prior 腿不做单调性 + 金融排除后空宇宙拒绝（codex #433 r9）---------------
+
+def test_prior_evidence_may_legitimately_go_backwards(tmp_path):
+    """prior 腿会**换角色**，它的证据合法倒退 —— 单调性金丝雀不适用于它。
+
+    时间线（codex 给的构造）：Q4 当期于 0401 可用；其迟交的 Q3 prior 于
+    0429 才到（prior 证据 = 0429）；0505 Q1 成为当期，prior 腿**切换**到
+    Q4 —— 其证据是 0401，一次**倒退**，而全程零泄漏。
+    """
+    days = [date(2022, 3, 31), date(2022, 4, 1), date(2022, 4, 29),
+            date(2022, 5, 5)]
+    cal = StaticTradingCalendar(days)
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    pd.DataFrame([
+        # 公告日 -> 可用日（严格次交易日）：0331->0401, 0401->0429, 0429->0505
+        _row("000001.SZ", "20210930", "0", "20220401", revenue=5.0),   # Q3 迟交,0429 可用
+        _row("000001.SZ", "20211231", "0", "20220331", revenue=10.0),  # Q4,0401 可用
+        _row("000001.SZ", "20220331", "0", "20220429", revenue=20.0),  # Q1,0505 可用
+    ]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    v = FinancialPITDataView(tmp_path, cal, financial_issuers=frozenset())
+
+    got = build_fundamental_panel(
+        v, ["revenue"], days, ["000001.SZ"], include_prior_period=True)
+    ev = got.prior_evidence["$revenue"]["SZ000001"].dropna()
+    # 0429：当期 Q4、prior=Q3（证据 20220429）；0505：当期切到 Q1、prior 切到
+    # Q4（证据 20220401）—— 序列 [20220429, 20220401]，确实倒退
+    assert list(ev) == ["20220429", "20220401"], list(ev)
+    assert not ev.is_monotonic_increasing
+    # 但 gate 不变式仍然全程成立
+    for when, stamp in ev.items():
+        assert stamp <= when.strftime("%Y%m%d")
+
+
+def test_all_financial_universe_is_refused(tmp_path):
+    """请求非空、但全被金融排除 —— 与空请求同一类配置错误，晚一层暴露。"""
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    pd.DataFrame([
+        _row("600000.SH", "20211231", "0", "20220331", revenue=1.0),
+    ]).to_parquet(inc / "600000.SH.parquet", index=False)
+    v = FinancialPITDataView(
+        tmp_path, _CAL, financial_issuers=frozenset({"600000.SH"}))
+    with pytest.raises(FundamentalPanelError, match="no effective instruments"):
+        build_fundamental_panel(v, ["revenue"], _DAYS, ["600000.SH"])

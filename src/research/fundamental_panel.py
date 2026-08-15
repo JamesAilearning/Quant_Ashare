@@ -274,11 +274,28 @@ def build_fundamental_panel(
     prior_periods = {t: _frame(r, ordered_dates)
                      for t, r in prior_period_rows.items()} if include_prior_period else {}
 
+    if any(frame.shape[1] == 0 for frame in panels.values()):
+        # The RAW request was nonempty, but the view dropped every name (all
+        # financial-excluded): the evidence checks below would pass vacuously
+        # and the caller would receive a zero-column panel that LOOKS valid —
+        # the same misconfigured-universe failure as an empty request, one
+        # layer later.
+        raise FundamentalPanelError(
+            "no effective instruments: every requested name was excluded by "
+            "the view (financial issuers?) — refusing a zero-column panel "
+            "rather than letting vacuous evidence checks pass it.")
     _assert_evidence_gates_every_cell(panels, evidence, "")
     _assert_evidence_is_monotonic(evidence, "")
     if include_prior_period:
         _assert_evidence_gates_every_cell(prior_panels, prior_evidence, "prior ")
-        _assert_evidence_is_monotonic(prior_evidence, "prior ")
+        # NO monotonicity on the prior leg: it legitimately CHANGES ROLES as
+        # the current period advances, so its evidence can go backwards with no
+        # leakage at all. Chronology: Q4 current on Apr-1; its late-filed Q3
+        # prior arrives Apr-29 (prior evidence = Apr-29); Q1 becomes current on
+        # May-5 and the prior leg SWITCHES to Q4 — whose evidence is Apr-1, a
+        # decrease. Monotonicity is an as-of carry-forward invariant, and the
+        # prior leg is not a carry-forward series; the availability gate above
+        # (evidence <= trade date) is the invariant that does hold for it.
 
     return FundamentalPanel(
         panels=panels, evidence=evidence, periods=periods,
