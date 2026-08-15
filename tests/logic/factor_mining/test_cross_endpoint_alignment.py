@@ -224,3 +224,34 @@ def test_filter_correlated_lets_missing_period_escape():
                           ValidationCriteria(is_oos_split_date="2022-05-07"),
                           pool,
                           periods=periods)
+
+
+def test_validate_pool_lets_missing_period_escape():
+    """`_evaluate_segment` 的 best-effort 捕获同样不得吞掉契约失败。
+
+    吞掉的话，`validate_pool` 会把它报成一个"指标为空的普通失败因子"——
+    晋升 run 于是带着误导性的拒绝结果、甚至一个空池跑完，而真正的原因
+    （provenance 契约不完整）从不浮出水面。
+    """
+    from src.factor_mining.validator import ValidationCriteria, validate_pool
+
+    panel, periods = _panel_and_periods()
+    del periods["$total_assets"]              # 契约缺口
+    expr = "cs_rank(div_safe($revenue, $total_assets))"
+    with pytest.raises(KeyError, match="cross-endpoint alignment needs"):
+        validate_pool(_pool_with(expr), panel, _fwd(),
+                      ValidationCriteria(is_oos_split_date="2022-05-07"),
+                      periods=periods)
+
+
+def test_a_genuinely_empty_segment_is_still_best_effort():
+    """非空性：真正"该失败"的分段仍按 best-effort 记为空指标，不炸。"""
+    from src.factor_mining.validator import ValidationCriteria, validate_pool
+
+    panel, periods = _panel_and_periods()
+    empty_fwd = _fwd().iloc[:0]
+    results = validate_pool(
+        _pool_with("cs_rank(div_safe($revenue, $total_assets))"),
+        panel, empty_fwd,
+        ValidationCriteria(is_oos_split_date="2022-05-07"), periods=periods)
+    assert results and not results[0].passes

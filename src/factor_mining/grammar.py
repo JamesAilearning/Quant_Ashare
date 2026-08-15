@@ -48,6 +48,11 @@ class GrammarError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+# Module-level so the class-body comprehension below can see it: a generator
+# expression inside a class body does NOT close over that class's namespace.
+_PRIOR_SUFFIX = "__prior"
+
+
 class FeatureRegistry:
     """The v1 terminal feature universe — twelve PIT bin fields.
 
@@ -100,10 +105,27 @@ class FeatureRegistry:
         "$n_cashflow_act",
     )
 
+    # Adjacent-PRIOR-period counterparts, one per statement terminal. Δ-shaped
+    # factors (asset growth, the pure-balance-sheet accrual) difference a field
+    # across adjacent report periods, and the evaluator can only consume keys
+    # that are IN the panel mapping — a prior value parked in a side object is
+    # unreachable from any AST, so those factors could not be WRITTEN at all.
+    #
+    # Modelled as terminals rather than as an operator because the evaluator
+    # resolves terminals by name against the panel: an operator would need a
+    # second mapping threaded through every call site, for no added expressive
+    # power.
+    PRIOR_SUFFIX = _PRIOR_SUFFIX
+    FINANCIAL_STATEMENT_PRIOR: tuple[str, ...] = tuple(
+        name + _PRIOR_SUFFIX for name in FINANCIAL_STATEMENT
+    )
+
     # Every terminal the grammar KNOWS, default-enabled or opt-in. Membership
     # here is what makes a name constructible; reachability by the generator is
     # a separate question answered by the campaign whitelist.
-    ALL_REGISTERED: tuple[str, ...] = V1 + FINANCIAL_STATEMENT
+    ALL_REGISTERED: tuple[str, ...] = (
+        V1 + FINANCIAL_STATEMENT + FINANCIAL_STATEMENT_PRIOR
+    )
 
     # Reserved for a future iteration (NOT enabled in v1)
     V2_DEFERRED: tuple[str, ...] = (
@@ -132,7 +154,21 @@ class FeatureRegistry:
             # PURE: statement values are reported amounts, untouched by the
             # price-adjustment ladder that taints raw prices.
             return ExprType("FEATURE", "PURE")
+        if name in cls.FINANCIAL_STATEMENT_PRIOR:
+            return ExprType("FEATURE", "PURE")   # same field, earlier period
         raise GrammarError(f"Unknown terminal feature: {name!r}")
+
+    @classmethod
+    def is_prior(cls, name: str) -> bool:
+        """Whether ``name`` is a prior-period terminal (``$revenue__prior``)."""
+        return name in cls.FINANCIAL_STATEMENT_PRIOR
+
+    @classmethod
+    def current_of_prior(cls, name: str) -> str:
+        """``$revenue__prior`` -> ``$revenue``; raises for a non-prior name."""
+        if not cls.is_prior(name):
+            raise GrammarError(f"{name!r} is not a prior-period terminal")
+        return name[: -len(cls.PRIOR_SUFFIX)]
 
     @classmethod
     def registered_of_taint(cls, taint: str) -> tuple[str, ...]:
@@ -630,11 +666,18 @@ def _random_operator(
     last_err: GrammarError | None = None
     for _ in range(MAX_OP_RETRIES):
         op, input_types = rng.choice(candidates)
-        children = tuple(
-            _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
-            for t in input_types
-        )
         try:
+            # Subtree generation is INSIDE the retry, not before it: a campaign
+            # whitelist may legitimately admit only one taint (a
+            # financial-statement campaign is all PURE), and then any candidate
+            # needing an ADJ_TAINTED input has an EMPTY pool. Generating the
+            # children outside the try let that GrammarError bubble out of the
+            # whole call instead of picking another candidate — a whitelist of
+            # one taint could not generate at all.
+            children = tuple(
+                _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
+                for t in input_types
+            )
             return OperatorCall(op.name, children)
         except GrammarError as exc:
             last_err = exc

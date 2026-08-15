@@ -167,3 +167,37 @@ def test_registered_of_taint_covers_both_groups():
     assert set(FeatureRegistry.FINANCIAL_STATEMENT) <= pure
     assert set(FeatureRegistry.V1_SCALE_FREE) <= pure
     assert not set(FeatureRegistry.V1_RAW_PRICE) & pure
+
+
+# --- 单一 taint 的白名单必须能生成（本 PR 撞出的既有缺陷）--------------------
+
+def test_a_single_taint_whitelist_can_still_generate():
+    """财报战役的白名单**全是 PURE**，没有任何 ADJ_TAINTED 终端。
+
+    生成器的重试循环原先把子树生成放在 `try` **之外**：一旦采样到需要
+    ADJ_TAINTED 输入的算子组合，该 taint 的池交出空集、抛 GrammarError，
+    异常直接冒出整个调用而**不触发重试** —— 于是这类白名单根本生成不出
+    任何表达式。子树生成移进 try 后，生成器会改选别的候选。
+
+    用 CSF 目标（战役里 GP 产出的根类型）跑足量样本，任何一次抛错都算失败。
+    """
+    allowed = frozenset({"$revenue", "$total_assets", "$oper_cost"})
+    rng = Random(99)
+    for i in range(300):
+        expr = random_expression(
+            ExprType("CSF", "PURE"), 4, 2, rng, allowed_terminals=allowed)
+        used = set(feature_terminals(expr))
+        assert used <= allowed, (i, expr.to_qlib_string())
+        assert used, (i, expr.to_qlib_string())      # 确有终端被引用
+
+
+def test_a_single_taint_whitelist_reaches_every_whitelisted_terminal():
+    """非空性：不是只能生成某一个终端。"""
+    allowed = frozenset({"$revenue", "$total_assets", "$oper_cost"})
+    rng = Random(4)
+    seen: set[str] = set()
+    for _ in range(400):
+        expr = random_expression(
+            ExprType("CSF", "PURE"), 4, 2, rng, allowed_terminals=allowed)
+        seen |= set(feature_terminals(expr))
+    assert seen == allowed, seen

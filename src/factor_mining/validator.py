@@ -179,6 +179,13 @@ def _evaluate_segment(
     try:
         result = evaluate_factor(expr, seg_panel, seg_fwd, method="rank",
                                  periods=seg_periods)
+    except KeyError:
+        # Same rule as `filter_correlated`: a missing period frame is a
+        # DATA-CONTRACT failure, not a segment that legitimately has no data.
+        # Reporting it as an ordinary failed factor would let a promotion run
+        # finish with misleading rejections — or an empty pool — while the real
+        # cause (malformed provenance) never surfaces.
+        raise
     except Exception:  # noqa: BLE001 — segment may legitimately fail; we just flag
         return float("nan"), float("nan"), 0
     # n_obs = the count of joint non-NaN cells (shared convention with

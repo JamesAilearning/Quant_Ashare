@@ -100,8 +100,12 @@ def align_periods_at_terminals(
     Note this needs no notion of "endpoint": terminals of one endpoint share a
     report period by construction, so comparing the period frames answers the
     same question without a second endpoint table that could drift from the
-    view's.
+    view's. Terminals ARE grouped by period generation (current vs prior),
+    because a prior-period terminal is supposed to differ from its current
+    counterpart — flat comparison would mask every Δ factor out of existence.
     """
+    from .grammar import FeatureRegistry  # noqa: PLC0415
+
     referenced = sorted(feature_terminals(expr))
     if len(referenced) < 2:
         return panel
@@ -114,14 +118,34 @@ def align_periods_at_terminals(
             f"cross-endpoint alignment needs report periods for {missing}; "
             f"available: {sorted(periods.keys())}"
         )
-    frames = [periods[t] for t in referenced]
-    first = frames[0]
+
+    # Group by PERIOD GENERATION before comparing. Same-period is required
+    # WITHIN a generation (current-vs-current, prior-vs-prior across endpoints)
+    # but NOT across them: `$total_assets__prior` is SUPPOSED to carry an
+    # earlier period than `$total_assets`. Comparing every referenced terminal
+    # flat would declare that intended difference a violation and mask asset
+    # growth out of existence — a defense that deletes the very factors it is
+    # meant to protect.
+    generations: dict[bool, list[str]] = {}
+    for terminal in referenced:
+        generations.setdefault(
+            FeatureRegistry.is_prior(terminal), []).append(terminal)
+
     disagree = None
-    for other in frames[1:]:
-        ne = first.ne(other) | (first.isna() != other.isna())
-        disagree = ne if disagree is None else (disagree | ne)
+    for group in generations.values():
+        if len(group) < 2:
+            continue
+        first = periods[group[0]]
+        for other_name in group[1:]:
+            other = periods[other_name]
+            ne = first.ne(other) | (first.isna() != other.isna())
+            disagree = ne if disagree is None else (disagree | ne)
     if disagree is None or not bool(disagree.to_numpy().any()):
         return panel
+
+    # A misaligned cell is masked on EVERY referenced terminal, both
+    # generations included: a Δ whose current leg is unproven is no more usable
+    # than one whose prior leg is.
     masked = dict(panel)
     for terminal in referenced:
         frame = masked[terminal]

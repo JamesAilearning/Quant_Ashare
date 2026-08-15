@@ -1,0 +1,159 @@
+"""prior 期终端：Δ 类因子必须**写得出来**。
+
+`prior_panels` 只挂在面板旁边时，evaluator 只消费已注册且在值 mapping 里的
+key —— AST 根本引用不到它，于是起步三因子里的**资产增长与 C3 应计写不出来**，
+而"跑通链路"又要求它们跑。
+
+建模为**终端**而非算子：evaluator 按名字对面板解析终端，算子则需要把第二个
+mapping 穿过每一个调用点，换不来任何表达力。
+"""
+from __future__ import annotations
+
+from random import Random
+
+import pandas as pd
+import pytest
+
+from src.factor_mining.evaluator import (
+    align_periods_at_terminals,
+    evaluate_expression,
+)
+from src.factor_mining.expression import Terminal, feature_terminals, parse_expression
+from src.factor_mining.grammar import (
+    ExprType,
+    FeatureRegistry,
+    random_expression,
+    sampling_pool,
+)
+
+_DAYS = pd.DatetimeIndex(pd.date_range("2022-05-02", periods=6, freq="D"))
+_INST = ["SZ000001", "SZ000002"]
+
+
+def _f(v):
+    return pd.DataFrame([[v, v * 2]] * 6, index=_DAYS, columns=_INST,
+                        dtype="float64")
+
+
+def _p(period):
+    return pd.DataFrame([[period, period]] * 6, index=_DAYS, columns=_INST,
+                        dtype="object")
+
+
+# --- 注册 -------------------------------------------------------------------
+
+def test_every_statement_terminal_has_a_prior_counterpart():
+    assert len(FeatureRegistry.FINANCIAL_STATEMENT_PRIOR) == len(
+        FeatureRegistry.FINANCIAL_STATEMENT)
+    for name in FeatureRegistry.FINANCIAL_STATEMENT:
+        prior = name + FeatureRegistry.PRIOR_SUFFIX
+        assert prior in FeatureRegistry.FINANCIAL_STATEMENT_PRIOR
+        assert FeatureRegistry.is_prior(prior)
+        assert FeatureRegistry.current_of_prior(prior) == name
+
+
+def test_prior_terminals_are_constructible_and_pure():
+    for prior in FeatureRegistry.FINANCIAL_STATEMENT_PRIOR:
+        assert FeatureRegistry.is_feature(prior)
+        assert FeatureRegistry.terminal_type(prior) == ExprType(
+            "FEATURE", "PURE")
+        assert Terminal(prior).name == prior
+
+
+def test_prior_terminals_stay_out_of_the_default_set():
+    assert set(FeatureRegistry.FINANCIAL_STATEMENT_PRIOR).isdisjoint(
+        FeatureRegistry.V1)
+    assert not set(sampling_pool("PURE", None)) & set(
+        FeatureRegistry.FINANCIAL_STATEMENT_PRIOR)
+
+
+def test_current_of_prior_rejects_a_non_prior_name():
+    from src.factor_mining.grammar import GrammarError
+
+    with pytest.raises(GrammarError, match="not a prior-period terminal"):
+        FeatureRegistry.current_of_prior("$revenue")
+
+
+# --- GP 能生成 --------------------------------------------------------------
+
+def test_gp_can_generate_an_adjacent_period_difference():
+    """白名单含当期与 prior 时，GP 必须能长出同时引用两者的表达式。
+
+    目标类型用 **CSF** —— 那才是战役里 GP 产出的根类型；``FEATURE`` 在生成器
+    表里没有任何算子，只会长出单个叶子，用它测「能否同时引用两个终端」等于
+    什么都没测。
+    """
+    allowed = frozenset({"$total_assets", "$total_assets__prior"})
+    rng = Random(5)
+    saw_both = False
+    for _ in range(400):
+        expr = random_expression(
+            ExprType("CSF", "PURE"), 4, 2, rng, allowed_terminals=allowed)
+        if feature_terminals(expr) == allowed:
+            saw_both = True
+            break
+    assert saw_both, "GP 从未生成同时引用当期与 prior 的表达式"
+
+
+# --- 求值确为相邻期差分 ------------------------------------------------------
+
+def _growth_panel():
+    panel = {"$total_assets": _f(110.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$total_assets": _p("20220331"),
+               "$total_assets__prior": _p("20211231")}
+    return panel, periods
+
+
+def test_asset_growth_evaluates_to_the_adjacent_difference():
+    panel, periods = _growth_panel()
+    expr = parse_expression(
+        "div_safe(sub($total_assets, $total_assets__prior), "
+        "$total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    # (110-100)/100 = 0.10 ；第二列 (220-200)/200 = 0.10
+    assert (got.round(6) == 0.10).all().all()
+
+
+def test_a_prior_terminal_differing_from_its_current_is_NOT_masked():
+    """核心：prior 与当期的 report_period **本来就该不同**。
+
+    若遮蔽把所有被引用终端一视同仁地要求同期，资产增长会被整片遮成 NA ——
+    一条把它本要保护的因子删掉的防线。
+    """
+    panel, periods = _growth_panel()
+    expr = parse_expression("sub($total_assets, $total_assets__prior)")
+    masked = align_periods_at_terminals(panel, periods, expr)
+    assert masked is panel                      # 零遮蔽
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.notna().all().all()
+
+
+def test_cross_endpoint_within_the_prior_generation_is_still_masked():
+    """但 prior 组**内部**跨端点错期仍要遮 —— 分组不是放行。"""
+    panel = {"$revenue__prior": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue__prior": _p("20211231"),
+               "$total_assets__prior": _p("20210930")}   # 组内不一致
+    expr = parse_expression("div_safe($revenue__prior, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_cross_endpoint_within_the_current_generation_is_still_masked():
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p("20220331"), "$total_assets": _p("20211231")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_a_masked_cell_hits_both_generations():
+    """当期腿被判错期时，prior 腿也一并遮 —— 半条腿没证据的 Δ 同样不可用。"""
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0),
+             "$total_assets__prior": _f(90.0)}
+    periods = {"$revenue": _p("20220331"), "$total_assets": _p("20211231"),
+               "$total_assets__prior": _p("20210930")}
+    expr = parse_expression(
+        "div_safe($revenue, sub($total_assets, $total_assets__prior))")
+    masked = align_periods_at_terminals(panel, periods, expr)
+    for terminal in ("$revenue", "$total_assets", "$total_assets__prior"):
+        assert masked[terminal].isna().all().all(), terminal
