@@ -145,10 +145,21 @@ def default_status_path(provider_dir: Path) -> Path:
     return _status_path_from(provider_dir)
 
 
+def _status_tmp_path(path: Path) -> Path:
+    """The staging file `_write_status` writes before its atomic rename.
+
+    Named (rather than inlined) because the config guard must forbid aliases
+    of THIS path too: the `.tmp` sibling is written and then `os.replace`d
+    away, so an operational input sitting at exactly that name would first be
+    overwritten and then removed (codex #434 r7).
+    """
+    return path.with_name(path.name + ".tmp")
+
+
 def _write_status(path: Path, payload: Mapping[str, object]) -> None:
     """Atomic status write (temp + rename): a killed process must never leave
     a half-written JSON that the UI would read as corrupt."""
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = _status_tmp_path(path)
     tmp.write_text(
         json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -236,7 +247,14 @@ class DailyUpdateConfig:
         # never affect canonical behavior. Reject overlaps at construction:
         # the CLI maps ValueError to the config-error exit 2 BEFORE any write,
         # consistent with "config errors never write the artifact".
-        target = _norm(self.status_path or default_status_path(self.provider_dir))
+        final = self.status_path or default_status_path(self.provider_dir)
+        # BOTH paths the writer touches: the final artifact AND the `.tmp`
+        # staging sibling it overwrites-then-renames. Guarding only the final
+        # target let `--reference-cases /cfg/status.json.tmp` sit exactly
+        # where the staging write lands — the reference file would be
+        # overwritten and then os.replace'd away (codex #434 r7).
+        targets = (("--status-path", _norm(final)),
+                   ("--status-path 的 .tmp 暂存", _norm(_status_tmp_path(final))))
         for label, root in (
             ("--provider-dir", self.provider_dir),
             ("--tushare-dir", self.tushare_dir),
@@ -247,12 +265,13 @@ class DailyUpdateConfig:
             ("<provider>.new", new_dir(self.provider_dir)),
             ("<provider>.bak", bak_dir(self.provider_dir)),
         ):
-            if _path_within(target, _norm(root)):
-                raise ValueError(
-                    f"--status-path resolves inside {label} ({root}) — the "
-                    f"status artifact's atomic replace would clobber canonical "
-                    f"data; refusing (observability must never affect data)"
-                )
+            for what, target in targets:
+                if _path_within(target, _norm(root)):
+                    raise ValueError(
+                        f"{what} resolves inside {label} ({root}) — the "
+                        f"status artifact's write path would clobber canonical "
+                        f"data; refusing (observability must never affect data)"
+                    )
         # codex P1 round 3: the single-flight LOCK files are siblings of the
         # resources, so the tree checks above cannot see them. Replacing a lock
         # is worse than clobbering data: on POSIX the atomic replace swaps the
@@ -267,12 +286,13 @@ class DailyUpdateConfig:
               for r in (self.provider_dir, self.tushare_dir,
                         self.delisted_registry)),
         ):
-            if target == _norm(f):
-                raise ValueError(
-                    f"--status-path aliases {label} ({f}) — the status "
-                    f"artifact's atomic replace would clobber a canonical "
-                    f"input; refusing"
-                )
+            for what, target in targets:
+                if target == _norm(f):
+                    raise ValueError(
+                        f"{what} aliases {label} ({f}) — the status "
+                        f"artifact's write path would clobber a canonical "
+                        f"input; refusing"
+                    )
         # codex P2: a name-less path (".", a filesystem root) makes
         # _write_status's path.with_name() raise ValueError — which
         # _record_status does not catch (OSError only), so the mistake would

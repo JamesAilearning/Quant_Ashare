@@ -71,7 +71,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "unless --allow-holey-recommend is passed THERE.")
     p.add_argument("--status-path", type=Path, default=None,
                    help="Run-status JSON artifact path (default: "
-                        "<provider-dir sibling>/daily_update_status.json). "
+                        "<provider-dir>.daily_update_status.json — a sibling "
+                        "of the provider dir, unique to it). "
                         "Observability only; a write failure never changes "
                         "the exit code. Must NOT overlap the provider / "
                         "tushare / registry / reference paths — an alias is "

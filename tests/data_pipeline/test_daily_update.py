@@ -660,6 +660,37 @@ class StatusPathGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _config(tmp, status_path=Path("."))
 
+    def test_status_tmp_sibling_aliases_are_rejected_too(self) -> None:
+        # codex #434 r7 (P1): the writer stages at `<target>.tmp` and then
+        # os.replace's it away. Guarding only the FINAL target let
+        # `--reference-cases /cfg/status.json.tmp` sit exactly where the
+        # staging write lands — overwritten, then renamed away.
+        # Built directly: the `_config` helper pins reference_cases /
+        # delisted_registry itself, and this test needs to place THOSE at
+        # the status target's `.tmp` sibling.
+        def build(**kw):
+            base = dict(tushare_dir=None, provider_dir=None,
+                        delisted_registry=None, reference_cases=None,
+                        now=TODAY)
+            base.update(kw)
+            return DailyUpdateConfig(**base)
+
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                build(tushare_dir=tmp / "raw", provider_dir=tmp / "provider",
+                      delisted_registry=tmp / "raw" / "dr.parquet",
+                      reference_cases=tmp / "cfg" / "status.json.tmp",
+                      status_path=tmp / "cfg" / "status.json")
+            # the reverse aliasing (registry at the tmp name) as well
+            with self.assertRaises(ValueError):
+                build(tushare_dir=tmp / "raw", provider_dir=tmp / "provider",
+                      delisted_registry=tmp / "s.json.tmp",
+                      reference_cases=tmp / "reference_cases.yaml",
+                      status_path=tmp / "s.json")
+            # …and an ordinary sibling override still passes
+            _config(tmp, status_path=tmp / "custom_status.json")
+
     def test_one_run_date_for_the_artifact_and_the_plan(self) -> None:
         # codex #434 r5: the status writer stamped `run_date` from its own
         # `date.today()` and the body froze a SECOND one, so a run crossing

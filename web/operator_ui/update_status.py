@@ -104,10 +104,15 @@ def status_path_for_provider(provider_dir: Path) -> Path:
 def read_update_status(path: Path) -> UpdateRunStatus:
     """Read + shape-validate the artifact. Fail-loud on corruption; a missing
     file is the only non-error absence."""
-    if not path.exists():
-        return UpdateRunStatus(kind="missing", path=path)
+    # Read FIRST and classify by exception — not `exists()` then read.
+    # `Path.exists()` answers False for a file it cannot STAT (permissions, a
+    # broken share), so an inaccessible artifact rendered as the benign
+    # 从未记录 instead of the loud read-error state the spec requires. Only
+    # FileNotFoundError means "never recorded" (codex #434 r7).
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return UpdateRunStatus(kind="missing", path=path)
     except (OSError, ValueError) as exc:
         return UpdateRunStatus(
             kind="corrupt", path=path,

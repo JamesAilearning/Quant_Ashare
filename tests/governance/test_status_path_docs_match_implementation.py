@@ -41,14 +41,28 @@ _REJECTED = (
     "<provider_dir>.<name>.daily_update_status.json",
     'provider_dir.parent / "daily_update_status.json"',
     "provider_dir.parent / STATUS_FILENAME",
+    # the CLI help's original shared-location spelling
+    "<provider-dir sibling>/daily_update_status.json",
 )
 
 # The one template every artifact must use for the derived default.
 _DOCUMENTED = "<provider_dir>.daily_update_status.json"
 
 
+# Operator-facing prose OUTSIDE the change dir that states the same path.
+# The CLI's --status-path help drifted independently of the specs (codex #434
+# r7) — an operator reading --help would inspect the wrong file.
+_EXTRA_PROSE = (
+    _PROJECT_ROOT / "scripts" / "daily_update.py",
+)
+
+
 def _markdown() -> dict[Path, str]:
-    return {p: p.read_text(encoding="utf-8") for p in sorted(_CHANGE.rglob("*.md"))}
+    docs = {p: p.read_text(encoding="utf-8")
+            for p in sorted(_CHANGE.rglob("*.md"))}
+    for p in _EXTRA_PROSE:
+        docs[p] = p.read_text(encoding="utf-8")
+    return docs
 
 
 class StatusPathDocsMatchImplementationTests(unittest.TestCase):
@@ -79,12 +93,17 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # Keyed by RELATIVE PATH, not `name`: both deltas are called
         # `spec.md`, so a name-keyed set silently merges them and the count
         # can never reach 4 (this test's own first cut did exactly that).
-        stated = {p.relative_to(_CHANGE).as_posix()
-                  for p, text in _markdown().items()
-                  if _DOCUMENTED in text
-                  or re.search(r"with_name\(.*daily_update_status", text)}
+        stated = set()
+        for p, text in _markdown().items():
+            rel = (p.relative_to(_CHANGE).as_posix() if _CHANGE in p.parents
+                   else p.name)
+            if (_DOCUMENTED in text
+                    or _DOCUMENTED.replace("<provider_dir>", "<provider-dir>")
+                    in text
+                    or re.search(r"with_name\(.*daily_update_status", text)):
+                stated.add(rel)
         self.assertGreaterEqual(
-            len(stated), 4,
+            len(stated), 5,
             f"该 change 的散文里只有 {sorted(stated)} 提到了推导规则;"
             f"proposal / tasks / 两份 spec 都应说明它")
 

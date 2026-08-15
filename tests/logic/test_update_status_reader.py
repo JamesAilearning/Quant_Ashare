@@ -329,6 +329,23 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
             _write(p, dict(_FINISHED_OK))
             self.assertEqual(read_update_status(p).kind, "finished")
 
+    def test_an_unreadable_artifact_is_not_reported_missing(self) -> None:
+        # codex #434 r7 (P2): `Path.exists()` answers False for a file it
+        # cannot STAT, so a permissions failure rendered as the benign
+        # 从未记录. Only FileNotFoundError may mean "missing"; every other
+        # OSError must surface as the loud corrupt/read-error state.
+        from unittest.mock import patch
+        target = Path("Z:/somewhere") / STATUS_FILENAME
+        with patch.object(Path, "read_text",
+                          side_effect=PermissionError("denied")):
+            st = read_update_status(target)
+        self.assertEqual(st.kind, "corrupt")
+        self.assertIn("denied", st.error or "")
+        with patch.object(Path, "read_text",
+                          side_effect=FileNotFoundError()):
+            st = read_update_status(target)
+        self.assertEqual(st.kind, "missing")
+
     def test_float_schema_version_is_corrupt(self) -> None:
         # codex #434 r4: JSON `1.0` parses to a float and `1.0 == 1`, so the
         # bool-exclusion spelling still let it through. `type(...) is int`
