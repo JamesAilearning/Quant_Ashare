@@ -294,7 +294,20 @@ def write_shifted_store(
             f"shifted-store output {dst} overlaps the source store {src} — "
             "writing would mutate the real store in place and invalidate the "
             "baseline. Choose a disjoint workdir.")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # The root-level check above is not enough on a REUSED workdir: a child
+    # symlink such as ``shifted_2/income -> <store>/income`` leaves the two
+    # ROOTS disjoint, yet ``mkdir(exist_ok=True)`` follows the link and the
+    # ``to_parquet`` calls overwrite the real source files. Requiring a fresh
+    # output tree closes the whole class — there is nothing pre-existing to
+    # follow — rather than chasing each link shape individually.
+    if dst.exists():
+        raise ShiftDiagnosticError(
+            f"shifted-store output {dst} already exists — a reused output tree "
+            "may contain symlinks into the real store (a child link makes the "
+            "roots look disjoint while the writes follow it). Delete it or "
+            "choose a fresh workdir; this function only ever writes into a "
+            "directory it created itself.")
+    out_dir.mkdir(parents=True)
     wrote = 0
     for endpoint_dir in sorted(p for p in store_dir.iterdir() if p.is_dir()):
         target = out_dir / endpoint_dir.name

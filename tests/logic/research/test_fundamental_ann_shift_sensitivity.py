@@ -629,3 +629,36 @@ def test_overlapping_output_path_is_refused_before_any_write(e2e_store,
 def test_disjoint_output_path_still_works(e2e_store, tmp_path):
     out = write_shifted_store(e2e_store, tmp_path / "elsewhere", 2, _E2E_DAYS)
     assert (out / "income" / "000001.SZ.parquet").exists()
+
+
+# --- 复用的输出树必须整树拒绝（codex #433 r7 P2）----------------------------
+
+def test_a_preexisting_output_tree_is_refused(e2e_store, tmp_path):
+    """根级 resolve 检查挡不住**子级 symlink**：`shifted_2/income -> store/income`
+    让两个根看似不相交，而写入会跟着链接改写真实 store。要求全新输出树把
+    整类问题关掉 —— 没有任何既存物可以被跟随。
+    """
+    out = tmp_path / "reused"
+    out.mkdir()
+    (out / "leftover.txt").write_text("x", encoding="utf-8")
+    before = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    with _pytest.raises(ShiftDiagnosticError, match="already exists"):
+        write_shifted_store(e2e_store, out, 2, _E2E_DAYS)
+    after = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    _pd.testing.assert_frame_equal(before, after)     # 源 store 未被触碰
+
+
+def test_symlinked_child_cannot_reach_the_real_store(e2e_store, tmp_path):
+    """有权限时直接验 symlink 情形本身（无权限则跳过 —— 前一条已覆盖该类）。"""
+    out = tmp_path / "sneaky"
+    out.mkdir()
+    try:
+        (out / "income").symlink_to(e2e_store / "income",
+                                    target_is_directory=True)
+    except OSError:
+        _pytest.skip("此环境无 symlink 权限；已由 already-exists 拒绝覆盖")
+    before = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    with _pytest.raises(ShiftDiagnosticError, match="already exists"):
+        write_shifted_store(e2e_store, out, 2, _E2E_DAYS)
+    after = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
+    _pd.testing.assert_frame_equal(before, after)

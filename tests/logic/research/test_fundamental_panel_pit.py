@@ -311,3 +311,27 @@ def test_without_prior_the_mapping_is_just_the_current_panel(view):
 # 注：`PRIOR_SUFFIX` 与 grammar 的 `FeatureRegistry.PRIOR_SUFFIX` 必须一致，
 # 但那个常量在 #437（GP 接线）里。**跨 PR 的守卫现在加就是悬空守卫** ——
 # 待两个 PR 都进 main 后于 PR-4 补上逐字相等的断言。
+
+
+# --- period token 在桥内规范化（codex #433 r7 P1）---------------------------
+
+def test_float_spelled_end_dates_are_canonicalised_in_the_period_frames(
+        tmp_path):
+    """两个 store 可以把**同一个季度**拼成 20220331 与 20220331.0。
+
+    view 保留各自原拼写；若桥原样导出，跨端点对齐掩码会把**真同期**的 cell
+    按拼写差异判成错期 —— 混端点因子全部被错误遮蔽。规范化放在**帧的出生地**
+    （桥），所有下游消费者一次受保护。
+    """
+    inc = tmp_path / "income"
+    inc.mkdir(parents=True)
+    row = _row("000001.SZ", "20220331", "0", "20220331", revenue=10.0)
+    row["end_date"] = 20220331.0                    # 精确 .0 float 拼写
+    pd.DataFrame([row]).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    got = build_fundamental_panel(
+        v, ["revenue"], [date(2022, 4, 1)], ["000001.SZ"],
+        include_prior_period=True)
+    served = got.periods["$revenue"].loc[pd.Timestamp(2022, 4, 1), "SZ000001"]
+    assert served == "20220331"                     # 不是 "20220331.0"

@@ -240,13 +240,15 @@ def build_fundamental_panel(
             endpoint = _endpoint_of(view, field)
             value_rows[terminal].append(served[field])
             evidence_rows[terminal].append(served[f"_available_from__{endpoint}"])
-            period_rows[terminal].append(served[f"_report_period__{endpoint}"])
+            period_rows[terminal].append(
+                _canonical_periods(served[f"_report_period__{endpoint}"]))
             if include_prior_period:
                 prior_value_rows[terminal].append(served[f"{field}__prior"])
                 prior_evidence_rows[terminal].append(
                     served[f"_available_from_prior__{endpoint}"])
                 prior_period_rows[terminal].append(
-                    served[f"_report_period_prior__{endpoint}"])
+                    _canonical_periods(
+                        served[f"_report_period_prior__{endpoint}"]))
 
     panels = {t: _frame(rows, ordered_dates) for t, rows in value_rows.items()}
     evidence = {t: _frame(rows, ordered_dates) for t, rows in evidence_rows.items()}
@@ -269,6 +271,30 @@ def build_fundamental_panel(
         prior_panels=prior_panels, prior_evidence=prior_evidence,
         prior_periods=prior_periods,
     )
+
+
+def _canonical_periods(column: pd.Series) -> pd.Series:
+    """Report-period tokens in canonical YYYYMMDD spelling.
+
+    The view preserves each store's RAW spelling, and the contract accepts both
+    ``20220331`` and the exact-float ``20220331.0`` — so two endpoints can spell
+    the SAME quarter differently. The cross-endpoint alignment mask compares
+    these tokens verbatim; handed raw spellings, it would mask genuinely
+    same-quarter cells and corrupt every mixed-endpoint factor. Canonicalising
+    HERE (where the frames are born) protects every consumer at once, instead
+    of each consumer re-normalising — the shift diagnostic included.
+    """
+    from src.data.pit.financial_pit_contract import (  # noqa: PLC0415
+        _parse_yyyymmdd,
+    )
+
+    def _one(token: object) -> object:
+        if token is None or pd.isna(token):
+            return pd.NA
+        parsed = _parse_yyyymmdd(token)
+        return pd.NA if parsed is None else parsed.strftime("%Y%m%d")
+
+    return column.map(_one)
 
 
 def _as_qlib(instrument: str) -> str:
