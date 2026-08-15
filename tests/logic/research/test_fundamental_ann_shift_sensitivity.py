@@ -860,3 +860,21 @@ def test_timestamp_sampled_dates_work_end_to_end(e2e_store, tmp_path):
         workdir=tmp_path / "wt")
     assert verdict.verdict == OK, verdict.render()
     assert verdict.moves != ()
+
+
+def test_a_plain_tuple_builder_satisfies_the_injection_seam(e2e_store,
+                                                            tmp_path):
+    """注入缝允诺"返回文档化三元组即可" —— 属性访问会把它悄悄收窄成
+    "必须是 FundamentalPanel 实例"（codex #433 r17 P2）。用一个只返回
+    朴素三元组的合规 builder 走完整条诊断。"""
+    from src.research.fundamental_panel import build_fundamental_panel
+
+    def tuple_builder(view, fields, trade_dates, instruments, **kw):
+        bundle = build_fundamental_panel(view, fields, trade_dates,
+                                         instruments, **kw)
+        return (dict(bundle.panels), dict(bundle.evidence),
+                dict(bundle.periods))          # 朴素 tuple，无任何属性
+
+    verdict = _run(e2e_store, tmp_path, build_panel=tuple_builder)
+    assert verdict.verdict == OK, verdict.render()
+    assert verdict.moves != ()

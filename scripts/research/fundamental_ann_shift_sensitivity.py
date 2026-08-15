@@ -587,21 +587,28 @@ def run_diagnostic(
 
     base_view = FinancialPITDataView(store_dir, cal,
                                      financial_issuers=financial_issuers)
-    base_panel = factory(base_view, fields, trade_dates, instruments)  # type: ignore[operator]
+    # Unpacked through the PUBLIC three-item contract, never through the
+    # concrete class's attributes: the injection seam advertises that any
+    # builder returning the documented ``(panels, evidence, periods)`` is
+    # acceptable, and an attribute access would quietly narrow that to
+    # "must be a FundamentalPanel instance".
+    _b_panels, _b_evidence, base_periods = factory(
+        base_view, fields, trade_dates, instruments)  # type: ignore[operator]
 
     shifted_dir = write_shifted_store(
         store_dir, workdir / f"shifted_{shift_days}", shift_days, calendar)
     shifted_view = FinancialPITDataView(shifted_dir, cal,
                                         financial_issuers=financial_issuers)
-    shifted_panel = factory(shifted_view, fields, trade_dates, instruments)  # type: ignore[operator]
+    _s_panels, _s_evidence, shifted_periods = factory(
+        shifted_view, fields, trade_dates, instruments)  # type: ignore[operator]
 
     # The expectation comes from the SOURCE data, never from either panel —
     # otherwise an announcement-blind builder would define itself irrelevant.
     moves = find_winner_moves(
         _record_frames(store_dir, fields, cal, instruments, financial_issuers),
         trade_dates, shift_days, calendar=calendar)
-    return adjudicate(moves, served_periods(base_panel.periods),
-                      served_periods(shifted_panel.periods))
+    return adjudicate(moves, served_periods(base_periods),
+                      served_periods(shifted_periods))
 
 
 def _record_frames(
