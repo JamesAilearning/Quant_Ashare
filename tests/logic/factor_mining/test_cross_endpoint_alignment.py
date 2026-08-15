@@ -255,3 +255,18 @@ def test_a_genuinely_empty_segment_is_still_best_effort():
         panel, empty_fwd,
         ValidationCriteria(is_oos_split_date="2022-05-07"), periods=periods)
     assert results and not results[0].passes
+
+
+def test_validate_run_forwards_periods(tmp_path):
+    """便捷包装同样必须转交 provenance —— 静默丢掉它的包装看起来是同一个
+    API，实际给出的是未遮蔽混季指标（codex #437 r4 P2）。"""
+    from src.factor_mining.validator import ValidationCriteria, validate_run
+
+    panel, periods = _panel_and_periods(misaligned_on=(5, 6, 7))
+    pool = _pool_with("cs_rank(div_safe($revenue, $total_assets))")
+    pool.save(tmp_path)
+    criteria = ValidationCriteria(is_oos_split_date="2022-05-07")
+    without = validate_run(tmp_path, panel, _fwd(), criteria)
+    with_prov = validate_run(tmp_path, panel, _fwd(), criteria,
+                             periods=periods)
+    assert with_prov[0].oos_n_obs < without[0].oos_n_obs

@@ -284,10 +284,17 @@ def validate_run(
     panel: Mapping[str, pd.DataFrame],
     forward_return: pd.DataFrame,
     criteria: ValidationCriteria,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> list[FactorValidationResult]:
-    """Convenience wrapper: load the pool from disk then validate."""
+    """Convenience wrapper: load the pool from disk then validate.
+
+    ``periods`` is forwarded to :func:`validate_pool` — a convenience wrapper
+    that silently dropped the provenance would hand a fundamental caller
+    unmasked mixed-quarter metrics while looking like the same API.
+    """
     pool = FactorPool.load(run_dir)
-    return validate_pool(pool, panel, forward_return, criteria)
+    return validate_pool(pool, panel, forward_return, criteria,
+                         periods=periods)
 
 
 # ---------------------------------------------------------------------------
