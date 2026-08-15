@@ -43,6 +43,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_OK,
     VERDICT_SINGLE_SHA_UNKNOWN,
     VERDICT_V1_UNKNOWN,
+    anchored_to_repo,
     artifact_kind_of,
     artifact_meta_status,
     banner_status,
@@ -68,11 +69,28 @@ render_page_header(
 # ---------------------------------------------------------------------------
 # 模型元信息横幅(常驻页顶)— 缺任一字段 → 醒目 WARN,绝不默认值
 # ---------------------------------------------------------------------------
-_model_path = resolve_model_path()
+_model_path = anchored_to_repo(resolve_model_path())
 # Which model is production ACTUALLY serving? Before this, the banner always
 # described the single model behind QUANT_MODEL_PATH — after the 2026-08-05
 # ensemble cutover that named a RETIRED model on every render.
 _incumbent = resolve_incumbent()
+
+if _incumbent.kind == "single" and not _model_path.strip():
+    # `QUANT_MODEL_PATH` set but empty. The resolver mirrors the CLI, which
+    # does NOT substitute the default for an empty value (r24), so say the
+    # cause once instead of leaving the operator to read it out of a
+    # "元信息缺失" warning whose data source renders as an empty backtick.
+    #
+    # ONLY under a single-model incumbent. In ensemble mode the CLI refuses
+    # `--model` outright (mutually exclusive with `--ensemble-manifest`) and
+    # never reads `_DEFAULT_MODEL`, so an empty override changes nothing —
+    # a red banner there would report a failure that cannot happen, on the
+    # deployment production actually runs (codex #431 r25).
+    st.error(
+        "⚠ **`QUANT_MODEL_PATH` 被设为空值**——出单侧 CLI 同样不会用默认值顶替,"
+        "它会拿着空路径失败。单模型形态下的晋升 meta 因此无从读起。"
+        "请把该环境变量取消设置(用文档默认)或指向真实模型。"
+    )
 
 if _incumbent.kind == "unresolvable":
     # The pointer says "production is an ensemble" and we cannot confirm

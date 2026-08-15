@@ -81,6 +81,7 @@ _ICON_MAP = {
     "作业": "\U0001f4cb",            # 📋
     "配置运行": "\U0001f680",        # 🚀
     "今日推荐": "\U0001f4dd",        # 📝
+    "生产运维": "\U0001f6e0",        # 🛠
     "结果": "\U0001f4c8",            # 📈
     "滚动验证": "\U0001f501",        # 🔁
     "设计系统": "\U0001f3a8",        # 🎨
@@ -203,6 +204,9 @@ _navigation: dict[str, list[Any]] = {
         # 每日决策页:只读渲染 daily_recommend 落盘工件 + 决策日志
         # (openspec add-daily-decision-page A2)。不触发任何作业。
         st.Page(str(_PAGES_DIR / "daily_decision.py"), title="今日推荐"),
+        # 生产运维驾驶舱:现任身份 / 授权门 / 再认证时钟 / 重训窗 / 数据新鲜度,
+        # 全部只读 + 命令文本(openspec 2026-08-14-ui-ops-cockpit)。不代跑任何命令。
+        st.Page(str(_PAGES_DIR / "ops_cockpit.py"), title="生产运维"),
     ],
     "分析": [
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
