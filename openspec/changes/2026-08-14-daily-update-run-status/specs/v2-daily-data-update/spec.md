@@ -40,9 +40,10 @@ temp-rename requires a file name.
 
 Every record SHALL carry the normalized identity of the provider it
 describes (`provider_dir`): two independently scheduled providers may point
-the same explicit `--status-path` at one file, their unlocked writes race
-through the same staging sibling, and without an identity stamp the reader
-cannot even in principle detect the mix-up.
+the same explicit `--status-path` at one file. The unique per-write staging
+above removes the WRITE race, but the file still holds whichever record was
+published last — without an identity stamp the reader cannot even in
+principle detect that it is looking at the other provider's run.
 
 #### Scenario: 成功运行留下 finished/0 记录
 - **WHEN** 一次完整运行全部阶段通过并完成 swap

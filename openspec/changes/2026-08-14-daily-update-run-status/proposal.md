@@ -23,6 +23,7 @@
    ```json
    {
      "schema_version": 1,
+     "provider_dir": "d:\\qlib_data\\my_cn_data_pit",
      "state": "running" | "finished",
      "run_date": "2026-08-14",
      "started_at": "2026-08-14T20:43:00+08:00",

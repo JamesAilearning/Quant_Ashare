@@ -334,6 +334,20 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                             name, ("src.data_pipeline.daily_update",
                                    "src.data_pipeline.bundle_swap"),
                             f"{rel} 把编排器/换库机器接进了检视页闭包")
+                        # `from os import system; system(...)` puts a BARE
+                        # name at the call site — no attribute shape to
+                        # match, and `os` itself is closure-legal. Reject
+                        # the spawning NAMES at their import instead
+                        # (codex #434 r21).
+                        if root in ("os", "posix", "nt"):
+                            leaf = name.rsplit(".", 1)[-1]
+                            spawnish = (leaf in ("system", "startfile")
+                                        or leaf.startswith(
+                                            ("exec", "spawn", "popen")))
+                            self.assertFalse(
+                                spawnish and leaf != name,
+                                f"{rel} 从 {root} 直接导入派生函数 {leaf!r}"
+                                f" —— 裸名调用没有属性形状可查")
                         if (root in spawn_banned
                                 and rel.split(".")[-1] != exempt_spawner):
                             self.fail(
