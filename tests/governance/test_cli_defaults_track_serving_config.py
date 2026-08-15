@@ -4,14 +4,16 @@
 every one of these flags straight into it. So on the CLI path the dataclass
 default **never applies** — the argparse default is the effective value, and
 an edit to the dataclass would silently fail to take effect for every
-production run. Three flags carried a duplicated literal
-(``--out-dir`` / ``--st-max-age-days`` / ``--bundle-max-age-days``); the ops
-cockpit had to print ``--bundle-max-age-days`` explicitly to work around
-exactly that divergence (#431 r14).
+production run. FOUR flags carried a duplicated literal — ``--out-dir``,
+``--st-max-age-days``, ``--bundle-max-age-days``, and ``--name-source``
+(whose copy hid behind a ``default_factory`` and survived the first sweep
+that claimed to close the class); the ops cockpit had to print
+``--bundle-max-age-days`` explicitly to work around exactly that divergence
+(#431 r14).
 
-This does NOT enumerate those three. It walks the parser and requires
+This does NOT enumerate those four. It walks the parser and requires
 agreement for **every** flag whose destination corresponds to a config field,
-so a fourth one added later is caught the day it appears rather than the day
+so a fifth one added later is caught the day it appears rather than the day
 someone changes the dataclass and wonders why nothing moved.
 """
 
