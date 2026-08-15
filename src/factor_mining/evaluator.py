@@ -70,6 +70,28 @@ def max_abs_corr(
     return max_abs
 
 
+def _previous_quarter_token(token: object) -> object:
+    """The calendar-adjacent previous CN quarter end, as a YYYYMMDD token.
+
+    Pure string/date logic on canonical tokens — deliberately NOT imported
+    from ``src.research`` (the isolation gate forbids that direction); a
+    governance test pins this against the research-side implementation so the
+    two cannot drift. A malformed token returns a sentinel that equals no real
+    period, so adjacency can never be PROVEN through corruption.
+    """
+    try:
+        text = str(token)
+        year, month_day = int(text[:4]), text[4:8]
+    except (TypeError, ValueError):
+        return "<malformed>"
+    return {
+        "0331": f"{year - 1}1231",
+        "0630": f"{year}0331",
+        "0930": f"{year}0630",
+        "1231": f"{year}0930",
+    }.get(month_day, "<malformed>")
+
+
 def align_periods_at_terminals(
     panel: PanelLike,
     periods: Mapping[str, pd.DataFrame],
@@ -178,6 +200,26 @@ def align_periods_at_terminals(
         unproven = missing if unproven is None else (unproven | missing)
     if unproven is not None and bool(unproven.to_numpy().any()):
         disagree = unproven if disagree is None else (disagree | unproven)
+
+    # ACROSS generations the requirement is ADJACENCY, not equality — and not
+    # nothing. A mixed expression like `div_safe($revenue,
+    # $total_assets__prior)` puts ONE terminal in each generation, so both
+    # within-group loops above are vacuous; if the endpoints have advanced by
+    # different amounts, a current-quarter value silently combines with a
+    # NON-adjacent prior. The prior generation's period must be the
+    # calendar-adjacent previous quarter of the current generation's period.
+    if len(generations) == 2:
+        current_rep = aligned[generations[False][0]]
+        prior_rep = aligned[generations[True][0]]
+        expected_prior = current_rep.map(_previous_quarter_token,
+                                         na_action="ignore")
+        # Only cells where BOTH generations actually carry a period are judged
+        # here — one-sided absence is already the `unproven` check's job.
+        both = expected_prior.notna() & prior_rep.notna()
+        non_adjacent = both & expected_prior.ne(prior_rep)
+        if bool(non_adjacent.to_numpy().any()):
+            disagree = non_adjacent if disagree is None else (
+                disagree | non_adjacent)
 
     if disagree is None or not bool(disagree.to_numpy().any()):
         return panel

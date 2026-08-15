@@ -157,3 +157,57 @@ def test_a_masked_cell_hits_both_generations():
     masked = align_periods_at_terminals(panel, periods, expr)
     for terminal in ("$revenue", "$total_assets", "$total_assets__prior"):
         assert masked[terminal].isna().all().all(), terminal
+
+
+# --- 跨期代必须邻接（codex #437 r8 P1）--------------------------------------
+
+def test_cross_generation_non_adjacent_is_masked():
+    """`div_safe($revenue, $total_assets__prior)`：每个期代各一个终端，
+    组内比较双双空转 —— 端点推进不一致时，当期值会与**非相邻**的 prior
+    静默相除。跨期代的要求是**邻接**：prior 期 == 当期期的上一季度末。
+    """
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("20220331"),
+               "$total_assets__prior": _p("20210930")}   # 非相邻（差两季）
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_cross_generation_adjacent_is_not_masked():
+    """相邻（20220331 的上一季 = 20211231）→ 合法，不遮。"""
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("20220331"),
+               "$total_assets__prior": _p("20211231")}
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.notna().all().all()
+
+
+def test_malformed_current_period_cannot_prove_adjacency():
+    """畸形期 token 映射到哨兵值，永远证不出邻接 —— 保守遮蔽。"""
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("2022Q1"),                  # 畸形
+               "$total_assets__prior": _p("20211231")}
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.isna().all().all()
+
+
+def test_adjacency_rule_matches_the_research_side():
+    """factor_mining 的邻接函数与 research 侧 previous_quarter_end 不得漂移。
+
+    隔离闸禁止 src/factor_mining import src.research（所以是本地纯函数），
+    这条测试就是两份实现的汇合点 —— 与 #425 的"窗口字段 == 冻结公式"同款。
+    """
+    from datetime import date as _date
+
+    from src.factor_mining.evaluator import _previous_quarter_token
+    from src.research.financial_pit_view import previous_quarter_end
+
+    for token, parsed in (("20220331", _date(2022, 3, 31)),
+                          ("20220630", _date(2022, 6, 30)),
+                          ("20220930", _date(2022, 9, 30)),
+                          ("20221231", _date(2022, 12, 31))):
+        assert _previous_quarter_token(token) == \
+            previous_quarter_end(parsed).strftime("%Y%m%d"), token
