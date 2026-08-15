@@ -272,7 +272,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                         "_winapi", "_posixsubprocess", "importlib",
                         "ctypes"}
         spawn_shapes = re.compile(
-            r"os\.(?:system|exec\w*|spawn\w*|popen\w*|startfile)\s*\(|__import__\s*\(")
+            r"os\.(?:system|exec\w*|spawn\w*|popen\w*|posix_spawn\w*|fork\w*|startfile)\s*\(|__import__\s*\(")
         # The audited exemption: it exists to spawn ONE thing.
         exempt_spawner = "pit_validation_runner"
         runner_src = (base / "pit_validation_runner.py").read_text(
@@ -341,9 +341,14 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                         # (codex #434 r21).
                         if root in ("os", "posix", "nt"):
                             leaf = name.rsplit(".", 1)[-1]
-                            spawnish = (leaf in ("system", "startfile")
+                            # posix_spawn(p) does not start with "spawn",
+                            # and fork/forkpty reach a new process the long
+                            # way round (codex #434 r22 + self-audit).
+                            spawnish = (leaf in ("system", "startfile",
+                                                 "fork", "forkpty")
                                         or leaf.startswith(
-                                            ("exec", "spawn", "popen")))
+                                            ("exec", "spawn", "popen",
+                                             "posix_spawn")))
                             self.assertFalse(
                                 spawnish and leaf != name,
                                 f"{rel} 从 {root} 直接导入派生函数 {leaf!r}"
