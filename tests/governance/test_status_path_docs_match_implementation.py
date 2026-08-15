@@ -179,12 +179,21 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         banned = {"subprocess", "runpy", "multiprocessing", "os",
                   "asyncio", "concurrent", "pty",
                   "posix", "nt", "_winapi", "_posixsubprocess",
-                  "importlib"}
+                  "importlib", "builtins"}
         for node in ast.walk(ast.parse(page)):
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
+                # BOTH halves: the module AND the imported names. `from
+                # builtins import __import__ as load` carries an allowed
+                # module while the alias hides every call-shape pattern —
+                # load("subprocess") then invokes at will (codex #434 r16).
                 names = [node.module or ""]
+                for alias in node.names:
+                    with self.subTest(imported_name=alias.name):
+                        self.assertNotIn(
+                            alias.name, {"__import__", "import_module"},
+                            f"检视页导入了动态取模块的名字 {alias.name!r}")
             else:
                 continue
             for name in names:
