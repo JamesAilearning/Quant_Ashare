@@ -241,6 +241,13 @@ def _resolve_inference_fit_window(
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    # Flags whose default MIRRORS a RecommendationConfig field read it off the
+    # dataclass instead of restating the literal. Each of them is passed
+    # straight back into the config below, so the config's own default never
+    # applies on this path: the argparse literal WAS the effective value, and
+    # editing the dataclass would have silently failed to take effect for
+    # every CLI run. The ops cockpit had to print `--bundle-max-age-days`
+    # explicitly to work around exactly this divergence (#431 r14).
     p = argparse.ArgumentParser(description="Daily stock recommendation (Alpha158 + LGB, PIT).")
     p.add_argument("--as-of", default=None,
                    help="Decision date T (YYYY-MM-DD). Default = latest PIT trading day.")
@@ -249,7 +256,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Buy-list size. Default: 50 in single-model mode; the "
              "pinned serving-config value in ensemble mode (an "
              "explicit value must EQUAL it).")
-    p.add_argument("--out-dir", default="output/daily_recommend",
+    p.add_argument("--out-dir", default=RecommendationConfig.out_dir,
                    help="Output directory for csv/json (default output/daily_recommend).")
     p.add_argument(
         "--model", default=None,
@@ -270,10 +277,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--name-source", default=_DEFAULT_NAME_SOURCE,
                    help="Active-stocks snapshot parquet. REQUIRED for the ST "
                         "filter (supplies current names + the current-ST set).")
-    p.add_argument("--st-max-age-days", type=int, default=7,
+    p.add_argument("--st-max-age-days", type=int,
+                   default=RecommendationConfig.st_snapshot_max_age_days,
                    help="Max days the ST snapshot may lag the as-of date "
                         "before it is rejected as stale (default 7).")
-    p.add_argument("--bundle-max-age-days", type=int, default=14,
+    p.add_argument("--bundle-max-age-days", type=int,
+                   default=RecommendationConfig.bundle_max_age_days,
                    help="Max CALENDAR days the qlib bundle's last trading day "
                         "may lag today before the price/feature data is "
                         "rejected as stale (default 14; covers A-share "
