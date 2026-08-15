@@ -179,7 +179,16 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         banned = {"subprocess", "runpy", "multiprocessing", "os",
                   "asyncio", "concurrent", "pty",
                   "posix", "nt", "_winapi", "_posixsubprocess",
-                  "importlib", "builtins"}
+                  "importlib", "builtins",
+                  # ctypes reaches libc's system() without any of the above
+                  # (`CDLL(None).system(b"...")` on POSIX) — codex #434 r17.
+                  "ctypes"}
+        # THREAT MODEL, stated so the list stops growing forever: this guard
+        # exists to catch ACCIDENTAL drift — someone wiring a convenient
+        # spawn into a read-only page. Deliberate evasion (eval/exec over
+        # assembled strings, getattr chains over allowed modules) is not
+        # spelled like an accident, cannot be enumerated away, and is the
+        # reviewer's job, not this test's.
         for node in ast.walk(ast.parse(page)):
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
