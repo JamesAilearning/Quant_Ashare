@@ -363,6 +363,15 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                             name, ("src.data_pipeline.daily_update",
                                    "src.data_pipeline.bundle_swap"),
                             f"{rel} 把编排器/换库机器接进了检视页闭包")
+                        # `import scripts.daily_update as updater` then
+                        # updater.main([...]) reaches the SAME orchestrator
+                        # through its CLI wrapper — the read-only closure has
+                        # no business importing anything under scripts/
+                        # (codex #434 r24).
+                        self.assertNotEqual(
+                            root, "scripts",
+                            f"{rel} import 了 scripts 下的入口 {name!r}"
+                            f" —— 检视页闭包不得触碰任何 CLI 包装")
                         # `from os import system; system(...)` puts a BARE
                         # name at the call site — no attribute shape to
                         # match, and `os` itself is closure-legal. Reject

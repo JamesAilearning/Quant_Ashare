@@ -201,7 +201,14 @@ def _record_status(path: Path, payload: Mapping[str, object]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_status(path, payload)
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 — reverse-coupling contract
+        # EVERY failure, not just OSError: `ensure_ascii=False` raises
+        # UnicodeEncodeError (a ValueError) on an unpaired surrogate smuggled
+        # in via an exception detail, and json.dumps raises TypeError on an
+        # unserializable value — either escaping would invert the one
+        # guarantee this function exists for: an observability failure SHALL
+        # NOT change the run's exit code (codex #434 r24). BaseException
+        # (KeyboardInterrupt/SystemExit) still propagates.
         _logger.error(
             "run-status artifact write FAILED (%s): %s — the run's exit code "
             "is unaffected; the UI will keep showing the previous record.",

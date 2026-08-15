@@ -697,6 +697,23 @@ class StatusPathGuardTests(unittest.TestCase):
             # …and an ordinary sibling override still passes
             _config(tmp, status_path=tmp / "custom_status.json")
 
+    def test_non_oserror_write_failures_stay_contained(self) -> None:
+        # codex #434 r24: `ensure_ascii=False` raises UnicodeEncodeError (a
+        # ValueError) on an unpaired surrogate smuggled in via an exception
+        # detail, and json.dumps raises TypeError on an unserializable value.
+        # Either escaping _record_status would invert the reverse-coupling
+        # contract: an observability failure SHALL NOT change the exit code.
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            # UnicodeEncodeError path — must not raise
+            du._record_status(target, {"detail": "bad" + chr(0xDC80)})
+            # TypeError path (unserializable payload) — must not raise
+            du._record_status(target, {"detail": object()})
+            # …and a well-formed write afterwards still succeeds
+            du._record_status(target, {"detail": "ok"})
+            self.assertIn("ok", target.read_text(encoding="utf-8"))
+
     def test_each_status_write_stages_at_a_unique_name(self) -> None:
         # codex #434 r19: with a FIXED `<target>.tmp`, two providers sharing
         # an explicit --status-path race through the same staging file — one
