@@ -61,6 +61,16 @@ _EXTRA_PROSE = (
 )
 
 
+def _is_spawnish(leaf: str) -> bool:
+    """Names on os/posix/nt that reach a new process.
+
+    ONE list for both the import check and the alias-aware call check — two
+    copies drifted twice already (posix_spawn in r22, aliases in r23).
+    """
+    return (leaf in ("system", "startfile", "fork", "forkpty")
+            or leaf.startswith(("exec", "spawn", "popen", "posix_spawn")))
+
+
 def _markdown() -> dict[Path, str]:
     docs = {p: p.read_text(encoding="utf-8")
             for p in sorted(_CHANGE.rglob("*.md"))}
@@ -296,6 +306,25 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                     spawn_shapes.search(module_src),
                     f"{rel} 出现 os 派生调用形状")
             module_ast = ast.parse(module_src)
+            # Alias-aware call check (codex #434 r23): `import os as
+            # operating_system; operating_system.posix_spawn(...)` defeats
+            # the literal `os.` regex above. Bind the module's os/posix/nt
+            # aliases first, then flag any spawnish attribute reached
+            # through one of them.
+            os_aliases = {
+                (a.asname or a.name)
+                for n in ast.walk(module_ast) if isinstance(n, ast.Import)
+                for a in n.names
+                if a.name.split(".")[0] in ("os", "posix", "nt")
+            }
+            for n in ast.walk(module_ast):
+                if (isinstance(n, ast.Attribute)
+                        and isinstance(n.value, ast.Name)
+                        and n.value.id in os_aliases
+                        and _is_spawnish(n.attr)):
+                    self.fail(
+                        f"{rel} 经别名 {n.value.id!r} 调用派生原语 "
+                        f"{n.attr!r}(第 {n.lineno} 行)")
             for node in ast.walk(module_ast):
                 # RESOLVED names, not just node.module: `from web.operator_ui
                 # import update_runner` exposes the submodule only through
@@ -344,11 +373,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                             # posix_spawn(p) does not start with "spawn",
                             # and fork/forkpty reach a new process the long
                             # way round (codex #434 r22 + self-audit).
-                            spawnish = (leaf in ("system", "startfile",
-                                                 "fork", "forkpty")
-                                        or leaf.startswith(
-                                            ("exec", "spawn", "popen",
-                                             "posix_spawn")))
+                            spawnish = _is_spawnish(leaf)
                             self.assertFalse(
                                 spawnish and leaf != name,
                                 f"{rel} 从 {root} 直接导入派生函数 {leaf!r}"
