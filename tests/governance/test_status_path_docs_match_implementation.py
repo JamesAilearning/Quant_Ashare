@@ -43,6 +43,10 @@ _REJECTED = (
     "provider_dir.parent / STATUS_FILENAME",
     # the CLI help's original shared-location spelling
     "<provider-dir sibling>/daily_update_status.json",
+    # the pre-r19 fixed staging claim: writes stage at a UNIQUE per-write
+    # name now, and a spec re-asserting the fixed `.tmp` would permit a
+    # future implementation to reintroduce the shared-staging race
+    "staged through a `<target>.tmp`",
 )
 
 # The one template every artifact must use for the derived default.
@@ -118,6 +122,10 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         self.assertIn(".tmp", spec)
         self.assertIn("staging sibling", spec)
         self.assertIn("single-flight lock", spec)
+        # r20: the spec must describe the UNIQUE per-write staging — keyword
+        # presence alone could not tell the fixed-name claim from the fix
+        # (this pin's own reverse validation caught that).
+        self.assertIn("UNIQUE" + chr(10) + "per-write sibling", spec)
 
     def test_the_ui_spec_records_the_stale_running_distinction(self) -> None:
         # codex #434 r9: the r8/r9 behaviour (fresh vs stale vs unverifiable,
@@ -299,7 +307,20 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                 if isinstance(node, ast.Import):
                     names = [a.name for a in node.names]
                 elif isinstance(node, ast.ImportFrom):
-                    prefix = node.module or ""
+                    # RELATIVE imports resolved against the current module
+                    # (codex #434 r20): `from . import update_runner` has
+                    # module=None/level=1 and `from .update_runner import
+                    # run_update` only the relative suffix — ignoring
+                    # node.level let both escape the closure entirely.
+                    if node.level:
+                        pkg_parts = ("web.operator_ui." + rel).split(".")[:-1]
+                        if node.level > 1:
+                            pkg_parts = pkg_parts[:-(node.level - 1)]
+                        base_pkg = ".".join(pkg_parts)
+                        prefix = (f"{base_pkg}.{node.module}"
+                                  if node.module else base_pkg)
+                    else:
+                        prefix = node.module or ""
                     names = [prefix] + [
                         f"{prefix}.{a.name}" if prefix else a.name
                         for a in node.names

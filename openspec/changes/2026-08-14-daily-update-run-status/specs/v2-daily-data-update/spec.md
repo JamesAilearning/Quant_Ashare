@@ -20,9 +20,14 @@ run holding the lock. The write SHALL be atomic (temp file + rename). A
 SHALL be logged as an error and SHALL NOT change the run's exit code — the
 artifact is observability, never a canonical input, and no module outside
 `src/data_pipeline/daily_update.py` SHALL consume it inside `src/`. Because
-the write is an unconditional atomic replace staged through a `<target>.tmp`
-sibling (written first, then `os.replace`d over the target), the guard SHALL
-validate **both** the final target and that `.tmp` staging sibling: either
+the write is an unconditional atomic replace staged through a UNIQUE
+per-write sibling (`<target>.<pid>.<uuid>.tmp` — unique so that two
+providers sharing an explicit `--status-path` cannot truncate each other's
+staging mid-replace and publish an empty artifact; the final `os.replace`
+is the only shared step and is atomic; a failed write SHALL remove its
+private staging file), the guard SHALL validate **both** the final target
+and the HISTORICAL fixed `<target>.tmp` staging sibling (no longer written,
+kept out of the config space as a forbidden alias): either
 one resolving inside the provider dir, the tushare dir, or the swap
 machinery's `<provider>.new` / `<provider>.bak` siblings, or aliasing the
 delisted registry, the reference cases, or any single-flight lock file,
