@@ -209,6 +209,22 @@ def build_fundamental_panel(
         raise FundamentalPanelError("fields is empty — nothing to build.")
     if not trade_dates:
         raise FundamentalPanelError("trade_dates is empty — nothing to build.")
+    if not instruments:
+        # An empty universe would "succeed": every view call returns an empty
+        # response, the evidence assertions are vacuous, and the caller gets a
+        # zero-column panel that LOOKS valid — a missing or misassembled
+        # research universe silently becomes a successful build.
+        raise FundamentalPanelError("instruments is empty — nothing to build.")
+    if len(set(fields)) != len(list(fields)):
+        # Duplicate fields collapse into one terminal-keyed accumulator while
+        # the build loop processes both occurrences, and the view returns
+        # duplicate-named columns so `served[field]` goes two-dimensional —
+        # construction would die with an incidental pandas shape error instead
+        # of this contract's documented refusal.
+        dupes = sorted({f for f in fields if list(fields).count(f) > 1})
+        raise FundamentalPanelError(
+            f"fields contains duplicates {dupes} — each charter field maps to "
+            "exactly one terminal key; deduplicate the request.")
 
     ordered_dates = sorted(set(trade_dates))
     field_list = list(fields)

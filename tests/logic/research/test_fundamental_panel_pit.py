@@ -335,3 +335,21 @@ def test_float_spelled_end_dates_are_canonicalised_in_the_period_frames(
         include_prior_period=True)
     served = got.periods["$revenue"].loc[pd.Timestamp(2022, 4, 1), "SZ000001"]
     assert served == "20220331"                     # 不是 "20220331.0"
+
+
+# --- 输入守卫补全（codex #433 r8 P2 ×2）-------------------------------------
+
+def test_empty_instruments_are_refused(view):
+    """空宇宙会"成功"：零列面板看起来有效，配置错误被静默吞掉。"""
+    with pytest.raises(FundamentalPanelError, match="instruments is empty"):
+        build_fundamental_panel(view, ["revenue"], _DAYS, [])
+
+
+def test_duplicate_fields_are_refused(view):
+    """重复字段会塌进一个累加器 + view 返回重名列 → 偶然的 pandas 形状错误。
+
+    必须以本契约文档化的 FundamentalPanelError 拒绝，而不是让实现细节炸出来。
+    """
+    with pytest.raises(FundamentalPanelError, match="duplicates"):
+        build_fundamental_panel(
+            view, ["revenue", "revenue"], _DAYS, ["000001.SZ"])

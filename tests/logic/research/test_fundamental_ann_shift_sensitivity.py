@@ -662,3 +662,51 @@ def test_symlinked_child_cannot_reach_the_real_store(e2e_store, tmp_path):
         write_shifted_store(e2e_store, out, 2, _E2E_DAYS)
     after = _pd.read_parquet(e2e_store / "income" / "000001.SZ.parquet")
     _pd.testing.assert_frame_equal(before, after)
+
+
+# --- 有效公告日必须原子平移（codex #433 r8 P1）-------------------------------
+
+def test_calendar_tail_does_not_resurrect_availability_via_ann_date(tmp_path):
+    """f_ann_date 晚于 ann_date、且平移只把 f_ann_date 推出日历时：
+
+    独立逐列平移会把 f_ann_date 置空、保留已平移的 ann_date —— 契约随后
+    回退到这个**低优先级**日期，记录在平移后的世界反而**获得**可用性；
+    而源侧期望（平移 f-ann 派生的可用日）是 None。诊断会为平移器自己制造
+    的分歧 REFUSE 一个正确的桥。
+
+    原子平移：逐行选契约同款的**有效**公告日，平移那一个值、写回两列
+    （越界则两列同空）。
+    """
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    row = _store_row("000001.SZ", "20211231", "20220331", 100.0)
+    # ann 早、f_ann 晚：契约的有效公告日 = f_ann（0505）
+    row["ann_date"] = "20220331"
+    row["f_ann_date"] = "20220505"
+    _pd.DataFrame([row]).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    # shift=2 之下：f_ann(0505) 之后日历只剩 0506/0509 两天 → 平移到 0509;
+    # 再大一点 shift=3 就越界。用 shift=3 打日历尾端。
+    out = write_shifted_store(tmp_path / "store", tmp_path / "s", 3, _E2E_DAYS)
+    shifted = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
+    f_ann = str(shifted["f_ann_date"].iloc[0])
+    ann = str(shifted["ann_date"].iloc[0])
+    # 有效公告日越界 → 两列**都**空，不得留下一个已平移的 ann_date 供回退
+    assert not f_ann.strip() or f_ann == "nan", (f_ann, ann)
+    assert not ann.strip() or ann == "nan", (f_ann, ann)
+
+
+def test_atomic_shift_still_moves_a_normal_row(tmp_path):
+    """非空性：未越界的行照常平移，且两列写回同一个有效值。"""
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    row = _store_row("000001.SZ", "20211231", "20220331", 100.0)
+    row["ann_date"] = "20220331"
+    row["f_ann_date"] = "20220429"     # 有效 = f_ann
+    _pd.DataFrame([row]).to_parquet(inc / "000001.SZ.parquet", index=False)
+
+    out = write_shifted_store(tmp_path / "store", tmp_path / "s", 1, _E2E_DAYS)
+    shifted = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
+    # 0429 之后的第 1 个交易日 = 0505；两列一致
+    assert str(shifted["f_ann_date"].iloc[0]) == "20220505"
+    assert str(shifted["ann_date"].iloc[0]) == "20220505"

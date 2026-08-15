@@ -314,15 +314,7 @@ def write_shifted_store(
         target.mkdir(parents=True, exist_ok=True)
         for parquet in sorted(endpoint_dir.glob("*.parquet")):
             frame = pd.read_parquet(parquet)
-            for col in ("ann_date", "f_ann_date"):
-                if col in frame.columns:
-                    # Written back in the store's own YYYYMMDD string form: the
-                    # contract layer parses these strictly and rejects any
-                    # other rendering as corruption, so emitting date objects
-                    # (which parquet would store as ISO) would fail the store
-                    # rather than shift it.
-                    frame[col] = frame[col].map(
-                        lambda d: _shift_stamp(d, shift_days, calendar))
+            frame = _shift_announcements(frame, shift_days, calendar)
             frame.to_parquet(target / parquet.name, index=False)
             wrote += 1
     if not wrote:
@@ -330,6 +322,55 @@ def write_shifted_store(
             f"{store_dir} held no endpoint parquet files — nothing to shift, "
             "so the diagnostic would compare a store against itself.")
     return out_dir
+
+
+def _shift_announcements(
+    frame: pd.DataFrame, shift_days: int, calendar: Sequence[date],
+) -> pd.DataFrame:
+    """Shift the EFFECTIVE announcement atomically, per row.
+
+    The contract resolves the effective announcement as ``f_ann_date`` falling
+    back to ``ann_date``. Shifting the two columns independently breaks that
+    resolution at the calendar tail: when the N-day shift runs off the calendar
+    only for ``f_ann_date``, an independent mapping blanks it while keeping a
+    shifted ``ann_date`` — and the contract then falls back to that
+    lower-priority date, making the record AVAILABLE in the shifted world even
+    though the source-side expectation (shifting the f-ann-derived
+    availability) says None. The diagnostic would REFUSE a correct bridge for a
+    disagreement the shifter itself manufactured.
+
+    So: per row, pick the SAME effective source the contract would pick, shift
+    that one value, and write the result to BOTH columns (blank both when the
+    shift runs off the calendar). The shifted world then has exactly one
+    effective announcement per row, derived from the same precedence rule as
+    the original.
+
+    Written back in the store's own YYYYMMDD string form: the contract layer
+    parses these strictly and rejects any other rendering as corruption.
+    """
+    has_f = "f_ann_date" in frame.columns
+    has_a = "ann_date" in frame.columns
+    if not (has_f or has_a):
+        return frame
+
+    def _blankish(value: object) -> bool:
+        if value is None or (not isinstance(value, str) and pd.isna(value)):
+            return True
+        return isinstance(value, str) and not value.strip()
+
+    frame = frame.copy()
+    for idx in frame.index:
+        f_val = frame.at[idx, "f_ann_date"] if has_f else None
+        a_val = frame.at[idx, "ann_date"] if has_a else None
+        effective = a_val if _blankish(f_val) else f_val
+        if _blankish(effective):
+            continue  # no announcement -> stays unavailable, nothing to shift
+        moved = _shift_stamp(effective, shift_days, calendar)
+        if has_f:
+            frame.at[idx, "f_ann_date"] = moved
+        if has_a:
+            frame.at[idx, "ann_date"] = moved
+    return frame
 
 
 def _shift_stamp(
