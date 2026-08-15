@@ -78,6 +78,18 @@ class DailyRecommendationError(RuntimeError):
     Fail-closed: never return a silently empty / partial list."""
 
 
+def default_name_source() -> str:
+    """The active-stocks snapshot this deployment serves from.
+
+    Named rather than inlined into the ``default_factory`` so the CLI can
+    reach the SAME resolution instead of restating the env var and the
+    literal a second time — which it did, and which no test noticed because
+    the two copies happened to agree (codex #438 r1).
+    """
+    return os.environ.get(
+        "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet")
+
+
 @dataclass(frozen=True)
 class RecommendationConfig:
     """Inputs for one daily-recommendation run.
@@ -115,11 +127,7 @@ class RecommendationConfig:
     # via the QUANT_NAME_SOURCE env var (default = the value below, so behaviour
     # is unchanged when it is unset); read per-instance via default_factory.
     name_source_parquet: str | None = field(
-        default_factory=lambda: os.environ.get(
-            "QUANT_NAME_SOURCE",
-            "D:/qlib_data/tushare_raw/active_stocks.parquet",
-        )
-    )
+        default_factory=lambda: default_name_source())
     # ST snapshot staleness tolerance: the name source's file mtime may lag
     # the as-of date by at most this many calendar days. A stale snapshot can
     # miss a recent ST designation and leak it into the list -> fail loud.

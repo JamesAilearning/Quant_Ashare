@@ -46,6 +46,7 @@ from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
     RecommendationConfig,
     _model_meta_paths,
+    default_name_source,
     recommend,
     write_outputs,
 )
@@ -125,12 +126,13 @@ _DEFAULT_PROVIDER = os.environ.get(
 _DEFAULT_REGISTRY = os.environ.get(
     "QUANT_DELISTED_REGISTRY", "D:/qlib_data/tushare_raw/delisted_registry.parquet"
 )
-# Mirrors RecommendationConfig.name_source_parquet — the active-stocks snapshot
-# is REQUIRED for the ST filter, so the CLI must let a non-default layout point
-# at it (otherwise _validate_st_snapshot fails "file not found" with no escape).
-_DEFAULT_NAME_SOURCE = os.environ.get(
-    "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
-)
+# The active-stocks snapshot is REQUIRED for the ST filter, so the CLI must
+# let a non-default layout point at it (otherwise _validate_st_snapshot fails
+# "file not found" with no escape). READS the serving resolver rather than
+# mirroring it: this used to restate both the env var and the literal, so
+# editing RecommendationConfig.name_source_parquet moved nothing for any CLI
+# run — the fourth copy of the same class this change closes (codex #438 r1).
+_DEFAULT_NAME_SOURCE = default_name_source()
 # _model_meta_paths moved to src.inference.daily_recommend (imported
 # above): the universe-consistency guard and this CLI's fit-window
 # resolver must agree on which sidecars exist, so the two-path
