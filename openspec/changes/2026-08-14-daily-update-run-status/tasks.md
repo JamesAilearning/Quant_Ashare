@@ -35,4 +35,4 @@
       被 `src/` 内除 `data_pipeline.daily_update` 外的任何模块引用
 - [x] `openspec validate --strict`；目标测试 + `tests/logic/` +
       `tests/governance/` 全绿；`ruff check` 全绿  ← 每轮修复后重跑,
-      末次:openspec 47/47,全量快速套件 4407 passed / 30 skipped
+      末次:openspec 47/47,全量快速套件 4408 passed / 30 skipped(此计数为合并时点快照,权威以 CI 为准)
