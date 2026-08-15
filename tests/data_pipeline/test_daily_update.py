@@ -660,6 +660,40 @@ class StatusPathGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _config(tmp, status_path=Path("."))
 
+    def test_one_run_date_for_the_artifact_and_the_plan(self) -> None:
+        # codex #434 r5: the status writer stamped `run_date` from its own
+        # `date.today()` and the body froze a SECOND one, so a run crossing
+        # local midnight between the two would report one day in the artifact
+        # while planning against the next.
+        #
+        # No fake clock needed: before the fix the body was called with NO
+        # run_date at all, so "the caller passed the one it stamped" is the
+        # exact regression signal.
+        import json
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp, now=None)
+            seen: list[object] = []
+
+            def spy(config, runners=None, run_date=None):
+                seen.append(run_date)
+                return (0, None, "ok")
+
+            with patch.object(du, "_execute_daily_update", spy):
+                du.run_daily_update(cfg)
+            written = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(
+                    encoding="utf-8"))
+        self.assertEqual(1, len(seen))
+        self.assertIsNotNone(
+            seen[0], "run_date 必须由调用方传入,不得让执行体自己再算一次")
+        self.assertEqual(
+            str(seen[0]), written["run_date"],
+            "工件里的 run_date 必须与执行体所用的是同一个")
+
     def test_status_path_aliasing_a_single_flight_lock_rejected(self) -> None:
         # codex #434 r3 (P1): the locks are SIBLINGS of the resources, so the
         # tree checks cannot see them. Replacing one is worse than clobbering

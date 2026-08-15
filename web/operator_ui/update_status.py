@@ -88,7 +88,17 @@ def status_path_for_provider(provider_dir: Path) -> Path:
     the research bundle would have displayed the production provider's last
     run as its own (codex #434 r4). Pinned against the writer's derivation by
     tests/logic/test_update_status_reader.py."""
-    return provider_dir.with_name(f"{provider_dir.name}.{STATUS_FILENAME}")
+    resolved = provider_dir.resolve()
+    if not resolved.name:
+        # A valid relative spelling like "." resolves to a named directory;
+        # only a filesystem ROOT stays nameless, and it has no sibling to
+        # derive. Raised (not returned) so the page can say so instead of
+        # rendering a traceback (codex #434 r5).
+        raise ValueError(
+            f"无法从 provider 路径 {provider_dir!r} 推导状态工件位置:"
+            f"它解析为文件系统根 {resolved!r},没有可派生的兄弟名"
+        )
+    return resolved.with_name(f"{resolved.name}.{STATUS_FILENAME}")
 
 
 def read_update_status(path: Path) -> UpdateRunStatus:

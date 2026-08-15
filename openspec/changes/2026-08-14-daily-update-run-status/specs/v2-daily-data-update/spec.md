@@ -5,7 +5,9 @@
 ### Requirement: 每次运行 SHALL 落盘一份机器可读的终态状态工件
 
 `run_daily_update` SHALL persist a run-status JSON artifact at
-`<provider_dir>.parent/daily_update_status.json` (overridable via the CLI
+`<provider_dir>.<name>.daily_update_status.json` — a SIBLING of the provider
+dir (so it survives the atomic swap) and NAME-DERIVED (so sibling bundles do
+not share one record) — (overridable via the CLI
 `--status-path`): written with `state: "running"` at run start, and rewritten
 with `state: "finished"`, the run's `exit_code`, the failing stage key
 (`failed_stage`, `null` on success) and a human-readable `detail` at every

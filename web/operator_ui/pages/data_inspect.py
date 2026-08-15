@@ -70,8 +70,17 @@ provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
 # error; a corrupt record is shown loud, never defaulted.
 # ---------------------------------------------------------------------------
 st.subheader("上次数据更新")
-_update_status = read_update_status(status_path_for_provider(provider_dir))
-if _update_status.kind == "missing":
+try:
+    _status_file = status_path_for_provider(provider_dir)
+except ValueError as _exc:
+    # A filesystem-root provider has no sibling to derive the artifact from.
+    # Say so; a traceback here would take the whole page down (codex #434 r5).
+    st.error(f"⚠ {_exc}")
+    _status_file = None
+_update_status = read_update_status(_status_file) if _status_file else None
+if _update_status is None:
+    pass
+elif _update_status.kind == "missing":
     st.info(
         "从未记录数据更新运行（状态文件不存在）。新机或首跑前属正常；"
         "若计划任务已在运行，请确认其写权限。"

@@ -85,11 +85,30 @@ class PathDerivationTests(unittest.TestCase):
         # Sibling (survives the swap) AND name-derived (unique per provider);
         # the original `<parent>/<FILENAME>` collided for sibling bundles
         # (codex #434 r4).
+        # Asserted as a RELATIONSHIP, not a literal: the derivation resolves
+        # the provider first (so a relative spelling like "." works), and a
+        # hardcoded "/data/..." expectation is host-dependent — on Windows
+        # `Path("/data/x").resolve()` acquires the current drive.
         provider = Path("/data/my_cn_data_pit")
-        self.assertEqual(
-            status_path_for_provider(provider),
-            Path("/data/my_cn_data_pit.daily_update_status.json"),
-        )
+        got = status_path_for_provider(provider)
+        resolved = provider.resolve()
+        self.assertEqual(resolved.parent, got.parent)          # sibling
+        self.assertEqual(f"{resolved.name}.{STATUS_FILENAME}", got.name)
+
+    def test_a_relative_provider_spelling_derives_a_real_path(self) -> None:
+        # codex #434 r5: `Path(".").name` is empty and `with_name` raises, so
+        # a valid relative provider URI took the page down with a traceback.
+        got = status_path_for_provider(Path("."))
+        self.assertTrue(got.is_absolute())
+        self.assertTrue(got.name.endswith(STATUS_FILENAME))
+
+    def test_a_filesystem_root_provider_is_refused_clearly(self) -> None:
+        # A root has no sibling to derive from; refuse with a message rather
+        # than let `with_name` raise an opaque ValueError deep in the page.
+        import os
+        root = Path(os.path.abspath(os.sep))
+        with self.assertRaises(ValueError):
+            status_path_for_provider(root)
 
 
 class ReadUpdateStatusTests(unittest.TestCase):

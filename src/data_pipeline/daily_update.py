@@ -113,6 +113,24 @@ class DailyUpdateError(RuntimeError):
     """Configuration / orchestration failure (fail-loud)."""
 
 
+def _status_path_from(provider_dir: Path) -> Path:
+    """``<provider>.<FILENAME>``, tolerating relative spellings.
+
+    ``resolve()`` first: a perfectly valid relative provider such as ``.``
+    has an empty ``name``, and ``with_name`` raises ValueError on it — which
+    would surface as a traceback rather than a message (codex #434 r5). A
+    filesystem ROOT stays nameless even after resolving; there is no
+    ``<root>.<name>`` sibling to write, so that is refused explicitly.
+    """
+    resolved = provider_dir.resolve()
+    if not resolved.name:
+        raise ValueError(
+            f"无法从 provider 路径 {provider_dir!r} 推导状态工件位置:"
+            f"它解析为文件系统根 {resolved!r},没有可派生的兄弟名"
+        )
+    return resolved.with_name(f"{resolved.name}.{STATUS_FILENAME}")
+
+
 def default_status_path(provider_dir: Path) -> Path:
     """The run-status artifact's default location: ``<provider>.<FILENAME>``.
 
@@ -124,7 +142,7 @@ def default_status_path(provider_dir: Path) -> Path:
     ``D:/qlib_data/daily_update_status.json``), so inspecting the research
     bundle would have shown the PRODUCTION run's status as if it were its own
     (codex #434 r4). Same convention as ``single_flight.lock_path_for``."""
-    return provider_dir.with_name(f"{provider_dir.name}.{STATUS_FILENAME}")
+    return _status_path_from(provider_dir)
 
 
 def _write_status(path: Path, payload: Mapping[str, object]) -> None:
@@ -478,6 +496,8 @@ def run_daily_update(
     if config.dry_run:
         return _execute_daily_update(config, runners)[0]
     status_path = config.status_path or default_status_path(config.provider_dir)
+    # ONE date for the whole run — stamped here and threaded into the body, so
+    # the artifact and the fetch plan can never name different days.
     run_date = config.now if config.now is not None else date.today()
     started_at = datetime.now(tz=_CN_TZ)
     base = {
@@ -486,7 +506,8 @@ def run_daily_update(
         "started_at": started_at.isoformat(),
     }
     _record_status(status_path, {**base, "state": "running"})
-    exit_code, failed_stage, detail = _execute_daily_update(config, runners)
+    exit_code, failed_stage, detail = _execute_daily_update(
+        config, runners, run_date=run_date)
     _record_status(status_path, {
         **base,
         "state": "finished",
@@ -501,6 +522,7 @@ def run_daily_update(
 def _execute_daily_update(
     config: DailyUpdateConfig,
     runners: Mapping[str, Runner] | None = None,
+    run_date: date | None = None,
 ) -> tuple[int, str | None, str]:
     """The orchestration body; returns ``(exit_code, failed_stage, detail)``.
 
@@ -516,7 +538,14 @@ def _execute_daily_update(
     # Freeze the ONE run date up front (codex P2): the fetch stamp, the default
     # end_date, and the snapshot verification all use THIS value, so an
     # hours-long fetch crossing midnight cannot fail its own snapshot check.
-    run_date = config.now if config.now is not None else date.today()
+    #
+    # ACCEPTED from the caller when it already froze one (codex #434 r5): the
+    # status writer stamps `run_date` before calling in, and a second
+    # `date.today()` here would let a run that crosses local midnight report
+    # one date in the artifact while planning against the next — the
+    # operator-visible record would name a different day than the run used.
+    if run_date is None:
+        run_date = config.now if config.now is not None else date.today()
     plan = build_plan(config, run_date=run_date)
 
     if config.dry_run:
