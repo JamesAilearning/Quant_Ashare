@@ -49,9 +49,9 @@
    「上次数据更新」小节（位于完整性戳之前）：运行中/成功/失败三态 +
    退出码 + 失败阶段 + 起止时间。文件缺失 → 「从未记录」info 态（新机
    器/首跑前）；形状违约 → 醒目 error（与本页既有 fail-loud 风格一致）。
-   页面源码不出现 `daily_update` / `bundle_swap` 字样（
-   `tests/governance/test_data_inspect_readonly.py` 的禁令），名字只活在
-   helper 里。
+   页面**不 import、不调用** `daily_update` / `bundle_swap`（治理扫描查
+   import 行与进程派生原语；散文提名是允许的——操作人需要被告知 bundle
+   由谁产出）。
 
 ## Non-goals
 

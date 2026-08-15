@@ -152,6 +152,52 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         for name in ("daily_update", "bundle_swap"):
             for ln in import_lines:
                 self.assertNotIn(name, ln)
+        # The INVOKE half (codex #434 r12): an import-line scan alone lets
+        # `import subprocess` + `subprocess.run([... "scripts/daily_update.py"])`
+        # through. The page needs no process-spawning primitive at all (its
+        # PIT-validation subprocess lives in pit_validation_runner), so ban
+        # the mechanism, not the target string — prose like "in a SUBPROCESS."
+        # stays legal because the patterns require a call shape.
+        # Alias escape (found by this test's own reverse validation, not by
+        # review): `import subprocess as _sp` + `_sp.run(...)` matches none
+        # of the attribute patterns. The IMPORT of a spawning module is what
+        # aliasing cannot hide, so ban that on import lines and keep the
+        # call-shape patterns for the os.* primitives (importing os is
+        # legitimate).
+        # `os` is on the list because EVERY spawning path starts with an
+        # import, and aliasing (`import os as _o` -> `_o.system(...)`) hides
+        # the call shape from any attribute pattern — this page needs no
+        # `os` at all (it is pathlib-only today; if that ever changes, the
+        # exemption must be argued here, not assumed).
+        for ln in import_lines:
+            for mod in ("subprocess", "runpy", "multiprocessing", "os"):
+                self.assertNotIn(
+                    f"import {mod}", ln,
+                    f"检视页 import 了可派生进程的模块 {mod!r}:{ln.strip()!r}")
+                self.assertNotIn(
+                    f"from {mod}", ln,
+                    f"检视页从 {mod!r} 导入:{ln.strip()!r}")
+        for pattern, label in (
+            (r"subprocess\.\w", "subprocess.<attr>"),
+            (r"\bPopen\b", "Popen"),
+            (r"os\.system\s*\(", "os.system("),
+            (r"os\.exec\w*\s*\(", "os.exec*("),
+            (r"os\.spawn\w*\s*\(", "os.spawn*("),
+            (r"\brunpy\b", "runpy"),
+        ):
+            with self.subTest(primitive=label):
+                self.assertIsNone(
+                    re.search(pattern, page),
+                    f"检视页出现进程派生原语 {label} —— 只读页面无法证明它"
+                    f"没在调用编排器")
+        # proposal/tasks must not resurrect the unenforceable naming claim —
+        # r11 fixed only the delta spec and both still carried it (r12).
+        for doc in ("proposal.md", "tasks.md"):
+            text = (_CHANGE / doc).read_text(encoding="utf-8")
+            with self.subTest(doc=doc):
+                self.assertNotIn("不出现 `daily_update`", text)
+                self.assertNotIn("字样", text.split("Non-goals")[0]
+                                 if doc == "proposal.md" else text)
 
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must

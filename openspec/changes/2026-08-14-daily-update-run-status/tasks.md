@@ -22,8 +22,8 @@
       截断/未知版本记录一律 corrupt，绝不渲染成绿色成功
 - [x] codex P2 第二轮：finished 记录必备 `failed_stage`/`detail` 键并
       类型校验，且强制 exit_code ⇔ failed_stage 成功/失败不变式
-- [x] 数据检视页「上次数据更新」小节（完整性戳之前；只读；源码不出现
-      `daily_update` / `bundle_swap` 字样）
+- [x] 数据检视页「上次数据更新」小节（完整性戳之前；只读；不 import、
+      不调用 `daily_update` / `bundle_swap`——散文提名允许，r11 对齐）
 
 ## 测试与验证
 - [x] `tests/data_pipeline/test_daily_update.py`：状态工件用例 ×5
