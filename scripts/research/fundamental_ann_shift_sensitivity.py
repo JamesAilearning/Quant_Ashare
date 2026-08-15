@@ -341,6 +341,11 @@ def write_shifted_store(
     return out_dir
 
 
+# Explicit row-identity column threaded through the contract chain — see
+# `_disclosure_of_record_rows` for why the frame index cannot be trusted.
+_ORIG_ROW = "_shift_diag_orig_row"
+
+
 def _normalized_calendar(calendar: Sequence[date]) -> list[date]:
     """One sorted, deduplicated calendar for EVERY consumer in this module.
 
@@ -366,10 +371,27 @@ def _disclosure_of_record_rows(
 
     if raw.empty:
         return raw
+    # Identity travels in an EXPLICIT column, never via the frame index: both
+    # `resolve_current_versions()` and `select_disclosure_of_record()` call
+    # `reset_index(drop=True)`, so `record.index` is just 0..N-1. Selecting
+    # `raw.loc[record.index]` happens to work when the surviving rows are the
+    # first N physical rows — and silently picks the WRONG raw rows the moment
+    # a later re-announcement physically precedes the earliest disclosure in
+    # the parquet (codex #433 r13: the earlier "verification" was exactly that
+    # coincidence on a two-row frame).
+    tagged = raw.reset_index(drop=True).copy()
+    tagged[_ORIG_ROW] = range(len(tagged))
     record = select_disclosure_of_record(
         resolve_current_versions(
-            build_contract_frame(raw, StaticTradingCalendar(list(calendar)))))
-    return raw.loc[sorted(record.index)].reset_index(drop=True)
+            build_contract_frame(tagged,
+                                 StaticTradingCalendar(list(calendar)))))
+    if _ORIG_ROW not in record.columns:  # pragma: no cover - contract change
+        raise ShiftDiagnosticError(
+            "the contract chain dropped the row-identity column "
+            f"{_ORIG_ROW!r} — cannot recover disclosure-of-record raw rows.")
+    keep = sorted(int(i) for i in record[_ORIG_ROW])
+    out = raw.reset_index(drop=True).loc[keep].reset_index(drop=True)
+    return out
 
 
 def _shift_announcements(

@@ -813,7 +813,9 @@ def test_shift_reduces_to_disclosure_of_record_first(tmp_path):
     r1 = _store_row("000001.SZ", "20211231", "20220331", 100.0)   # 首次披露
     r2 = _store_row("000001.SZ", "20211231", "20220401", 999.0)   # 同版本再公告
     r2["_content_hash"] = "h_later"
-    _pd.DataFrame([r1, r2]).to_parquet(inc / "000001.SZ.parquet", index=False)
+    # 物理顺序故意反着放：再公告在前、首次披露在后 —— reset 后的 0..N-1
+    # 索引若被当成原始行号，会选中错误的行（codex r13 正是这个构造）。
+    _pd.DataFrame([r2, r1]).to_parquet(inc / "000001.SZ.parquet", index=False)
 
     out = write_shifted_store(tmp_path / "store", tmp_path / "s", 2, _E2E_DAYS)
     shifted = _pd.read_parquet(out / "income" / "000001.SZ.parquet")
