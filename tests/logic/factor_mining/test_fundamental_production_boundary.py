@@ -106,15 +106,31 @@ def test_handler_passes_price_volume_entries():
     _refuse_fundamental_entries(list(_pool(_PV).all_entries()))
 
 
+def test_a_prior_only_pool_is_also_refused(tmp_path):
+    """只引用 prior 终端的幸存者同样被挡（codex #437 r3 P1）。
+
+    判据是**注册表减默认集**而非手挑的组名单：`$X__prior` 也不在 qlib 生产
+    面板里，手挑名单会漏掉它 —— 以及漏掉下一个 opt-in 组。
+    """
+    with pytest.raises(PromotionError, match="FUNDAMENTAL pool"):
+        _refuse_fundamental_pool_in_production(
+            _pool("cs_rank($total_assets__prior)"), tmp_path / "v1")
+
+
 def test_both_layers_agree_on_what_counts_as_fundamental():
-    """两层用的是同一个判据（注册表），不是各自一份名单。"""
+    """两层用的是同一个判据（注册表减默认集），不是各自一份名单。
+
+    覆盖面 = 全部非默认注册终端（财报 18 + prior 18），逐个验证两层一致。
+    """
     from src.data.mined_factor_handler import (
         MinedFactorHandlerError,
         _refuse_fundamental_entries,
     )
     from src.factor_mining.grammar import FeatureRegistry
 
-    for terminal in FeatureRegistry.FINANCIAL_STATEMENT:
+    non_default = set(FeatureRegistry.ALL_REGISTERED) - set(FeatureRegistry.V1)
+    assert len(non_default) == 36          # 18 财报 + 18 prior
+    for terminal in sorted(non_default):
         text = f"cs_rank({terminal})"
         pool = _pool(text)
         with pytest.raises(PromotionError):

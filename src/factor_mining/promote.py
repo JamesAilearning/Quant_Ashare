@@ -333,7 +333,11 @@ def _refuse_fundamental_pool_in_production(
     from .expression import feature_terminals  # noqa: PLC0415
     from .grammar import FeatureRegistry  # noqa: PLC0415
 
-    financial = set(FeatureRegistry.FINANCIAL_STATEMENT)
+    # The blocklist is REGISTRY MINUS DEFAULT, not a hand-picked group list:
+    # every registered terminal outside the default set is by definition one
+    # the qlib production panel does not carry ($X__prior included), and a
+    # hand-picked list would silently miss the next opt-in group too.
+    financial = set(FeatureRegistry.ALL_REGISTERED) - set(FeatureRegistry.V1)
     offenders: dict[str, list[str]] = {}
     for entry in survivor_pool.all_entries():
         hit = sorted(feature_terminals(entry.expr) & financial)

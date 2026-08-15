@@ -211,7 +211,9 @@ def _refuse_fundamental_entries(entries: Sequence[object]) -> None:
     from src.factor_mining.expression import feature_terminals  # noqa: PLC0415
     from src.factor_mining.grammar import FeatureRegistry  # noqa: PLC0415
 
-    financial = set(FeatureRegistry.FINANCIAL_STATEMENT)
+    # Registry minus default — same rule as the writer-side guard, so the two
+    # layers cannot disagree on what counts as fundamental ($X__prior included).
+    financial = set(FeatureRegistry.ALL_REGISTERED) - set(FeatureRegistry.V1)
     offenders = [
         e.expr.to_qlib_string() for e in entries  # type: ignore[attr-defined]
         if feature_terminals(e.expr) & financial  # type: ignore[attr-defined]
