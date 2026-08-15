@@ -15,7 +15,6 @@ here. ``web/`` may read it (that is the point); ``research/`` must not.
 
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 

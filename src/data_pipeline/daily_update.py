@@ -82,7 +82,9 @@ _CN_TZ = timezone(timedelta(hours=8))
 # update succeed, and if not, where did it die" without parsing the rolling log.
 # Observability only — never a canonical input; see the proposal's Non-goals.
 STATUS_FILENAME = "daily_update_status.json"
-_STATUS_SCHEMA_VERSION = 1
+# Public so the read-only UI reader can pin its copy against the writer's
+# (the two modules deliberately do not import each other).
+STATUS_SCHEMA_VERSION = 1
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "data_pipeline"
 
@@ -139,6 +141,17 @@ def _record_status(path: Path, payload: Mapping[str, object]) -> None:
         )
 
 
+def _norm(path: Path) -> str:
+    """Case/separator-normalized absolute form for overlap comparison:
+    ``resolve()`` defeats ``..`` and ``normcase`` matches the Windows
+    case-insensitive filesystem semantics."""
+    return os.path.normcase(str(path.resolve()))
+
+
+def _path_within(target: str, root: str) -> bool:
+    return target == root or target.startswith(root + os.sep)
+
+
 @dataclass(frozen=True)
 class DailyUpdateConfig:
     """Inputs for one daily update run. All paths explicit — no env coupling."""
@@ -161,10 +174,42 @@ class DailyUpdateConfig:
     # Run-status artifact location. None -> default_status_path(provider_dir)
     # (sibling of the provider dir, surviving the swap). Explicit override via
     # the CLI's --status-path keeps the chain's "paths explicit" discipline.
+    # Must NOT overlap any canonical input — see __post_init__ (codex P1).
     status_path: Path | None = None
     # Injectable "today" (value-injection): drives end_date's default and the
     # snapshot-freshness verification. Production leaves None -> system date.
     now: date | None = None
+
+    def __post_init__(self) -> None:
+        # codex P1: the status write is an UNCONDITIONAL atomic replace — an
+        # operator-typo'd --status-path aliasing a canonical input (the live
+        # provider tree, the raw tushare tree, the delisted registry, the
+        # reference cases) would clobber that input with status JSON before
+        # orchestration starts, inverting the guarantee that observability can
+        # never affect canonical behavior. Reject overlaps at construction:
+        # the CLI maps ValueError to the config-error exit 2 BEFORE any write,
+        # consistent with "config errors never write the artifact".
+        target = _norm(self.status_path or default_status_path(self.provider_dir))
+        for label, root in (
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
+        ):
+            if _path_within(target, _norm(root)):
+                raise ValueError(
+                    f"--status-path resolves inside {label} ({root}) — the "
+                    f"status artifact's atomic replace would clobber canonical "
+                    f"data; refusing (observability must never affect data)"
+                )
+        for label, f in (
+            ("--delisted-registry", self.delisted_registry),
+            ("--reference-cases", self.reference_cases),
+        ):
+            if target == _norm(f):
+                raise ValueError(
+                    f"--status-path aliases {label} ({f}) — the status "
+                    f"artifact's atomic replace would clobber a canonical "
+                    f"input; refusing"
+                )
 
 
 def _load_script_main(filename: str) -> Runner:
@@ -382,7 +427,7 @@ def run_daily_update(
     run_date = config.now if config.now is not None else date.today()
     started_at = datetime.now(tz=_CN_TZ)
     base = {
-        "schema_version": _STATUS_SCHEMA_VERSION,
+        "schema_version": STATUS_SCHEMA_VERSION,
         "run_date": run_date.isoformat(),
         "started_at": started_at.isoformat(),
     }

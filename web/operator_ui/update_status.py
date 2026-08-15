@@ -22,6 +22,11 @@ from typing import Any
 # test pins the two to the same value.
 STATUS_FILENAME = "daily_update_status.json"
 
+# Mirrors src/data_pipeline/daily_update.py STATUS_SCHEMA_VERSION, same
+# duplication reasoning; pinned by the same logic test. A record with any
+# OTHER version is corrupt here — never interpreted with v1 semantics.
+STATUS_SCHEMA_VERSION = 1
+
 # Exit-code → one-line Chinese meaning, mirroring the runbook table in
 # docs/runbook_daily_update_scheduling.md (the canonical exit-code reference).
 EXIT_CODE_MEANINGS: dict[int, str] = {
@@ -96,11 +101,35 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             kind="corrupt", path=path,
             error=f"顶层不是 JSON object（got {type(payload).__name__}）",
         )
+    # codex P2: validate the COMPLETE state-specific schema before believing
+    # any of it — a truncated or future-version record must read as corrupt,
+    # never as a green success. Version first: an unsupported schema_version
+    # is never interpreted with v1 semantics.
+    version = payload.get("schema_version")
+    if version != STATUS_SCHEMA_VERSION:
+        return UpdateRunStatus(
+            kind="corrupt", path=path,
+            error=f"schema_version 缺失或不受支持（got {version!r}，仅支持 "
+                  f"{STATUS_SCHEMA_VERSION}）",
+        )
     state = payload.get("state")
     if state not in ("running", "finished"):
         return UpdateRunStatus(
             kind="corrupt", path=path,
             error=f"state 缺失或非法（got {state!r}，期望 running/finished）",
+        )
+    required = ["run_date", "started_at"]
+    if state == "finished":
+        required.append("finished_at")
+    missing = [
+        k for k in required
+        if not (isinstance(payload.get(k), str) and payload.get(k))
+    ]
+    if missing:
+        return UpdateRunStatus(
+            kind="corrupt", path=path,
+            error=f"{state} 记录缺少非空字段：{', '.join(missing)}"
+                  f"（截断的记录绝不按成功/运行中渲染）",
         )
     exit_code = payload.get("exit_code")
     if state == "finished" and (

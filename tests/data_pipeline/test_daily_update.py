@@ -575,5 +575,65 @@ class StatusArtifactTests(unittest.TestCase):
             self.assertIn("no-op", st["detail"])
 
 
+class StatusPathGuardTests(unittest.TestCase):
+    """codex P1: --status-path must never alias a canonical input. The status
+    write is an UNCONDITIONAL atomic replace, so an operator-typo'd path that
+    resolves inside the provider/tushare trees or onto the registry/reference
+    files would clobber canonical data BEFORE orchestration starts — the exact
+    reverse coupling the artifact's design forbids. Rejection happens at
+    config construction (ValueError -> CLI config-error exit 2, no write)."""
+
+    def test_status_path_inside_provider_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "provider" / "status.json")
+
+    def test_status_path_equal_to_provider_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "provider")
+
+    def test_status_path_inside_tushare_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "raw" / "status.json")
+
+    def test_status_path_aliasing_delisted_registry_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=tmp / "raw" / "delisted_registry.parquet",
+                )
+
+    def test_status_path_aliasing_reference_cases_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "reference_cases.yaml")
+
+    def test_dotdot_escape_into_provider_rejected(self) -> None:
+        # The `..` spelling of the same alias must not slip past the guard.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=tmp / "elsewhere" / ".." / "provider" / "s.json",
+                )
+
+    def test_default_and_sibling_override_accepted(self) -> None:
+        # The derived default and an ordinary sibling override keep working.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertIsNone(_config(tmp).status_path)
+            cfg = _config(tmp, status_path=tmp / "custom_status.json")
+            self.assertEqual(cfg.status_path, tmp / "custom_status.json")
+
+
 if __name__ == "__main__":
     unittest.main()

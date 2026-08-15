@@ -22,8 +22,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.data_pipeline.daily_update import (  # noqa: E402
     STATUS_FILENAME as WRITER_STATUS_FILENAME,
 )
+from src.data_pipeline.daily_update import (
+    STATUS_SCHEMA_VERSION as WRITER_STATUS_SCHEMA_VERSION,
+)
 from web.operator_ui.update_status import (  # noqa: E402
     STATUS_FILENAME,
+    STATUS_SCHEMA_VERSION,
     read_update_status,
     status_path_for_provider,
 )
@@ -48,6 +52,9 @@ _FINISHED_OK = {
 class FilenamePinTests(unittest.TestCase):
     def test_reader_and_writer_agree_on_the_filename(self) -> None:
         self.assertEqual(STATUS_FILENAME, WRITER_STATUS_FILENAME)
+
+    def test_reader_and_writer_agree_on_the_schema_version(self) -> None:
+        self.assertEqual(STATUS_SCHEMA_VERSION, WRITER_STATUS_SCHEMA_VERSION)
 
 
 class PathDerivationTests(unittest.TestCase):
@@ -135,6 +142,76 @@ class ReadUpdateStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME
             _write(p, {**_FINISHED_OK, "exit_code": True})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+
+
+class StrictSchemaTests(unittest.TestCase):
+    """codex P2: the reader must validate the COMPLETE state-specific schema
+    before believing a record — a truncated write or a future schema_version
+    reads as corrupt, never as a green success under v1 semantics."""
+
+    def test_minimal_finished_record_does_not_render_green(self) -> None:
+        # codex's exact example: {"state":"finished","exit_code":0} previously
+        # rendered a green success despite missing every other field.
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {"state": "finished", "exit_code": 0})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertFalse(st.ok)
+
+    def test_unsupported_schema_version_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "schema_version": 2})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("schema_version", st.error)
+
+    def test_missing_schema_version_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = {k: v for k, v in _FINISHED_OK.items()
+                       if k != "schema_version"}
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("schema_version", st.error)
+
+    def test_finished_missing_finished_at_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = {k: v for k, v in _FINISHED_OK.items()
+                       if k != "finished_at"}
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("finished_at", st.error)
+
+    def test_finished_missing_run_date_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = {k: v for k, v in _FINISHED_OK.items()
+                       if k != "run_date"}
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("run_date", st.error)
+
+    def test_running_missing_started_at_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {"schema_version": 1, "state": "running",
+                       "run_date": "2026-08-14"})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("started_at", st.error)
+
+    def test_empty_string_field_counts_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "finished_at": ""})
             st = read_update_status(p)
             self.assertEqual(st.kind, "corrupt")
 
