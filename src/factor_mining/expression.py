@@ -368,7 +368,7 @@ def feature_terminals(expr: Expression) -> frozenset[str]:
             else frozenset()
     if isinstance(expr, OperatorCall):
         out: set[str] = set()
-        for child in expr.args:
+        for child in expr.children:
             out |= feature_terminals(child)
         return frozenset(out)
     return frozenset()

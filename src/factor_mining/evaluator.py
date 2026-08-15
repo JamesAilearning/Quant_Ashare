@@ -19,7 +19,12 @@ import pandas as pd
 
 from src.core._ic_utils import compute_ic_for_group
 
-from .expression import Expression, OperatorCall, Terminal
+from .expression import (
+    Expression,
+    OperatorCall,
+    Terminal,
+    feature_terminals,
+)
 from .grammar import REGISTRY
 
 __all__ = [
@@ -65,7 +70,73 @@ def max_abs_corr(
     return max_abs
 
 
-def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
+def align_periods_at_terminals(
+    panel: PanelLike,
+    periods: Mapping[str, pd.DataFrame],
+    expr: Expression,
+) -> PanelLike:
+    """Mask every referenced terminal where the expression's report periods
+    disagree — AT THE TERMINALS, before any operator consumes them.
+
+    The endpoints of a fundamental panel are served INDEPENDENTLY, so a ratio
+    across income and balance-sheet fields would otherwise combine different
+    quarters silently. The mask is computed from the SET of terminals this
+    expression references and applied to their frames; an expression whose
+    terminals all share a report period (the single-endpoint case) is therefore
+    never masked, and nothing else in the panel is touched.
+
+    Masking at ANY interior node is too late, in either direction:
+
+    * below a rolling parent — ``ts_mean(div_safe($revenue, $total_assets), 5)``
+      may align on trade date ``T`` while the window still averages
+      mixed-quarter ratios from earlier dates;
+    * above rolling children — ``add(ts_mean($revenue, 5), ts_mean($total_assets,
+      5))`` first combines endpoints at ``add``, by which point each child has
+      already aggregated its own misaligned history.
+
+    Terminals are the only placement that admits no such topology: no operator,
+    temporal or otherwise, can observe a misaligned date.
+
+    Note this needs no notion of "endpoint": terminals of one endpoint share a
+    report period by construction, so comparing the period frames answers the
+    same question without a second endpoint table that could drift from the
+    view's.
+    """
+    referenced = sorted(feature_terminals(expr))
+    if len(referenced) < 2:
+        return panel
+    missing = [t for t in referenced if t not in periods]
+    if missing:
+        # Refuse rather than silently skip: a terminal with no period frame
+        # cannot be proven same-period, and an unmasked mixed-quarter ratio is
+        # exactly what this exists to prevent.
+        raise KeyError(
+            f"cross-endpoint alignment needs report periods for {missing}; "
+            f"available: {sorted(periods.keys())}"
+        )
+    frames = [periods[t] for t in referenced]
+    first = frames[0]
+    disagree = None
+    for other in frames[1:]:
+        ne = first.ne(other) | (first.isna() != other.isna())
+        disagree = ne if disagree is None else (disagree | ne)
+    if disagree is None or not bool(disagree.to_numpy().any()):
+        return panel
+    masked = dict(panel)
+    for terminal in referenced:
+        frame = masked[terminal]
+        if not isinstance(frame, pd.DataFrame):  # pragma: no cover - defensive
+            continue
+        masked[terminal] = frame.mask(disagree.reindex_like(frame).fillna(True))
+    return masked
+
+
+def evaluate_expression(
+    expr: Expression,
+    panel: PanelLike,
+    *,
+    periods: Mapping[str, pd.DataFrame] | None = None,
+) -> WalkResult:
     """Recursively evaluate ``expr`` against the loaded ``panel``.
 
     Terminal nodes resolve to:
@@ -77,7 +148,21 @@ def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
     OperatorCall nodes resolve to ``REGISTRY.get(op).compute_fn(*children)``.
     The walker is single-pass and stateless; the GP engine (Phase 3)
     is the natural place to add subtree caching.
+
+    ``periods`` carries the served report period per terminal. When given, the
+    referenced terminals are masked where those periods disagree BEFORE the
+    walk starts — see :func:`align_periods_at_terminals`. Omitting it leaves
+    the walk exactly as it was, which is what every price-volume caller wants;
+    a FUNDAMENTAL caller that omits it evaluates unmasked mixed-quarter values,
+    so the fundamental entry points pass it.
     """
+    if periods is not None:
+        panel = align_periods_at_terminals(panel, periods, expr)
+    return _walk(expr, panel)
+
+
+def _walk(expr: Expression, panel: PanelLike) -> WalkResult:
+    """The stateless recursive walk (masking, if any, already applied)."""
     if isinstance(expr, Terminal):
         if expr.name.startswith("$"):
             if expr.name not in panel:
@@ -93,7 +178,7 @@ def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
         op = REGISTRY.get(expr.op_name)
         if op is None:  # pragma: no cover — guarded at construction
             raise ValueError(f"Unknown operator at evaluate time: {expr.op_name!r}")
-        args = [evaluate_expression(c, panel) for c in expr.children]
+        args = [_walk(c, panel) for c in expr.children]
         return op.compute_fn(*args)
     raise TypeError(f"Cannot evaluate node of type {type(expr).__name__}")
 
@@ -282,6 +367,7 @@ def evaluate_factor(
     method: str = "rank",
     universe_mask: pd.DataFrame | None = None,
     min_names_per_day: int = 0,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> EvaluationResult:
     """Walk ``expr``, compute its factor values, then produce the
     full metric bundle against ``forward_return``.
@@ -316,7 +402,7 @@ def evaluate_factor(
         need — see ``_coverage``. When None (synthetic / dense panels),
         coverage falls back to the all-cells fraction (legacy behaviour).
     """
-    walked = evaluate_expression(expr, panel)
+    walked = evaluate_expression(expr, panel, periods=periods)
     if not isinstance(walked, pd.DataFrame):
         raise TypeError(
             "Expression evaluation did not produce a DataFrame; "
