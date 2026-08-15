@@ -128,7 +128,7 @@
 ## W20 codex #431 r14（两 P2，均属实）
 - [x] 晨跑命令显式携带 `--bundle-max-age-days <页面预测所用阈值>`  ← C49 咬住
       （CLI 有自己独立的 argparse 默认 14,与 config 字段不同源）
-- [ ] **越界项已登记为独立任务**:让 CLI 的默认值改读 config 字段(单一事实源)
+- 越界项(非本 change 的任务,登记备查):让 CLI 的默认值改读 config 字段(单一事实源)
       —— 本 change 边界写明「不改 CLI」,故不在此处做
 - [x] 规格守卫认全部 markdown 列表标记（`-` `*` `+` 有序 `1.`/`1)` 与标题）  ← C50 咬住
 - [x] 三种列表写法入解析器钉
@@ -393,4 +393,4 @@
 - [x] 通用扫描：page_header glob / 主题禁色值 / ruff / mypy --strict  ← 全绿
 - [x] 关键守卫突变验证（每处先自检突变真落地）  ← C1..C107(C57/C58/C68 随重构作废):103 杀 + 1 已论证等价
 - [x] 全量快速套件 + openspec validate --strict  ← 见末次运行记录
-- [ ] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge
+- [x] codex 循环至 CLEAN + CI 七绿 → STOP 等操作人 merge  ← CLEAN@82b5e36 + CI 七绿;已并入 main(5a0fc16)

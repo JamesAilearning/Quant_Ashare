@@ -1083,9 +1083,14 @@ class ProposalConsistencyTests(unittest.TestCase):
     """A change whose proposal contradicts its own spec/implementation would
     archive contradictory governance history (codex #430 r2)."""
 
-    def test_proposal_does_not_claim_unset_means_single(self) -> None:
-        prop = (_ROOT / "openspec" / "changes"
-                / "2026-08-14-ui-incumbent-ensemble-identity"
-                / "proposal.md").read_text(encoding="utf-8")
-        self.assertIn("未设 ≠ 单模型", prop)
-        self.assertNotIn("单模型（未设该变量）", prop)
+    def test_the_shipped_spec_does_not_claim_unset_means_single(self) -> None:
+        # Repointed at archive time: the proposal is now frozen history that
+        # cannot regress, while THIS is the contract a future edit can
+        # contradict — and the rule made it into the shipped spec, so the
+        # guard follows it there rather than pinning a path the archive
+        # renames.
+        spec = (_ROOT / "openspec" / "specs" / "v2-daily-decision-page"
+                / "spec.md").read_text(encoding="utf-8")
+        self.assertIn("MUST NOT 推断为单模型", spec)
+        self.assertIn("MUST NOT 因变量缺席就断定生产为单模型形态", spec)
+        self.assertNotIn("单模型（未设该变量）", spec)
