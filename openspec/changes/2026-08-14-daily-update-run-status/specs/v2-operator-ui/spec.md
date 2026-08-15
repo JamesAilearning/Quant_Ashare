@@ -14,9 +14,12 @@ malformed artifact (a prominent error — never a silent default). The reader
 SHALL validate the COMPLETE state-specific schema before believing a record:
 `schema_version` must equal the supported version (an absent or unsupported
 version is never interpreted with v1 semantics), `run_date`/`started_at`
-must be non-empty on every record, and `finished_at` must be non-empty on a
-finished record — an incomplete record renders as corrupt, never as a green
-success. The section SHALL remain strictly read-only, and the page source
+must be non-empty on every record, and a finished record must carry a
+non-empty `finished_at` plus the `failed_stage` and `detail` keys the writer
+always emits (`failed_stage` null or a non-empty stage key, `detail` a
+string), honoring the success/failure invariant (exit_code 0 ⇔ failed_stage
+null). An incomplete or invariant-breaking record renders as corrupt, never
+as a green success. The section SHALL remain strictly read-only, and the page source
 SHALL NOT name the orchestrator or swap machinery (`daily_update` /
 `bundle_swap`) — the governance source scan keeps passing.
 
@@ -33,6 +36,8 @@ SHALL NOT name the orchestrator or swap machinery (`daily_update` /
 
 #### Scenario: 截断或未知版本的记录不渲染成成功
 - **WHEN** 状态工件是 `{"state":"finished","exit_code":0}` 这类缺字段
-  记录，或 `schema_version` 缺失/不受支持
-- **THEN** 页面显示醒目的损坏错误并指明缺失字段/版本问题——绝不把
-  截断或未来的记录按 v1 语义渲染成绿色成功
+  记录（缺 `finished_at`/`failed_stage`/`detail` 任一），或
+  `schema_version` 缺失/不受支持，或 `exit_code` 与 `failed_stage`
+  违反成功/失败不变式
+- **THEN** 页面显示醒目的损坏错误并指明缺失字段/版本/不变式问题——
+  绝不把截断或未来的记录按 v1 语义渲染成绿色成功

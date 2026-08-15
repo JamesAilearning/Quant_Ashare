@@ -65,6 +65,7 @@ from src.core.logger import get_logger
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
 from src.data_pipeline.bundle_swap import (
     BundleSwapError,
+    bak_dir,
     check_and_repair,
     new_dir,
     swap,
@@ -193,6 +194,12 @@ class DailyUpdateConfig:
         for label, root in (
             ("--provider-dir", self.provider_dir),
             ("--tushare-dir", self.tushare_dir),
+            # codex P1 round 2: the swap machinery's mandatory staging /
+            # rollback siblings are operational paths too — a status file at
+            # <provider>.new / <provider>.bak is rmtree'd by check_and_repair
+            # / swap, killing the run with exit 10/16.
+            ("<provider>.new", new_dir(self.provider_dir)),
+            ("<provider>.bak", bak_dir(self.provider_dir)),
         ):
             if _path_within(target, _norm(root)):
                 raise ValueError(
@@ -210,6 +217,15 @@ class DailyUpdateConfig:
                     f"artifact's atomic replace would clobber a canonical "
                     f"input; refusing"
                 )
+        # codex P2: a name-less path (".", a filesystem root) makes
+        # _write_status's path.with_name() raise ValueError — which
+        # _record_status does not catch (OSError only), so the mistake would
+        # abort the run instead of surfacing as a config error. Reject here.
+        if self.status_path is not None and not self.status_path.name:
+            raise ValueError(
+                f"--status-path {self.status_path!r} has no file name — the "
+                f"status artifact must be a file path, not a directory/root"
+            )
 
 
 def _load_script_main(filename: str) -> Runner:

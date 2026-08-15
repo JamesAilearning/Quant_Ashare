@@ -626,6 +626,39 @@ class StatusPathGuardTests(unittest.TestCase):
                     status_path=tmp / "elsewhere" / ".." / "provider" / "s.json",
                 )
 
+    def test_status_path_aliasing_provider_new_rejected(self) -> None:
+        # codex P1 round 2: <provider>.new is the swap's mandatory staging
+        # dir — a status file there is rmtree'd by check_and_repair/swap,
+        # killing the run with exit 10/16.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=new_dir(tmp / "provider"))
+
+    def test_status_path_aliasing_provider_bak_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=bak_dir(tmp / "provider"))
+
+    def test_status_path_inside_provider_new_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=new_dir(tmp / "provider") / "status.json",
+                )
+
+    def test_nameless_status_path_rejected(self) -> None:
+        # codex P2: "." (or a filesystem root) has no file name — the atomic
+        # write's with_name() would raise ValueError, which _record_status
+        # does not catch; reject at config construction instead.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=Path("."))
+
     def test_default_and_sibling_override_accepted(self) -> None:
         # The derived default and an ordinary sibling override keep working.
         with tempfile.TemporaryDirectory() as t:

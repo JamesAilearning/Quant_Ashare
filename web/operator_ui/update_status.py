@@ -139,6 +139,45 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             kind="corrupt", path=path,
             error=f"finished 记录的 exit_code 不是 int（got {exit_code!r}）",
         )
+    if state == "finished":
+        # codex P2 round 2: the writer ALWAYS emits failed_stage (null on
+        # success) and detail — a truncated record that still carries the
+        # timestamp fields must not slip through as a green success. Require
+        # both keys, type-check them, and enforce the success/failure
+        # invariant between exit_code and failed_stage.
+        absent = [k for k in ("failed_stage", "detail") if k not in payload]
+        if absent:
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"finished 记录缺少字段：{', '.join(absent)}"
+                      f"（写侧恒定产出，缺即截断）",
+            )
+        failed_stage = payload["failed_stage"]
+        if failed_stage is not None and not (
+            isinstance(failed_stage, str) and failed_stage
+        ):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"failed_stage 非法（got {failed_stage!r}，期望 null 或"
+                      f"非空阶段键）",
+            )
+        if not isinstance(payload["detail"], str):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"detail 不是 str（got {type(payload['detail']).__name__}）",
+            )
+        if exit_code == 0 and failed_stage is not None:
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"exit_code=0 却带 failed_stage={failed_stage!r}——"
+                      f"成功/失败不变式被破坏",
+            )
+        if exit_code != 0 and failed_stage is None:
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"exit_code={exit_code} 却缺 failed_stage——失败记录"
+                      f"必须命名失败阶段",
+            )
     return UpdateRunStatus(
         kind=state,
         path=path,

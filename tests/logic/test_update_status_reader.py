@@ -98,9 +98,12 @@ class ReadUpdateStatusTests(unittest.TestCase):
             self.assertIn("校验", st.exit_meaning)
 
     def test_unknown_exit_code_says_so(self) -> None:
+        # A future exit code the reader has no meaning string for still
+        # renders (loudly labeled unknown) — provided the record is otherwise
+        # schema-complete (failed_stage required on any non-zero exit).
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME
-            _write(p, {**_FINISHED_OK, "exit_code": 99})
+            _write(p, {**_FINISHED_OK, "exit_code": 99, "failed_stage": "fetch"})
             st = read_update_status(p)
             self.assertEqual(st.exit_meaning, "未知退出码")
 
@@ -214,6 +217,62 @@ class StrictSchemaTests(unittest.TestCase):
             _write(p, {**_FINISHED_OK, "finished_at": ""})
             st = read_update_status(p)
             self.assertEqual(st.kind, "corrupt")
+
+
+class FinishedFieldCompletenessTests(unittest.TestCase):
+    """codex P2 round 2: the writer ALWAYS emits failed_stage (null on
+    success) and detail — a truncated record missing either key, or one
+    breaking the exit_code/failed_stage invariant, is corrupt, never green."""
+
+    def test_finished_missing_failed_stage_key_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = {k: v for k, v in _FINISHED_OK.items()
+                       if k != "failed_stage"}
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("failed_stage", st.error)
+
+    def test_finished_missing_detail_key_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = {k: v for k, v in _FINISHED_OK.items() if k != "detail"}
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("detail", st.error)
+
+    def test_success_with_failed_stage_breaks_the_invariant(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "exit_code": 0, "failed_stage": "fetch"})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("不变式", st.error)
+
+    def test_failure_without_failed_stage_breaks_the_invariant(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "exit_code": 15, "failed_stage": None})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("failed_stage", st.error)
+
+    def test_failed_stage_wrong_type_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "exit_code": 15, "failed_stage": 15})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+
+    def test_detail_wrong_type_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**_FINISHED_OK, "detail": 15})
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("detail", st.error)
 
 
 if __name__ == "__main__":

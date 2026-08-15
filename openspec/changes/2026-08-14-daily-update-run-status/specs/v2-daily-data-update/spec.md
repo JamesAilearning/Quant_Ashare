@@ -19,10 +19,14 @@ SHALL be logged as an error and SHALL NOT change the run's exit code — the
 artifact is observability, never a canonical input, and no module outside
 `src/data_pipeline/daily_update.py` SHALL consume it inside `src/`. Because
 the write is an unconditional atomic replace, an explicit `--status-path`
-that resolves inside the provider dir or the tushare dir, or that aliases
+that resolves inside the provider dir, the tushare dir, or the swap
+machinery's `<provider>.new` / `<provider>.bak` siblings, or that aliases
 the delisted registry or the reference cases, SHALL be rejected as a config
 error (exit 2) at config construction — before any write — so a mistyped
-observability path can never clobber a canonical input.
+observability path can never clobber a canonical input or an operational
+swap path. A name-less `--status-path` (`.`, a filesystem root) SHALL
+likewise be rejected at config construction, since the atomic write's
+temp-rename requires a file name.
 
 #### Scenario: 成功运行留下 finished/0 记录
 - **WHEN** 一次完整运行全部阶段通过并完成 swap
@@ -48,8 +52,10 @@ observability path can never clobber a canonical input.
   改变数据更新的成败
 
 #### Scenario: 状态路径覆盖 canonical 输入被拒绝
-- **WHEN** `--status-path` 解析后落在 provider 目录或 tushare 原始数据
-  目录之内，或与 delisted registry / reference cases 是同一路径
+- **WHEN** `--status-path` 解析后落在 provider 目录、tushare 原始数据
+  目录、`<provider>.new` / `<provider>.bak` 交换暂存/回滚目录之内，
+  或与 delisted registry / reference cases 是同一路径，或根本没有
+  文件名（`.`、文件系统根）
 - **THEN** 配置构造即以 ValueError 拒绝（CLI 映射为配置错误 exit 2），
   任何状态写入都不会发生——打错的可观测性路径绝不能毁掉 canonical
-  数据
+  数据或交换机械的操作路径
