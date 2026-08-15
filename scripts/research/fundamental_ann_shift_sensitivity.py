@@ -207,20 +207,27 @@ def adjudicate(
     ``served_*`` map ``(endpoint, instrument, trade_date)`` -> the report period
     the panel served there, taken from the panel's own ``periods`` frames.
 
-    A move whose key is ABSENT from the served maps is skipped, not failed: the
-    source scan may legitimately cover instruments the panel was not asked to
-    build (see ``run_diagnostic``, which restricts the scan, and the financial
-    exclusion, which drops issuers inside the view). Failing on absence would
-    refuse a correct bridge for not building what it was never asked to build.
+    A move whose key is ABSENT from both served maps is a VIOLATION, not a
+    skip. The source scan is already restricted to the requested, non-financial
+    universe (see ``run_diagnostic``), so every expectation it produces SHOULD
+    have a panel entry; absence therefore means the builder did not supply the
+    required period provenance. Skipping such keys would hand an
+    announcement-blind builder a trivial escape — emit no ``periods`` at all,
+    have every expectation discarded, and collect an INCONCLUSIVE.
     """
     if not moves:
         return ShiftVerdict(INCONCLUSIVE, (), ())
     violations: list[str] = []
     adjudicated: list[WinnerMove] = []
     for mv in moves:
-        if mv.key not in served_base and mv.key not in served_shifted:
-            continue
         adjudicated.append(mv)
+        if mv.key not in served_base and mv.key not in served_shifted:
+            violations.append(
+                f"{mv.endpoint}/{mv.instrument} @ {mv.trade_date}: the panel "
+                "reported NO served report period — required provenance is "
+                "missing for a key the source scan proved relevant. Refusing "
+                "rather than discarding the expectation.")
+            continue
         got_base = served_base.get(mv.key)
         got_shift = served_shifted.get(mv.key)
         where = f"{mv.endpoint}/{mv.instrument} @ {mv.trade_date}"
@@ -234,8 +241,6 @@ def adjudicate(
                 f"{mv.shifted_period!r}"
                 + ("  <-- 被服务的记录没换人：公告日未被消费"
                    if got_shift == got_base else ""))
-    if not adjudicated:
-        return ShiftVerdict(INCONCLUSIVE, (), ())
     return ShiftVerdict(REFUSE if violations else OK, tuple(adjudicated),
                         tuple(violations))
 

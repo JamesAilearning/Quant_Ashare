@@ -413,3 +413,65 @@ def test_qlib_form_instruments_are_matched_against_the_store(
         financial_issuers=frozenset(), shift_days=2, workdir=tmp_path / "w3")
     assert verdict.moves != ()          # 匹配上了，不是静默空扫
     assert verdict.verdict == OK, verdict.render()
+
+
+# --- 缺 provenance 必须判负，不得靠 INCONCLUSIVE 脱身（codex #433 r3 P1）----
+
+def _panel_without_periods(view, fields, trade_dates, instruments, **kw):
+    """一个不输出 report period 的构建器。
+
+    源侧扫描已限定在被请求的非金融宇宙，所以它产出的每个 key **都应该**在面板
+    里有条目。若"缺 key 就跳过"，这个构建器会让全部期望被丢弃、拿到
+    INCONCLUSIVE —— 不输出 provenance 反而成了逃生路。
+    """
+    from src.data.pit._common import to_qlib_ticker
+
+    insts = [to_qlib_ticker(i) if "." in i else i for i in instruments]
+    idx = _pd.DatetimeIndex(sorted(trade_dates))
+    empty = _pd.DataFrame(index=idx, columns=insts, dtype="object")
+    key = "$" + fields[0]
+    return FundamentalPanel({key: empty.copy()}, {key: empty.copy()},
+                            {key: empty.copy()}, {}, {}, {})
+
+
+def _panel_with_no_periods_at_all(view, fields, trade_dates, instruments, **kw):
+    """更彻底的一种：periods 映射整个为空 —— 连 key 都不存在。"""
+    from src.data.pit._common import to_qlib_ticker
+
+    insts = [to_qlib_ticker(i) if "." in i else i for i in instruments]
+    idx = _pd.DatetimeIndex(sorted(trade_dates))
+    empty = _pd.DataFrame(index=idx, columns=insts, dtype="object")
+    key = "$" + fields[0]
+    return FundamentalPanel({key: empty.copy()}, {key: empty.copy()},
+                            {}, {}, {}, {})
+
+
+def test_all_na_periods_are_refused(e2e_store, tmp_path):
+    """periods 帧在、但全 NA：key 存在而值为 None —— 走常规比对，照样 REFUSE。"""
+    verdict = _run(e2e_store, tmp_path, build_panel=_panel_without_periods)
+    assert verdict.verdict == REFUSE, verdict.render()
+    assert verdict.violations != ()
+
+
+def test_a_builder_that_omits_periods_is_refused_not_inconclusive(
+        e2e_store, tmp_path):
+    """periods 整个不给 —— key 不存在。**不得**因此把期望丢掉判 INCONCLUSIVE。
+
+    源侧已限定在被请求的非金融宇宙，所以每个期望都该有面板条目；缺失是
+    「必需的 provenance 没给」，不是「合法的未请求」。跳过它等于给盲目
+    构建器一条逃生路：不输出 periods 就能免于裁决（codex #433 r3 P1）。
+    """
+    verdict = _run(e2e_store, tmp_path,
+                   build_panel=_panel_with_no_periods_at_all)
+    assert verdict.verdict == REFUSE, verdict.render()
+    assert verdict.verdict != INCONCLUSIVE
+    assert any("NO served report period" in v for v in verdict.violations)
+
+
+def test_missing_provenance_is_reported_per_key():
+    """缺失是逐 key 报告的，不是一句笼统的失败。"""
+    moves = _moves()
+    verdict = adjudicate(moves, {}, {})
+    assert verdict.verdict == REFUSE
+    assert len(verdict.violations) == len(moves)
+    assert len(verdict.moves) == len(moves)     # 期望没有被丢弃
