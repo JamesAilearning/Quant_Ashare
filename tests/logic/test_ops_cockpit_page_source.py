@@ -24,6 +24,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 _PAGE = _ROOT / "web" / "operator_ui" / "pages" / "ops_cockpit.py"
 _HELPERS = _ROOT / "web" / "operator_ui" / "pages" / "_ops_cockpit_helpers.py"
+_SHIPPED_SPEC = (_ROOT / "openspec" / "specs" / "v2-ops-cockpit-page"
+                 / "spec.md")
 _RECERT = _ROOT / "web" / "operator_ui" / "recert_health.py"
 _APP = _ROOT / "web" / "operator_ui" / "app.py"
 _DAILY_HELPERS = (
@@ -255,9 +257,7 @@ class ResolvedCommandTests(unittest.TestCase):
         # "cmd too" without testing it. cmd.exe does NOT treat single quotes
         # as argument delimiters — the same space-bearing path splits. The
         # scope must say what was verified, no more.
-        spec = (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit"
-                / "specs" / "v2-ops-cockpit-page"
-                / "spec.md").read_text(encoding="utf-8")
+        spec = _SHIPPED_SPEC.read_text(encoding="utf-8")
         self.assertIn("PowerShell 与 POSIX shell", spec)
         self.assertIn("MUST NOT 声称支持 `cmd.exe`", spec)
         for text in (spec, _HELPERS.read_text(encoding="utf-8")):
@@ -2183,7 +2183,13 @@ class SpecSelfConsistencyTests(unittest.TestCase):
     A machine guard for a rule that was already mine to apply by hand every
     round (re-read the spec after editing it) and that I missed."""
 
-    _CHANGE = (_ROOT / "openspec" / "changes" / "2026-08-14-ui-ops-cockpit")
+    # The LIVING contract. Before this change shipped the guard scanned
+    # the change folder (proposal + tasks + spec together, r17);
+    # archived, those are frozen history that can no longer regress,
+    # while the canonical spec is the one a future edit can contradict.
+    # Watching the frozen copy would pin a path archiving renames — and
+    # guard nothing.
+    _WATCHED = (_SHIPPED_SPEC,)
 
     # Every way this change's artifacts refer to the bundle's last trading
     # day, and every way they name the source that was REJECTED for it.
@@ -2209,8 +2215,7 @@ class SpecSelfConsistencyTests(unittest.TestCase):
         # rejected tail source — archived, that sends a later maintainer
         # back to it (codex #431 r17). One guard over all of them.
         return "\n\n".join(
-            path.read_text(encoding="utf-8")
-            for path in sorted(self._CHANGE.rglob("*.md")))
+            path.read_text(encoding="utf-8") for path in self._WATCHED)
 
     @staticmethod
     def _statements(text: str) -> list[str]:
