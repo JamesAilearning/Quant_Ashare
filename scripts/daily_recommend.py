@@ -259,7 +259,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "pinned serving-config value in ensemble mode (an "
              "explicit value must EQUAL it).")
     p.add_argument("--out-dir", default=RecommendationConfig.out_dir,
-                   help="Output directory for csv/json (default output/daily_recommend).")
+                   help="Output directory for csv/json (default %(default)s).")
     p.add_argument(
         "--model", default=None,
         help="Model artifact path (single-model mode; default: the "
@@ -282,12 +282,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--st-max-age-days", type=int,
                    default=RecommendationConfig.st_snapshot_max_age_days,
                    help="Max days the ST snapshot may lag the as-of date "
-                        "before it is rejected as stale (default 7).")
+                        "before it is rejected as stale (default %(default)s).")
     p.add_argument("--bundle-max-age-days", type=int,
                    default=RecommendationConfig.bundle_max_age_days,
                    help="Max CALENDAR days the qlib bundle's last trading day "
                         "may lag today before the price/feature data is "
-                        "rejected as stale (default 14; covers A-share "
+                        "rejected as stale (default %(default)s; covers A-share "
                         "holidays). Raise it for an intentional historical run.")
     p.add_argument(
         "--instruments", default=None,

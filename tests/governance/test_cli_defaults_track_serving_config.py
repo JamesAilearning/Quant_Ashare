@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -118,14 +119,36 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
         for dest, field in pairs:
             with self.subTest(dest=dest, field=field):
                 moved = self._moved_value(self._config_defaults()[field])
+                stale = self._config_defaults()[field]
+                # Not every flag advertises its default in prose (--name-source
+                # does not, and that is fine — an absent claim cannot go
+                # stale). The rule is conditional: IF the help states a
+                # default, it must state the current one.
+                advertises = f"default {stale}" in re.sub(
+                    r"\s+", " ", parser.format_help())
                 with self._config_value_moved(field, moved):
-                    got = getattr(
-                        _cli_module()._build_arg_parser().parse_args([]),  # type: ignore[attr-defined]
-                        dest)
+                    fresh = _cli_module()._build_arg_parser()  # type: ignore[attr-defined]
+                    got = getattr(fresh.parse_args([]), dest)
+                    rendered = re.sub(r"\s+", " ", fresh.format_help())
                 self.assertEqual(
                     moved, got,
                     f"挪动 RecommendationConfig.{field} 的来源后 --"
                     f"{dest.replace('_', '-')} 没有跟随:它仍在复述字面量")
+                # …and so must the OPERATOR-FACING text. The help strings
+                # restated the same literals in prose, so `--help` kept
+                # advertising 14 after the default moved to 21 — the flag was
+                # correct and the sentence describing it was a lie
+                # (codex #438 r2). Fixed with `%(default)s`, pinned here
+                # rather than by grepping for that spelling: what matters is
+                # that the help follows, not how it is written.
+                self.assertNotIn(
+                    f"default {stale}", rendered,
+                    f"--{dest.replace('_', '-')} 的 help 仍在广告旧默认值")
+                if advertises:
+                    self.assertIn(
+                        f"default {moved}", rendered,
+                        f"--{dest.replace('_', '-')} 的 help 广告了默认值,"
+                        f"就必须广告当前那个")
 
     @contextlib.contextmanager
     def _config_value_moved(self, field: str, moved: object):
@@ -162,7 +185,10 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
             return not current
         if isinstance(current, int):
             return current + 5
-        return f"{current}__MOVED"
+        # NOT a suffix of the original: `f"{current}__MOVED"` still CONTAINS
+        # the stale value, so a "no longer advertises the old default" check
+        # would fail against help text that moved correctly.
+        return "moved/elsewhere/" + str(abs(hash(current)) % 9973)
 
     def _linked_pairs(self, parser: object) -> list[tuple[str, str]]:
         config_defaults = self._config_defaults()
