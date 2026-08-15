@@ -443,3 +443,120 @@ def test_as_of_prior_period_service(tmp_path):
     plain = v.as_of("2022-05-05", ["total_assets"], ["000001.SZ"])
     assert [c for c in plain.columns if "__prior" in c or
             c.startswith("_report_period_prior")] == []
+
+
+# public availability provenance (阶段8 基本面桥 · 桥的证据来源) ---------------
+#
+# The bridge must PROVE its panel is announcement-gated. Without a public
+# provenance response it could only re-read the store or infer dates from
+# sampled value changes — and inference is exactly what such evidence has to
+# exclude. These pin the semantics the panel spec depends on.
+
+def test_availability_evidence_comes_with_the_value(tmp_path):
+    v = _view(tmp_path)
+    got = v.as_of("2022-04-01", ["revenue"], ["000001.SZ"],
+                  include_availability=True)
+    # ONE call yields both, and the evidence is the served record's own
+    # availability day (announced 20220331 -> available the next trading day).
+    assert got.loc["000001.SZ", "revenue"] == 100.0
+    assert got.loc["000001.SZ", "_available_from__income"] == "20220401"
+
+
+def test_evidence_is_na_on_the_announcement_day_itself(tmp_path):
+    """Evidence keys on SERVED, not on ANNOUNCED (spec r24).
+
+    On the announcement day the record exists and is announced, yet
+    availability starts strictly after it, so nothing is served — the evidence
+    must be NA there too. Anything else would invent a future-dated evidence
+    cell that the bridge's own `available_from <= T` check then rejects.
+    """
+    v = _view(tmp_path)
+    on_ann = v.as_of("2022-03-31", ["revenue"], ["000001.SZ"],
+                     include_availability=True)
+    assert pd.isna(on_ann.loc["000001.SZ", "revenue"])
+    assert pd.isna(on_ann.loc["000001.SZ", "_available_from__income"])
+
+
+def test_served_record_with_na_value_still_carries_its_availability(tmp_path):
+    """The evidence records WHICH DISCLOSURE WAS SERVED, not whether the value
+    is present. 000001.SZ discloses no rd_exp, but a record IS served."""
+    v = _view(tmp_path)
+    got = v.as_of("2022-04-01", ["rd_exp"], ["000001.SZ"],
+                  include_availability=True)
+    assert pd.isna(got.loc["000001.SZ", "rd_exp"])
+    assert got.loc["000001.SZ", "_available_from__income"] == "20220401"
+
+
+def test_every_non_na_evidence_is_on_or_before_the_trade_date(tmp_path):
+    """The invariant the bridge asserts, pinned at its source."""
+    v = _view(tmp_path)
+    for day in ("2022-03-31", "2022-04-01", "2022-05-01", "2022-05-05"):
+        got = v.as_of(day, ["revenue"], ["000001.SZ", "000002.SZ", "600000.SH"],
+                      include_availability=True)
+        evidence = got["_available_from__income"].dropna()
+        assert (evidence <= day.replace("-", "")).all(), (day, list(evidence))
+
+
+def test_evidence_moves_with_the_served_period(tmp_path):
+    """Carry-forward holds the evidence; a newer available period moves it."""
+    v = _view(tmp_path)
+    held = v.as_of("2022-05-01", ["revenue"], ["000001.SZ"],
+                   include_availability=True)
+    assert held.loc["000001.SZ", "revenue"] == 100.0
+    assert held.loc["000001.SZ", "_available_from__income"] == "20220401"
+    moved = v.as_of("2022-05-05", ["revenue"], ["000001.SZ"],
+                    include_availability=True)
+    assert moved.loc["000001.SZ", "revenue"] == 30.0
+    assert moved.loc["000001.SZ", "_available_from__income"] == "20220505"
+
+
+def test_update_flag_1_only_period_carries_evidence_too(tmp_path):
+    """A period whose only rows are update_flag=1 IS its disclosure of record
+    (v2-financial-pit-contract) — it is served and it carries evidence."""
+    v = _view(tmp_path)
+    got = v.as_of("2022-05-05", ["revenue"], ["000002.SZ"],
+                  include_availability=True)
+    assert got.loc["000002.SZ", "revenue"] == 210.0
+    assert got.loc["000002.SZ", "_available_from__income"] == "20220505"
+
+
+def test_prior_period_carries_its_own_evidence(tmp_path):
+    """The prior record's evidence is ITS OWN availability, not the current
+    record's — a Delta formula must be able to prove both legs."""
+    bs = tmp_path / "balancesheet"
+    bs.mkdir(parents=True)
+
+    def _bs(ts, end, ann, **vals):
+        return {"ts_code": ts, "end_date": end, "ann_date": ann,
+                "f_ann_date": ann, "update_flag": "0",
+                "_content_hash": f"h{ts}{end}", "_fetch_batch": "b1",
+                "_source_endpoint": "balancesheet",
+                "total_assets": vals.get("total_assets", pd.NA)}
+
+    pd.DataFrame([
+        _bs("000001.SZ", "20211231", "20220331", total_assets=500.0),
+        _bs("000001.SZ", "20220331", "20220429", total_assets=520.0),
+    ]).to_parquet(bs / "000001.SZ.parquet", index=False)
+    # late prior: the Q4-2021 record is announced AFTER the query day
+    pd.DataFrame([
+        _bs("000005.SZ", "20211231", "20220601", total_assets=999.0),
+        _bs("000005.SZ", "20220331", "20220429", total_assets=310.0),
+    ]).to_parquet(bs / "000005.SZ.parquet", index=False)
+
+    v = FinancialPITDataView(tmp_path, _CAL, financial_issuers=frozenset())
+    got = v.as_of("2022-05-05", ["total_assets"], ["000001.SZ", "000005.SZ"],
+                  include_prior_period=True, include_availability=True)
+    # current leg available 20220505, prior leg available 20220401
+    assert got.loc["000001.SZ", "_available_from__balancesheet"] == "20220505"
+    assert got.loc["000001.SZ", "_available_from_prior__balancesheet"] == "20220401"
+    # prior not yet available -> its value AND its evidence are both NA
+    assert got.loc["000005.SZ", "total_assets"] == 310.0
+    assert pd.isna(got.loc["000005.SZ", "total_assets__prior"])
+    assert pd.isna(got.loc["000005.SZ", "_available_from_prior__balancesheet"])
+
+
+def test_default_call_emits_no_availability_columns(tmp_path):
+    """Opt-in only: existing consumers see a byte-identical frame."""
+    v = _view(tmp_path)
+    plain = v.as_of("2022-05-05", ["revenue"], ["000001.SZ"])
+    assert [c for c in plain.columns if c.startswith("_available_from")] == []

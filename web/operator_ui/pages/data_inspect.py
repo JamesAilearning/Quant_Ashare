@@ -2,13 +2,15 @@
 
 U3 retired the UI's tushare ingest path; this page is the promised THIN
 replacement: it only INSPECTS the production bundle — the fetch-integrity stamp
-(P3-4c), the bundle-health summary, and an on-demand run of the 06 PIT
-validator — and never builds, ingests, or mutates anything. Bundles are made by
-the pipeline (``scripts/daily_update.py`` / ``scripts/data_pipeline``), not by
-the UI.
+(P3-4c), the bundle-health summary, and an on-demand SUBPROCESS run of the 06
+PIT validator — and never builds, ingests, or mutates anything. Bundles are
+made by the pipeline (``scripts/daily_update.py`` / ``scripts/data_pipeline``),
+not by the UI.
 
 READ-ONLY is a hard contract here, enforced by a governance test: this module
-must not contain any write-side filesystem API.
+must not contain any write-side filesystem API. The validator runs in a
+subprocess (qlib is a per-process singleton), so this page never imports the
+validator or the qlib runtime — only the subprocess runner's parsed result.
 """
 
 from __future__ import annotations
@@ -17,18 +19,17 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.core.qlib_runtime import QlibRuntimeInitError
 from src.data.pit.bundle_integrity import (
     BundleIntegrityError,
     read_bundle_integrity,
 )
-from src.data.pit.pit_validator import PITValidator, PITValidatorError
 from web.operator_ui.bundle_health import (
     normalize_provider_uri,
     resolve_default_provider_uri,
     summarise_bundle_health,
 )
 from web.operator_ui.page_header import render_page_header
+from web.operator_ui.pit_validation_runner import run_pit_validation
 from web.operator_ui.update_status import (
     read_update_status,
     status_path_for_provider,
@@ -155,55 +156,59 @@ for e in health.errors:
     st.error(e)
 
 # ---------------------------------------------------------------------------
-# Section 3: thin 06 validator — on-demand, read-only.
+# Section 3: thin 06 validator — on-demand, read-only, in a SUBPROCESS.
+# qlib is a per-process singleton, so running the validator in-process would
+# hard-fail the moment this UI session had initialized qlib for another
+# provider; the subprocess runner gives every run a fresh interpreter and
+# returns the CLI's structured report (parsed dicts), which is all this page
+# renders. Nothing here touches the bundle but read-only validation.
 # ---------------------------------------------------------------------------
 st.subheader("PIT 校验(06_validate,只读)")
+st.caption(
+    "校验在独立子进程中运行(全新解释器,UI 进程不加载 qlib),因此可校验任意 "
+    "provider_uri、可重复运行,无需重启 UI。"
+)
 registry_default = str(provider_dir.parent / "tushare_raw" / "delisted_registry.parquet")
 registry_path = st.text_input(
     "delisted_registry.parquet 路径",
     value=registry_default,
     help="校验 NaN-after-delist 等检查所需的退市登记表。",
 )
-if st.button("运行校验(只读,可能需要数十秒)"):
+if st.button("运行校验(只读,子进程,可能需要数十秒)"):
     reg = Path(registry_path.strip())
     if not reg.exists():
         st.error(f"登记表不存在:{reg}")
     else:
-        with st.spinner("正在对生产 bundle 运行 PIT 校验 …"):
-            try:
-                report = PITValidator(provider_dir, reg).validate()
-            except PITValidatorError as exc:
-                st.error(f"校验无法运行:{exc}")
-            except QlibRuntimeInitError as exc:
-                # codex P2: qlib is a per-process singleton — once this UI
-                # process initialized it for one provider, validating a
-                # DIFFERENT provider_uri cannot re-init. Render a controlled
-                # error instead of crashing the read-only page.
-                st.error(
-                    f"qlib 已在本 UI 进程中用另一 provider 初始化,无法切换:{exc} "
-                    "重启 UI 后再校验这个 bundle。"
-                )
-            else:
-                badge = "🟢 全部通过" if report.exit_code == 0 else (
-                    "🟡 有警告" if report.exit_code == 1 else "🔴 有失败"
-                )
-                st.write(f"结果:**{badge}**(exit_code={report.exit_code})")
-                st.dataframe(
-                    [
-                        {
-                            "check": c.code, "name": c.name,
-                            "passed": "✅" if c.passed else "❌",
-                            "warnings": len(c.warnings),
-                            "errors": len(c.errors),
-                        }
-                        for c in report.checks
-                    ],
-                    width="stretch",
-                )
-                for c in report.checks:
-                    if c.errors or c.warnings:
-                        with st.expander(f"{c.code} — {c.name}"):
-                            for e in c.errors:
-                                st.error(e)
-                            for w in c.warnings:
-                                st.warning(w)
+        with st.spinner("正在子进程中对生产 bundle 运行 PIT 校验 …"):
+            result = run_pit_validation(provider_dir, reg)
+        if result.kind != "ok":
+            # timeout / launch_failed / run_failed / corrupt_report — all
+            # fail-loud, never a silent default.
+            st.error(f"校验无法运行({result.kind}):{result.error}")
+        else:
+            badge = "🟢 全部通过" if result.exit_code == 0 else (
+                "🟡 有警告" if result.exit_code == 1 else "🔴 有失败"
+            )
+            st.write(
+                f"结果:**{badge}**(exit_code={result.exit_code},"
+                f"用时 {result.elapsed_s:.0f}s)"
+            )
+            st.dataframe(
+                [
+                    {
+                        "check": c["code"], "name": c["name"],
+                        "passed": "✅" if c["passed"] else "❌",
+                        "warnings": len(c["warnings"]),
+                        "errors": len(c["errors"]),
+                    }
+                    for c in result.checks
+                ],
+                width="stretch",
+            )
+            for c in result.checks:
+                if c["errors"] or c["warnings"]:
+                    with st.expander(f"{c['code']} — {c['name']}"):
+                        for e in c["errors"]:
+                            st.error(e)
+                        for w in c["warnings"]:
+                            st.warning(w)

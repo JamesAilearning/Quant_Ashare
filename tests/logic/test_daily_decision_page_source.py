@@ -350,6 +350,66 @@ class HelpersRuntimeTests(unittest.TestCase):
             self.assertIsNone(load_promotion_meta(str(model)))
             self.assertEqual(load_trainer_sidecar_sha(str(model)), "ab" * 32)
 
+    def test_a_blank_model_path_reads_no_sidecar_and_does_not_crash(
+            self) -> None:
+        # codex #431 r24: the resolver now mirrors the CLI, which does NOT
+        # substitute the default for an empty QUANT_MODEL_PATH — so a blank
+        # path became reachable here. `Path("").with_suffix(...)` raises
+        # "empty name", which would replace this page with a traceback.
+        # These loaders are best-effort-or-None, and "no model to read a
+        # sidecar beside" is exactly None.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            load_promotion_meta,
+            load_trainer_sidecar_sha,
+            model_meta_paths,
+        )
+        for blank in ("", "   "):
+            with self.subTest(model_path=repr(blank)):
+                self.assertIsNone(load_promotion_meta(blank))
+                self.assertIsNone(load_trainer_sidecar_sha(blank))
+                # …and the path builder refuses rather than inventing a pair
+                # rooted at the working directory
+                with self.assertRaises(ValueError):
+                    model_meta_paths(blank)
+
+    def test_the_page_names_an_empty_model_path_env_as_the_cause(self) -> None:
+        # Otherwise the operator sees only "元信息缺失" with an empty
+        # backtick where the data source should be (r24) — but ONLY under a
+        # single-model incumbent: in ensemble mode the CLI refuses `--model`
+        # outright (mutually exclusive with `--ensemble-manifest`) and never
+        # reads _DEFAULT_MODEL, so an empty override changes nothing and a
+        # red banner would report an impossible failure on the deployment
+        # production actually runs (codex #431 r25).
+        page = _PAGE.read_text(encoding="utf-8")
+        self.assertIn(
+            'if _incumbent.kind == "single" and not _model_path.strip():',
+            page)
+        self.assertIn("`QUANT_MODEL_PATH` 被设为空值", page)
+        # the guard must sit AFTER the incumbent is resolved
+        self.assertLess(page.index("_incumbent = resolve_incumbent()"),
+                        page.index("`QUANT_MODEL_PATH` 被设为空值"))
+
+    def test_an_irrelevant_model_override_does_not_block_the_ensemble_command(
+            self) -> None:
+        # The same rule on the cockpit side: an empty QUANT_MODEL_PATH must
+        # not refuse a command that never carries `--model` (r25).
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+        ens = IncumbentIdentity(
+            kind="ensemble", manifest_path="M.json",
+            members=({"fit_start": "2024-01-01", "fit_end": "2026-04-01"},))
+        cmd = morning_command(
+            ens, model_path="", provider_uri="P", delisted_registry="R",
+            name_source="N", bundle_max_age_days=14)
+        self.assertNotIn("无法生成可粘贴命令", cmd.title)
+        self.assertIn("--ensemble-manifest", cmd.command)
+        self.assertNotIn("--model", cmd.command)
+        # …while the single-model deployment, where it DOES matter, refuses
+        single = morning_command(
+            IncumbentIdentity(kind="single"), model_path="", provider_uri="P",
+            delisted_registry="R", name_source="N", bundle_max_age_days=14)
+        self.assertIn("无法生成可粘贴命令", single.title)
+
     def test_picks_shape_violation_raises_not_empty(self) -> None:
         # codex P2 on #330: missing/non-list picks is a corrupt artifact —
         # it must fail loud, never masquerade as the benign empty state.
@@ -502,16 +562,32 @@ class IncumbentEnsembleIdentityTests(unittest.TestCase):
         # went back to one model" fabricates a fact — and on any box that
         # upgraded the UI without adding the variable it would BOTH show the
         # retired model AND warn against the correct ensemble lists.
+        # The documented default is a WINDOWS path, so the host's own
+        # absoluteness rule is pinned to Windows here — otherwise on the
+        # POSIX legs it reads as a foreign spelling, `resolve_incumbent`
+        # refuses it before loading (correctly, codex #431 r31) and this
+        # test would be asserting the platform rather than the rule it is
+        # about (codex #431 r31 / same class as W35).
+        import ntpath
         import os
         from unittest.mock import patch
 
-        from web.operator_ui.pages import _daily_decision_helpers as H
-
+        # Patch where the resolver LIVES (web.operator_ui.incumbent), not
+        # where 今日推荐 re-exports it from: the resolver moved to package
+        # level so 生产运维 asks the same code, and a page-local patch would
+        # no longer intercept the call it is meant to observe.
+        from web.operator_ui import incumbent as H
         with patch.dict(os.environ, {H.ENV_ENSEMBLE_MANIFEST: ""}, clear=False):
-            with patch.object(H, "load_ensemble_manifest_identity") as fake:
+            with patch.object(H, "_host_is_fully_qualified", ntpath.isabs), \
+                    patch.object(H, "load_ensemble_manifest_identity") as fake:
                 fake.return_value = H.IncumbentIdentity(kind="ensemble")
                 H.resolve_incumbent()
             fake.assert_called_once_with(H.DEFAULT_ENSEMBLE_MANIFEST)
+            # …and on a host where that spelling is NOT usable it still must
+            # not degrade to the single-model shape — the actual invariant.
+            import posixpath
+            with patch.object(H, "_host_is_fully_qualified", posixpath.isabs):
+                self.assertEqual("unresolvable", H.resolve_incumbent().kind)
 
     def test_single_model_requires_the_explicit_opt_out(self) -> None:
         import os
@@ -1007,9 +1083,14 @@ class ProposalConsistencyTests(unittest.TestCase):
     """A change whose proposal contradicts its own spec/implementation would
     archive contradictory governance history (codex #430 r2)."""
 
-    def test_proposal_does_not_claim_unset_means_single(self) -> None:
-        prop = (_ROOT / "openspec" / "changes"
-                / "2026-08-14-ui-incumbent-ensemble-identity"
-                / "proposal.md").read_text(encoding="utf-8")
-        self.assertIn("未设 ≠ 单模型", prop)
-        self.assertNotIn("单模型（未设该变量）", prop)
+    def test_the_shipped_spec_does_not_claim_unset_means_single(self) -> None:
+        # Repointed at archive time: the proposal is now frozen history that
+        # cannot regress, while THIS is the contract a future edit can
+        # contradict — and the rule made it into the shipped spec, so the
+        # guard follows it there rather than pinning a path the archive
+        # renames.
+        spec = (_ROOT / "openspec" / "specs" / "v2-daily-decision-page"
+                / "spec.md").read_text(encoding="utf-8")
+        self.assertIn("MUST NOT 推断为单模型", spec)
+        self.assertIn("MUST NOT 因变量缺席就断定生产为单模型形态", spec)
+        self.assertNotIn("单模型（未设该变量）", spec)
