@@ -522,6 +522,12 @@ def run_daily_update(
     started_at = datetime.now(tz=_CN_TZ)
     base = {
         "schema_version": STATUS_SCHEMA_VERSION,
+        # The record's IDENTITY (codex #434 r18): two independently scheduled
+        # providers may point the same explicit --status-path at one file,
+        # and their unlocked writes race through the same .tmp — the reader
+        # can only detect the mix-up if every record names the provider it
+        # describes. Normalized exactly like the guard's comparisons.
+        "provider_dir": _norm(config.provider_dir),
         "run_date": run_date.isoformat(),
         "started_at": started_at.isoformat(),
     }

@@ -36,6 +36,7 @@ from web.operator_ui.update_status import (
     RUNNING_STALE_AFTER,
     classify_running,
     read_update_status,
+    record_matches_provider,
     status_path_for_provider,
 )
 
@@ -108,6 +109,20 @@ if _status_file is None:
 _update_status = read_update_status(_status_file) if _status_file else None
 if _update_status is None:
     pass
+elif (_update_status.kind not in ("missing", "corrupt")
+        and not record_matches_provider(_update_status, provider_dir)):
+    # The record names a DIFFERENT provider: two schedules pointing one
+    # explicit --status-path at the same file race through the same .tmp,
+    # and this file holds whichever finished last. Presenting it as THIS
+    # provider's status would be the r4 mix-up through a new door
+    # (codex #434 r18).
+    st.error(
+        f"⚠ 该状态记录属于**另一个 provider**"
+        f"（记录:`{_update_status.provider_dir or '未标注'}`;"
+        f"当前:`{provider_dir}`）——多个计划任务可能把同一个 --status-path "
+        "指向了这份文件。请为每个 provider 配置各自的状态路径;"
+        "本页拒绝把别人的运行当作本 bundle 的状态展示。"
+    )
 elif _update_status.kind == "missing":
     st.info(
         "从未记录数据更新运行（状态文件不存在）。新机或首跑前属正常；"

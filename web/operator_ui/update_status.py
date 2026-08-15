@@ -13,6 +13,7 @@ input (openspec 2026-08-14-daily-update-run-status).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +61,7 @@ class UpdateRunStatus:
     kind: str
     path: Path
     state: str = ""
+    provider_dir: str = ""
     run_date: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -140,6 +142,24 @@ def classify_running(
     return RUNNING_FRESH if age <= RUNNING_STALE_AFTER else RUNNING_STALE
 
 
+def record_matches_provider(
+    status: UpdateRunStatus, provider_dir: Path,
+) -> bool:
+    """Does this record describe THIS provider?
+
+    Two independently scheduled providers can point the same explicit
+    ``--status-path`` at one file; their unlocked writes race and the file
+    holds whichever finished last. The writer stamps ``provider_dir``
+    (resolved + normcased) into every record, and the page must refuse to
+    present a record that names a different provider as if it were this
+    one's (codex #434 r18). Normalization mirrors the writer's ``_norm``;
+    the parity is pinned by tests, not by a shared import (the two modules
+    deliberately do not import each other).
+    """
+    ours = os.path.normcase(str(provider_dir.resolve()))
+    return status.provider_dir == ours
+
+
 def status_path_for_provider(provider_dir: Path) -> Path:
     """``<provider>.<FILENAME>`` — sibling of the provider dir, and unique to
     it.
@@ -210,7 +230,7 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             kind="corrupt", path=path,
             error=f"state 缺失或非法（got {state!r}，期望 running/finished）",
         )
-    required = ["run_date", "started_at"]
+    required = ["provider_dir", "run_date", "started_at"]
     if state == "finished":
         required.append("finished_at")
     missing = [
@@ -275,6 +295,7 @@ def read_update_status(path: Path) -> UpdateRunStatus:
         path=path,
         state=state,
         run_date=str(payload.get("run_date") or ""),
+        provider_dir=str(payload.get("provider_dir") or ""),
         started_at=str(payload.get("started_at") or ""),
         finished_at=str(payload.get("finished_at") or ""),
         exit_code=exit_code if state == "finished" else None,

@@ -33,6 +33,12 @@ swap path. A name-less `--status-path` (`.`, a filesystem root) SHALL
 likewise be rejected at config construction, since the atomic write's
 temp-rename requires a file name.
 
+Every record SHALL carry the normalized identity of the provider it
+describes (`provider_dir`): two independently scheduled providers may point
+the same explicit `--status-path` at one file, their unlocked writes race
+through the same staging sibling, and without an identity stamp the reader
+cannot even in principle detect the mix-up.
+
 #### Scenario: 成功运行留下 finished/0 记录
 - **WHEN** 一次完整运行全部阶段通过并完成 swap
 - **THEN** 状态工件为 `state: "finished"`、`exit_code: 0`、

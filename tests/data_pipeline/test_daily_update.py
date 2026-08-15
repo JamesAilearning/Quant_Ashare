@@ -502,6 +502,12 @@ class StatusArtifactTests(unittest.TestCase):
             self.assertTrue(st["started_at"])
             self.assertTrue(st["finished_at"])
             self.assertIn("complete", st["detail"])
+            # identity stamp (codex #434 r18): the record must name the
+            # provider it describes, normalized as the guard normalizes —
+            # without it, two schedules sharing one --status-path mix up
+            # silently and the reader cannot even in principle notice.
+            from src.data_pipeline.daily_update import _norm
+            self.assertEqual(st["provider_dir"], _norm(cfg.provider_dir))
 
     def test_running_state_visible_mid_run(self) -> None:
         # A fake fetch runner reads the artifact MID-RUN: the "running" record

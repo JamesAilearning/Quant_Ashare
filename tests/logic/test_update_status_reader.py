@@ -39,6 +39,8 @@ def _write(path: Path, payload: object) -> None:
 
 _FINISHED_OK = {
     "schema_version": 1,
+    # normalized provider identity, as the writer stamps it (codex #434 r18)
+    "provider_dir": "d:" + chr(92) + "qlib_data" + chr(92) + "my_cn_data_pit",
     "state": "finished",
     "run_date": "2026-08-14",
     "started_at": "2026-08-14T20:43:00+08:00",
@@ -156,6 +158,7 @@ class ReadUpdateStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME
             _write(p, {"schema_version": 1, "state": "running",
+                       "provider_dir": _FINISHED_OK["provider_dir"],
                        "run_date": "2026-08-14",
                        "started_at": "2026-08-14T20:43:00+08:00"})
             st = read_update_status(p)
@@ -464,6 +467,56 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
                           side_effect=FileNotFoundError()):
             st = read_update_status(target)
         self.assertEqual(st.kind, "missing")
+
+    def test_record_without_provider_identity_is_corrupt(self) -> None:
+        # codex #434 r18: two schedules can point one explicit --status-path
+        # at the same file; without an identity stamp the reader cannot even
+        # in principle detect the mix-up.
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            payload = dict(_FINISHED_OK)
+            del payload["provider_dir"]
+            _write(p, payload)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "corrupt")
+            self.assertIn("provider_dir", st.error)
+
+    def test_record_matches_provider_normalization_parity(self) -> None:
+        # The reader's normalization must equal the writer's `_norm` — pinned
+        # by comparison, since the two modules deliberately do not import
+        # each other.
+        import os
+
+        from src.data_pipeline.daily_update import _norm
+        from web.operator_ui.update_status import (
+            UpdateRunStatus,
+            record_matches_provider,
+        )
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "My_Provider"
+            provider.mkdir()
+            stamped = UpdateRunStatus(
+                kind="finished", path=Path("x"),
+                provider_dir=_norm(provider))
+            # spelled differently (case, relative hop) — still the same dir
+            self.assertTrue(record_matches_provider(
+                stamped, Path(str(provider).upper())))
+            self.assertTrue(record_matches_provider(
+                stamped, provider.parent / "." / provider.name))
+            other = UpdateRunStatus(
+                kind="finished", path=Path("x"),
+                provider_dir=_norm(Path(t) / "Other"))
+            self.assertFalse(record_matches_provider(other, provider))
+            del os
+
+    def test_the_page_refuses_a_foreign_providers_record(self) -> None:
+        page = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
+                / "pages" / "data_inspect.py").read_text(encoding="utf-8")
+        self.assertIn("record_matches_provider(_update_status, provider_dir)", page)
+        self.assertIn("属于**另一个 provider**", page)
+        # the refusal comes BEFORE any state-specific rendering
+        self.assertLess(page.index("record_matches_provider"),
+                        page.index('elif _update_status.kind == "missing"'))
 
     def test_float_schema_version_is_corrupt(self) -> None:
         # codex #434 r4: JSON `1.0` parses to a float and `1.0 == 1`, so the

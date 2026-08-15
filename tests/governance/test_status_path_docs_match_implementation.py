@@ -233,6 +233,83 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                 self.assertNotIn("字样", text.split("Non-goals")[0]
                                  if doc == "proposal.md" else text)
 
+    def test_the_pages_import_closure_cannot_reach_the_orchestrator(self) -> None:
+        """The helper door (codex #434 r18).
+
+        `from web.operator_ui.update_runner import run_update` is an allowed
+        import and a plain call — the single-page scan sees nothing, while
+        the helper spawns the updater. Helper-mediated subprocess IS an
+        established pattern here (pit_validation_runner), so the enforceable
+        rule is over the page's TRANSITIVE web.operator_ui closure:
+
+        * no module may import the orchestrator or swap machinery;
+        * no module may import a process-spawning module — except the ONE
+          audited runner, whose argv is pinned to the 06 validator below.
+
+        Import-level on purpose: cockpit helpers legitimately carry
+        `scripts/daily_update.py` inside COMMAND TEXT they print, so a
+        string-level sweep cannot distinguish printing from invoking.
+        """
+        import ast
+        base = _PROJECT_ROOT / "web" / "operator_ui"
+        # NARROWER than the page-only list above: closure helpers
+        # legitimately import `os` (env vars, path plumbing in theme /
+        # bundle_health / update_status), so `os` and `builtins` stay legal
+        # at closure level and their SPAWNING call shapes are forbidden by
+        # regex instead — command TEXT ("python scripts/…") never matches an
+        # `os.system(` call shape, so the cockpit's printed commands are
+        # unaffected.
+        spawn_banned = {"subprocess", "runpy", "multiprocessing",
+                        "asyncio", "concurrent", "pty", "posix", "nt",
+                        "_winapi", "_posixsubprocess", "importlib",
+                        "ctypes"}
+        spawn_shapes = re.compile(
+            r"os\.(?:system|exec\w*|spawn\w*|popen\w*|startfile)\s*\(|__import__\s*\(")
+        # The audited exemption: it exists to spawn ONE thing.
+        exempt_spawner = "pit_validation_runner"
+        runner_src = (base / "pit_validation_runner.py").read_text(
+            encoding="utf-8")
+        self.assertIn("06_validate_pit_data", runner_src)
+        self.assertNotIn("daily_update.py", runner_src)
+
+        seen: set[str] = set()
+        queue = ["pages.data_inspect"]
+        while queue:
+            rel = queue.pop()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            path = base / (rel.replace(".", "/") + ".py")
+            if not path.is_file():
+                continue
+            module_src = path.read_text(encoding="utf-8")
+            with self.subTest(module=rel, check="spawn call shapes"):
+                self.assertIsNone(
+                    spawn_shapes.search(module_src),
+                    f"{rel} 出现 os 派生调用形状")
+            module_ast = ast.parse(module_src)
+            for node in ast.walk(module_ast):
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                else:
+                    continue
+                for name in names:
+                    root = name.split(".")[0]
+                    with self.subTest(module=rel, imported=name):
+                        self.assertNotIn(
+                            name, ("src.data_pipeline.daily_update",
+                                   "src.data_pipeline.bundle_swap"),
+                            f"{rel} 把编排器/换库机器接进了检视页闭包")
+                        if (root in spawn_banned
+                                and rel.split(".")[-1] != exempt_spawner):
+                            self.fail(
+                                f"{rel} import 了可派生进程的模块 {name!r}"
+                                f"(检视页闭包内仅 {exempt_spawner} 获豁免)")
+                    if name.startswith("web.operator_ui."):
+                        queue.append(name[len("web.operator_ui."):])
+
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must
         # derive it — a second literal in the writer or reader is how the

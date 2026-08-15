@@ -40,7 +40,16 @@ computed at all (missing / unparseable / timezone-naive `started_at`) the
 page SHALL use distinct wording that asserts **no** age — claiming
 "已超过 N 小时" about an age nobody computed is the same defect as claiming
 the run is active. The classification SHALL be a pure, tested function of
-the read-side module, not inline page logic. The section SHALL remain strictly read-only, and the page SHALL NOT
+the read-side module, not inline page logic.
+
+The reader SHALL require the record's `provider_dir` identity and the page
+SHALL refuse to present a record naming a DIFFERENT provider as this
+bundle's status (a prominent error explaining the shared `--status-path`
+cause) — never render it as if it were this provider's. The page's
+transitive `web.operator_ui` import closure SHALL NOT import the
+orchestrator or swap machinery, and SHALL NOT import process-spawning
+modules (the single audited exemption is the PIT-validation runner, whose
+argv is pinned to the 06 validator). The section SHALL remain strictly read-only, and the page SHALL NOT
 **import or invoke** the orchestrator or swap machinery (`daily_update` /
 `bundle_swap`) — the coupling is what the governance scan forbids. Prose
 references in operator-facing text and comments (e.g. "bundles are made by
