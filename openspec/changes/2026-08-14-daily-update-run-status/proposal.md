@@ -16,7 +16,8 @@
 
 1. **`src/data_pipeline/daily_update.py`**：`run_daily_update` 在运行开始与
    每个终态（成功或任一失败退出码）各写一次状态工件
-   `<provider_dir 同级>/daily_update_status.json`（临时文件 + `os.replace`
+   `<provider_dir>.daily_update_status.json`（provider 的兄弟位、按名派生,
+   兄弟 bundle 不共用同一份；临时文件 + `os.replace`
    原子落盘）：
 
    ```json

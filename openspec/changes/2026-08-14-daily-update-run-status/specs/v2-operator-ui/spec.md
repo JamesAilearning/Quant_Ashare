@@ -7,7 +7,7 @@
 The bundle inspector page SHALL render a "上次数据更新" section (before the
 fetch-integrity stamp section) sourced from the run-status artifact derived
 from the inspected provider path
-(`<provider_dir>.<name>.daily_update_status.json` — sibling of, and unique to,
+(`<provider_dir>.daily_update_status.json` — sibling of, and unique to,
 that provider).
 The section SHALL distinguish: running (state=running), finished-ok
 (exit_code 0), finished-failed (exit_code + failed_stage prominent), missing

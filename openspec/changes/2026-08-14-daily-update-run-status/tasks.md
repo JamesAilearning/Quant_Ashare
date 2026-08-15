@@ -2,7 +2,8 @@
 
 ## 写侧（data_pipeline）
 - [x] `DailyUpdateConfig` 新增 `status_path: Path | None = None`（None → 派生
-      `provider_dir.parent / "daily_update_status.json"`）；CLI 加 `--status-path`
+      `provider_dir.with_name(provider_dir.name + ".daily_update_status.json")`）；
+      CLI 加 `--status-path`
 - [x] `run_daily_update` 开始时写 `state="running"`，每个终态写
       `state="finished"` + `exit_code` + `failed_stage` + `detail`；
       临时文件 + `os.replace` 原子落盘；`--dry-run` 不写
