@@ -154,6 +154,14 @@ class FinancialViewIsolationTests(unittest.TestCase):
         "src/data/pit/financial_pit_contract.py",    # contract layer wraps the store
         "scripts/data_pipeline/08_fetch_financials.py",   # the ingest writes the store
         "scripts/research/gate3_step_a_coverage_report.py",  # store-level coverage auditor
+        # The announcement-shift diagnostic must build the SHIFTED world at the
+        # store level — the view has no way to express "the same store with
+        # every announcement delayed by N trading days", and the diagnostic's
+        # whole point is to compare the two worlds. Its second implementation of
+        # the as-of winner rule is pinned against the view by
+        # tests/logic/research/test_shift_winner_matches_the_view.py, so it
+        # cannot drift from the rule it is auditing.
+        "scripts/research/fundamental_ann_shift_sensitivity.py",
     }
 
     def test_only_sanctioned_modules_import_lowlevel_store(self) -> None:

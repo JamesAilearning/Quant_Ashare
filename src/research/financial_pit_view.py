@@ -285,10 +285,18 @@ class FinancialPITDataView:
                         v = latest.get(f)
                         row[f] = pd.NA if (v is None or pd.isna(v)) else v
                 if include_report_periods:
-                    period = None if latest is None else latest.get("end_date")
+                    # Emitted from the PARSED report period, not the raw
+                    # ``end_date`` token: stores legitimately spell the same
+                    # quarter as ``20220331`` or ``20220331.0``, and a consumer
+                    # comparing periods ACROSS endpoints verbatim would read
+                    # that spelling difference as a quarter mismatch. The
+                    # prior-period column below is already canonical
+                    # (strftime), so this also makes the two columns agree.
+                    period = None if latest is None else latest.get(
+                        REPORT_PERIOD)
                     row[f"_report_period__{endpoint}"] = (
                         pd.NA if (period is None or pd.isna(period))
-                        else str(period)
+                        else period.strftime("%Y%m%d")
                     )
                 if include_availability:
                     # Keyed on WHICH RECORD WAS SERVED, never on whether its
