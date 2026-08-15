@@ -140,6 +140,27 @@ def align_periods_at_terminals(
             other = periods[other_name]
             ne = first.ne(other) | (first.isna() != other.isna())
             disagree = ne if disagree is None else (disagree | ne)
+
+    # Pairwise comparison can only speak about cells the period frames COVER.
+    # A date/instrument every period frame omits while the VALUE frames still
+    # carry it has no label to disagree on — the early "no disagreement" return
+    # would leave those values unmasked, and a cell with NO report-period
+    # provenance is exactly an unproven mixed-quarter candidate. So a value
+    # present where its own period frame (reindexed to the value's axes) is
+    # absent/NA counts as a violation in its own right.
+    unproven = None
+    for terminal in referenced:
+        frame = panel.get(terminal)
+        if not isinstance(frame, pd.DataFrame):
+            continue
+        period = periods[terminal].reindex(
+            index=frame.index, columns=frame.columns)
+        missing = frame.notna() & period.isna()
+        unproven = missing if unproven is None else (unproven | missing)
+    if unproven is not None and bool(unproven.to_numpy().any()):
+        disagree = unproven if disagree is None else (
+            disagree.reindex_like(unproven).fillna(False) | unproven)
+
     if disagree is None or not bool(disagree.to_numpy().any()):
         return panel
 

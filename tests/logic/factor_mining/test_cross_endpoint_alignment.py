@@ -270,3 +270,28 @@ def test_validate_run_forwards_periods(tmp_path):
     with_prov = validate_run(tmp_path, panel, _fwd(), criteria,
                              periods=periods)
     assert with_prov[0].oos_n_obs < without[0].oos_n_obs
+
+
+def test_values_without_any_period_coverage_are_masked():
+    """period 帧整行缺失（不是 NA，是**轴上没有**）而值帧仍有数据时，
+    逐对比较没有可记录分歧的标签 —— 早退会让这些**无 provenance** 的值
+    原样进入求值（codex #437 r6 P2）。此类 cell 必须遮蔽。
+    """
+    panel, periods = _panel_and_periods()
+    # 砍掉两个 period 帧的最后一行（轴缺失），值帧保持完整
+    periods["$revenue"] = periods["$revenue"].iloc[:-1]
+    periods["$total_assets"] = periods["$total_assets"].iloc[:-1]
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.iloc[-1].isna().all()          # 无 provenance 行被遮
+    assert got.iloc[0].notna().all()          # 有 provenance 行照常
+
+
+def test_agreeing_absence_does_not_excuse_present_values():
+    """"两个 period 帧都缺同一行" = 一致的缺席，不是一致的证明。"""
+    panel, periods = _panel_and_periods()
+    periods["$revenue"].iloc[3] = [pd.NA, pd.NA]
+    periods["$total_assets"].iloc[3] = [pd.NA, pd.NA]   # NA==NA，逐对"无分歧"
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.iloc[3].isna().all()
