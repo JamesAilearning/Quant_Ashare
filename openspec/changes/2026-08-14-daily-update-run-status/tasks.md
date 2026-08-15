@@ -33,5 +33,6 @@
       + 严格 schema 用例 ×7 + schema 版本读写两侧钉
 - [x] 治理：`test_data_inspect_readonly.py` 保持绿；新增钉——状态工件不得
       被 `src/` 内除 `data_pipeline.daily_update` 外的任何模块引用
-- [ ] `openspec validate --strict`；目标测试 + `tests/logic/` +
-      `tests/governance/` 全绿；`ruff check` 全绿
+- [x] `openspec validate --strict`；目标测试 + `tests/logic/` +
+      `tests/governance/` 全绿；`ruff check` 全绿  ← 每轮修复后重跑,
+      末次:openspec 47/47,全量快速套件 4399 passed / 30 skipped

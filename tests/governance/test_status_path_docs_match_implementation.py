@@ -174,8 +174,13 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
             # as do concurrent.futures (ProcessPoolExecutor) and pty — the
             # list is "modules that can start a process", not "modules I have
             # seen used" (codex #434 r13).
+            # `posix` / `nt` are os's platform layers and expose system()
+            # DIRECTLY (`from posix import system` — verified nt.system
+            # exists on this host); `_winapi` / `_posixsubprocess` are the
+            # CPython spawn internals (codex #434 r14).
             for mod in ("subprocess", "runpy", "multiprocessing", "os",
-                        "asyncio", "concurrent", "pty"):
+                        "asyncio", "concurrent", "pty",
+                        "posix", "nt", "_winapi", "_posixsubprocess"):
                 self.assertNotIn(
                     f"import {mod}", ln,
                     f"检视页 import 了可派生进程的模块 {mod!r}:{ln.strip()!r}")
