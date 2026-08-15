@@ -438,19 +438,25 @@ def promote_run(
     n_kept = len(survivors)
 
     output_dir: Path | None = None
+    survivor_pool = FactorPool()
+    entries_by_hash = {e.expr_hash: e for e in pool.all_entries()}
+    for res in survivors:
+        entry = entries_by_hash.get(res.expr_hash)
+        if entry is not None:
+            survivor_pool.add(entry)
+    # POLICY runs in BOTH modes; only the filesystem mutation is conditional.
+    # A dry run is the operator's preview — skipping the refusal there would
+    # report "would be kept" for a pool whose identical non-dry invocation is
+    # guaranteed to fail, i.e. a preview that lies about production
+    # eligibility.
+    #
+    # And in the real run: BEFORE mkdir, not merely before save — the directory
+    # is created first, so a refusal placed after it would leave an empty
+    # production version directory behind and the next attempt would fail on
+    # "already exists". A REFUSED promotion must not mutate production at all,
+    # nor consume the version label.
+    _refuse_fundamental_pool_in_production(survivor_pool, target_dir)
     if not dry_run:
-        survivor_pool = FactorPool()
-        entries_by_hash = {e.expr_hash: e for e in pool.all_entries()}
-        for res in survivors:
-            entry = entries_by_hash.get(res.expr_hash)
-            if entry is not None:
-                survivor_pool.add(entry)
-        # BEFORE mkdir, not merely before save: the directory is created first,
-        # so a refusal placed after it would leave an empty production version
-        # directory behind and the next attempt would fail on "already exists".
-        # A REFUSED promotion must not mutate production at all, nor consume
-        # the version label.
-        _refuse_fundamental_pool_in_production(survivor_pool, target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
         survivor_pool.save(target_dir)
         # Promotion report
