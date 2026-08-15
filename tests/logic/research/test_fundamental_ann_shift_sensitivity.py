@@ -717,6 +717,13 @@ def test_atomic_shift_still_moves_a_normal_row(tmp_path):
 # 被服务记录的断言证明**面板**消费了公告日；这半边证明平移**到达指标层** ——
 # 下游求值若无视或接错了平移面板，IC 在一个"构造成必动"的 fixture 上会纹丝
 # 不动。IC 断言只挂在该 fixture 上：正确实现也可能只改字节不改 IC。
+#
+# **已知边界（codex r11，跨 PR）**：这里的 IC 经 `daily_rank_ic` 本地计算，
+# 而非 canonical 求值器（`evaluate_factor`）——后者要求 `$revenue` 已注册，
+# 而财报终端注册在 #437（与本 PR 并行、均基于 main）。本分支上
+# `Terminal("$revenue")` 构造即抛 GrammarError，"走真求值器"不可实现。
+# 两 PR 合并后由 PR-4 升级为经 `evaluate_factor` 的同一断言（届时本地
+# `daily_rank_ic` 从脚本撤除），与 PRIOR_SUFFIX 一致性守卫同批。
 
 _IC_TOLERANCE = 0.5     # fixture 构造成 baseline IC=+1、shifted IC=-1，Δ=2
 
