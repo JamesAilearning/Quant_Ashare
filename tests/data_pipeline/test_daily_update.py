@@ -2,6 +2,7 @@
 fetch, no real qlib build, no real paths."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -658,6 +659,43 @@ class StatusPathGuardTests(unittest.TestCase):
             tmp = Path(t)
             with self.assertRaises(ValueError):
                 _config(tmp, status_path=Path("."))
+
+    def test_status_path_aliasing_a_single_flight_lock_rejected(self) -> None:
+        # codex #434 r3 (P1): the locks are SIBLINGS of the resources, so the
+        # tree checks cannot see them. Replacing one is worse than clobbering
+        # data — on POSIX the atomic replace swaps the directory entry while
+        # the old inode stays locked, so a second run opens the NEW file, takes
+        # a DIFFERENT lock, and proceeds concurrently against the same
+        # provider. Observability would have disabled single-flight.
+        from src.data_pipeline.single_flight import lock_path_for
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp)
+            for resource in (cfg.provider_dir, cfg.tushare_dir,
+                             cfg.delisted_registry):
+                lock = lock_path_for(Path(os.path.abspath(resource)))
+                with self.subTest(lock=lock.name):
+                    with self.assertRaises(ValueError):
+                        _config(tmp, status_path=lock)
+
+    def test_containment_holds_when_a_root_is_a_filesystem_root(self) -> None:
+        # codex #434 r3 (P1): `root + os.sep` builds "D:\\" (or "//") for a
+        # filesystem root, so a genuine child never matched and the guard
+        # ACCEPTED a status path inside the canonical tree. Asserted on the
+        # predicate itself — a real root-level provider_dir is not creatable
+        # in a test, and the defect lives in the containment rule.
+        from src.data_pipeline.daily_update import _norm, _path_within
+        for root, child in ((Path("D:/"), Path("D:/active_stocks.parquet")),
+                            (Path("/"), Path("/active_stocks.parquet"))):
+            with self.subTest(root=str(root)):
+                self.assertTrue(
+                    _path_within(_norm(child), _norm(root)),
+                    f"{child} 应被判为在 {root} 之内")
+        # …and unrelated trees must still be OUTSIDE (no over-broad guard).
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertFalse(
+                _path_within(_norm(tmp / "a" / "x.json"), _norm(tmp / "b")))
 
     def test_default_and_sibling_override_accepted(self) -> None:
         # The derived default and an ordinary sibling override keep working.

@@ -106,7 +106,11 @@ def read_update_status(path: Path) -> UpdateRunStatus:
     # never as a green success. Version first: an unsupported schema_version
     # is never interpreted with v1 semantics.
     version = payload.get("schema_version")
-    if version != STATUS_SCHEMA_VERSION:
+    # `isinstance(True, int)` is True and `True == 1`, so a JSON `true` would
+    # otherwise satisfy the version check and an otherwise-complete record
+    # would render GREEN on a document nothing validated (codex #434 r3).
+    # Type first, value second — the same order the state check below uses.
+    if isinstance(version, bool) or version != STATUS_SCHEMA_VERSION:
         return UpdateRunStatus(
             kind="corrupt", path=path,
             error=f"schema_version 缺失或不受支持（got {version!r}，仅支持 "

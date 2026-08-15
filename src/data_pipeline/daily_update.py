@@ -71,6 +71,11 @@ from src.data_pipeline.bundle_swap import (
     swap,
 )
 
+# The lock NAMING is owned by single_flight; the status guard reads it from
+# there rather than restating `<name>.daily_update.lock`, so a rename of the
+# convention cannot leave this guard protecting a path nobody locks.
+from src.data_pipeline.single_flight import lock_path_for
+
 _logger = get_logger(__name__)
 
 # Operator-facing timestamps use fixed +08:00, mirroring the repo convention
@@ -150,7 +155,25 @@ def _norm(path: Path) -> str:
 
 
 def _path_within(target: str, root: str) -> bool:
-    return target == root or target.startswith(root + os.sep)
+    """Is ``target`` the same as, or inside, ``root``?
+
+    Component-aware, NOT ``startswith(root + os.sep)``: when ``root`` is a
+    filesystem ROOT — a plausible layout for a dedicated data drive — that
+    spelling builds ``D:\\\\`` (or ``//`` on POSIX) and a genuine child like
+    ``D:\\active_stocks.parquet`` fails to match, so the guard would ACCEPT a
+    status path inside the canonical tree and the first atomic replace could
+    clobber a raw/provider file (codex #434 r3).
+
+    ``commonpath`` raises for inputs on different drives / mixed
+    absolute-relative; both inputs here are already ``_norm``-ed absolutes, and
+    a cross-drive pair simply is not contained.
+    """
+    if target == root:
+        return True
+    try:
+        return os.path.commonpath([target, root]) == root
+    except ValueError:      # different drives, or no common prefix at all
+        return False
 
 
 @dataclass(frozen=True)
@@ -207,9 +230,19 @@ class DailyUpdateConfig:
                     f"status artifact's atomic replace would clobber canonical "
                     f"data; refusing (observability must never affect data)"
                 )
+        # codex P1 round 3: the single-flight LOCK files are siblings of the
+        # resources, so the tree checks above cannot see them. Replacing a lock
+        # is worse than clobbering data: on POSIX the atomic replace swaps the
+        # directory entry while the old inode stays locked, so a second run
+        # opens the NEW file, takes a different lock, and proceeds CONCURRENTLY
+        # against the same provider — observability would have disabled
+        # single-flight. Forbid every lock `scripts/daily_update.py` takes.
         for label, f in (
             ("--delisted-registry", self.delisted_registry),
             ("--reference-cases", self.reference_cases),
+            *(("单飞锁", lock_path_for(Path(os.path.abspath(r))))
+              for r in (self.provider_dir, self.tushare_dir,
+                        self.delisted_registry)),
         ):
             if target == _norm(f):
                 raise ValueError(

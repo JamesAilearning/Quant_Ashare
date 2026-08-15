@@ -266,6 +266,24 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
             st = read_update_status(p)
             self.assertEqual(st.kind, "corrupt")
 
+    def test_boolean_schema_version_is_corrupt(self) -> None:
+        # codex #434 r3 (P2): `True == 1` in Python, so a JSON `true` satisfied
+        # the version comparison and an otherwise-complete record rendered
+        # GREEN on a document nothing had validated. Type first, value second.
+        for bogus in (True, False):
+            with self.subTest(schema_version=bogus):
+                with tempfile.TemporaryDirectory() as t:
+                    p = Path(t) / STATUS_FILENAME
+                    _write(p, {**_FINISHED_OK, "schema_version": bogus})
+                    st = read_update_status(p)
+                    self.assertEqual(st.kind, "corrupt")
+                    self.assertIn("schema_version", st.error)
+        # …and the real version still reads clean (no over-broad rejection).
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, dict(_FINISHED_OK))
+            self.assertEqual(read_update_status(p).kind, "finished")
+
     def test_detail_wrong_type_is_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME
