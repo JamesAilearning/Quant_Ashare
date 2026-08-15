@@ -53,16 +53,42 @@ class FilenamePinTests(unittest.TestCase):
     def test_reader_and_writer_agree_on_the_filename(self) -> None:
         self.assertEqual(STATUS_FILENAME, WRITER_STATUS_FILENAME)
 
+    def test_reader_and_writer_agree_on_the_DERIVATION(self) -> None:
+        # Agreeing on the FILENAME is not agreeing on the path: the two
+        # modules each restate `provider -> artifact`, and the rule is what
+        # can drift. Pinned over sibling providers because that is exactly
+        # where the old rule collapsed (codex #434 r4).
+        from src.data_pipeline.daily_update import default_status_path
+        for provider in (Path("D:/qlib_data/my_cn_data_pit"),
+                         Path("D:/qlib_data/my_cn_data_pit_2015"),
+                         Path("/srv/bundles/live")):
+            with self.subTest(provider=str(provider)):
+                self.assertEqual(default_status_path(provider),
+                                 status_path_for_provider(provider))
+
+    def test_sibling_providers_do_not_share_one_artifact(self) -> None:
+        # This repo SHIPS the colliding layout (my_cn_data_pit next to
+        # my_cn_data_pit_2015), so the research bundle would have shown the
+        # production provider's last run as its own.
+        a = status_path_for_provider(Path("D:/qlib_data/my_cn_data_pit"))
+        b = status_path_for_provider(Path("D:/qlib_data/my_cn_data_pit_2015"))
+        self.assertNotEqual(a, b)
+        # …and it stays a SIBLING, so the atomic swap cannot carry it away.
+        self.assertEqual(a.parent, Path("D:/qlib_data"))
+
     def test_reader_and_writer_agree_on_the_schema_version(self) -> None:
         self.assertEqual(STATUS_SCHEMA_VERSION, WRITER_STATUS_SCHEMA_VERSION)
 
 
 class PathDerivationTests(unittest.TestCase):
-    def test_status_path_is_sibling_of_provider_dir(self) -> None:
+    def test_status_path_is_a_provider_specific_sibling(self) -> None:
+        # Sibling (survives the swap) AND name-derived (unique per provider);
+        # the original `<parent>/<FILENAME>` collided for sibling bundles
+        # (codex #434 r4).
         provider = Path("/data/my_cn_data_pit")
         self.assertEqual(
             status_path_for_provider(provider),
-            Path("/data/daily_update_status.json"),
+            Path("/data/my_cn_data_pit.daily_update_status.json"),
         )
 
 
@@ -283,6 +309,19 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
             p = Path(t) / STATUS_FILENAME
             _write(p, dict(_FINISHED_OK))
             self.assertEqual(read_update_status(p).kind, "finished")
+
+    def test_float_schema_version_is_corrupt(self) -> None:
+        # codex #434 r4: JSON `1.0` parses to a float and `1.0 == 1`, so the
+        # bool-exclusion spelling still let it through. `type(...) is int`
+        # covers bool and float in one predicate.
+        for bogus in (1.0, True, False, "1", None):
+            with self.subTest(schema_version=bogus):
+                with tempfile.TemporaryDirectory() as t:
+                    p = Path(t) / STATUS_FILENAME
+                    _write(p, {**_FINISHED_OK, "schema_version": bogus})
+                    st = read_update_status(p)
+                    self.assertEqual(st.kind, "corrupt")
+                    self.assertIn("schema_version", st.error)
 
     def test_detail_wrong_type_is_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as t:

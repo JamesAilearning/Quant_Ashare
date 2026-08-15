@@ -115,6 +115,21 @@ class DataInspectReadOnlyTests(unittest.TestCase):
             f"transitive import check failed:\n{proc.stdout}\n{proc.stderr}",
         )
 
+class UpdateStatusSectionOrderTests(unittest.TestCase):
+    """The status artifact is a SIBLING of the provider dir, so it exists in
+    exactly the case the page used to bail on: a fresh machine whose first
+    update died before the swap. Rendering it after `st.stop()` hid the one
+    record that explains why (codex #434 r4)."""
+
+    def test_status_section_precedes_the_missing_provider_stop(self) -> None:
+        src = PAGE.read_text(encoding="utf-8")
+        status_at = src.index("st.subheader(\"上次数据更新\")")
+        stop_at = src.index("st.error(f\"目录不存在:{provider_dir}\")")
+        self.assertLess(
+            status_at, stop_at,
+            "「上次数据更新」必须在「目录不存在 -> st.stop()」之前渲染,"
+            "否则首跑失败(provider 尚不存在)时那条失败记录永远看不到")
+
 
 if __name__ == "__main__":
     unittest.main()

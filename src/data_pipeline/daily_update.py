@@ -114,12 +114,17 @@ class DailyUpdateError(RuntimeError):
 
 
 def default_status_path(provider_dir: Path) -> Path:
-    """The run-status artifact's default location: a SIBLING of the provider
-    dir (``<provider>.parent/daily_update_status.json``), so it survives the
-    atomic swap (which only renames the provider dir itself) and is derivable
-    from the one path every consumer already knows (``QUANT_PROVIDER_URI`` /
-    ``--provider-dir``)."""
-    return provider_dir.parent / STATUS_FILENAME
+    """The run-status artifact's default location: ``<provider>.<FILENAME>``.
+
+    A SIBLING of the provider dir, so it survives the atomic swap (which only
+    renames the provider dir itself), and NAME-DERIVED so it is unique per
+    provider. The first cut used ``<provider>.parent/<FILENAME>``, which
+    collapses for sibling bundles — this repo ships exactly that layout
+    (``D:/qlib_data/my_cn_data_pit`` and ``…_2015`` both resolved to
+    ``D:/qlib_data/daily_update_status.json``), so inspecting the research
+    bundle would have shown the PRODUCTION run's status as if it were its own
+    (codex #434 r4). Same convention as ``single_flight.lock_path_for``."""
+    return provider_dir.with_name(f"{provider_dir.name}.{STATUS_FILENAME}")
 
 
 def _write_status(path: Path, payload: Mapping[str, object]) -> None:

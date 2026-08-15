@@ -79,9 +79,16 @@ class UpdateRunStatus:
 
 
 def status_path_for_provider(provider_dir: Path) -> Path:
-    """The artifact lives as a SIBLING of the provider dir (it must survive
-    the bundle's atomic swap, which only renames the provider dir itself)."""
-    return provider_dir.parent / STATUS_FILENAME
+    """``<provider>.<FILENAME>`` — sibling of the provider dir, and unique to
+    it.
+
+    Sibling so it survives the bundle's atomic swap (which renames only the
+    provider dir); name-derived because ``<provider>.parent/<FILENAME>``
+    collapses for sibling bundles, and this repo ships exactly that layout —
+    the research bundle would have displayed the production provider's last
+    run as its own (codex #434 r4). Pinned against the writer's derivation by
+    tests/logic/test_update_status_reader.py."""
+    return provider_dir.with_name(f"{provider_dir.name}.{STATUS_FILENAME}")
 
 
 def read_update_status(path: Path) -> UpdateRunStatus:
@@ -110,7 +117,11 @@ def read_update_status(path: Path) -> UpdateRunStatus:
     # otherwise satisfy the version check and an otherwise-complete record
     # would render GREEN on a document nothing validated (codex #434 r3).
     # Type first, value second — the same order the state check below uses.
-    if isinstance(version, bool) or version != STATUS_SCHEMA_VERSION:
+    # `type(...) is int`, not `isinstance` + a bool exclusion: JSON `1.0`
+    # parses to a float and `1.0 == 1`, so the previous spelling still let a
+    # float version through and rendered an unvalidated record as a green
+    # success (codex #434 r4). One predicate covers bool and float alike.
+    if type(version) is not int or version != STATUS_SCHEMA_VERSION:
         return UpdateRunStatus(
             kind="corrupt", path=path,
             error=f"schema_version 缺失或不受支持（got {version!r}，仅支持 "

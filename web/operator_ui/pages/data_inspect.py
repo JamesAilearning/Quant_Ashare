@@ -60,9 +60,6 @@ if not provider_uri.strip():
 # expander) and a `~` prefix — before the literal existence check, so a valid
 # production URI typed in a supported form is not rejected as missing.
 provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
-if not provider_dir.exists():
-    st.error(f"目录不存在:{provider_dir}")
-    st.stop()
 
 # ---------------------------------------------------------------------------
 # Section 0: last data-update run status (2026-08-14-daily-update-run-status).
@@ -105,6 +102,14 @@ else:
         f"run_date={_update_status.run_date or '?'}，"
         f"失败于 {_update_status.finished_at or '?'}。排查后重跑。"
     )
+
+# The existence check comes AFTER the status section on purpose: the artifact
+# is a SIBLING of the provider dir, so on a fresh machine whose first update
+# died before the swap it exists while the provider dir does not. Stopping
+# first would hide the one record that explains why (codex #434 r4).
+if not provider_dir.exists():
+    st.error(f"目录不存在:{provider_dir}")
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # Section 1: fetch-integrity stamp (P3-4c) — was this bundle built from a
