@@ -62,6 +62,14 @@ _ALIASES = {
 # Flags that legitimately default to None/False and are resolved elsewhere
 # (serving-parameter binding, or an explicit opt-in switch) rather than from
 # the dataclass. Listed so the exemption is a decision, not an accident.
+# Parser destinations that are NOT config inputs at all. Only argparse's own
+# `--help` qualifies today. Everything else must map to a real field, so a
+# future `--foo` feeding `foo_path` cannot slip past by simply lacking an
+# alias — it would otherwise be dropped at "is this a config field?" and the
+# dead-entry test, which only validates mappings that ALREADY exist, would
+# not notice either (codex #438 r7).
+_NOT_CONFIG_FLAGS = {"help"}
+
 _RESOLVED_ELSEWHERE = {
     "instruments",              # bound from the serving params
     "topk",                     # bound from the serving params
@@ -179,6 +187,14 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                     f"它是死条目,豁免了一个不存在的东西")
         field_names = {f.name for f in dataclasses.fields(RecommendationConfig)}
         dests = {a.dest for a in parser._actions}
+        for dest in sorted(dests - _NOT_CONFIG_FLAGS):
+            with self.subTest(unclassified=dest):
+                self.assertIn(
+                    _ALIASES.get(dest, dest), field_names,
+                    f"--{dest.replace('_', '-')} 映射不到任何 "
+                    f"RecommendationConfig 字段:补一条 _ALIASES,或把它列进 "
+                    f"_NOT_CONFIG_FLAGS —— 否则它会在「是不是 config 字段」"
+                    f"那一步被静默跳过,两条联动测试都看不见它")
         for dest, field in sorted(_ALIASES.items()):
             with self.subTest(alias=f"{dest}->{field}"):
                 self.assertIn(dest, dests, f"别名左侧 {dest!r} 不是任何 flag 的 dest")
@@ -235,6 +251,16 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 advertises = _advertises_default(
                     _action_help(parser, dest), stale)
                 with self._config_value_moved(field, moved):
+                    # The mutation must have moved the CANONICAL side. For a
+                    # factory field it patches the resolver the factory
+                    # delegates to — if the dataclass is later repointed at a
+                    # DIFFERENT function while the CLI still calls this one,
+                    # only the CLI would move and the equality below would
+                    # pass on a divergence (codex #438 r7).
+                    self.assertEqual(
+                        moved, self._config_defaults()[field],
+                        f"挪动手段没有移动 RecommendationConfig.{field} 本身:"
+                        f"这条断言之后比较的就不是同源性了")
                     fresh = _cli_module()._build_arg_parser()  # type: ignore[attr-defined]
                     got = getattr(fresh.parse_args([]), dest)
                     rendered = _action_help(fresh, dest)
@@ -278,12 +304,22 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
             finally:
                 setattr(serving, resolver, saved)
             return
+        # BOTH places a plain default lives: the class attribute (what the
+        # CLI reads) and the Field object (what instantiating the dataclass
+        # uses, and what this test reads back). Moving only the attribute
+        # left the two disagreeing, so "the canonical side moved" was false
+        # while the CLI-side check still passed — the new assertion caught it
+        # (codex #438 r7).
+        spec = RecommendationConfig.__dataclass_fields__[field]
         saved_attr = getattr(RecommendationConfig, field)
+        saved_default = spec.default
         setattr(RecommendationConfig, field, moved)
+        spec.default = moved
         try:
             yield
         finally:
             setattr(RecommendationConfig, field, saved_attr)
+            spec.default = saved_default
 
     @staticmethod
     def _moved_value(current: object) -> object:
