@@ -70,11 +70,24 @@ def max_abs_corr(
     return max_abs
 
 
-def _is_canonical_period(token: object) -> bool:
-    """Whether a non-null token is a canonical YYYYMMDD CN quarter end."""
+def _canonical_period_token(token: object) -> str | None:
+    """A period token normalized to canonical YYYYMMDD, or None when invalid.
+
+    The contract explicitly ACCEPTS the exact-float spelling ("20211231.0"),
+    and the view may serialize the raw store token — so normalization must
+    come BEFORE validity: rejecting the supported ``.0`` form would mask
+    perfectly valid multi-terminal observations. Everything else (short,
+    non-digit, trailing garbage, an 8-digit non-quarter-end) is invalid — and
+    all comparisons downstream run on the NORMALIZED value, so "20220331.0"
+    vs "20220331" is equality, not disagreement.
+    """
     text = str(token)
-    return (len(text) == 8 and text.isdigit()
-            and text[4:8] in ("0331", "0630", "0930", "1231"))
+    if text.endswith(".0"):
+        text = text[:-2]
+    if (len(text) == 8 and text.isdigit()
+            and text[4:8] in ("0331", "0630", "0930", "1231")):
+        return text
+    return None
 
 
 def _previous_quarter_token(token: object) -> object:
@@ -86,13 +99,14 @@ def _previous_quarter_token(token: object) -> object:
     two cannot drift. A malformed token returns a sentinel that equals no real
     period, so adjacency can never be PROVEN through corruption.
     """
-    text = str(token)
-    # The WHOLE token must be a canonical YYYYMMDD — a prefix match would let
-    # "20220331junk" prove adjacency against a clean "20211231": corruption
-    # must never be able to prove anything.
-    if len(text) != 8 or not text.isdigit():
+    canonical = _canonical_period_token(token)
+    # Defensive even though inputs arrive pre-normalized: corruption must
+    # never be able to prove anything, so a non-canonical token maps to a
+    # sentinel that equals no real period (and the sentinel itself would fail
+    # normalization upstream, so it cannot collide with a literal).
+    if canonical is None:
         return "<malformed>"
-    year, month_day = int(text[:4]), text[4:8]
+    year, month_day = int(canonical[:4]), canonical[4:8]
     return {
         "0331": f"{year - 1}1231",
         "0630": f"{year}0331",
@@ -193,12 +207,19 @@ def align_periods_at_terminals(
     # against a corrupted current token. Matching corruption must never
     # establish provenance — a non-canonical token is unproven, full stop.
     invalid = None
+    normalized: dict[str, pd.DataFrame] = {}
     for terminal in referenced:
         frame = aligned[terminal]
-        bad = frame.notna() & ~frame.apply(
-            lambda col: col.map(_is_canonical_period, na_action="ignore")
-        ).fillna(True).astype(bool)
+        norm = frame.apply(
+            lambda col: col.map(_canonical_period_token, na_action="ignore"))
+        normalized[terminal] = norm
+        bad = frame.notna() & norm.isna()     # non-NA that failed to normalize
         invalid = bad if invalid is None else (invalid | bad)
+    # Every comparison below runs on the NORMALIZED frames, so the accepted
+    # ``.0`` spelling and the canonical form are the SAME token, and invalid
+    # tokens are already flagged (their normalized cell is NA — which the
+    # pairwise NA-mismatch and the unproven check treat conservatively).
+    aligned = normalized
 
     disagree = None if invalid is None or not bool(
         invalid.to_numpy().any()) else invalid

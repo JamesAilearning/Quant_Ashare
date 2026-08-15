@@ -255,3 +255,24 @@ def test_non_quarter_end_dates_are_invalid_provenance():
     expr = parse_expression("div_safe($revenue, $total_assets)")
     got = evaluate_expression(expr, panel, periods=periods)
     assert got.isna().all().all()
+
+
+def test_accepted_float_spelling_is_equality_not_corruption():
+    """契约明确接受 "20211231.0" 拼写 —— #437 单独看时 view 仍会发原拼写，
+    严判会把合法数据当腐坏遮掉（codex #437 r11 P2）。规范化先行：
+    ".0" 与规范形是**同一个** token，相等而非分歧。
+    """
+    panel = {"$revenue": _f(10.0), "$total_assets": _f(100.0)}
+    periods = {"$revenue": _p("20220331.0"), "$total_assets": _p("20220331")}
+    expr = parse_expression("div_safe($revenue, $total_assets)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.notna().all().all()          # 同期，不遮
+
+
+def test_float_spelling_participates_in_adjacency():
+    panel = {"$revenue": _f(10.0), "$total_assets__prior": _f(100.0)}
+    periods = {"$revenue": _p("20220331.0"),
+               "$total_assets__prior": _p("20211231.0")}
+    expr = parse_expression("div_safe($revenue, $total_assets__prior)")
+    got = evaluate_expression(expr, panel, periods=periods)
+    assert got.notna().all().all()          # 规范化后相邻，不遮
