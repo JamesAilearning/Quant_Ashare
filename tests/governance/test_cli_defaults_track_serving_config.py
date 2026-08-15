@@ -70,6 +70,35 @@ _RESOLVED_ELSEWHERE = {
 }
 
 
+# "It says default 7" is only one spelling. `Default: 7`, `(default = 7)`,
+# `default is 7` are all the same claim to an operator reading --help, and a
+# regression to any of them would sail past an exact, case-sensitive substring
+# search — leaving the parser reading the moved value while the text advertises
+# the old one, which is the very defect this pins (codex #438 r4).
+_DEFAULT_CLAIM = r"default(?:\s+value)?\s*(?:[:=]|is\b)?\s*"
+
+
+def _advertises_default(help_text: str, value: object) -> bool:
+    """Does this help text claim ``value`` is the default, in any spelling?"""
+    return re.search(_DEFAULT_CLAIM + re.escape(str(value)) + r"(?!\w)",
+                     help_text, re.IGNORECASE) is not None
+
+
+def _action_help(parser: object, dest: str) -> str:
+    """The EXPANDED help of one flag — `%(default)s` already substituted.
+
+    Scoped to the single action rather than the whole `format_help()` output:
+    other flags describe their own defaults in prose (`--topk` says
+    "Default: 50"), so a whole-text search can be tripped or masked by a
+    sentence about a different option.
+    """
+    formatter = parser._get_formatter()  # type: ignore[attr-defined]
+    for action in parser._actions:  # type: ignore[attr-defined]
+        if action.dest == dest:
+            return re.sub(r"\s+", " ", formatter._expand_help(action))
+    raise AssertionError(f"no action with dest {dest!r}")
+
+
 def _cli_module() -> object:
     path = _PROJECT_ROOT / "scripts" / "daily_recommend.py"
     spec = importlib.util.spec_from_file_location("_dr_cli_defaults", path)
@@ -164,12 +193,12 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 # does not, and that is fine — an absent claim cannot go
                 # stale). The rule is conditional: IF the help states a
                 # default, it must state the current one.
-                advertises = f"default {stale}" in re.sub(
-                    r"\s+", " ", parser.format_help())
+                advertises = _advertises_default(
+                    _action_help(parser, dest), stale)
                 with self._config_value_moved(field, moved):
                     fresh = _cli_module()._build_arg_parser()  # type: ignore[attr-defined]
                     got = getattr(fresh.parse_args([]), dest)
-                    rendered = re.sub(r"\s+", " ", fresh.format_help())
+                    rendered = _action_help(fresh, dest)
                 self.assertEqual(
                     moved, got,
                     f"挪动 RecommendationConfig.{field} 的来源后 --"
@@ -181,14 +210,15 @@ class CliDefaultsTrackServingConfigTests(unittest.TestCase):
                 # (codex #438 r2). Fixed with `%(default)s`, pinned here
                 # rather than by grepping for that spelling: what matters is
                 # that the help follows, not how it is written.
-                self.assertNotIn(
-                    f"default {stale}", rendered,
-                    f"--{dest.replace('_', '-')} 的 help 仍在广告旧默认值")
+                self.assertFalse(
+                    _advertises_default(rendered, stale),
+                    f"--{dest.replace('_', '-')} 的 help 仍在广告旧默认值:"
+                    f"{rendered!r}")
                 if advertises:
-                    self.assertIn(
-                        f"default {moved}", rendered,
+                    self.assertTrue(
+                        _advertises_default(rendered, moved),
                         f"--{dest.replace('_', '-')} 的 help 广告了默认值,"
-                        f"就必须广告当前那个")
+                        f"就必须广告当前那个:{rendered!r}")
 
     @contextlib.contextmanager
     def _config_value_moved(self, field: str, moved: object):
