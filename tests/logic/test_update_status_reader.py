@@ -329,6 +329,48 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
             _write(p, dict(_FINISHED_OK))
             self.assertEqual(read_update_status(p).kind, "finished")
 
+    def test_running_age_fresh_stale_and_unknowable(self) -> None:
+        # codex #434 r8: a killed updater leaves `running` on disk forever;
+        # past the staleness threshold the page must not keep asserting an
+        # update is in progress. `None` (unparseable / tz-naive started_at)
+        # counts as "cannot establish freshness" and must render ambiguous.
+        from datetime import datetime, timedelta, timezone
+
+        from web.operator_ui.update_status import (
+            RUNNING_STALE_AFTER,
+            UpdateRunStatus,
+            running_age,
+        )
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+
+        def running(started_at: str) -> UpdateRunStatus:
+            return UpdateRunStatus(kind="running", path=Path("x"),
+                                   state="running", started_at=started_at)
+
+        fresh = running((now - timedelta(hours=1)).isoformat())
+        self.assertLessEqual(running_age(fresh, now), RUNNING_STALE_AFTER)
+        stale = running((now - timedelta(hours=20)).isoformat())
+        self.assertGreater(running_age(stale, now), RUNNING_STALE_AFTER)
+        # unparseable / naive -> None (freshness cannot be established)
+        self.assertIsNone(running_age(running("not-a-date"), now))
+        self.assertIsNone(running_age(running("2026-08-15T10:00:00"), now))
+        # non-running records have no age at all
+        done = UpdateRunStatus(kind="finished", path=Path("x"))
+        self.assertIsNone(running_age(done, now))
+
+    def test_the_page_never_asserts_running_past_the_threshold(self) -> None:
+        # Source pin: the running branch must consult the age and carry the
+        # interrupted/ambiguous wording — an unconditional 正在运行 is
+        # exactly the claim the page cannot make (codex #434 r8).
+        page = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
+                / "pages" / "data_inspect.py").read_text(encoding="utf-8")
+        self.assertIn("running_age(_update_status)", page)
+        self.assertIn("RUNNING_STALE_AFTER", page)
+        self.assertIn("可能已被中断", page)
+        # the fresh branch is CONDITIONAL on the age check
+        self.assertLess(page.index("_age = running_age"),
+                        page.index("数据更新**正在运行**"))
+
     def test_an_unreadable_artifact_is_not_reported_missing(self) -> None:
         # codex #434 r7 (P2): `Path.exists()` answers False for a file it
         # cannot STAT, so a permissions failure rendered as the benign

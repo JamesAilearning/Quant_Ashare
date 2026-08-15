@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,38 @@ class UpdateRunStatus:
         if self.exit_code is None:
             return ""
         return EXIT_CODE_MEANINGS.get(self.exit_code, "未知退出码")
+
+
+# Display heuristic for a `running` record that never got its terminal
+# rewrite: a kill / power loss / unhandled exception leaves `state="running"`
+# on disk until the NEXT invocation overwrites it, and the page would keep
+# asserting an update is in progress that no process is running (codex #434
+# r8). The observed production run takes ~2h (2026-08-14: 20:33 → 22:22), so
+# 6h is a 3x margin; past it the page must say "ambiguous / likely
+# interrupted", never a confident 正在运行. A read-only page cannot probe the
+# single-flight lock (opening it is a write-side act), so wall-clock age is
+# the only honest signal it has.
+RUNNING_STALE_AFTER = timedelta(hours=6)
+
+
+def running_age(
+    status: UpdateRunStatus, now: datetime | None = None,
+) -> timedelta | None:
+    """Age of a ``running`` record, or ``None`` when it cannot be computed.
+
+    ``None`` (unparseable or timezone-naive ``started_at``) must be treated
+    like stale by the caller: a freshness the page cannot establish is not a
+    freshness it may claim.
+    """
+    if status.kind != "running":
+        return None
+    try:
+        started = datetime.fromisoformat(status.started_at)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        return None
+    return (now or datetime.now(tz=timezone.utc)) - started
 
 
 def status_path_for_provider(provider_dir: Path) -> Path:

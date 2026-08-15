@@ -20,11 +20,14 @@ run holding the lock. The write SHALL be atomic (temp file + rename). A
 SHALL be logged as an error and SHALL NOT change the run's exit code — the
 artifact is observability, never a canonical input, and no module outside
 `src/data_pipeline/daily_update.py` SHALL consume it inside `src/`. Because
-the write is an unconditional atomic replace, an explicit `--status-path`
-that resolves inside the provider dir, the tushare dir, or the swap
-machinery's `<provider>.new` / `<provider>.bak` siblings, or that aliases
-the delisted registry or the reference cases, SHALL be rejected as a config
-error (exit 2) at config construction — before any write — so a mistyped
+the write is an unconditional atomic replace staged through a `<target>.tmp`
+sibling (written first, then `os.replace`d over the target), the guard SHALL
+validate **both** the final target and that `.tmp` staging sibling: either
+one resolving inside the provider dir, the tushare dir, or the swap
+machinery's `<provider>.new` / `<provider>.bak` siblings, or aliasing the
+delisted registry, the reference cases, or any single-flight lock file,
+SHALL be rejected as a config error (exit 2) at config construction —
+before any write — so a mistyped
 observability path can never clobber a canonical input or an operational
 swap path. A name-less `--status-path` (`.`, a filesystem root) SHALL
 likewise be rejected at config construction, since the atomic write's

@@ -31,7 +31,9 @@ from web.operator_ui.bundle_health import (
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pit_validation_runner import run_pit_validation
 from web.operator_ui.update_status import (
+    RUNNING_STALE_AFTER,
     read_update_status,
+    running_age,
     status_path_for_provider,
 )
 
@@ -91,10 +93,24 @@ elif _update_status.kind == "corrupt":
         f"（文件：{_update_status.path}）"
     )
 elif _update_status.kind == "running":
-    st.info(
-        f"🔄 数据更新**正在运行**：始于 {_update_status.started_at or '?'} "
-        f"（run_date={_update_status.run_date or '?'}）。完成后本小节显示终态。"
-    )
+    # A kill / power loss leaves `running` on disk with no terminal rewrite,
+    # so past a staleness threshold this page must NOT keep asserting an
+    # update is in progress — it cannot know; say so (codex #434 r8).
+    _age = running_age(_update_status)
+    if _age is not None and _age <= RUNNING_STALE_AFTER:
+        st.info(
+            f"🔄 数据更新**正在运行**：始于 {_update_status.started_at or '?'} "
+            f"（run_date={_update_status.run_date or '?'}）。完成后本小节显示终态。"
+        )
+    else:
+        st.warning(
+            f"⚠ 状态记录停在**运行中**且已超过 "
+            f"{int(RUNNING_STALE_AFTER.total_seconds() // 3600)} 小时"
+            f"（始于 {_update_status.started_at or '?'}，"
+            f"run_date={_update_status.run_date or '?'}）——"
+            "进程可能已被中断（断电/被杀/未处理异常），也可能仍在异常缓慢地运行;"
+            "本页无法区分。请检查计划任务日志;下次运行会覆盖此记录。"
+        )
 elif _update_status.ok:
     st.success(
         f"🟢 上次更新成功（exit 0 — {_update_status.exit_meaning}）："

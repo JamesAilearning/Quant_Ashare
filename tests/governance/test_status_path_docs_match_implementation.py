@@ -107,6 +107,18 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
             f"该 change 的散文里只有 {sorted(stated)} 提到了推导规则;"
             f"proposal / tasks / 两份 spec 都应说明它")
 
+    def test_the_spec_records_the_tmp_staging_protection(self) -> None:
+        # codex #434 r8: the r7 guard validates the final target AND its
+        # `.tmp` staging sibling, but the spec kept prohibiting only the
+        # final `--status-path` — archived, the invariant vanishes and a
+        # future spec-compliant implementation may reintroduce the staging
+        # clobber. The spec must keep stating both.
+        spec = (_CHANGE / "specs" / "v2-daily-data-update"
+                / "spec.md").read_text(encoding="utf-8")
+        self.assertIn(".tmp", spec)
+        self.assertIn("staging sibling", spec)
+        self.assertIn("single-flight lock", spec)
+
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must
         # derive it — a second literal in the writer or reader is how the
