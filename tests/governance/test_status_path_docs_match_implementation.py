@@ -61,6 +61,15 @@ _EXTRA_PROSE = (
 )
 
 
+SPAWN_SHAPES_PATTERN = (
+    r"os\.(?:system|exec\w*|spawn\w*|popen\w*|posix_spawn\w*|fork\w*|startfile)"
+    r"\s*\(|__import__\s*\("
+)
+
+
+pathlib_Path = Path
+
+
 def _is_spawnish(leaf: str) -> bool:
     """Names on os/posix/nt that reach a new process.
 
@@ -252,91 +261,73 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                                  if doc == "proposal.md" else text)
 
     def test_the_pages_import_closure_cannot_reach_the_orchestrator(self) -> None:
-        """The helper door (codex #434 r18).
+        """The helper door (codex #434 r18, uniform walk since r27).
 
         `from web.operator_ui.update_runner import run_update` is an allowed
         import and a plain call — the single-page scan sees nothing, while
         the helper spawns the updater. Helper-mediated subprocess IS an
         established pattern here (pit_validation_runner), so the enforceable
-        rule is over the page's TRANSITIVE web.operator_ui closure:
+        rule is over the page's TRANSITIVE closure under `web`:
 
-        * no module may import the orchestrator or swap machinery;
+        * no module may import the orchestrator / swap machinery / anything
+          under scripts (the CLI wrappers reach the same orchestrator);
         * no module may import a process-spawning module — except the ONE
-          audited runner, whose argv is pinned to the 06 validator below.
+          audited runner, whose argv is pinned to the 06 validator below;
+        * modules that legally import `os` may not touch its spawning names
+          (attribute shapes AND alias-bound calls AND from-imported names).
+
+        ONE loop over ABSOLUTE module names — the r26 special branch for
+        `web/__init__.py` ran a reduced check and its relative-import anchor
+        mis-resolved package initializers; two copies of this logic have
+        drifted twice, so there is exactly one now (codex #434 r27).
 
         Import-level on purpose: cockpit helpers legitimately carry
         `scripts/daily_update.py` inside COMMAND TEXT they print, so a
         string-level sweep cannot distinguish printing from invoking.
         """
         import ast
-        base = _PROJECT_ROOT / "web" / "operator_ui"
-        # NARROWER than the page-only list above: closure helpers
-        # legitimately import `os` (env vars, path plumbing in theme /
-        # bundle_health / update_status), so `os` and `builtins` stay legal
-        # at closure level and their SPAWNING call shapes are forbidden by
-        # regex instead — command TEXT ("python scripts/…") never matches an
-        # `os.system(` call shape, so the cockpit's printed commands are
-        # unaffected.
         spawn_banned = {"subprocess", "runpy", "multiprocessing",
                         "asyncio", "concurrent", "pty", "posix", "nt",
                         "_winapi", "_posixsubprocess", "importlib",
-                        "ctypes"}
-        spawn_shapes = re.compile(
-            r"os\.(?:system|exec\w*|spawn\w*|popen\w*|posix_spawn\w*|fork\w*|startfile)\s*\(|__import__\s*\(")
-        # The audited exemption: it exists to spawn ONE thing.
+                        "builtins", "ctypes"}
+        spawn_shapes = re.compile(SPAWN_SHAPES_PATTERN)
         exempt_spawner = "pit_validation_runner"
-        runner_src = (base / "pit_validation_runner.py").read_text(
-            encoding="utf-8")
+        runner_src = (_PROJECT_ROOT / "web" / "operator_ui"
+                      / "pit_validation_runner.py").read_text(encoding="utf-8")
         self.assertIn("06_validate_pit_data", runner_src)
         self.assertNotIn("daily_update.py", runner_src)
 
+        def resolve(name: str) -> tuple[pathlib_Path, bool] | None:
+            path = _PROJECT_ROOT / (name.replace(".", "/") + ".py")
+            if path.is_file():
+                return path, False
+            path = _PROJECT_ROOT / name.replace(".", "/") / "__init__.py"
+            if path.is_file():
+                return path, True
+            return None
+
         seen: set[str] = set()
-        # Package INITIALIZERS run before any submodule import, so they are
-        # part of the closure even though no import statement names them:
-        # `web/__init__.py` and `web/operator_ui/__init__.py` execute on the
-        # page's very first import, and every package traversed on the way
-        # to a queued module executes its own __init__ (codex #434 r26).
-        # Seeded explicitly ("" = the operator_ui package initializer, plus
-        # the out-of-namespace web/__init__.py checked via its real path);
-        # parent-package initializers are enqueued alongside every module.
-        queue = ["pages.data_inspect", "", "pages"]
-        web_init = base.parent / "__init__.py"
-        if web_init.is_file():
-            init_src = web_init.read_text(encoding="utf-8")
-            with self.subTest(module="web.__init__",
-                              check="spawn call shapes"):
-                self.assertIsNone(spawn_shapes.search(init_src))
-            for n in ast.walk(ast.parse(init_src)):
-                if isinstance(n, (ast.Import, ast.ImportFrom)):
-                    for a in n.names:
-                        with self.subTest(module="web.__init__",
-                                          imported=a.name):
-                            self.assertNotIn(
-                                a.name.split(".")[0], spawn_banned)
+        queue = ["web.operator_ui.pages.data_inspect"]
         while queue:
-            rel = queue.pop()
-            if rel in seen:
+            name = queue.pop()
+            if name in seen or not name.startswith("web"):
                 continue
-            seen.add(rel)
-            for i in range(1, rel.count(".") + 1):
-                queue.append(".".join(rel.split(".")[:i]))
-            path = base / (rel.replace(".", "/") + ".py")
-            if not path.is_file():
-                path = (base / rel.replace(".", "/") / "__init__.py"
-                        if rel else base / "__init__.py")
-            if not path.is_file():
+            seen.add(name)
+            # package initializers run before any submodule import — every
+            # ancestor package is part of the closure (codex #434 r26).
+            if "." in name:
+                queue.append(name.rsplit(".", 1)[0])
+            resolved = resolve(name)
+            if resolved is None:
                 continue
+            path, is_pkg = resolved
             module_src = path.read_text(encoding="utf-8")
-            with self.subTest(module=rel, check="spawn call shapes"):
+            with self.subTest(module=name, check="spawn call shapes"):
                 self.assertIsNone(
                     spawn_shapes.search(module_src),
-                    f"{rel} 出现 os 派生调用形状")
+                    f"{name} 出现 os 派生调用形状")
             module_ast = ast.parse(module_src)
-            # Alias-aware call check (codex #434 r23): `import os as
-            # operating_system; operating_system.posix_spawn(...)` defeats
-            # the literal `os.` regex above. Bind the module's os/posix/nt
-            # aliases first, then flag any spawnish attribute reached
-            # through one of them.
+            # alias-aware calls: `import os as x; x.posix_spawn(...)`
             os_aliases = {
                 (a.asname or a.name)
                 for n in ast.walk(module_ast) if isinstance(n, ast.Import)
@@ -349,26 +340,18 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                         and n.value.id in os_aliases
                         and _is_spawnish(n.attr)):
                     self.fail(
-                        f"{rel} 经别名 {n.value.id!r} 调用派生原语 "
+                        f"{name} 经别名 {n.value.id!r} 调用派生原语 "
                         f"{n.attr!r}(第 {n.lineno} 行)")
             for node in ast.walk(module_ast):
-                # RESOLVED names, not just node.module: `from web.operator_ui
-                # import update_runner` exposes the submodule only through
-                # its alias (module == "web.operator_ui"), and `from
-                # src.data_pipeline import daily_update` names the orchestrator
-                # only as module+alias — checking node.module alone misses
-                # both, leaving the helper outside the closure and the
-                # orchestrator import invisible (codex #434 r19).
                 if isinstance(node, ast.Import):
                     names = [a.name for a in node.names]
                 elif isinstance(node, ast.ImportFrom):
-                    # RELATIVE imports resolved against the current module
-                    # (codex #434 r20): `from . import update_runner` has
-                    # module=None/level=1 and `from .update_runner import
-                    # run_update` only the relative suffix — ignoring
-                    # node.level let both escape the closure entirely.
+                    # relative imports anchored correctly for BOTH module
+                    # kinds: a package initializer's level-1 anchor is the
+                    # package itself, a plain module's is its parent
+                    # (codex #434 r27).
                     if node.level:
-                        pkg_parts = ("web.operator_ui." + rel).split(".")[:-1]
+                        pkg_parts = name.split(".") if is_pkg                             else name.split(".")[:-1]
                         if node.level > 1:
                             pkg_parts = pkg_parts[:-(node.level - 1)]
                         base_pkg = ".".join(pkg_parts)
@@ -380,46 +363,41 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                         f"{prefix}.{a.name}" if prefix else a.name
                         for a in node.names
                     ]
+                    for alias in node.names:
+                        with self.subTest(module=name,
+                                          imported_name=alias.name):
+                            self.assertNotIn(
+                                alias.name,
+                                {"__import__", "import_module"},
+                                f"{name} 导入了动态取模块的名字")
                 else:
                     continue
-                for name in names:
-                    root = name.split(".")[0]
-                    with self.subTest(module=rel, imported=name):
+                for imported in names:
+                    root = imported.split(".")[0]
+                    with self.subTest(module=name, imported=imported):
                         self.assertNotIn(
-                            name, ("src.data_pipeline.daily_update",
-                                   "src.data_pipeline.bundle_swap"),
-                            f"{rel} 把编排器/换库机器接进了检视页闭包")
-                        # `import scripts.daily_update as updater` then
-                        # updater.main([...]) reaches the SAME orchestrator
-                        # through its CLI wrapper — the read-only closure has
-                        # no business importing anything under scripts/
-                        # (codex #434 r24).
+                            imported, ("src.data_pipeline.daily_update",
+                                       "src.data_pipeline.bundle_swap"),
+                            f"{name} 把编排器/换库机器接进了检视页闭包")
                         self.assertNotEqual(
                             root, "scripts",
-                            f"{rel} import 了 scripts 下的入口 {name!r}"
+                            f"{name} import 了 scripts 下的入口"
                             f" —— 检视页闭包不得触碰任何 CLI 包装")
-                        # `from os import system; system(...)` puts a BARE
-                        # name at the call site — no attribute shape to
-                        # match, and `os` itself is closure-legal. Reject
-                        # the spawning NAMES at their import instead
-                        # (codex #434 r21).
                         if root in ("os", "posix", "nt"):
-                            leaf = name.rsplit(".", 1)[-1]
-                            # posix_spawn(p) does not start with "spawn",
-                            # and fork/forkpty reach a new process the long
-                            # way round (codex #434 r22 + self-audit).
-                            spawnish = _is_spawnish(leaf)
+                            leaf = imported.rsplit(".", 1)[-1]
                             self.assertFalse(
-                                spawnish and leaf != name,
-                                f"{rel} 从 {root} 直接导入派生函数 {leaf!r}"
-                                f" —— 裸名调用没有属性形状可查")
+                                _is_spawnish(leaf) and leaf != imported,
+                                f"{name} 从 {root} 直接导入派生函数 "
+                                f"{leaf!r} —— 裸名调用没有属性形状可查")
                         if (root in spawn_banned
-                                and rel.split(".")[-1] != exempt_spawner):
+                                and name.split(".")[-1] != exempt_spawner):
                             self.fail(
-                                f"{rel} import 了可派生进程的模块 {name!r}"
-                                f"(检视页闭包内仅 {exempt_spawner} 获豁免)")
-                    if name.startswith("web.operator_ui."):
-                        queue.append(name[len("web.operator_ui."):])
+                                f"{name} import 了可派生进程的模块 "
+                                f"{imported!r}(检视页闭包内仅 "
+                                f"{exempt_spawner} 获豁免)")
+                    if imported.startswith("web."):
+                        queue.append(imported)
+
 
     def test_the_filename_constant_is_not_restated_as_a_literal(self) -> None:
         # The docs may spell the filename (they are prose), but the CODE must
