@@ -147,8 +147,13 @@ _render_command(morning_command(
     provider_uri=_provider,
     delisted_registry=resolve_delisted_registry(),
     name_source=resolve_name_source(),
-    # Bind the SAME threshold section ⑤ predicts against — the CLI's own
-    # argparse default is independent of it (codex #431 r14).
+    # Bind the SAME threshold section ⑤ predicts against. The CLI's argparse
+    # default now READS this field (it used to restate the literal — the
+    # divergence this flag was added to route around, #431 r14), so the flag
+    # is no longer load-bearing for agreement. It is kept because the page
+    # promises the command it prints runs against the value it predicted, and
+    # an explicit flag keeps that true even if the CLI's own default moves
+    # again.
     bundle_max_age_days=serving_bundle_max_age_days()))
 
 # ---------------------------------------------------------------------------

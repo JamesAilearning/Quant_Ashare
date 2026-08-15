@@ -46,6 +46,7 @@ from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
     RecommendationConfig,
     _model_meta_paths,
+    default_name_source,
     recommend,
     write_outputs,
 )
@@ -125,12 +126,13 @@ _DEFAULT_PROVIDER = os.environ.get(
 _DEFAULT_REGISTRY = os.environ.get(
     "QUANT_DELISTED_REGISTRY", "D:/qlib_data/tushare_raw/delisted_registry.parquet"
 )
-# Mirrors RecommendationConfig.name_source_parquet — the active-stocks snapshot
-# is REQUIRED for the ST filter, so the CLI must let a non-default layout point
-# at it (otherwise _validate_st_snapshot fails "file not found" with no escape).
-_DEFAULT_NAME_SOURCE = os.environ.get(
-    "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet"
-)
+# The active-stocks snapshot is REQUIRED for the ST filter, so the CLI must
+# let a non-default layout point at it (otherwise _validate_st_snapshot fails
+# "file not found" with no escape). READS the serving resolver rather than
+# mirroring it: this used to restate both the env var and the literal, so
+# editing RecommendationConfig.name_source_parquet moved nothing for any CLI
+# run — the fourth copy of the same class this change closes (codex #438 r1).
+_DEFAULT_NAME_SOURCE = default_name_source()
 # _model_meta_paths moved to src.inference.daily_recommend (imported
 # above): the universe-consistency guard and this CLI's fit-window
 # resolver must agree on which sidecars exist, so the two-path
@@ -241,6 +243,13 @@ def _resolve_inference_fit_window(
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    # Flags whose default MIRRORS a RecommendationConfig field read it off the
+    # dataclass instead of restating the literal. Each of them is passed
+    # straight back into the config below, so the config's own default never
+    # applies on this path: the argparse literal WAS the effective value, and
+    # editing the dataclass would have silently failed to take effect for
+    # every CLI run. The ops cockpit had to print `--bundle-max-age-days`
+    # explicitly to work around exactly this divergence (#431 r14).
     p = argparse.ArgumentParser(description="Daily stock recommendation (Alpha158 + LGB, PIT).")
     p.add_argument("--as-of", default=None,
                    help="Decision date T (YYYY-MM-DD). Default = latest PIT trading day.")
@@ -249,8 +258,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Buy-list size. Default: 50 in single-model mode; the "
              "pinned serving-config value in ensemble mode (an "
              "explicit value must EQUAL it).")
-    p.add_argument("--out-dir", default="output/daily_recommend",
-                   help="Output directory for csv/json (default output/daily_recommend).")
+    p.add_argument("--out-dir", default=RecommendationConfig.out_dir,
+                   help="Output directory for csv/json (default %(default)s).")
     p.add_argument(
         "--model", default=None,
         help="Model artifact path (single-model mode; default: the "
@@ -270,13 +279,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--name-source", default=_DEFAULT_NAME_SOURCE,
                    help="Active-stocks snapshot parquet. REQUIRED for the ST "
                         "filter (supplies current names + the current-ST set).")
-    p.add_argument("--st-max-age-days", type=int, default=7,
+    p.add_argument("--st-max-age-days", type=int,
+                   default=RecommendationConfig.st_snapshot_max_age_days,
                    help="Max days the ST snapshot may lag the as-of date "
-                        "before it is rejected as stale (default 7).")
-    p.add_argument("--bundle-max-age-days", type=int, default=14,
+                        "before it is rejected as stale (default %(default)s).")
+    p.add_argument("--bundle-max-age-days", type=int,
+                   default=RecommendationConfig.bundle_max_age_days,
                    help="Max CALENDAR days the qlib bundle's last trading day "
                         "may lag today before the price/feature data is "
-                        "rejected as stale (default 14; covers A-share "
+                        "rejected as stale (default %(default)s; covers A-share "
                         "holidays). Raise it for an intentional historical run.")
     p.add_argument(
         "--instruments", default=None,
