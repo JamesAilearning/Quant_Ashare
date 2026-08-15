@@ -21,6 +21,7 @@ loudly (kind="corrupt_report"), never defaulted.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,8 +54,9 @@ class PITRunResult:
       still ``ok`` here — it means "validation found failures", which is a
       RESULT to render, not a runner error.
     * ``run_failed`` — the CLI died before producing a report (setup error,
-      e.g. unreadable registry) or the validator script itself is missing;
-      ``error`` carries the stderr tail.
+      e.g. unreadable registry), the validator script itself is missing, or
+      the temporary report directory could not be created (full disk /
+      permissions); ``error`` carries the reason.
     * ``corrupt_report`` — the CLI finished but the report file is missing /
       unparseable / shape-invalid. Fail-loud; never a silent default.
     * ``timeout`` — the run exceeded ``timeout_s`` and was killed.
@@ -123,7 +125,22 @@ def run_pit_validation(
             error=f"校验脚本不在预期路径（仓库布局变了？）：{VALIDATOR_SCRIPT}",
         )
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="pit_validate_") as tmp:
+    # codex P2: TemporaryDirectory() as a context manager lets two failure
+    # modes ESCAPE as exceptions — creation (full disk / permissions) raises
+    # before the try below, and a cleanup PermissionError would override a
+    # pending return. The page only ever sees result kinds, so neither may
+    # escape: creation failure becomes a loud run_failed; cleanup runs with
+    # ignore_errors=True so it can never override a computed result (worst
+    # case is litter in the system temp dir, which the OS janitor reaps —
+    # NOT worth flipping a successful validation into an error over).
+    try:
+        tmp = tempfile.mkdtemp(prefix="pit_validate_")
+    except OSError as exc:
+        return PITRunResult(
+            kind="run_failed",
+            error=f"无法创建临时报告目录（磁盘满/权限不足？）：{exc}",
+        )
+    try:
         report_path = Path(tmp) / "pit_report.json"
         cmd = [
             python or sys.executable,
@@ -199,3 +216,5 @@ def run_pit_validation(
             error="校验进程退出码 0 但报告文件不存在 — 06 CLI 契约被违反。",
             elapsed_s=elapsed,
         )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

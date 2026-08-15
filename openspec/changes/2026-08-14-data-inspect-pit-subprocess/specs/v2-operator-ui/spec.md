@@ -16,11 +16,13 @@ validation hard-fails once the UI session has initialized qlib for another
 provider. The page SHALL render the CLI's structured report (exit code +
 per-check results); a process exit code of 2 WITH a parseable report SHALL be
 rendered as validation failures (a result), not as a runner error. Runner-level
-failures — timeout, interpreter launch failure, CLI death before a report, or
-a missing / unparseable / shape-invalid report — SHALL surface loudly with
-their failure kind, never as a silent default. The transient report file SHALL
-live in a temporary directory removed when the run returns; nothing in the
-inspected bundle SHALL be written. The page copy SHALL state explicitly that it
+failures — timeout, interpreter launch failure, temporary-directory creation
+failure, CLI death before a report, or a missing / unparseable / shape-invalid
+report — SHALL surface loudly with their failure kind, never as a silent
+default and never as an escaping exception the page cannot render. The
+transient report file SHALL live in a temporary directory removed when the
+run returns (cleanup itself SHALL NOT override a computed result); nothing
+in the inspected bundle SHALL be written. The page copy SHALL state explicitly that it
 inspects production data and that bundles are produced by the data pipeline,
 not the UI. Read-only is machine-enforced: the page source SHALL contain no
 write-side filesystem API and SHALL NOT import builder / fetcher /
@@ -44,10 +46,11 @@ orchestrator machinery, nor the validator or the qlib runtime itself.
   process itself has initialized qlib for, and repeatably within one session
 
 #### Scenario: runner-level failures are loud
-- **WHEN** the validation subprocess times out, cannot launch, dies before
-  writing its report, or yields an unparseable / shape-invalid report
+- **WHEN** the validation subprocess times out, cannot launch, the temporary
+  report directory cannot be created, the CLI dies before writing its
+  report, or the report is unparseable / shape-invalid
 - **THEN** the page shows a prominent error naming the failure kind —
-  never an empty table or a defaulted pass
+  never an empty table, a defaulted pass, or an unhandled exception
 
 #### Scenario: the read-only contract is machine-checked
 - **WHEN** the governance suite runs

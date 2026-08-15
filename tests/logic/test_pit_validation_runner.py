@@ -24,8 +24,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from web.operator_ui.pit_validation_runner import (  # noqa: E402
     DEFAULT_TIMEOUT_S,
-    PITRunResult,
     VALIDATOR_SCRIPT,
+    PITRunResult,
     run_pit_validation,
 )
 
@@ -205,6 +205,44 @@ class OutcomeBranchTests(unittest.TestCase):
             run_pit_validation(Path("/data/prov"), Path("/data/reg.parquet"))
         self.assertEqual(len(seen), 1)
         self.assertFalse(seen[0].exists(), f"temp dir leaked: {seen[0]}")
+
+
+class TempDirBoundaryTests(unittest.TestCase):
+    """codex P2: temporary-directory failures must surface as a result kind,
+    never as an escaping exception — the page only renders result kinds."""
+
+    def test_tempdir_creation_failure_is_a_loud_run_failed(self) -> None:
+        with mock.patch(
+            "web.operator_ui.pit_validation_runner.tempfile.mkdtemp",
+            side_effect=OSError("disk full"),
+        ):
+            result = run_pit_validation(Path("/data/prov"), Path("/data/reg.parquet"))
+        self.assertEqual(result.kind, "run_failed")
+        self.assertIn("无法创建临时报告目录", result.error)
+        self.assertIn("disk full", result.error)
+
+    def test_cleanup_can_never_override_a_computed_result(self) -> None:
+        # Pin the mechanism: cleanup goes through rmtree(ignore_errors=True),
+        # so even a PermissionError there cannot replace a successful result
+        # with an escaping exception.
+        captured: dict = {}
+
+        def _rmtree(path, **kwargs):
+            captured.update(kwargs)
+
+        def _run(cmd, **kwargs):
+            report_path = Path(cmd[cmd.index("--report-json") + 1])
+            report_path.write_text(json.dumps(_VALID_REPORT), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch(
+            "web.operator_ui.pit_validation_runner.subprocess.run", _run
+        ), mock.patch(
+            "web.operator_ui.pit_validation_runner.shutil.rmtree", _rmtree
+        ):
+            result = run_pit_validation(Path("/data/prov"), Path("/data/reg.parquet"))
+        self.assertEqual(result.kind, "ok")
+        self.assertTrue(captured.get("ignore_errors"))
 
 
 if __name__ == "__main__":
