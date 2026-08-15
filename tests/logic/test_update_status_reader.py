@@ -417,6 +417,12 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
         # …and the missing state names the override as a cause to check
         missing_at = page.index("从未记录数据更新运行")
         self.assertIn("--status-path", page[missing_at:missing_at + 300])
+        # The widget is KEYED to the provider (codex #434 r13): Streamlit
+        # applies `value=` only on first creation, so without a
+        # provider-derived key, editing provider_uri leaves the box holding
+        # the previous provider's path — the bundle sections inspect one
+        # provider while this section silently reads another's artifact.
+        self.assertIn('key=f"data_inspect::status_path::{provider_dir}"', page)
 
     def test_the_page_never_asserts_running_it_cannot_verify(self) -> None:
         # Source pins (codex #434 r8/r9): the fresh banner is conditional on

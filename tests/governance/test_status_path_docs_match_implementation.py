@@ -170,7 +170,12 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # `os` at all (it is pathlib-only today; if that ever changes, the
         # exemption must be argued here, not assumed).
         for ln in import_lines:
-            for mod in ("subprocess", "runpy", "multiprocessing", "os"):
+            # asyncio spawns processes too (create_subprocess_exec/shell),
+            # as do concurrent.futures (ProcessPoolExecutor) and pty — the
+            # list is "modules that can start a process", not "modules I have
+            # seen used" (codex #434 r13).
+            for mod in ("subprocess", "runpy", "multiprocessing", "os",
+                        "asyncio", "concurrent", "pty"):
                 self.assertNotIn(
                     f"import {mod}", ln,
                     f"检视页 import 了可派生进程的模块 {mod!r}:{ln.strip()!r}")

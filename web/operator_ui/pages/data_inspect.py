@@ -90,6 +90,15 @@ except ValueError as _exc:
 _status_input = st.text_input(
     "状态工件路径（若计划任务用了 --status-path 覆盖，请填同一路径）",
     value=str(_derived_status) if _derived_status else "",
+    # KEYED to the provider: Streamlit keeps a widget's state across reruns
+    # and applies `value=` only on first creation, so editing provider_uri
+    # above would leave this box holding the PREVIOUS provider's derived
+    # path — the bundle sections would inspect the new provider while this
+    # section silently read the old provider's artifact (codex #434 r13).
+    # A provider-derived key makes the widget a NEW widget when the provider
+    # changes, re-applying the fresh default; an operator override typed for
+    # the current provider still survives that provider's own reruns.
+    key=f"data_inspect::status_path::{provider_dir}",
     help="默认从 provider 路径派生（<provider>.daily_update_status.json）。"
          "本页对该文件只读。",
 )
