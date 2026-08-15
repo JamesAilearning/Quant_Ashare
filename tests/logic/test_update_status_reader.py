@@ -72,11 +72,20 @@ class FilenamePinTests(unittest.TestCase):
         # This repo SHIPS the colliding layout (my_cn_data_pit next to
         # my_cn_data_pit_2015), so the research bundle would have shown the
         # production provider's last run as its own.
-        a = status_path_for_provider(Path("D:/qlib_data/my_cn_data_pit"))
-        b = status_path_for_provider(Path("D:/qlib_data/my_cn_data_pit_2015"))
+        # Host-independent on purpose (codex #434 r28, same class as W35):
+        # on POSIX, `Path("D:/...").resolve()` anchors under the CWD, so a
+        # literal `Path("D:/qlib_data")` parent assertion is a Windows-only
+        # premise. Assert the RELATIONSHIPS instead — distinct artifacts,
+        # same parent as each provider's own resolved parent.
+        pa = Path("D:/qlib_data/my_cn_data_pit")
+        pb = Path("D:/qlib_data/my_cn_data_pit_2015")
+        a = status_path_for_provider(pa)
+        b = status_path_for_provider(pb)
         self.assertNotEqual(a, b)
-        # …and it stays a SIBLING, so the atomic swap cannot carry it away.
-        self.assertEqual(a.parent, Path("D:/qlib_data"))
+        # …and each stays a SIBLING of its (resolved) provider, so the atomic
+        # swap cannot carry it away.
+        self.assertEqual(a.parent, pa.resolve().parent)
+        self.assertEqual(b.parent, pb.resolve().parent)
 
     def test_reader_and_writer_agree_on_the_schema_version(self) -> None:
         self.assertEqual(STATUS_SCHEMA_VERSION, WRITER_STATUS_SCHEMA_VERSION)
@@ -498,11 +507,18 @@ class FinishedFieldCompletenessTests(unittest.TestCase):
             stamped = UpdateRunStatus(
                 kind="finished", path=Path("x"),
                 provider_dir=_norm(provider))
-            # spelled differently (case, relative hop) — still the same dir
-            self.assertTrue(record_matches_provider(
-                stamped, Path(str(provider).upper())))
+            # spelled differently (relative hop) — still the same dir;
+            # host-independent because resolve() collapses "." everywhere
             self.assertTrue(record_matches_provider(
                 stamped, provider.parent / "." / provider.name))
+            # case folding is a WINDOWS filesystem semantic (normcase is the
+            # identity on POSIX, where an uppercased path is a DIFFERENT
+            # path) — asserted only where the host folds case, or this line
+            # is a Windows-only premise that reds every Ubuntu leg
+            # (codex #434 r28, same class as W35).
+            if os.path.normcase("A") == "a":
+                self.assertTrue(record_matches_provider(
+                    stamped, Path(str(provider).upper())))
             other = UpdateRunStatus(
                 kind="finished", path=Path("x"),
                 provider_dir=_norm(Path(t) / "Other"))

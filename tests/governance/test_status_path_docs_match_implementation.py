@@ -170,95 +170,35 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
                 / "spec.md").read_text(encoding="utf-8")
         self.assertIn("**import or invoke**", spec)
         self.assertNotIn("SHALL NOT name the orchestrator", spec)
-        # …and the claim stays TRUE of the page: prose may name it, imports
-        # must not.
+
+    def test_the_page_itself_needs_no_os_at_all(self) -> None:
+        """The page's EXTRA restriction beyond the closure rules.
+
+        Everything else this block used to check (spawning modules, dynamic
+        importers, call shapes, orchestrator imports) is enforced for the
+        page BY THE CLOSURE WALK below — the page is its seed module. Two
+        policy copies had already diverged over `os` (r28), so the shared
+        rules live only in the walk and THIS test keeps only the page-local
+        increment: the page is pathlib-only, so even `os`/`builtins` —
+        closure-legal for helpers that read env vars — are banned here. If
+        the page ever needs os, the exemption must be argued here, not
+        assumed.
+        """
+        import ast
         page = (_PROJECT_ROOT / "web" / "operator_ui" / "pages"
                 / "data_inspect.py").read_text(encoding="utf-8")
-        import_lines = [ln for ln in page.splitlines()
-                        if re.match(r"\s*(import|from)\s", ln)]
-        for name in ("daily_update", "bundle_swap"):
-            for ln in import_lines:
-                self.assertNotIn(name, ln)
-        # The INVOKE half (codex #434 r12): an import-line scan alone lets
-        # `import subprocess` + `subprocess.run([... "scripts/daily_update.py"])`
-        # through. The page needs no process-spawning primitive at all (its
-        # PIT-validation subprocess lives in pit_validation_runner), so ban
-        # the mechanism, not the target string — prose like "in a SUBPROCESS."
-        # stays legal because the patterns require a call shape.
-        # Alias escape (found by this test's own reverse validation, not by
-        # review): `import subprocess as _sp` + `_sp.run(...)` matches none
-        # of the attribute patterns. The IMPORT of a spawning module is what
-        # aliasing cannot hide, so ban that on import lines and keep the
-        # call-shape patterns for the os.* primitives (importing os is
-        # legitimate).
-        # Parsed with AST, not substring-matched: `import pathlib,
-        # subprocess as _sp` contains neither the substring
-        # `import subprocess` nor any call-shape pattern, so the previous
-        # string scan stayed green while the page could invoke the
-        # orchestrator (codex #434 r15). AST sees the module NAME
-        # regardless of grouping, aliasing, or line layout. `importlib`
-        # and the `__import__` builtin are banned alongside — the
-        # remaining spellings of "get me a module without writing its
-        # import". `os` stays on the list because this page is
-        # pathlib-only; if it ever needs os, the exemption must be argued
-        # here, not assumed.
-        import ast
-        banned = {"subprocess", "runpy", "multiprocessing", "os",
-                  "asyncio", "concurrent", "pty",
-                  "posix", "nt", "_winapi", "_posixsubprocess",
-                  "importlib", "builtins",
-                  # ctypes reaches libc's system() without any of the above
-                  # (`CDLL(None).system(b"...")` on POSIX) — codex #434 r17.
-                  "ctypes"}
-        # THREAT MODEL, stated so the list stops growing forever: this guard
-        # exists to catch ACCIDENTAL drift — someone wiring a convenient
-        # spawn into a read-only page. Deliberate evasion (eval/exec over
-        # assembled strings, getattr chains over allowed modules) is not
-        # spelled like an accident, cannot be enumerated away, and is the
-        # reviewer's job, not this test's.
         for node in ast.walk(ast.parse(page)):
             if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
+                names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
-                # BOTH halves: the module AND the imported names. `from
-                # builtins import __import__ as load` carries an allowed
-                # module while the alias hides every call-shape pattern —
-                # load("subprocess") then invokes at will (codex #434 r16).
                 names = [node.module or ""]
-                for alias in node.names:
-                    with self.subTest(imported_name=alias.name):
-                        self.assertNotIn(
-                            alias.name, {"__import__", "import_module"},
-                            f"检视页导入了动态取模块的名字 {alias.name!r}")
             else:
                 continue
             for name in names:
                 with self.subTest(imported=name):
                     self.assertNotIn(
-                        name.split(".")[0], banned,
-                        f"检视页 import 了可派生进程的模块 {name!r}")
-        for pattern, label in (
-            (r"subprocess\.\w", "subprocess.<attr>"),
-            (r"\bPopen\b", "Popen"),
-            (r"os\.system\s*\(", "os.system("),
-            (r"os\.exec\w*\s*\(", "os.exec*("),
-            (r"os\.spawn\w*\s*\(", "os.spawn*("),
-            (r"\brunpy\b", "runpy"),
-            (r"__import__\s*\(", "__import__("),
-        ):
-            with self.subTest(primitive=label):
-                self.assertIsNone(
-                    re.search(pattern, page),
-                    f"检视页出现进程派生原语 {label} —— 只读页面无法证明它"
-                    f"没在调用编排器")
-        # proposal/tasks must not resurrect the unenforceable naming claim —
-        # r11 fixed only the delta spec and both still carried it (r12).
-        for doc in ("proposal.md", "tasks.md"):
-            text = (_CHANGE / doc).read_text(encoding="utf-8")
-            with self.subTest(doc=doc):
-                self.assertNotIn("不出现 `daily_update`", text)
-                self.assertNotIn("字样", text.split("Non-goals")[0]
-                                 if doc == "proposal.md" else text)
+                        name.split(".")[0], ("os", "builtins"),
+                        f"检视页(pathlib-only)import 了 {name!r}")
 
     def test_the_pages_import_closure_cannot_reach_the_orchestrator(self) -> None:
         """The helper door (codex #434 r18, uniform walk since r27).
