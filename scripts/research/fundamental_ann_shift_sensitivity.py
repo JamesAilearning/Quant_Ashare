@@ -72,12 +72,24 @@ class ShiftDiagnosticError(RuntimeError):
 
 @dataclass(frozen=True)
 class WinnerMove:
-    """One sampled date at which the source-side winner moves."""
+    """One (endpoint, instrument, sampled date) at which the winner moves.
 
+    ENDPOINT is part of the identity, not a detail: the view serves each
+    endpoint INDEPENDENTLY, so the same ticker legitimately has a different
+    served period per endpoint on the same day. Collapsing them would both
+    lose movements (one endpoint overwriting another) and manufacture false
+    conflicts out of a perfectly legal cross-endpoint difference.
+    """
+
+    endpoint: str
     instrument: str
     trade_date: date
     base_period: str | None      # W_base — winner under ORIGINAL availability
     shifted_period: str | None   # W_shift — winner under SHIFTED availability
+
+    @property
+    def key(self) -> tuple[str, str, date]:
+        return (self.endpoint, self.instrument, self.trade_date)
 
 
 @dataclass(frozen=True)
@@ -148,13 +160,17 @@ def _shift_forward(
 
 
 def find_winner_moves(
-    store_by_instrument: Mapping[str, pd.DataFrame],
+    store_by_key: Mapping[tuple[str, str], pd.DataFrame],
     sampled_dates: Sequence[date],
     shift_days: int,
     *,
     calendar: Sequence[date] | None = None,
 ) -> tuple[WinnerMove, ...]:
-    """Every (instrument, sampled date) whose SOURCE-SIDE winner moves.
+    """Every (endpoint, instrument, sampled date) whose SOURCE-SIDE winner moves.
+
+    ``store_by_key`` is keyed by ``(endpoint, instrument)`` — one frame per
+    endpoint per ticker, because endpoints are served independently and a
+    single per-ticker key would let one endpoint's frame overwrite another's.
 
     Computed purely from the store, the shift and the calendar — the rebuilt
     panel is never consulted, so an announcement-blind builder cannot make
@@ -165,7 +181,7 @@ def find_winner_moves(
             f"shift_days must be positive (got {shift_days}) — the diagnostic "
             "delays announcements; a zero or negative shift tests nothing.")
     moves: list[WinnerMove] = []
-    for instrument, raw in store_by_instrument.items():
+    for (endpoint, instrument), raw in store_by_key.items():
         # Canonical selection FIRST: rows the view would never serve must not
         # be able to move a winner, or a correct panel gets refused for obeying
         # the serve-rule. Note this KEEPS a uf1-only period — that row IS its
@@ -176,38 +192,51 @@ def find_winner_moves(
             shifted = winner_at(record, td, shift_days=shift_days,
                                 calendar=calendar)
             if base != shifted:
-                moves.append(WinnerMove(instrument, td, base, shifted))
+                moves.append(
+                    WinnerMove(endpoint, instrument, td, base, shifted))
     return tuple(moves)
 
 
 def adjudicate(
     moves: Sequence[WinnerMove],
-    served_base: Mapping[tuple[str, date], str | None],
-    served_shifted: Mapping[tuple[str, date], str | None],
+    served_base: Mapping[tuple[str, str, date], str | None],
+    served_shifted: Mapping[tuple[str, str, date], str | None],
 ) -> ShiftVerdict:
     """Compare what the builder ACTUALLY served against the source-side winners.
 
-    ``served_*`` map (instrument, trade_date) -> the report period the panel
-    served there, taken from the panel's own ``periods`` frames.
+    ``served_*`` map ``(endpoint, instrument, trade_date)`` -> the report period
+    the panel served there, taken from the panel's own ``periods`` frames.
+
+    A move whose key is ABSENT from the served maps is skipped, not failed: the
+    source scan may legitimately cover instruments the panel was not asked to
+    build (see ``run_diagnostic``, which restricts the scan, and the financial
+    exclusion, which drops issuers inside the view). Failing on absence would
+    refuse a correct bridge for not building what it was never asked to build.
     """
     if not moves:
         return ShiftVerdict(INCONCLUSIVE, (), ())
     violations: list[str] = []
+    adjudicated: list[WinnerMove] = []
     for mv in moves:
-        key = (mv.instrument, mv.trade_date)
-        got_base = served_base.get(key)
-        got_shift = served_shifted.get(key)
+        if mv.key not in served_base and mv.key not in served_shifted:
+            continue
+        adjudicated.append(mv)
+        got_base = served_base.get(mv.key)
+        got_shift = served_shifted.get(mv.key)
+        where = f"{mv.endpoint}/{mv.instrument} @ {mv.trade_date}"
         if got_base != mv.base_period:
             violations.append(
-                f"{mv.instrument} @ {mv.trade_date}: baseline served "
-                f"{got_base!r}, source-side winner was {mv.base_period!r}")
+                f"{where}: baseline served {got_base!r}, source-side winner "
+                f"was {mv.base_period!r}")
         if got_shift != mv.shifted_period:
             violations.append(
-                f"{mv.instrument} @ {mv.trade_date}: shifted rebuild served "
-                f"{got_shift!r}, expected {mv.shifted_period!r}"
+                f"{where}: shifted rebuild served {got_shift!r}, expected "
+                f"{mv.shifted_period!r}"
                 + ("  <-- 被服务的记录没换人：公告日未被消费"
                    if got_shift == got_base else ""))
-    return ShiftVerdict(REFUSE if violations else OK, tuple(moves),
+    if not adjudicated:
+        return ShiftVerdict(INCONCLUSIVE, (), ())
+    return ShiftVerdict(REFUSE if violations else OK, tuple(adjudicated),
                         tuple(violations))
 
 
@@ -280,28 +309,43 @@ def _shift_stamp(
     return "" if moved is None else moved.strftime("%Y%m%d")
 
 
-def served_periods(panel_periods: Mapping[str, pd.DataFrame]) -> dict[
-        tuple[str, date], str | None]:
-    """Flatten a panel's ``periods`` frames into (instrument, date) -> period.
+def served_periods(
+    panel_periods: Mapping[str, pd.DataFrame],
+) -> dict[tuple[str, str, date], str | None]:
+    """A panel's ``periods`` frames as (endpoint, instrument, date) -> period.
 
-    All requested fields of one endpoint share a served period, so any field's
-    frame answers the question; disagreement across fields would itself be a
-    bug, and is asserted rather than averaged over.
+    Grouped BY ENDPOINT, because the view serves endpoints independently: on
+    one trade date a ticker's income period and balance-sheet period may
+    legitimately differ, and flattening them into a single per-ticker key would
+    turn that legal difference into a spurious conflict (and silently drop one
+    endpoint's answer).
+
+    WITHIN one endpoint the requested fields do share a served period, so a
+    disagreement there IS a panel bug — asserted rather than averaged over.
     """
-    out: dict[tuple[str, date], str | None] = {}
-    for frame in panel_periods.values():
+    out: dict[tuple[str, str, date], str | None] = {}
+    for terminal, frame in panel_periods.items():
+        endpoint = _endpoint_of_terminal(terminal)
         for when in frame.index:
             for inst in frame.columns:
                 raw = frame.loc[when, inst]
                 value = None if pd.isna(raw) else str(raw)
-                key = (str(inst), pd.Timestamp(when).date())
+                key = (endpoint, str(inst), pd.Timestamp(when).date())
                 if key in out and out[key] != value:
                     raise ShiftDiagnosticError(
-                        f"fields disagree on the served period at {key}: "
-                        f"{out[key]!r} vs {value!r} — a panel bug, not a "
-                        "shift-sensitivity finding.")
+                        f"fields of endpoint {endpoint!r} disagree on the "
+                        f"served period at {key}: {out[key]!r} vs {value!r} — "
+                        "a panel bug, not a shift-sensitivity finding.")
                 out[key] = value
     return out
+
+
+def _endpoint_of_terminal(terminal: str) -> str:
+    """``$revenue`` -> ``income``, through the view's own field table."""
+    from src.research.financial_pit_view import _FIELD_ENDPOINT  # noqa: PLC0415
+    from src.research.fundamental_panel import to_field  # noqa: PLC0415
+
+    return _FIELD_ENDPOINT[to_field(terminal)]
 
 
 def run_diagnostic(
@@ -351,22 +395,36 @@ def run_diagnostic(
     # The expectation comes from the SOURCE data, never from either panel —
     # otherwise an announcement-blind builder would define itself irrelevant.
     moves = find_winner_moves(
-        _record_frames(store_dir, fields, cal), trade_dates, shift_days,
-        calendar=calendar)
+        _record_frames(store_dir, fields, cal, instruments, financial_issuers),
+        trade_dates, shift_days, calendar=calendar)
     return adjudicate(moves, served_periods(base_panel.periods),
                       served_periods(shifted_panel.periods))
 
 
 def _record_frames(
     store_dir: Path, fields: Sequence[str], calendar: object,
-) -> dict[str, pd.DataFrame]:
-    """Per-instrument disclosure-of-record frames for the queried endpoints.
+    instruments: Sequence[str], financial_issuers: frozenset[str],
+) -> dict[tuple[str, str], pd.DataFrame]:
+    """Disclosure-of-record frames per (endpoint, instrument) for the queried
+    endpoints, RESTRICTED to the universe the panels were actually built for.
+
+    Both restrictions matter on a real full-universe store:
+
+    * a ticker the panels were not asked to build has no panel entry to compare
+      against, and
+    * a FINANCIAL issuer is dropped inside the view, so it has no entry either.
+
+    Scanning every parquet would generate winner movements for such tickers and
+    then refuse the (correct) bridge for not serving them.
 
     Reduced by the CANONICAL selection before any winner is computed, so rows
     the view would never serve cannot move a winner — and so a uf1-only period,
     which IS its period's disclosure of record, still can.
     """
-    from src.data.pit._common import to_qlib_ticker  # noqa: PLC0415
+    from src.data.pit._common import (
+        qlib_to_ts_code,  # noqa: PLC0415
+        to_qlib_ticker,  # noqa: PLC0415
+    )
     from src.data.pit.financial_pit_contract import (  # noqa: PLC0415
         build_contract_frame,
         resolve_current_versions,
@@ -375,18 +433,29 @@ def _record_frames(
         _FIELD_ENDPOINT,
     )
 
+    # Store files are ts_code-named; callers may pass either namespace, so
+    # normalise through the SAME converter the bridge uses rather than
+    # hand-splitting the label.
+    wanted_ts = {
+        label if "." in label else qlib_to_ts_code(label)
+        for label in instruments
+    }
+    wanted_ts -= set(financial_issuers)
+
     endpoints = {_FIELD_ENDPOINT[f] for f in fields if f in _FIELD_ENDPOINT}
-    out: dict[str, pd.DataFrame] = {}
+    out: dict[tuple[str, str], pd.DataFrame] = {}
     for endpoint in sorted(endpoints):
         endpoint_dir = Path(store_dir) / endpoint
         if not endpoint_dir.is_dir():
             continue
         for parquet in sorted(endpoint_dir.glob("*.parquet")):
+            if parquet.stem not in wanted_ts:
+                continue
             raw = pd.read_parquet(parquet)
             record = select_disclosure_of_record(
                 resolve_current_versions(
                     build_contract_frame(raw, calendar)))  # type: ignore[arg-type]
-            out[to_qlib_ticker(parquet.stem)] = record
+            out[(endpoint, to_qlib_ticker(parquet.stem))] = record
     return out
 
 

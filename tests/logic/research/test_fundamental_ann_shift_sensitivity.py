@@ -74,7 +74,7 @@ def test_shift_delays_the_winner():
 
 def test_winner_moves_are_found_from_source_only():
     moves = find_winner_moves(
-        {"SZ000001": _TWO_PERIODS}, _CAL, shift_days=2, calendar=_CAL)
+        {("income", "SZ000001"): _TWO_PERIODS}, _CAL, shift_days=2, calendar=_CAL)
     at = {(m.trade_date, m.base_period, m.shifted_period) for m in moves}
     # 0505 起基线服务新期、平移后仍是旧期 —— 胜者移动
     assert (date(2022, 5, 5), "20220331", "20211231") in at
@@ -89,7 +89,7 @@ def test_no_move_when_the_shift_crosses_no_sampled_date():
     """
     sampled = [date(2022, 5, 9), date(2022, 5, 10)]
     moves = find_winner_moves(
-        {"SZ000001": _TWO_PERIODS}, sampled, shift_days=1, calendar=_CAL)
+        {("income", "SZ000001"): _TWO_PERIODS}, sampled, shift_days=1, calendar=_CAL)
     assert moves == ()
     assert adjudicate(moves, {}, {}).verdict == INCONCLUSIVE
 
@@ -104,7 +104,7 @@ def test_restatement_row_cannot_move_a_winner():
         ("2021-12-31", "1", "2022-05-06", "2022-05-09"),   # 重述，从不被服务
     )
     moves = find_winner_moves(
-        {"SZ000001": with_restatement}, _CAL, shift_days=1, calendar=_CAL)
+        {("income", "SZ000001"): with_restatement}, _CAL, shift_days=1, calendar=_CAL)
     # 唯一被服务的期是 Q4-2021，其可用日 0401 平移到 0429 —— 只有该移动
     assert {m.base_period for m in moves} <= {"20211231", None}
     assert all(m.shifted_period != "20211231" or m.base_period != "20211231"
@@ -117,7 +117,7 @@ def test_update_flag_1_only_period_participates():
     rec = select_disclosure_of_record(uf1_only)
     assert winner_at(rec, date(2022, 5, 5)) == "20220331"
     moves = find_winner_moves(
-        {"SZ000001": uf1_only}, _CAL, shift_days=2, calendar=_CAL)
+        {("income", "SZ000001"): uf1_only}, _CAL, shift_days=2, calendar=_CAL)
     assert moves != ()
 
 
@@ -125,12 +125,12 @@ def test_update_flag_1_only_period_participates():
 
 def _moves():
     return find_winner_moves(
-        {"SZ000001": _TWO_PERIODS}, _CAL, shift_days=2, calendar=_CAL)
+        {("income", "SZ000001"): _TWO_PERIODS}, _CAL, shift_days=2, calendar=_CAL)
 
 
 def _served(moves, *, base_from, shift_from):
-    base = {(m.instrument, m.trade_date): base_from(m) for m in moves}
-    shifted = {(m.instrument, m.trade_date): shift_from(m) for m in moves}
+    base = {m.key: base_from(m) for m in moves}
+    shifted = {m.key: shift_from(m) for m in moves}
     return base, shifted
 
 
@@ -198,7 +198,7 @@ def test_baseline_mismatch_is_also_reported():
 
 def test_non_positive_shift_is_refused():
     with pytest.raises(ShiftDiagnosticError, match="must be positive"):
-        find_winner_moves({"SZ000001": _TWO_PERIODS}, _CAL, 0, calendar=_CAL)
+        find_winner_moves({("income", "SZ000001"): _TWO_PERIODS}, _CAL, 0, calendar=_CAL)
 
 
 def test_verdict_renders_its_reason():
@@ -332,12 +332,27 @@ def test_blind_builder_does_not_escape_via_inconclusive_end_to_end(e2e_store,
     assert verdict.moves != ()
 
 
-def test_served_periods_flattening_rejects_field_disagreement():
+def test_served_periods_rejects_disagreement_within_one_endpoint():
+    """同一 endpoint 的两个字段给出不同的期 = 面板 bug，必须 fail-loud。"""
     idx = _pd.DatetimeIndex([_pd.Timestamp(2022, 5, 5)])
     a = _pd.DataFrame([["20220331"]], index=idx, columns=["SZ000001"])
     b = _pd.DataFrame([["20211231"]], index=idx, columns=["SZ000001"])
     with _pytest.raises(ShiftDiagnosticError, match="disagree on the served"):
-        served_periods({"$x": a, "$y": b})
+        served_periods({"$revenue": a, "$oper_cost": b})   # 都是 income
+
+
+def test_served_periods_keeps_endpoints_apart():
+    """不同 endpoint 同日给出不同的期是**合法**的 —— view 各端点独立服务。
+
+    压平成 per-ticker 一个键，会把这个合法差异变成假冲突，并悄悄丢掉一个
+    端点的答案（codex #433 r2 P1）。
+    """
+    idx = _pd.DatetimeIndex([_pd.Timestamp(2022, 5, 5)])
+    income = _pd.DataFrame([["20220331"]], index=idx, columns=["SZ000001"])
+    balance = _pd.DataFrame([["20211231"]], index=idx, columns=["SZ000001"])
+    got = served_periods({"$revenue": income, "$total_assets": balance})
+    assert got[("income", "SZ000001", date(2022, 5, 5))] == "20220331"
+    assert got[("balancesheet", "SZ000001", date(2022, 5, 5))] == "20211231"
 
 
 def test_empty_store_is_refused(tmp_path):
@@ -345,3 +360,56 @@ def test_empty_store_is_refused(tmp_path):
     empty.mkdir()
     with _pytest.raises(ShiftDiagnosticError, match="nothing to shift"):
         write_shifted_store(empty, tmp_path / "o", 1, _E2E_DAYS)
+
+
+# --- 源侧扫描必须限定在被请求的宇宙内（codex #433 r2 P1）--------------------
+
+@_pytest.fixture
+def store_with_extras(tmp_path):
+    """一个"全宇宙"小店：请求的名字 + 一个未请求的 + 一个金融的。"""
+    inc = tmp_path / "store" / "income"
+    inc.mkdir(parents=True)
+    for ts in ("000001.SZ", "000009.SZ", "600000.SH"):
+        _pd.DataFrame([
+            _store_row(ts, "20211231", "20220331", 100.0),
+            _store_row(ts, "20220331", "20220429", 30.0),
+        ]).to_parquet(inc / f"{ts}.parquet", index=False)
+    return tmp_path / "store"
+
+
+def test_unrequested_instruments_do_not_refuse_a_correct_bridge(
+        store_with_extras, tmp_path):
+    """只请求 000001.SZ：另外两个名字的胜者移动不得拿来裁决。
+
+    否则源侧扫描会为面板从未被要求构建的名字生成移动，然后拿"面板里没有的
+    条目"去比对 —— 误 REFUSE 一个完全正确的桥。
+    """
+    verdict = run_diagnostic(
+        store_dir=store_with_extras, calendar=_E2E_DAYS, trade_dates=_E2E_DAYS,
+        fields=["revenue"], instruments=["000001.SZ"],
+        financial_issuers=frozenset(), shift_days=2, workdir=tmp_path / "w1")
+    assert verdict.verdict == OK, verdict.render()
+    assert {m.instrument for m in verdict.moves} == {"SZ000001"}
+
+
+def test_financially_excluded_instruments_are_not_adjudicated(
+        store_with_extras, tmp_path):
+    """金融 issuer 在 view 内部被剔除，面板里没有它 —— 不得据此拒绝。"""
+    verdict = run_diagnostic(
+        store_dir=store_with_extras, calendar=_E2E_DAYS, trade_dates=_E2E_DAYS,
+        fields=["revenue"], instruments=["000001.SZ", "600000.SH"],
+        financial_issuers=frozenset({"600000.SH"}), shift_days=2,
+        workdir=tmp_path / "w2")
+    assert verdict.verdict == OK, verdict.render()
+    assert {m.instrument for m in verdict.moves} == {"SZ000001"}
+
+
+def test_qlib_form_instruments_are_matched_against_the_store(
+        store_with_extras, tmp_path):
+    """入参给 qlib 标签时，源侧扫描仍要能对上 ts_code 命名的 store 文件。"""
+    verdict = run_diagnostic(
+        store_dir=store_with_extras, calendar=_E2E_DAYS, trade_dates=_E2E_DAYS,
+        fields=["revenue"], instruments=["SZ000001"],
+        financial_issuers=frozenset(), shift_days=2, workdir=tmp_path / "w3")
+    assert verdict.moves != ()          # 匹配上了，不是静默空扫
+    assert verdict.verdict == OK, verdict.render()

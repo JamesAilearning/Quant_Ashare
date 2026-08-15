@@ -226,6 +226,27 @@ def test_unprefixed_key_is_refused():
         to_field("revenue")
 
 
+@pytest.mark.parametrize("bad", ["$not_a_field", "$", "$REVENUE", "$revenue "])
+def test_terminal_naming_no_charter_field_is_refused(bad):
+    """前缀对但名字不指向任何 charter 字段 —— 也必须在桥边界拒绝。
+
+    只查 `$` 前缀会把拼错的终端一路放行，最后变成一次令人困惑的查表落空，
+    而不是 fail-loud（codex #433 P2）。直接测 `to_field`：此前唯一相关的用例
+    走的是 build_fundamental_panel，依赖 view 先拒绝，所以这条回归会漏
+    （codex #433 r2 P1）。
+    """
+    with pytest.raises(FundamentalPanelError, match="maps to no charter field"):
+        to_field(bad)
+
+
+def test_every_charter_field_round_trips_through_the_mapping():
+    """非空性：合法字段必须全部通得过，拒绝不能退化成拒绝一切。"""
+    from src.research.financial_pit_view import _FIELD_ENDPOINT
+
+    for field in _FIELD_ENDPOINT:
+        assert to_field(to_terminal(field)) == field
+
+
 def test_unknown_charter_field_fails_loud(view):
     with pytest.raises(Exception):  # noqa: B017 - view refuses first
         build_fundamental_panel(view, ["not_a_field"], _DAYS, ["000001.SZ"])
