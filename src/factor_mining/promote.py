@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 import numpy as np
@@ -28,8 +29,10 @@ import yaml
 from .factor_pool import FactorPool
 from .miner import (
     DataConfig,
+    _build_fundamental_leg,
     build_panel_for_data,
     data_definition_sha256,
+    fundamental_binding_fingerprints,
     normalize_yaml_dates,
 )
 from .validator import (
@@ -77,6 +80,13 @@ class PromotionConfig:
     # ``end_date`` forward, explicitly, to this value. None = no extension
     # (the synthetic path).
     validation_end_date: str | None = None
+    # Pre-authorized extension baseline for a FUNDAMENTAL run (see
+    # ``_verify_fundamental_extension_baseline``): the mined run only
+    # ever covers the original window, so extending it needs an output
+    # digest recorded by an independent trusted process BEFORE
+    # promotion. None is valid only when the run has no fundamental leg
+    # or the window is not extended.
+    fundamental_baseline_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,15 @@ class PromotionReport:
 
 class PromotionError(RuntimeError):
     """Raised on bad config, missing run dir, or overwrite refusal."""
+
+
+# The one tolerated schema gap in old run snapshots: the fundamental
+# quartet's defaults are inert, so a pre-extension snapshot still
+# describes the exact panel it mined (see ``_load_run_data_config``).
+_FUNDAMENTAL_SCHEMA_KEYS = frozenset({
+    "fundamental_store_root", "fundamental_calendar_path",
+    "fundamental_fields", "financial_exclusions",
+})
 
 
 def _load_yaml_mapping(path: Path, what: str) -> dict:
@@ -313,6 +332,190 @@ def _verify_pit_binding(run_dir: Path, run_data: DataConfig) -> None:
 
 
 
+def _verify_fundamental_identity(
+    run_dir: Path, run_data: DataConfig, factory,
+) -> tuple[dict[str, str], str]:
+    """Bind the injected factory to the run — by BEHAVIOR, not by claim.
+
+    Two checks, in order:
+
+    1. **Content fingerprints (take #1).** The financial-statement store
+       and calendar as they exist NOW must match what mining recorded —
+       an in-place refresh passes every config check while the panel
+       bytes move (same class as the PIT binding). This read doubles as
+       the promotion-side "before reading the panel" stability anchor;
+       ``promote_run`` re-takes the fingerprints after evaluation and
+       refuses drift before touching production.
+    2. **Original-window behavioral recompute.** The factory callable is
+       the one input the persisted contract cannot carry, and a swapped
+       callable can agree with every recorded config value. Mining
+       recorded a digest of the factory's FULL output (values, evidence,
+       periods) on an exact geometry; the factory promotion was handed
+       is re-invoked HERE on that recorded geometry and must reproduce
+       the digest bit-for-bit. Identity is what the factory DOES — a
+       name/version pair would let two different factories claim each
+       other's runs.
+
+    Returns ``(current_fingerprints, recorded_output_sha)``. Refuses a
+    run that predates factory-identity recording (re-mine; an
+    unverifiable seam is worse than a re-run).
+    """
+    from .miner import _verify_fundamental_triple  # noqa: PLC0415
+    from .panel_digest import fundamental_output_sha256  # noqa: PLC0415
+
+    raw = _load_yaml_mapping(run_dir / "config.yaml", "run snapshot")
+    recorded_fp = {
+        key: raw.get(key)
+        for key in ("fundamental_store_sha256", "fundamental_calendar_sha256")
+    }
+    recorded_output = raw.get("fundamental_output_sha256")
+    binding_path = run_dir / "fundamental_binding.json"
+    if (not all(recorded_fp.values()) or not recorded_output
+            or not binding_path.is_file()):
+        raise PromotionError(
+            "run_dir declares a fundamental leg but carries no complete "
+            "factory-identity record (fundamental_store_sha256 / "
+            "fundamental_calendar_sha256 / fundamental_output_sha256 / "
+            "fundamental_binding.json) — the run predates identity "
+            "recording, so the panel builder that mined it cannot be "
+            "verified; re-mine before promoting."
+        )
+    try:
+        current_fp = fundamental_binding_fingerprints(run_data)
+    except (OSError, ValueError) as exc:
+        raise PromotionError(
+            f"cannot fingerprint the fundamental inputs ({exc}) — the "
+            "store or calendar the run was mined on is not readable at "
+            "its recorded path."
+        ) from exc
+    for key, recorded_value in recorded_fp.items():
+        if current_fp[key] != recorded_value:
+            raise PromotionError(
+                f"{key} mismatch: recorded {recorded_value!r} at mining "
+                f"time, but the path now yields {current_fp[key]!r} — the "
+                "fundamental store/calendar was refreshed in place after "
+                "mining, so the pool would be validated on data it was "
+                "not mined on. Re-mine against the current inputs."
+            )
+    try:
+        binding = json.loads(binding_path.read_text(encoding="utf-8"))
+        trade_dates = pd.DatetimeIndex(
+            [pd.Timestamp(d) for d in binding["trade_dates"]])
+        instruments = [str(c) for c in binding["instruments"]]
+        binding_output = binding["output_sha256"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise PromotionError(
+            f"run_dir fundamental_binding.json is unreadable or malformed "
+            f"({exc}) — the recorded geometry is the ground the identity "
+            "recompute stands on; re-mine before promoting."
+        ) from exc
+    if binding_output != recorded_output:
+        raise PromotionError(
+            "fundamental_binding.json and config.yaml disagree on the "
+            "recorded fundamental_output_sha256 — the run's identity "
+            "record was edited after mining; re-mine before promoting."
+        )
+    skeleton = pd.DataFrame(np.nan, index=trade_dates, columns=instruments)
+    triple = factory(run_data, trade_dates, instruments)
+    try:
+        values, evidence, periods = _verify_fundamental_triple(
+            triple, skeleton, {})
+    except RuntimeError as exc:
+        raise PromotionError(str(exc)) from exc
+    got = fundamental_output_sha256(values, evidence, periods)
+    if got != recorded_output:
+        raise PromotionError(
+            "the injected fundamental panel factory does not reproduce "
+            "the run's recorded behavioral identity on the mined window "
+            f"(recorded {recorded_output!r}, recomputed {got!r}) — a "
+            "different builder (or a drifted implementation) would "
+            "adjudicate the pool on a panel it was never mined on; "
+            "refusing."
+        )
+    return current_fp, recorded_output
+
+
+def _verify_fundamental_extension_baseline(
+    config: PromotionConfig, fwd, effective_output_sha: str,
+) -> str:
+    """An extended window needs a baseline promotion could not self-issue.
+
+    Mining only ever covers the original window, so its recorded digest
+    knows nothing about the extension dates — the exact dates the OOS
+    adjudication is FOR. And hashing the promoted factory's own
+    effective-window output would let a swapped callable certify itself.
+    The only admissible baseline is one recorded by an independent
+    trusted process (the campaign's ``record-baseline`` step, which runs
+    the canonical bridge directly) and written to disk BEFORE promotion;
+    this verifier binds it to the exact effective definition and
+    geometry, then requires the promoted factory to reproduce its output
+    digest on the effective window bit-for-bit. Returns the verified
+    baseline digest for the report.
+    """
+    path = config.fundamental_baseline_path
+    if path is None:
+        raise PromotionError(
+            "extended-window promotion of a fundamental run requires a "
+            "pre-authorized extension baseline "
+            "(fundamental_baseline_path): the mining run only covers the "
+            "original window, so its recorded digest cannot certify "
+            "dates it never saw — and a baseline produced by the "
+            "promoted factory itself would be self-certification. Record "
+            "one with the campaign script's record-baseline step, then "
+            "pass its path."
+        )
+    if not Path(path).is_file():
+        raise PromotionError(
+            f"fundamental extension baseline {path} does not exist — "
+            "record it (campaign record-baseline step) before promoting."
+        )
+    try:
+        baseline = json.loads(Path(path).read_text(encoding="utf-8"))
+        purpose = baseline["purpose"]
+        base_sha = baseline["data_definition_sha256"]
+        base_dates = [str(d) for d in baseline["trade_dates"]]
+        base_instruments = [str(c) for c in baseline["instruments"]]
+        base_output = baseline["output_sha256"]
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise PromotionError(
+            f"fundamental extension baseline {path} is unreadable or "
+            f"malformed ({exc}); refusing."
+        ) from exc
+    if purpose != "fundamental-extension-baseline":
+        raise PromotionError(
+            f"fundamental extension baseline {path} declares purpose "
+            f"{purpose!r}, not 'fundamental-extension-baseline' — a "
+            "repurposed artifact must not key the extension; refusing."
+        )
+    effective_sha = data_definition_sha256(config.data)
+    if base_sha != effective_sha:
+        raise PromotionError(
+            "fundamental extension baseline was recorded for a different "
+            f"effective data definition (baseline {base_sha!r}, this "
+            f"promotion {effective_sha!r}) — the baseline binds the "
+            "store, fields, exclusions AND the extended window; record "
+            "one for exactly this promotion."
+        )
+    got_dates = [str(d.date()) for d in fwd.index]
+    got_instruments = [str(c) for c in fwd.columns]
+    if base_dates != got_dates or base_instruments != got_instruments:
+        raise PromotionError(
+            "fundamental extension baseline geometry does not match the "
+            "effective validation panel (trade dates x instruments) — "
+            "the baseline must be recorded on exactly the panel this "
+            "promotion evaluates; re-record it."
+        )
+    if base_output != effective_output_sha:
+        raise PromotionError(
+            "the promoted factory's effective-window output digest does "
+            f"not match the pre-authorized baseline (baseline "
+            f"{base_output!r}, factory {effective_output_sha!r}) — on "
+            "the extension dates the injected builder diverges from the "
+            "canonical bridge; refusing."
+        )
+    return base_output
+
+
 def _refuse_fundamental_pool_in_production(
     survivor_pool: FactorPool, target_dir: Path,
 ) -> None:
@@ -361,8 +564,18 @@ def _refuse_fundamental_pool_in_production(
 
 def promote_run(
     config: PromotionConfig, *, dry_run: bool = False,
+    fundamental_panel_factory=None,
 ) -> PromotionReport:
-    """Validate the run and (unless ``dry_run``) write the production dir."""
+    """Validate the run and (unless ``dry_run``) write the production dir.
+
+    ``fundamental_panel_factory`` is the promotion side of the miner's
+    injection seam. A run mined WITH a fundamental leg must be promoted
+    with a factory (and that factory must reproduce the run's recorded
+    behavioral identity — see ``_verify_fundamental_identity``); a run
+    mined WITHOUT one must not be handed a factory. Swapping the builder
+    moves the panel exactly like swapping the data, so both directions
+    are refused with the same severity as a data-definition mismatch.
+    """
     if not config.run_dir.exists():
         raise PromotionError(f"run_dir does not exist: {config.run_dir!r}")
     target_dir = config.production_dir / config.version
@@ -380,6 +593,26 @@ def promote_run(
     # caller's config verbatim, hash included, so the report's claim is
     # true by construction for every entry path.
     run_data, run_sha = _load_run_data_config(config.run_dir)
+    fundamental_declared = bool(run_data.fundamental_store_root)
+    if fundamental_declared and fundamental_panel_factory is None:
+        raise PromotionError(
+            "this run was mined WITH a fundamental panel leg "
+            f"(fundamental_store_root="
+            f"{run_data.fundamental_store_root!r}) but no "
+            "fundamental_panel_factory was injected — validating without "
+            "the leg would adjudicate the pool on a panel it was never "
+            "mined on. Drive the promotion through the campaign script "
+            "(scripts/research/fundamental_gp_campaign.py), which "
+            "injects and identity-binds the factory; the bare CLI cannot "
+            "promote a fundamental run."
+        )
+    if fundamental_panel_factory is not None and not fundamental_declared:
+        raise PromotionError(
+            "a fundamental_panel_factory was injected but the run "
+            "records no fundamental leg — the factory would add "
+            "terminals the pool was never mined on. Promote "
+            "price-volume runs without a factory."
+        )
     expected = run_data
     if run_data.mode == "pit":
         # Re-enforce the PIT OOS invariants HERE (codex P1 on #415 r2) —
@@ -418,11 +651,49 @@ def promote_run(
             "promote._load_config, or pass the run snapshot verbatim."
         )
 
+    fundamental_fp_entry: dict[str, str] | None = None
+    recorded_output_sha: str | None = None
+    if fundamental_declared:
+        # Take #1 of the promotion-side stability pair happens inside
+        # (before anything reads the panel), together with the
+        # original-window behavioral recompute of the injected factory.
+        fundamental_fp_entry, recorded_output_sha = (
+            _verify_fundamental_identity(
+                config.run_dir, run_data, fundamental_panel_factory))
+
     pool = FactorPool.load(config.run_dir)
     try:
         panel, fwd = build_panel_for_data(config.data)
     except ValueError as exc:
         raise PromotionError(str(exc)) from exc
+
+    periods = None
+    effective_output_sha: str | None = None
+    verified_baseline_sha: str | None = None
+    if fundamental_declared:
+        try:
+            values, _evidence, periods, effective_output_sha = (
+                _build_fundamental_leg(
+                    config.data, fundamental_panel_factory, fwd, panel))
+        except RuntimeError as exc:
+            raise PromotionError(str(exc)) from exc
+        panel = {**panel, **values}
+        if config.validation_end_date is None:
+            # Same window as mining: a deterministic factory must
+            # reproduce the recorded digest verbatim — no independent
+            # baseline exists or is needed.
+            if effective_output_sha != recorded_output_sha:
+                raise PromotionError(
+                    "the factory's output on the validation panel does "
+                    "not match the digest recorded at mining time "
+                    f"(recorded {recorded_output_sha!r}, got "
+                    f"{effective_output_sha!r}) despite an unextended "
+                    "window — the builder is nondeterministic or "
+                    "drifted; refusing."
+                )
+        else:
+            verified_baseline_sha = _verify_fundamental_extension_baseline(
+                config, fwd, effective_output_sha)
 
     if run_data.mode == "pit":
         _check_pit_embargo(
@@ -430,10 +701,12 @@ def promote_run(
             config.criteria.is_oos_split_date, run_data.forward_horizon,
         )
 
-    results = validate_pool(pool, panel, fwd, config.criteria)
+    results = validate_pool(pool, panel, fwd, config.criteria,
+                            periods=periods)
     n_passed_individual = sum(1 for r in results if r.passes)
 
-    filtered = filter_correlated(results, panel, config.criteria, pool)
+    filtered = filter_correlated(results, panel, config.criteria, pool,
+                                 periods=periods)
     survivors = [r for r in filtered if r.passes]
     n_kept = len(survivors)
 
@@ -444,6 +717,30 @@ def promote_run(
         entry = entries_by_hash.get(res.expr_hash)
         if entry is not None:
             survivor_pool.add(entry)
+    if fundamental_fp_entry is not None:
+        # Take #2 of the stability pair: the promotion evaluated its own
+        # panel over a window nobody else was watching — a store or
+        # calendar refresh DURING that window means the adjudication
+        # numbers came from mixed or vanished bytes while every recorded
+        # identity still matches. Refused here, before the production
+        # boundary is touched (same edge as "refusal before mkdir").
+        try:
+            fundamental_fp_now = fundamental_binding_fingerprints(
+                config.data)
+        except (OSError, ValueError) as exc:
+            raise PromotionError(
+                f"cannot re-fingerprint the fundamental inputs ({exc}) "
+                "after evaluation — refusing before touching production."
+            ) from exc
+        if fundamental_fp_now != fundamental_fp_entry:
+            raise PromotionError(
+                "fundamental inputs changed while promotion was "
+                "evaluating — the store or calendar was refreshed "
+                "mid-promotion, so the adjudication numbers do not "
+                "correspond to any on-disk data identity. Nothing was "
+                "written; re-run against stable inputs."
+            )
+
     # POLICY runs in BOTH modes; only the filesystem mutation is conditional.
     # A dry run is the operator's preview — skipping the refusal there would
     # report "would be kept" for a pool whose identical non-dry invocation is
@@ -483,6 +780,23 @@ def promote_run(
             "data": asdict(config.data),
             "data_sha256": data_definition_sha256(config.data),
             "validation_end_date": config.validation_end_date,
+            **(
+                {
+                    "fundamental_output_sha256_mined": recorded_output_sha,
+                    "fundamental_output_sha256_effective":
+                        effective_output_sha,
+                    "fundamental_extension_baseline_sha256":
+                        verified_baseline_sha,
+                    "fundamental_extension_baseline_path": (
+                        str(config.fundamental_baseline_path)
+                        if config.fundamental_baseline_path is not None
+                        else None
+                    ),
+                    **fundamental_fp_entry,
+                }
+                if fundamental_declared and fundamental_fp_entry is not None
+                else {}
+            ),
             "results": [
                 {
                     "expr_hash_hex": format(r.expr_hash & 0xFFFFFFFFFFFFFFFF, "016x"),
@@ -567,6 +881,7 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
             f"miner's DataConfig ({exc}) — the run predates or diverges "
             "from the current data schema; re-mine before promoting."
         ) from exc
+
     recorded = raw.get("data_definition_sha256")
     if not recorded:
         raise PromotionError(
@@ -577,11 +892,31 @@ def _load_run_data_config(run_dir: Path) -> tuple[DataConfig, str]:
         )
     recomputed = data_definition_sha256(data)
     if recorded != recomputed:
+        # Schema migration, one tolerated shape: a snapshot dumped by the
+        # pre-fundamental miner recorded its digest over the field set
+        # that existed THEN — today's full-payload recompute cannot
+        # match it even though nothing was edited. When the snapshot's
+        # missing keys are EXACTLY within the fundamental quartet (whose
+        # defaults are inert, so the parsed config still describes the
+        # very panel the run mined), reproduce the original
+        # canonicalization by restricting to the snapshot's own keys.
+        # Any other gap fails both recomputes and is refused below — a
+        # run predating a behavior-carrying schema change cannot prove
+        # what it mined.
+        section_keys = frozenset(data_section)
+        missing = (
+            {f.name for f in dataclass_fields(DataConfig)} - section_keys)
+        if missing and missing <= _FUNDAMENTAL_SCHEMA_KEYS:
+            recomputed = data_definition_sha256(
+                data, restrict_to=section_keys)
+    if recorded != recomputed:
         raise PromotionError(
             "run_dir config.yaml data section does not match the digest "
             f"recorded at mining time (recorded {recorded!r}, recomputed "
-            f"{recomputed!r}) — the snapshot was edited after mining; the "
-            "pool cannot be re-bound to a panel it was not mined on."
+            f"{recomputed!r}) — either the snapshot was edited after "
+            "mining, or the run predates the current data schema; the "
+            "pool cannot be re-bound to a panel it was not mined on. "
+            "Re-mine before promoting."
         )
     return data, recorded
 
@@ -591,6 +926,7 @@ def _load_config(
     run_dir: Path,
     production_dir: Path,
     version: str,
+    fundamental_baseline_path: Path | None = None,
 ) -> PromotionConfig:
     if config_path is not None and config_path.exists():
         raw = _load_yaml_mapping(config_path, "promotion config")
@@ -688,6 +1024,7 @@ def _load_config(
         data=data,
         data_definition_sha256=data_sha,
         validation_end_date=str(validation_end) if validation_end else None,
+        fundamental_baseline_path=fundamental_baseline_path,
     )
 
 
