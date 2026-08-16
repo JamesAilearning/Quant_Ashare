@@ -195,6 +195,10 @@ class CommandShapeTests(unittest.TestCase):
             log_path = default_log_path(box.provider)
             text = log_path.read_text(encoding="utf-8")
             self.assertIn("[run_center]", text)
+            # "launch attempt", never "launched": the marker precedes
+            # Popen, so its wording must not claim a process exists
+            # (codex #440 r6).
+            self.assertIn("launch attempt", text)
             self.assertIn(str(datetime.now(tz=_CN_TZ).year), text)
             self.assertEqual(log_path.parent.name, "logs")
 
@@ -349,6 +353,15 @@ class RefusalBranchTests(unittest.TestCase):
                 )
             self.assertEqual(result.kind, "launch_failed")
             self.assertIn("no such interpreter", result.error)
+            # codex #440 r6: the attempt marker must be closed out by a
+            # failure marker, or the scheduler's later output would be
+            # misattributed to this nonexistent UI run.
+            text = default_log_path(box.provider).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("launch attempt", text)
+            self.assertIn("launch FAILED", text)
+            self.assertIn("no such interpreter", text)
 
     def test_missing_script_refuses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -294,10 +294,17 @@ def _kill_tree(proc: subprocess.Popen[str]) -> str | None:
                 errors="replace",
                 timeout=KILL_GRACE_S,
             )
-            if kill.returncode != 0 and proc.poll() is None:
+            # A nonzero taskkill is incomplete EVEN IF the top-level
+            # process already exited: with a dead top pid taskkill /T
+            # cannot walk the tree, while orphaned workers may live on
+            # holding the pipes and the bundle (codex #440 r6). The
+            # safe direction is a false "incomplete" (staging kept,
+            # loud) — never a false "tree dead".
+            if kill.returncode != 0:
                 return (
                     f"taskkill 退出码 {kill.returncode}:"
                     f"{(kill.stderr or kill.stdout).strip()}"
+                    "(顶层进程退出与否都不证明子孙已终止)"
                 )
             return None
         os.killpg(proc.pid, signal.SIGKILL)

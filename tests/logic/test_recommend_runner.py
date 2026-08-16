@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -340,6 +341,31 @@ class StagingPublishTests(unittest.TestCase):
             self.assertIn("4321", result.error)
             self.assertIn("保留", result.error)
             self.assertEqual(len(list(out.glob(".staging-*"))), 1)
+
+    def test_failed_taskkill_is_incomplete_even_if_top_exited(self) -> None:
+        # codex #440 r6: with a dead top pid, taskkill /T cannot walk
+        # the tree (rc 128) while orphaned joblib workers may live on —
+        # a nonzero taskkill must NEVER be inferred back to "tree dead"
+        # from the top-level exit alone.
+        from web.operator_ui.recommend_runner import _kill_tree
+
+        proc = _FakeProc([], None, 0, "", "")  # poll() -> 0: top exited
+
+        def _taskkill(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            self.assertEqual(cmd[:3], ["taskkill", "/F", "/T"])
+            return SimpleNamespace(
+                returncode=128, stdout="", stderr="not found"
+            )
+
+        with mock.patch(
+            "web.operator_ui.recommend_runner.subprocess.run", _taskkill
+        ), mock.patch(
+            "web.operator_ui.recommend_runner.sys.platform", "win32"
+        ):
+            note = _kill_tree(proc)  # type: ignore[arg-type]
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("128", note)
 
     def test_nonzero_exit_cleans_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

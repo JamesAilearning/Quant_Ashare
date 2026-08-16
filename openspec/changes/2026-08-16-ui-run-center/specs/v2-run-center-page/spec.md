@@ -37,9 +37,11 @@ argv SHALL 镜像调度器（`run_daily_update.bat`）的参数形状：
 子进程 SHALL detached 于 UI 会话（Windows：`CREATE_NEW_PROCESS_GROUP |
 CREATE_NO_WINDOW`；POSIX：`start_new_session=True`），`stdin=DEVNULL`，
 stdout/stderr 追加写入调度器同一条日志流（`<provider 父目录>/logs/
-daily_update.log`），追加前 SHALL 写入一行携带完整日期时间的 launch 标记
-（既有日志行仅有时分秒）；子进程 env SHALL 经 `utf8_child_env()` 钉
-UTF-8。
+daily_update.log`），追加前 SHALL 写入一行携带完整日期时间的
+「launch attempt」标记（既有日志行仅有时分秒；措辞 MUST NOT 宣称进程
+已存在——标记先于 `Popen`），`Popen` 失败路径 SHALL 追加失败标记，
+避免调度器后续输出被误归因到未发生的 UI 运行；子进程 env SHALL 经
+`utf8_child_env()` 钉 UTF-8。
 
 启动前 SHALL 预检并 fail-loud 拒绝（不启动进程）：(a) argv 三路径
 （provider/tushare/registry）任一不是绝对路径——空串会被解析成当前
@@ -136,8 +138,10 @@ running 记录陈旧时，这把锁就是防止出单撞进换库真空的唯一
 errors="replace"`，`cwd=仓库根`，env 经 `utf8_child_env()`，超时默认
 900s。超时 SHALL 先终止**整棵进程树**（win32 `taskkill /F /T`；POSIX
 `killpg`）再作宽限 drain——joblib 孙进程握着捕获管道，只杀顶层会让
-drain 永久阻塞且锁不释放；终止不完整时 SHALL 保留暂存（避免与残留
-写者赛跑）、指名顶层 pid、并如实声明锁将在返回后释放。产物 SHALL 写入
+drain 永久阻塞且锁不释放；`taskkill` 非零 SHALL 一律视为终止不完整
+（顶层进程已退出**不证明**子孙已终止——死顶层 pid 让 `/T` 无从走树，
+孤儿工作进程可能仍持有管道与 bundle）；终止不完整时 SHALL 保留暂存
+（避免与残留写者赛跑）、指名顶层 pid、并如实声明锁将在返回后释放。产物 SHALL 写入
 `output/daily_recommend/` 下的**每次一新的暂存目录**（`--out-dir`），
 完成（exit 0）后逐文件经同卷 `os.replace` 原子发布——超时被杀/退出≠0
 只清理暂存，已发布工件 MUST NOT 被触碰。发布 SHALL 带回滚账本：被

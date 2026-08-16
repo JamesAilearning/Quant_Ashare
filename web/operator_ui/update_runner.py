@@ -21,6 +21,7 @@ Boundaries (openspec 2026-08-16-ui-run-center):
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -205,9 +206,13 @@ def launch_daily_update(
     cmd = build_update_argv(
         provider_dir, tushare_dir, registry_path, python=python
     )
+    # "launch attempt", not "launched": the marker is written BEFORE
+    # Popen, and a failed spawn must not leave a line that misattributes
+    # the scheduler's later output to a nonexistent UI run — the failure
+    # path appends its own closing marker (codex #440 r6).
     marker = (
         f"[run_center] {datetime.now(tz=_CN_TZ).isoformat(timespec='seconds')}"
-        " manual launch of daily_update (detached; scheduler stays the"
+        " launch attempt: daily_update (detached; scheduler stays the"
         " automatic channel)\n"
     )
     try:
@@ -250,6 +255,15 @@ def launch_daily_update(
                 start_new_session=True,
             )
     except OSError as exc:
+        # Close out the attempt marker so nothing later (e.g. the
+        # scheduler's own run) gets misattributed to this failed try.
+        with contextlib.suppress(OSError):
+            failure_line = (
+                f"[run_center] launch FAILED before process creation:"
+                f" {exc}\n"
+            )
+            log_fh.write(failure_line.encode("utf-8"))
+            log_fh.flush()
         return UpdateLaunch(
             kind="launch_failed",
             error=f"无法启动解释器 {cmd[0]!r}:{exc}",

@@ -96,6 +96,16 @@
   `AlreadyRunningError`,释放后可正常获取(双向实证闭环)
 - [x] P2 本文件勾选如实化(实现项 [x],未做项保留 [ ])
 
+## codex #440 r6（1×P1 + 1×P2 全实修）
+
+- [x] P1 taskkill 非零 + 顶层已退出被推断成「树已死」→ 非零一律视为
+  终止不完整(死顶层 pid 让 /T 无从走树,孤儿工作进程可能仍持有管道与
+  bundle);安全方向=假「不完整」可接受,假「已死」不可接受;单测钉
+  rc128+顶层退出 → note 非空
+- [x] P2 预写 marker 在 Popen 失败后误归因调度器输出 → 措辞改
+  「launch attempt」+ 失败路径追加「launch FAILED」标记;两处日志
+  状态回归测试
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`
