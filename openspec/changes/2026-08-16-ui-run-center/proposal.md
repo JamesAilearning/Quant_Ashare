@@ -47,8 +47,11 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
 
 - 比照 `pit_validation_runner`：同步 `subprocess.run`，`capture_output +
   text + encoding="utf-8" + errors="replace"`，`timeout` 默认 900s，
-  `cwd=repo 根`（相对 `out_dir` 落 `output/daily_recommend/`，与终端惯例
-  一致），env 经 `utf8_child_env()`。
+  `cwd=repo 根`，env 经 `utf8_child_env()`。产物写入
+  `output/daily_recommend/` 下每次一新的**暂存目录**（`--out-dir`），
+  exit 0 后逐文件同卷 `os.replace` 原子发布——超时杀在
+  `write_outputs` 中间绝不撕裂已发布的当日工件；发布中断保留暂存
+  （唯一完整副本）并指名（codex #440 r1）。
 - argv：`<python> scripts/daily_recommend.py --ensemble-manifest <m>
   --provider-uri <p> --delisted-registry <r> --name-source <n>
   --bundle-max-age-days <d>`——与驾驶舱 `morning_command` ensemble 分支
@@ -67,9 +70,11 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
   外来 provider 记录拒绝）+ 刷新按钮 + 「手动启动」按钮（running 新鲜时
   禁用）+ 日志尾部 expander + 调度说明（20:30 自动通道不动）。
 - 区块二 出单：`st.code` 展示 `morning_command` 权威命令文本（终端复制
-  仍可用）；现任为 ensemble 且命令可渲染时给「跑今日出单」按钮（spinner
-  同步）；单模型/不可解析现任不给按钮只给说明。结果按 exit code
-  fail-loud 展示，成功引导去「今日推荐」页看清单与 HOLD 披露。
+  仍可用）；现任为 ensemble、命令可渲染、**且数据更新未在进行**
+  （`bundle_swap` 两段 rename 不与读者并发，codex #440 r1）时给
+  「跑今日出单」按钮（spinner 同步）；单模型/不可解析现任不给按钮只给
+  说明。结果按 exit code fail-loud 展示，成功列出已发布工件并引导去
+  「今日推荐」页看清单与 HOLD 披露。
 - 页面自身 **不 import subprocess/编排器**——spawn 只发生在两个 runner。
 
 ### W4 测试

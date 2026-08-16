@@ -221,7 +221,11 @@ def launch_daily_update(
     try:
         # The shared log's own lines carry only HH:MM:SS — the dated
         # marker is what lets an operator attribute the next block.
+        # Flush BEFORE spawning: the child appends through its inherited
+        # descriptor, and an immediate exit-17 lock refusal would beat a
+        # buffered marker into the file (codex #440 r1).
         log_fh.write(marker.encode("utf-8"))
+        log_fh.flush()
         if sys.platform == "win32":
             proc = subprocess.Popen(
                 cmd,

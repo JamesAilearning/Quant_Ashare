@@ -203,9 +203,18 @@ _runnable = (
     _incumbent.is_ensemble
     and bool(_manifest)
     and _cmd.command.startswith("python ")
+    # 换库的两段 rename 不与读者并发——更新进行中不提供出单按钮,
+    # 读者真空瞬间的出单会撞到暂时不存在的 live 路径(codex #440 r1)。
+    and not _running_fresh
 )
 if not _runnable:
-    if not _incumbent.is_ensemble:
+    if _running_fresh:
+        st.warning(
+            "一次数据更新正在进行——bundle 换库(两段 rename)不与读者"
+            "并发,更新结束前本页不提供出单按钮。等上方状态变为"
+            " finished 后再跑。"
+        )
+    elif not _incumbent.is_ensemble:
         st.info(
             f"本页按钮只支持 ensemble 生产形态(现任形态:{_incumbent.kind})。"
             "单模型/不可解析现任请按命令文本在终端处理,或先修好 manifest。"
@@ -234,6 +243,8 @@ elif st.button(
             "到「今日推荐」页查看;**每次必读打印的 entry_date**——它是"
             "已收盘会话,不是「明早买入指令」。"
         )
+        if _result.published:
+            st.caption("已发布工件:" + "、".join(_result.published))
         if _result.stdout_tail:
             st.code(_result.stdout_tail)
     elif _result.kind == "failed":

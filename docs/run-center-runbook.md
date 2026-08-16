@@ -9,7 +9,7 @@ openspec `2026-08-16-ui-run-center`。本页把两个例行动作从终端搬进
 | 动作 | 执行形态 | 背后 CLI | 观测 |
 |---|---|---|---|
 | 数据更新手动补跑 | **后台**（detached 子进程，约 2 小时） | `scripts/daily_update.py`，argv 镜像调度器 | #434 状态工件 + 共享日志 |
-| 今日出单 | **同步**（分钟级，spinner 等待） | `scripts/daily_recommend.py`，ensemble 五参数 | 页面直接展示 exit code 与输出尾部 |
+| 今日出单 | **同步**（分钟级，spinner 等待；数据更新进行中不可用——换库不与读者并发） | `scripts/daily_recommend.py`，ensemble 五参数；产物经暂存目录原子发布，超时/失败绝不撕裂已发布工件 | 页面直接展示 exit code 与输出尾部 |
 
 - 自动通道不动：每晚 20:30 的计划任务（`run_daily_update.bat`）仍是数据
   更新的主通道；本页只用于漏跑/失败后的补跑。

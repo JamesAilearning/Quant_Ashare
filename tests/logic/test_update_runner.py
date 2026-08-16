@@ -158,6 +158,33 @@ class CommandShapeTests(unittest.TestCase):
             )
             self.assertEqual(result.log_path, default_log_path(box.provider))
 
+    def test_marker_is_flushed_before_the_child_can_write(self) -> None:
+        # codex #440 r1: the marker sat in the parent's userspace buffer
+        # until close(), so a fast child (an immediate exit-17 lock
+        # refusal) could land its lines BEFORE the marker meant to
+        # introduce them. The fake child writes through its own handle
+        # the moment it is "spawned" — the marker must already be on
+        # disk by then.
+        with tempfile.TemporaryDirectory() as tmp:
+            box = _Sandbox(tmp)
+            log = default_log_path(box.provider)
+
+            def _popen(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+                with open(log, "ab") as fh:
+                    fh.write(b"CHILD-FIRST-LINE\n")
+                return SimpleNamespace(pid=1)
+
+            with mock.patch(
+                "web.operator_ui.update_runner.subprocess.Popen", _popen
+            ):
+                launch_daily_update(
+                    box.provider, box.tushare, box.registry, env=_ENV_OK
+                )
+            text = log.read_text(encoding="utf-8")
+            self.assertLess(
+                text.index("[run_center]"), text.index("CHILD-FIRST-LINE")
+            )
+
     def test_dated_marker_line_lands_in_the_log(self) -> None:
         # The shared log's own lines carry only HH:MM:SS; the launcher's
         # marker is what lets an operator attribute the next block.

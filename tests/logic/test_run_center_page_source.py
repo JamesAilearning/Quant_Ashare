@@ -88,6 +88,13 @@ class PageSourceTests(unittest.TestCase):
         self.assertIn("is_ensemble", self.src)
         self.assertIn('startswith("python ")', self.src)
 
+    def test_recommend_is_serialized_against_a_running_update(self) -> None:
+        # codex #440 r1: bundle_swap's two-rename window is not
+        # reader-concurrent — while an update is running and fresh, the
+        # page must not offer the recommend button either. Pin the gate
+        # into the runnable expression.
+        self.assertIn("and not _running_fresh", self.src)
+
     def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
         # The repo logger writes refusals to STDOUT (StreamHandler on
         # sys.stdout, propagate=False); stderr mostly carries import-time

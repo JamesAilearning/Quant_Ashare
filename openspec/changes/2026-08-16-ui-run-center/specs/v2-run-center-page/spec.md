@@ -112,15 +112,21 @@ SHALL 禁用。
 解析器取值（`resolve_incumbent` / provider / `resolve_delisted_registry` /
 `resolve_name_source` / `serving_bundle_max_age_days`）。
 
-按钮 SHALL 仅在现任为 ensemble 且命令文本可渲染（非拒绝态）时提供；
-单模型与不可解析现任只展示说明。argv MUST NOT 含 `--model` /
+按钮 SHALL 仅在现任为 ensemble、命令文本可渲染（非拒绝态）、**且数据
+更新未在进行**（状态工件 running 且新鲜时不提供——`bundle_swap` 的
+两段 rename 不与读者并发，出单读者不得撞进换库瞬间的路径真空）时
+提供；单模型与不可解析现任只展示说明。argv MUST NOT 含 `--model` /
 `--fit-start` / `--fit-end` / `--topk` / `--instruments` /
 `--rebalance-cadence-days`——宇宙/节奏/topk 留给 serving config 两级
 绑定链在 CLI 内解析。
 
 子进程 SHALL 同步运行：`capture_output=True, text=True,
-encoding="utf-8", errors="replace"`，`cwd=仓库根`（相对 `out_dir` 落
-`output/daily_recommend/`），env 经 `utf8_child_env()`，超时默认 900s。
+encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
+`utf8_child_env()`，超时默认 900s。产物 SHALL 写入
+`output/daily_recommend/` 下的**每次一新的暂存目录**（`--out-dir`），
+完成（exit 0）后逐文件经同卷 `os.replace` 原子发布——超时被杀/退出≠0
+只清理暂存，已发布工件 MUST NOT 被触碰；发布中断时暂存目录 SHALL
+保留（删除会毁掉唯一完整副本）并在错误里指名。
 结果 SHALL fail-loud：exit 0 → 展示 stdout 尾部（含 entry_date 横幅）并
 引导至「今日推荐」页；exit≠0 → **优先展示 stdout 尾部**——本仓 CLI 的
 拒绝原因经 logger 落 stdout（`StreamHandler(sys.stdout)`、
@@ -143,9 +149,23 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`（相对 `out_dir` 落
 
 - **WHEN** runner 组装 argv
 - **THEN** argv 恰含 `--ensemble-manifest/--provider-uri/
-  --delisted-registry/--name-source/--bundle-max-age-days` 五个旗标
+  --delisted-registry/--name-source/--bundle-max-age-days` 五个同源
+  旗标加暂存 `--out-dir`（闭列表，测试以全列表相等钉死）
 - **AND** 不含 `--model/--fit-start/--fit-end/--topk/--instruments/
   --rebalance-cadence-days` 中任何一个
+
+#### Scenario: 更新进行中不提供出单按钮
+
+- **GIVEN** 状态工件属于该 provider、state=running 且新鲜
+- **WHEN** 渲染出单区
+- **THEN** 不出现执行按钮，并说明换库与读者不并发的原因
+
+#### Scenario: 超时/失败不触碰已发布工件
+
+- **GIVEN** 前一交易日的工件已在 `output/daily_recommend/`
+- **WHEN** 本次运行超时被杀或退出≠0
+- **THEN** 已发布工件逐字节不变，暂存目录被清理
+- **AND** 发布中断（`os.replace` 失败）时暂存目录保留并在错误里指名
 
 #### Scenario: CLI 拒绝如实转述
 

@@ -43,6 +43,17 @@
 - [ ] `docs/run-center-runbook.md`：职责、并发权威说明、日志落点、UI 启动
   `.bat` 模板（TUSHARE_TOKEN 注册表回读）
 
+## codex #440 r1（三条全实修）
+
+- [ ] P1 出单×更新并发：`_runnable` 增加 `not _running_fresh`
+  （bundle_swap 两段 rename 非读者并发），拒绝态给专属说明；页面源码
+  测试钉住闸门表达式
+- [ ] P1 超时撕裂工件：产物改写每次一新的暂存目录，exit 0 后逐文件
+  同卷 `os.replace` 原子发布；超时/失败只清暂存不碰已发布；发布中断
+  保留暂存并指名；六个 staging/publish 生命周期测试
+- [ ] P2 marker 缓冲：`log_fh.flush()` 先于 `Popen`；子进程抢写次序
+  回归测试（无 flush 则红，反向验证过）
+
 ## 验证
 
 - [ ] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`
