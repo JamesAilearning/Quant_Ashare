@@ -351,7 +351,8 @@ def test_split_panel_warmup_zero_is_legacy_behavior():
 
     panel, fwd = _make_panel_basic(n_dates=100, n_tickers=5)
     split = panel["$close"].index[50]
-    is_p, is_f, oos_p, oos_f = _split_panel(panel, fwd, split, warmup_days=0)
+    is_p, is_f, _, oos_p, oos_f, _ = _split_panel(
+        panel, fwd, split, warmup_days=0)
     assert (is_p["$close"].index < split).all()
     assert (oos_p["$close"].index >= split).all()
     assert (is_f.index < split).all()
@@ -367,7 +368,8 @@ def test_split_panel_warmup_extends_oos_panel_and_masks_fwd():
 
     panel, fwd = _make_panel_basic(n_dates=100, n_tickers=5)
     split = panel["$close"].index[50]
-    is_p, is_f, oos_p, oos_f = _split_panel(panel, fwd, split, warmup_days=10)
+    is_p, is_f, _, oos_p, oos_f, _ = _split_panel(
+        panel, fwd, split, warmup_days=10)
     # IS unchanged
     assert (is_p["$close"].index < split).all()
     assert (is_f.index < split).all()

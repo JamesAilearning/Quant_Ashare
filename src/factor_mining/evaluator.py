@@ -13,13 +13,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 import pandas as pd
 
 from src.core._ic_utils import compute_ic_for_group
 
-from .expression import Expression, OperatorCall, Terminal
+from .expression import (
+    Expression,
+    OperatorCall,
+    Terminal,
+    feature_terminals,
+)
 from .grammar import REGISTRY
 
 __all__ = [
@@ -65,7 +71,243 @@ def max_abs_corr(
     return max_abs
 
 
-def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
+def _canonical_period_token(token: object) -> str | None:
+    """A period token normalized to canonical YYYYMMDD, or None when invalid.
+
+    The contract explicitly ACCEPTS the exact-float spelling ("20211231.0"),
+    and the view may serialize the raw store token — so normalization must
+    come BEFORE validity: rejecting the supported ``.0`` form would mask
+    perfectly valid multi-terminal observations. Everything else (short,
+    non-digit, trailing garbage, an 8-digit non-quarter-end) is invalid — and
+    all comparisons downstream run on the NORMALIZED value, so "20220331.0"
+    vs "20220331" is equality, not disagreement.
+    """
+    # Mirrors the CONTRACT's accepted spellings (`_parse_yyyymmdd` in
+    # src/data/pit/financial_pit_contract.py — the isolation direction forbids
+    # importing it here; a governance test pins the two against each other):
+    # surrounding whitespace is trimmed, and a float coercion with an
+    # ALL-ZERO fraction ("20211231.0", "20211231.00") is the integer part —
+    # while a NON-zero fraction is corruption, never truncated into a
+    # valid-looking date. On top of the contract's date rules this layer also
+    # requires a QUARTER END, since a report period can be nothing else.
+    text = str(token).strip()
+    if "." in text:
+        int_part, _, frac = text.partition(".")
+        text = int_part if frac.strip("0") == "" else ""
+    if (len(text) == 8 and text.isdigit()
+            and text[4:8] in ("0331", "0630", "0930", "1231")):
+        # Shape is not enough: "00000331" has the right shape and suffix, yet
+        # year zero is not a calendar date — and two endpoints both carrying
+        # the same impossible token would compare EQUAL and sail through.
+        # Prove it is a real date, exactly as the contract parser does.
+        try:
+            date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+        except ValueError:
+            return None
+        return text
+    return None
+
+
+def _previous_quarter_token(token: object) -> object:
+    """The calendar-adjacent previous CN quarter end, as a YYYYMMDD token.
+
+    Pure string/date logic on canonical tokens — deliberately NOT imported
+    from ``src.research`` (the isolation gate forbids that direction); a
+    governance test pins this against the research-side implementation so the
+    two cannot drift. A malformed token returns a sentinel that equals no real
+    period, so adjacency can never be PROVEN through corruption.
+    """
+    canonical = _canonical_period_token(token)
+    # Defensive even though inputs arrive pre-normalized: corruption must
+    # never be able to prove anything, so a non-canonical token maps to a
+    # sentinel that equals no real period (and the sentinel itself would fail
+    # normalization upstream, so it cannot collide with a literal).
+    if canonical is None:
+        return "<malformed>"
+    year, month_day = int(canonical[:4]), canonical[4:8]
+    return {
+        "0331": f"{year - 1}1231",
+        "0630": f"{year}0331",
+        "0930": f"{year}0630",
+        "1231": f"{year}0930",
+    }.get(month_day, "<malformed>")
+
+
+def align_periods_at_terminals(
+    panel: PanelLike,
+    periods: Mapping[str, pd.DataFrame],
+    expr: Expression,
+) -> PanelLike:
+    """Mask every referenced terminal where the expression's report periods
+    disagree — AT THE TERMINALS, before any operator consumes them.
+
+    The endpoints of a fundamental panel are served INDEPENDENTLY, so a ratio
+    across income and balance-sheet fields would otherwise combine different
+    quarters silently. The mask is computed from the SET of terminals this
+    expression references and applied to their frames; an expression whose
+    terminals all share a report period (the single-endpoint case) is therefore
+    never masked, and nothing else in the panel is touched.
+
+    Masking at ANY interior node is too late, in either direction:
+
+    * below a rolling parent — ``ts_mean(div_safe($revenue, $total_assets), 5)``
+      may align on trade date ``T`` while the window still averages
+      mixed-quarter ratios from earlier dates;
+    * above rolling children — ``add(ts_mean($revenue, 5), ts_mean($total_assets,
+      5))`` first combines endpoints at ``add``, by which point each child has
+      already aggregated its own misaligned history.
+
+    Terminals are the only placement that admits no such topology: no operator,
+    temporal or otherwise, can observe a misaligned date.
+
+    Note this needs no notion of "endpoint": terminals of one endpoint share a
+    report period by construction, so comparing the period frames answers the
+    same question without a second endpoint table that could drift from the
+    view's. Terminals ARE grouped by period generation (current vs prior),
+    because a prior-period terminal is supposed to differ from its current
+    counterpart — flat comparison would mask every Δ factor out of existence.
+    """
+    from .grammar import FeatureRegistry  # noqa: PLC0415
+
+    referenced = sorted(feature_terminals(expr))
+    if len(referenced) < 2:
+        return panel
+    missing = [t for t in referenced if t not in periods]
+    if missing:
+        # Refuse rather than silently skip: a terminal with no period frame
+        # cannot be proven same-period, and an unmasked mixed-quarter ratio is
+        # exactly what this exists to prevent.
+        raise KeyError(
+            f"cross-endpoint alignment needs report periods for {missing}; "
+            f"available: {sorted(periods.keys())}"
+        )
+
+    # Group by PERIOD GENERATION before comparing. Same-period is required
+    # WITHIN a generation (current-vs-current, prior-vs-prior across endpoints)
+    # but NOT across them: `$total_assets__prior` is SUPPOSED to carry an
+    # earlier period than `$total_assets`. Comparing every referenced terminal
+    # flat would declare that intended difference a violation and mask asset
+    # growth out of existence — a defense that deletes the very factors it is
+    # meant to protect.
+    generations: dict[bool, list[str]] = {}
+    for terminal in referenced:
+        generations.setdefault(
+            FeatureRegistry.is_prior(terminal), []).append(terminal)
+
+    # ALL comparisons run on ONE shared set of axes — the union of the
+    # referenced VALUE frames' indices/columns — with every period frame
+    # reindexed onto it first. Two reasons:
+    # * pairwise `.ne()` / `.isna() !=` on differently-labelled frames RAISES
+    #   (pandas refuses to compare non-identically-labelled DataFrames), so an
+    #   asymmetric provenance gap would abort evaluation instead of masking;
+    # * a date/instrument every period frame omits while the value frames
+    #   still carry it has no label to disagree on — cells with NO provenance
+    #   must count as violations, not escape through an early return.
+    ref_index: pd.Index | None = None
+    ref_columns: pd.Index | None = None
+    for terminal in referenced:
+        frame = panel.get(terminal)
+        if not isinstance(frame, pd.DataFrame):
+            continue
+        ref_index = frame.index if ref_index is None else             ref_index.union(frame.index)
+        ref_columns = frame.columns if ref_columns is None else             ref_columns.union(frame.columns)
+    if ref_index is None or ref_columns is None:  # pragma: no cover
+        return panel
+    aligned = {
+        t: periods[t].reindex(index=ref_index, columns=ref_columns)
+        for t in referenced
+    }
+
+    # Malformed tokens are flagged INVALID before any equality or adjacency
+    # comparison. Equality is the wrong tool for corruption: two endpoints
+    # both carrying "junk" compare EQUAL and sail through, and a prior frame
+    # literally containing the "<malformed>" sentinel would "prove" adjacency
+    # against a corrupted current token. Matching corruption must never
+    # establish provenance — a non-canonical token is unproven, full stop.
+    invalid = None
+    normalized: dict[str, pd.DataFrame] = {}
+    for terminal in referenced:
+        frame = aligned[terminal]
+        norm = frame.apply(
+            lambda col: col.map(_canonical_period_token, na_action="ignore"))
+        normalized[terminal] = norm
+        bad = frame.notna() & norm.isna()     # non-NA that failed to normalize
+        invalid = bad if invalid is None else (invalid | bad)
+    # Every comparison below runs on the NORMALIZED frames, so the accepted
+    # ``.0`` spelling and the canonical form are the SAME token, and invalid
+    # tokens are already flagged (their normalized cell is NA — which the
+    # pairwise NA-mismatch and the unproven check treat conservatively).
+    aligned = normalized
+
+    disagree = None if invalid is None or not bool(
+        invalid.to_numpy().any()) else invalid
+    for group in generations.values():
+        if len(group) < 2:
+            continue
+        first = aligned[group[0]]
+        for other_name in group[1:]:
+            other = aligned[other_name]
+            ne = first.ne(other) | (first.isna() != other.isna())
+            disagree = ne if disagree is None else (disagree | ne)
+
+    unproven = None
+    for terminal in referenced:
+        frame = panel.get(terminal)
+        if not isinstance(frame, pd.DataFrame):
+            continue
+        period = aligned[terminal].reindex(
+            index=frame.index, columns=frame.columns)
+        missing = frame.notna() & period.isna()
+        missing = missing.reindex(
+            index=ref_index, columns=ref_columns).fillna(False)
+        unproven = missing if unproven is None else (unproven | missing)
+    if unproven is not None and bool(unproven.to_numpy().any()):
+        disagree = unproven if disagree is None else (disagree | unproven)
+
+    # ACROSS generations the requirement is ADJACENCY, not equality — and not
+    # nothing. A mixed expression like `div_safe($revenue,
+    # $total_assets__prior)` puts ONE terminal in each generation, so both
+    # within-group loops above are vacuous; if the endpoints have advanced by
+    # different amounts, a current-quarter value silently combines with a
+    # NON-adjacent prior. The prior generation's period must be the
+    # calendar-adjacent previous quarter of the current generation's period.
+    if len(generations) == 2:
+        current_rep = aligned[generations[False][0]]
+        prior_rep = aligned[generations[True][0]]
+        # Per-column Series.map, NOT DataFrame.map: the latter only exists
+        # from pandas 2.1, while pyproject allows >=2.0 — a mixed-generation
+        # expression would raise AttributeError on a legal install.
+        expected_prior = current_rep.apply(
+            lambda col: col.map(_previous_quarter_token, na_action="ignore"))
+        # Only cells where BOTH generations actually carry a period are judged
+        # here — one-sided absence is already the `unproven` check's job.
+        both = expected_prior.notna() & prior_rep.notna()
+        non_adjacent = both & expected_prior.ne(prior_rep)
+        if bool(non_adjacent.to_numpy().any()):
+            disagree = non_adjacent if disagree is None else (
+                disagree | non_adjacent)
+
+    if disagree is None or not bool(disagree.to_numpy().any()):
+        return panel
+
+    # A misaligned cell is masked on EVERY referenced terminal, both
+    # generations included: a Δ whose current leg is unproven is no more usable
+    # than one whose prior leg is.
+    masked = dict(panel)
+    for terminal in referenced:
+        frame = masked[terminal]
+        if not isinstance(frame, pd.DataFrame):  # pragma: no cover - defensive
+            continue
+        masked[terminal] = frame.mask(disagree.reindex_like(frame).fillna(True))
+    return masked
+
+
+def evaluate_expression(
+    expr: Expression,
+    panel: PanelLike,
+    *,
+    periods: Mapping[str, pd.DataFrame] | None = None,
+) -> WalkResult:
     """Recursively evaluate ``expr`` against the loaded ``panel``.
 
     Terminal nodes resolve to:
@@ -77,7 +319,21 @@ def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
     OperatorCall nodes resolve to ``REGISTRY.get(op).compute_fn(*children)``.
     The walker is single-pass and stateless; the GP engine (Phase 3)
     is the natural place to add subtree caching.
+
+    ``periods`` carries the served report period per terminal. When given, the
+    referenced terminals are masked where those periods disagree BEFORE the
+    walk starts — see :func:`align_periods_at_terminals`. Omitting it leaves
+    the walk exactly as it was, which is what every price-volume caller wants;
+    a FUNDAMENTAL caller that omits it evaluates unmasked mixed-quarter values,
+    so the fundamental entry points pass it.
     """
+    if periods is not None:
+        panel = align_periods_at_terminals(panel, periods, expr)
+    return _walk(expr, panel)
+
+
+def _walk(expr: Expression, panel: PanelLike) -> WalkResult:
+    """The stateless recursive walk (masking, if any, already applied)."""
     if isinstance(expr, Terminal):
         if expr.name.startswith("$"):
             if expr.name not in panel:
@@ -93,7 +349,7 @@ def evaluate_expression(expr: Expression, panel: PanelLike) -> WalkResult:
         op = REGISTRY.get(expr.op_name)
         if op is None:  # pragma: no cover — guarded at construction
             raise ValueError(f"Unknown operator at evaluate time: {expr.op_name!r}")
-        args = [evaluate_expression(c, panel) for c in expr.children]
+        args = [_walk(c, panel) for c in expr.children]
         return op.compute_fn(*args)
     raise TypeError(f"Cannot evaluate node of type {type(expr).__name__}")
 
@@ -282,6 +538,7 @@ def evaluate_factor(
     method: str = "rank",
     universe_mask: pd.DataFrame | None = None,
     min_names_per_day: int = 0,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> EvaluationResult:
     """Walk ``expr``, compute its factor values, then produce the
     full metric bundle against ``forward_return``.
@@ -316,7 +573,7 @@ def evaluate_factor(
         need — see ``_coverage``. When None (synthetic / dense panels),
         coverage falls back to the all-cells fraction (legacy behaviour).
     """
-    walked = evaluate_expression(expr, panel)
+    walked = evaluate_expression(expr, panel, periods=periods)
     if not isinstance(walked, pd.DataFrame):
         raise TypeError(
             "Expression evaluation did not produce a DataFrame; "

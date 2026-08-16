@@ -35,7 +35,7 @@ Lifecycle:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -193,6 +193,42 @@ def make_mined_factor_features(
     return _materialise_features(pool, resolved_panel)
 
 
+
+def _refuse_fundamental_entries(entries: Sequence[object]) -> None:
+    """Defense in depth: refuse to materialise FINANCIAL-STATEMENT factors.
+
+    The primary refusal lives at the WRITER (``promote._refuse_fundamental_
+    pool_in_production``), before the production directory is even created —
+    a check here alone would fire only at some later materialisation, by which
+    point promotion had already written the pool into production.
+
+    This one exists because "the writer refused" is a claim about one code
+    path, while this is the path that would actually serve the numbers: we
+    evaluate against a qlib panel with NO report-period provenance, so a
+    fundamental factor materialised here would be served WITHOUT the
+    cross-endpoint alignment mask that decided its promotion.
+    """
+    from src.factor_mining.expression import feature_terminals  # noqa: PLC0415
+    from src.factor_mining.grammar import FeatureRegistry  # noqa: PLC0415
+
+    # Registry minus default — same rule as the writer-side guard, so the two
+    # layers cannot disagree on what counts as fundamental ($X__prior included).
+    financial = set(FeatureRegistry.ALL_REGISTERED) - set(FeatureRegistry.V1)
+    offenders = [
+        e.expr.to_qlib_string() for e in entries  # type: ignore[attr-defined]
+        if feature_terminals(e.expr) & financial  # type: ignore[attr-defined]
+    ]
+    if not offenders:
+        return
+    raise MinedFactorHandlerError(
+        f"refusing to materialise {len(offenders)} FUNDAMENTAL factor(s): "
+        f"{offenders}. This path evaluates without report-period provenance, "
+        "so they would be served WITHOUT the cross-endpoint alignment mask "
+        "that decided their promotion. The fundamental-panel wiring for this "
+        "consumer is a separate change; until it lands such a pool must not "
+        "reach production (the promotion writer refuses it too)."
+    )
+
 def _materialise_features(
     pool: FactorPool,
     resolved_panel: Mapping[str, pd.DataFrame],
@@ -206,6 +242,7 @@ def _materialise_features(
     (codex P2 on #260).
     """
     sorted_entries = sorted(pool.all_entries(), key=_entry_sort_key)
+    _refuse_fundamental_entries(sorted_entries)
 
     columns: list[pd.Series] = []
     column_names: list[str] = []

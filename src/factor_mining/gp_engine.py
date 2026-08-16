@@ -38,6 +38,7 @@ from .grammar import (
     FeatureRegistry,
     GrammarError,
     random_expression,
+    sampling_pool,
 )
 
 _log = logging.getLogger(__name__)
@@ -558,10 +559,16 @@ class GPEngine:
         self, target: ExprType, exclude: str
     ) -> Terminal:
         if target.kind == "FEATURE":
-            if target.taint == "ADJ_TAINTED":
-                pool = [t for t in FeatureRegistry.V1_RAW_PRICE if t != exclude]
-            else:
-                pool = [t for t in FeatureRegistry.V1_SCALE_FREE if t != exclude]
+            # Derived from the REGISTRY, not from a hand-written union of the
+            # legacy groups: under a whitelist naming only opt-in terminals the
+            # legacy union intersects to the EMPTY set, `mutate_point` swallows
+            # the resulting GrammarError, and point mutation silently degrades
+            # to a no-op for the entire campaign (openspec r9 P2). Sampling and
+            # mutation now draw from one place, so a new terminal group cannot
+            # be reachable by one and invisible to the other.
+            pool = [t for t in sampling_pool(target.taint,
+                                             self._allowed_terminals)
+                    if t != exclude]
             # Point mutation must respect the campaign whitelist too
             # (codex #401 r9) — otherwise a legal parent mutates into
             # an expression over a forbidden terminal.

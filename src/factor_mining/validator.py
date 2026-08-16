@@ -79,11 +79,15 @@ def _split_panel(
     forward_return: pd.DataFrame,
     split_ts: pd.Timestamp,
     warmup_days: int = 0,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> tuple[
-    dict[str, pd.DataFrame], pd.DataFrame,
-    dict[str, pd.DataFrame], pd.DataFrame,
+    dict[str, pd.DataFrame], pd.DataFrame, dict[str, pd.DataFrame] | None,
+    dict[str, pd.DataFrame], pd.DataFrame, dict[str, pd.DataFrame] | None,
 ]:
-    """Return (is_panel, is_fwd, oos_panel, oos_fwd) sliced on ``split_ts``.
+    """Return the IS and OOS segments sliced on ``split_ts``.
+
+    ``(is_panel, is_fwd, is_periods, oos_panel, oos_fwd, oos_periods)``; the
+    period halves are ``None`` when no ``periods`` were supplied.
 
     With ``warmup_days == 0`` (the default and the legacy behavior),
     IS = ``date < split_ts`` and OOS = ``date >= split_ts``. A rolling
@@ -130,7 +134,19 @@ def _split_panel(
     # rolling windows, not to count toward OOS IC.
     if warmup_days > 0 and not oos_fwd.empty:
         oos_fwd.loc[oos_fwd.index < split_ts] = np.nan
-    return is_panel, is_fwd, oos_panel, oos_fwd
+    # Report periods are sliced on the SAME row boundaries as the values they
+    # describe. A period frame sliced differently would align its rows against
+    # the wrong dates and mask the wrong cells — worse than no masking, because
+    # it would look like it was working.
+    is_periods: dict[str, pd.DataFrame] | None = None
+    oos_periods: dict[str, pd.DataFrame] | None = None
+    if periods is not None:
+        is_periods = {}
+        oos_periods = {}
+        for field, df in periods.items():
+            is_periods[field] = df.loc[df.index < split_ts]
+            oos_periods[field] = df.loc[df.index >= oos_floor]
+    return (is_panel, is_fwd, is_periods, oos_panel, oos_fwd, oos_periods)
 
 
 def _ir_for_threshold(ir: float) -> float:
@@ -147,14 +163,29 @@ def _evaluate_segment(
     expr: Expression,
     seg_panel: Mapping[str, pd.DataFrame],
     seg_fwd: pd.DataFrame,
+    seg_periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> tuple[float, float, int]:
     """Returns (ir, rank_ic_mean, n_obs) for one segment.
+
+    ``seg_periods`` carries this segment's report-period provenance so the
+    SAME cross-endpoint masking that shaped the search also shapes validation.
+    Without it, validation would re-compute unmasked mixed-quarter values and
+    adjudicate on them — the metric deciding promotion would not be the metric
+    the masking defines.
 
     Best-effort: any failure inside the evaluator (e.g. empty panel)
     returns (nan, nan, 0).
     """
     try:
-        result = evaluate_factor(expr, seg_panel, seg_fwd, method="rank")
+        result = evaluate_factor(expr, seg_panel, seg_fwd, method="rank",
+                                 periods=seg_periods)
+    except KeyError:
+        # Same rule as `filter_correlated`: a missing period frame is a
+        # DATA-CONTRACT failure, not a segment that legitimately has no data.
+        # Reporting it as an ordinary failed factor would let a promotion run
+        # finish with misleading rejections — or an empty pool — while the real
+        # cause (malformed provenance) never surfaces.
+        raise
     except Exception:  # noqa: BLE001 — segment may legitimately fail; we just flag
         return float("nan"), float("nan"), 0
     # n_obs = the count of joint non-NaN cells (shared convention with
@@ -168,11 +199,20 @@ def validate_pool(
     panel: Mapping[str, pd.DataFrame],
     forward_return: pd.DataFrame,
     criteria: ValidationCriteria,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> list[FactorValidationResult]:
-    """Per-factor IS/OOS validation against the criteria thresholds."""
+    """Per-factor IS/OOS validation against the criteria thresholds.
+
+    ``periods`` is the report-period provenance of a FUNDAMENTAL panel. It is
+    sliced onto the same segments as the values and passed through to every
+    evaluation, so validation adjudicates on the SAME masked values the search
+    bred against. Price-volume callers omit it and are unaffected.
+    """
     split_ts = pd.Timestamp(criteria.is_oos_split_date)
-    is_panel, is_fwd, oos_panel, oos_fwd = _split_panel(
+    (is_panel, is_fwd, is_periods,
+     oos_panel, oos_fwd, oos_periods) = _split_panel(
         panel, forward_return, split_ts, warmup_days=criteria.warmup_days,
+        periods=periods,
     )
 
     # Warn (once per call) if the pool contains entries from a pre-PR2
@@ -197,8 +237,10 @@ def validate_pool(
     results: list[FactorValidationResult] = []
     for entry in pool.all_entries():
         reasons: list[str] = []
-        is_ir, is_rank_ic, is_n = _evaluate_segment(entry.expr, is_panel, is_fwd)
-        oos_ir, oos_rank_ic, oos_n = _evaluate_segment(entry.expr, oos_panel, oos_fwd)
+        is_ir, is_rank_ic, is_n = _evaluate_segment(
+            entry.expr, is_panel, is_fwd, is_periods)
+        oos_ir, oos_rank_ic, oos_n = _evaluate_segment(
+            entry.expr, oos_panel, oos_fwd, oos_periods)
 
         if is_n < criteria.min_obs_per_segment:
             reasons.append("is_segment_too_short")
@@ -242,10 +284,17 @@ def validate_run(
     panel: Mapping[str, pd.DataFrame],
     forward_return: pd.DataFrame,
     criteria: ValidationCriteria,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> list[FactorValidationResult]:
-    """Convenience wrapper: load the pool from disk then validate."""
+    """Convenience wrapper: load the pool from disk then validate.
+
+    ``periods`` is forwarded to :func:`validate_pool` — a convenience wrapper
+    that silently dropped the provenance would hand a fundamental caller
+    unmasked mixed-quarter metrics while looking like the same API.
+    """
     pool = FactorPool.load(run_dir)
-    return validate_pool(pool, panel, forward_return, criteria)
+    return validate_pool(pool, panel, forward_return, criteria,
+                         periods=periods)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +307,7 @@ def filter_correlated(
     panel: Mapping[str, pd.DataFrame],
     criteria: ValidationCriteria,
     pool: FactorPool,
+    periods: Mapping[str, pd.DataFrame] | None = None,
 ) -> list[FactorValidationResult]:
     """Drop factors whose correlation against a higher-fitness
     already-kept factor exceeds ``max_pool_correlation``.
@@ -265,6 +315,10 @@ def filter_correlated(
     The input ``results`` are scanned in `fitness` desc order. The
     output preserves order and updates `passes` / `reasons` for any
     dropped factor.
+
+    ``periods`` reaches the re-evaluation here too: correlations computed on
+    UNMASKED mixed-quarter values would drop (or keep) factors on the strength
+    of numbers the masked definition never produces.
     """
     # Map expr_hash → PoolEntry so we can re-evaluate factors against
     # the FULL panel (not just OOS) for cross-correlation purposes.
@@ -290,7 +344,16 @@ def filter_correlated(
         try:
             from .evaluator import evaluate_expression  # noqa: PLC0415
 
-            factor_values = evaluate_expression(entry.expr, panel)
+            factor_values = evaluate_expression(
+                entry.expr, panel, periods=periods)
+        except KeyError:
+            # A DATA-CONTRACT failure, not a best-effort evaluation failure:
+            # `align_periods_at_terminals` raises KeyError when a referenced
+            # terminal has no period frame, i.e. we cannot prove same-period.
+            # Swallowing it here would let the factor SKIP correlation
+            # filtering entirely and change the survivor set — silently, and
+            # in the permissive direction. Let it escape.
+            raise
         except Exception:  # noqa: BLE001
             new_results_by_hash[res.expr_hash] = res
             continue

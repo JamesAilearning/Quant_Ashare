@@ -896,3 +896,33 @@ def test_promote_run_enforces_pit_window_for_programmatic_callers(tmp_path):
     )
     with pytest.raises(PromotionError, match="GP-visible"):
         promote_run(bad_split, dry_run=True)
+
+
+def test_dry_run_also_invokes_the_fundamental_refusal(tmp_path, monkeypatch):
+    """dry-run 是操作员的预览：政策检查两种模式都要跑（codex #437 r5 P2）。
+
+    若拒绝只在真跑时触发，预览会对一个**必然失败**的池说"would be kept" ——
+    对生产资格撒谎。只有文件系统写入才允许按 dry_run 条件化。
+
+    合成面板没有财报列（基本面因子在验证层就会 fail-loud，到不了写盘），
+    所以这里钉的是**缝**：dry-run 也必须**调用**拒绝，并把幸存者池递给它 ——
+    与「拒绝对基本面池抛 PromotionError」的既有回归组合，即覆盖该行为。
+    真实基本面 run 的端到端在注入缝 PR 里补。
+    """
+    import src.factor_mining.promote as promote_mod
+
+    calls: list = []
+    real = promote_mod._refuse_fundamental_pool_in_production
+
+    def spy(survivor_pool, target_dir):
+        calls.append((len(list(survivor_pool.all_entries())), target_dir))
+        return real(survivor_pool, target_dir)
+
+    monkeypatch.setattr(
+        promote_mod, "_refuse_fundamental_pool_in_production", spy)
+    run_dir = _seed_run_dir(tmp_path)
+    cfg = _promotion_config(tmp_path, run_dir, "v1")
+    report = promote_run(cfg, dry_run=True)
+    assert calls, "dry-run 没有调用生产边界拒绝 —— 预览与真跑政策不一致"
+    assert report.output_dir is None
+    assert not (cfg.production_dir / "v1").exists()

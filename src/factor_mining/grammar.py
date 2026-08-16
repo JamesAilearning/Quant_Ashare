@@ -48,6 +48,11 @@ class GrammarError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+# Module-level so the class-body comprehension below can see it: a generator
+# expression inside a class body does NOT close over that class's namespace.
+_PRIOR_SUFFIX = "__prior"
+
+
 class FeatureRegistry:
     """The v1 terminal feature universe — twelve PIT bin fields.
 
@@ -78,6 +83,50 @@ class FeatureRegistry:
     )
     V1: tuple[str, ...] = V1_RAW_PRICE + V1_SCALE_FREE + V1_FUNDAMENTAL
 
+    # Financial-STATEMENT terminals (阶段8 基本面方向). Deliberately OUTSIDE
+    # ``V1``: ``V1`` is the DEFAULT field set — ``pit_adapter._default_fields()``
+    # returns exactly it — so appending here would make every existing
+    # ``fields=()`` PIT run start requesting non-qlib columns, and would let a
+    # search with no terminal restriction breed research-only terminals inside a
+    # legacy price-volume campaign. These are reachable ONLY through an explicit
+    # campaign whitelist.
+    #
+    # Note the naming collision to avoid: ``V1_FUNDAMENTAL`` above is
+    # daily_basic VALUATION (pe/pb/ps/...), not financial statements.
+    FINANCIAL_STATEMENT: tuple[str, ...] = (
+        # income
+        "$revenue", "$total_revenue", "$oper_cost", "$sell_exp", "$admin_exp",
+        "$rd_exp", "$int_exp", "$fin_exp",
+        # balancesheet
+        "$total_assets", "$total_hldr_eqy_inc_min_int",
+        "$total_hldr_eqy_exc_min_int", "$accounts_receiv", "$inventories",
+        "$prepayment", "$accounts_pay", "$adv_receipts", "$contract_liab",
+        # cashflow
+        "$n_cashflow_act",
+    )
+
+    # Adjacent-PRIOR-period counterparts, one per statement terminal. Δ-shaped
+    # factors (asset growth, the pure-balance-sheet accrual) difference a field
+    # across adjacent report periods, and the evaluator can only consume keys
+    # that are IN the panel mapping — a prior value parked in a side object is
+    # unreachable from any AST, so those factors could not be WRITTEN at all.
+    #
+    # Modelled as terminals rather than as an operator because the evaluator
+    # resolves terminals by name against the panel: an operator would need a
+    # second mapping threaded through every call site, for no added expressive
+    # power.
+    PRIOR_SUFFIX = _PRIOR_SUFFIX
+    FINANCIAL_STATEMENT_PRIOR: tuple[str, ...] = tuple(
+        name + _PRIOR_SUFFIX for name in FINANCIAL_STATEMENT
+    )
+
+    # Every terminal the grammar KNOWS, default-enabled or opt-in. Membership
+    # here is what makes a name constructible; reachability by the generator is
+    # a separate question answered by the campaign whitelist.
+    ALL_REGISTERED: tuple[str, ...] = (
+        V1 + FINANCIAL_STATEMENT + FINANCIAL_STATEMENT_PRIOR
+    )
+
     # Reserved for a future iteration (NOT enabled in v1)
     V2_DEFERRED: tuple[str, ...] = (
         "$turn",                # absolute turnover (kept under $turnover_rate)
@@ -91,7 +140,7 @@ class FeatureRegistry:
 
     @classmethod
     def is_feature(cls, name: str) -> bool:
-        return name in cls.V1
+        return name in cls.ALL_REGISTERED
 
     @classmethod
     def terminal_type(cls, name: str) -> ExprType:
@@ -101,7 +150,38 @@ class FeatureRegistry:
             return ExprType("FEATURE", "PURE")
         if name in cls.V1_FUNDAMENTAL:
             return ExprType("FEATURE", "PURE")
+        if name in cls.FINANCIAL_STATEMENT:
+            # PURE: statement values are reported amounts, untouched by the
+            # price-adjustment ladder that taints raw prices.
+            return ExprType("FEATURE", "PURE")
+        if name in cls.FINANCIAL_STATEMENT_PRIOR:
+            return ExprType("FEATURE", "PURE")   # same field, earlier period
         raise GrammarError(f"Unknown terminal feature: {name!r}")
+
+    @classmethod
+    def is_prior(cls, name: str) -> bool:
+        """Whether ``name`` is a prior-period terminal (``$revenue__prior``)."""
+        return name in cls.FINANCIAL_STATEMENT_PRIOR
+
+    @classmethod
+    def current_of_prior(cls, name: str) -> str:
+        """``$revenue__prior`` -> ``$revenue``; raises for a non-prior name."""
+        if not cls.is_prior(name):
+            raise GrammarError(f"{name!r} is not a prior-period terminal")
+        return name[: -len(cls.PRIOR_SUFFIX)]
+
+    @classmethod
+    def registered_of_taint(cls, taint: str) -> tuple[str, ...]:
+        """Every REGISTERED terminal of one taint, opt-in groups included.
+
+        The sampling and point-mutation pools derive from this rather than
+        from a hand-written union of the legacy groups. With a hand-written
+        union, a whitelist naming only opt-in terminals intersects to the EMPTY
+        set — and point mutation then silently degrades to a no-op for the whole
+        campaign, which is worse than failing.
+        """
+        return tuple(n for n in cls.ALL_REGISTERED
+                     if cls.terminal_type(n).taint == taint)
 
 
 # Integer window literals allowed as the second arg of ts_* operators.
@@ -518,26 +598,36 @@ def _restrict(pool: tuple[str, ...],
     return kept
 
 
+def sampling_pool(
+    taint: str, allowed: frozenset[str] | None,
+) -> tuple[str, ...]:
+    """Candidate terminals of one taint, for generation and point mutation.
+
+    With NO whitelist the pool is exactly the DEFAULT set (``V1``) — an
+    unrestricted legacy campaign must keep sampling exactly what it samples
+    today, and must never reach an opt-in group whose columns its panel does
+    not even contain.
+
+    With a whitelist the pool is every REGISTERED terminal of that taint, then
+    intersected with the whitelist by the caller. Deriving it from the registry
+    rather than from a hand-written union of legacy groups is what lets a
+    campaign whitelist naming only financial-statement terminals mutate at all:
+    against the legacy union that intersection is empty.
+    """
+    if allowed is None:
+        return tuple(n for n in FeatureRegistry.V1
+                     if FeatureRegistry.terminal_type(n).taint == taint)
+    return FeatureRegistry.registered_of_taint(taint)
+
+
 def _random_leaf(target_type: ExprType, rng: Random,
                  allowed: frozenset[str] | None = None):
     # Deferred import to break circularity with expression.py.
     from .expression import Terminal
 
     if target_type.kind in ("FEATURE", "FLOAT"):
-        if target_type.taint == "ADJ_TAINTED":
-            name = rng.choice(
-                _restrict(FeatureRegistry.V1_RAW_PRICE, allowed))
-        else:
-            # PURE pool = legacy scale-free (volume, money) + daily_basic
-            # fundamentals (pe, pb, ps, turnover_rate, circ_mv, total_mv).
-            # All registered with taint=PURE in FeatureRegistry — combined
-            # here so the random sampler reaches them with non-negligible
-            # probability per the extend-feature-universe-with-daily-basic
-            # spec's "generator MUST sample fundamentals" requirement.
-            pure_pool = _restrict(
-                FeatureRegistry.V1_SCALE_FREE
-                + FeatureRegistry.V1_FUNDAMENTAL, allowed)
-            name = rng.choice(pure_pool)
+        name = rng.choice(_restrict(
+            sampling_pool(target_type.taint, allowed), allowed))
         return Terminal(name)
     if target_type.kind == "INT_WINDOW":
         return Terminal(str(rng.choice(WINDOW_LITERALS)))
@@ -576,11 +666,18 @@ def _random_operator(
     last_err: GrammarError | None = None
     for _ in range(MAX_OP_RETRIES):
         op, input_types = rng.choice(candidates)
-        children = tuple(
-            _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
-            for t in input_types
-        )
         try:
+            # Subtree generation is INSIDE the retry, not before it: a campaign
+            # whitelist may legitimately admit only one taint (a
+            # financial-statement campaign is all PURE), and then any candidate
+            # needing an ADJ_TAINTED input has an EMPTY pool. Generating the
+            # children outside the try let that GrammarError bubble out of the
+            # whole call instead of picking another candidate — a whitelist of
+            # one taint could not generate at all.
+            children = tuple(
+                _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
+                for t in input_types
+            )
             return OperatorCall(op.name, children)
         except GrammarError as exc:
             last_err = exc

@@ -351,3 +351,24 @@ def parse_expression(s: str) -> Expression:
             f"Unexpected trailing tokens after expression: {tokens[pos:]!r}"
         )
     return expr
+
+
+def feature_terminals(expr: Expression) -> frozenset[str]:
+    """Every FEATURE terminal name the expression references.
+
+    Window literals and other non-feature terminals are excluded — the callers
+    care about which DATA a candidate reads, not about its constants.
+
+    Needed wherever a decision depends on what an expression actually touches:
+    the cross-endpoint alignment mask is computed from the endpoint SET of
+    these names, and a campaign's frozen-whitelist check compares against them.
+    """
+    if isinstance(expr, Terminal):
+        return frozenset({expr.name}) if expr.name.startswith("$") \
+            else frozenset()
+    if isinstance(expr, OperatorCall):
+        out: set[str] = set()
+        for child in expr.children:
+            out |= feature_terminals(child)
+        return frozenset(out)
+    return frozenset()
