@@ -82,6 +82,7 @@ _ICON_MAP = {
     "配置运行": "\U0001f680",        # 🚀
     "今日推荐": "\U0001f4dd",        # 📝
     "生产运维": "\U0001f6e0",        # 🛠
+    "运行中心": "\U0001f39b",        # 🎛
     "结果": "\U0001f4c8",            # 📈
     "滚动验证": "\U0001f501",        # 🔁
     "设计系统": "\U0001f3a8",        # 🎨
@@ -207,6 +208,10 @@ _navigation: dict[str, list[Any]] = {
         # 生产运维驾驶舱:现任身份 / 授权门 / 再认证时钟 / 重训窗 / 数据新鲜度,
         # 全部只读 + 命令文本(openspec 2026-08-14-ui-ops-cockpit)。不代跑任何命令。
         st.Page(str(_PAGES_DIR / "ops_cockpit.py"), title="生产运维"),
+        # 运行中心:数据更新手动补跑(后台子进程)+ 今日出单(同步子进程),
+        # 参数与驾驶舱同源绑定(openspec 2026-08-16-ui-run-center)。「代跑」
+        # 职责归这里,驾驶舱的只读承诺不动。
+        st.Page(str(_PAGES_DIR / "run_center.py"), title="运行中心"),
     ],
     "分析": [
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
