@@ -205,10 +205,16 @@ _runnable = (
     and _cmd.command.startswith("python ")
 )
 if not _runnable:
-    st.info(
-        f"本页按钮只支持 ensemble 生产形态(现任形态:{_incumbent.kind})。"
-        "单模型/不可解析现任请按命令文本在终端处理,或先修好 manifest。"
-    )
+    if not _incumbent.is_ensemble:
+        st.info(
+            f"本页按钮只支持 ensemble 生产形态(现任形态:{_incumbent.kind})。"
+            "单模型/不可解析现任请按命令文本在终端处理,或先修好 manifest。"
+        )
+    else:
+        st.warning(
+            "现任是 ensemble,但某个参数路径无法安全渲染成命令——按钮已"
+            "收起。真实原因见上方命令框下的说明;修好那条路径再回本页。"
+        )
 elif st.button(
     "📝 跑今日出单(同步,分钟级)",
     key="run_center::run_recommend",
@@ -235,7 +241,12 @@ elif st.button(
             f"出单被拒/失败(exit {_result.exit_code})。本 CLI 一律 "
             "fail-loud——原因如下,修好数据再试,不存在静默错单。"
         )
-        st.code(_result.stderr_tail or _result.stdout_tail or "(无输出)")
+        # 拒绝原因经本仓 logger 落 STDOUT(StreamHandler(sys.stdout),
+        # propagate=False);stderr 多为 import 期环境噪音——顺序不能反。
+        st.code(_result.stdout_tail or _result.stderr_tail or "(无输出)")
+        if _result.stdout_tail and _result.stderr_tail:
+            with st.expander("stderr 尾部(import 期环境噪音可能混入)"):
+                st.code(_result.stderr_tail)
     else:
         st.error(f"无法运行({_result.kind}):{_result.error}")
 

@@ -35,9 +35,10 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
   launch 标记——既有日志行只有时分秒）；Windows 下
   `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`，POSIX 下
   `start_new_session=True`；子进程 env 经 `utf8_child_env()` 钉 UTF-8。
-- 启动前预检（均 fail-loud，不启动）：`TUSHARE_TOKEN` 缺失；状态工件
-  running 且新鲜（advisory——并发权威是 `daily_update` 自身单飞锁，撞锁
-  exit 17 会落日志）。
+- 启动前预检（均 fail-loud，不启动）：argv 三路径必须是绝对路径（空串
+  会被解析成当前工作目录）；`TUSHARE_TOKEN` 缺失；状态工件 running 且
+  新鲜（advisory——并发权威是 `daily_update` 自身单飞锁，撞锁 exit 17
+  会落日志）。
 - 返回 `UpdateLaunch(kind, pid, log_path, error)`；`launched` 只表示
   「进程已起」，不代表成功——成败由状态工件与日志承载。
 - 附 `log_tail()` 只读小工具供页面展示日志尾部。
@@ -54,8 +55,10 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
   逐参数同源；**绝不**注入 `--model/--fit-*/--topk/--instruments/
   --rebalance-cadence-days`（宇宙/节奏/topk 留给 serving config 两级绑定）。
 - 返回 `RecommendRunResult(kind, exit_code, stdout_tail, stderr_tail,
-  elapsed_s, error)`：`ok`（exit 0）/`failed`（exit≠0，CLI 的拒绝原因在
-  stderr 尾部）/`timeout`/`launch_failed`/`run_failed`（脚本缺失）。
+  elapsed_s, error)`：`ok`（exit 0）/`failed`（exit≠0；拒绝原因经本仓
+  logger 落 **stdout**——`StreamHandler(sys.stdout)`+`propagate=False`，
+  stderr 多为 import 期环境噪音，页面优先展示 stdout 尾部）/`timeout`/
+  `launch_failed`/`run_failed`（脚本缺失）。
 
 ### W3 `web/operator_ui/pages/run_center.py` + `app.py` 注册
 

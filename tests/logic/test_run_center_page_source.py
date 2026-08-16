@@ -88,6 +88,13 @@ class PageSourceTests(unittest.TestCase):
         self.assertIn("is_ensemble", self.src)
         self.assertIn('startswith("python ")', self.src)
 
+    def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
+        # The repo logger writes refusals to STDOUT (StreamHandler on
+        # sys.stdout, propagate=False); stderr mostly carries import-time
+        # environment noise. A page that prefers stderr would show the
+        # noise instead of the reason — pin the preference order.
+        self.assertIn("_result.stdout_tail or _result.stderr_tail", self.src)
+
 
 class RegistrationTests(unittest.TestCase):
     def setUp(self) -> None:

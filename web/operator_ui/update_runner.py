@@ -68,6 +68,11 @@ class UpdateLaunch:
     * ``already_running`` — the status artifact for THIS provider says a
       run is in flight and fresh. Advisory duplicate-click guard; the
       single-flight lock stays the authority.
+    * ``unusable_path`` — one of the three argv paths is not an
+      absolute path (empty resolves to the CWD, a foreign-convention
+      spelling lands elsewhere); nothing was started. The morning
+      command's ``_arg`` boundary refuses the same class for pasteable
+      text — a 2-hour detached run deserves no weaker a gate.
     * ``script_missing`` — repo layout drifted; nothing was started.
     * ``launch_failed`` — log dir/file or interpreter could not be set
       up (OSError); ``error`` carries the reason.
@@ -161,6 +166,22 @@ def launch_daily_update(
             kind="script_missing",
             error=f"更新脚本不在预期路径(仓库布局变了?):{UPDATE_SCRIPT}",
         )
+    for flag, path in (
+        ("--provider-dir", provider_dir),
+        ("--tushare-dir", tushare_dir),
+        ("--delisted-registry", registry_path),
+    ):
+        # Path("") normalizes to "." and a foreign-convention spelling
+        # ("/srv/…" on Windows, "D:x") is not absolute either — one
+        # check covers the whole class this box can produce.
+        if not path.is_absolute():
+            return UpdateLaunch(
+                kind="unusable_path",
+                error=(
+                    f"{flag} 不是绝对路径({str(path)!r})——拒绝把它交给"
+                    "一次约 2 小时的后台运行(空串会被读成当前工作目录)。"
+                ),
+            )
     child_env = utf8_child_env(env)
     if not child_env.get(TOKEN_ENV_VAR, "").strip():
         return UpdateLaunch(

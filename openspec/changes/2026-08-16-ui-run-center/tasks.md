@@ -8,8 +8,9 @@
   `start_new_session=True`；`stdin=DEVNULL`；stdout/stderr 追加
   `<provider 父目录>/logs/daily_update.log`；launch 标记行带完整日期
 - [ ] env 经 `utf8_child_env()`；token 预检读同一 env 映射
-- [ ] 预检：no_token / already_running（仅本 provider + running + 新鲜；
-  advisory，锁是权威）/ script_missing / launch_failed 各态
+- [ ] 预检：unusable_path（三路径必须绝对，空串=CWD 陷阱）/ no_token /
+  already_running（仅本 provider + running + 新鲜；advisory，锁是权威）/
+  script_missing / launch_failed 各态
 - [ ] `log_tail()` 只读工具
 
 ## W2 recommend_runner（同步 runner）
@@ -29,10 +30,11 @@
 
 ## W4 测试
 
-- [ ] `tests/logic/test_update_runner.py`：argv/detach/env/日志钉、四拒绝
-  分支、漂移守卫（脚本与 reference_cases 存在）、源码目标钉
-- [ ] `tests/logic/test_recommend_runner.py`：argv 五旗标 + 六禁标钉、
-  UTF-8 kwargs 钉、四结果分支、源码目标钉
+- [ ] `tests/logic/test_update_runner.py`：argv **全列表相等**钉（走私
+  旗标即红）、detach/env/日志钉、五拒绝分支、漂移守卫（脚本与
+  reference_cases 存在）、源码目标钉
+- [ ] `tests/logic/test_recommend_runner.py`：argv **全列表相等**钉 +
+  六禁标文档性断言、UTF-8 kwargs 钉、四结果分支、源码目标钉
 - [ ] `tests/logic/test_run_center_page_source.py`：页面禁 spawn/写 API/
   编排器 import；须引用两 runner；app.py 注册行 + 图标
 

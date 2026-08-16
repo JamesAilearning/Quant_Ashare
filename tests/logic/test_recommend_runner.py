@@ -49,10 +49,6 @@ _FORBIDDEN_FLAGS = (
 )
 
 
-def _flag_value(cmd: list[str], flag: str) -> str:
-    return cmd[cmd.index(flag) + 1]
-
-
 class CommandShapeTests(unittest.TestCase):
     def test_argv_carries_exactly_the_cockpit_flags(self) -> None:
         captured: dict = {}
@@ -69,23 +65,30 @@ class CommandShapeTests(unittest.TestCase):
 
         self.assertEqual(result.kind, "ok")
         cmd = captured["cmd"]
-        self.assertEqual(cmd[0], sys.executable)
-        self.assertEqual(cmd[1], str(RECOMMEND_SCRIPT))
+        # FULL-LIST equality, not per-flag membership: a smuggled extra
+        # flag (--allow-holey-recommend would bypass the fetch-integrity
+        # gate, --as-of would rewrite the decision day) passes any
+        # membership-style pin. Exactly the cockpit's five flags or red.
         self.assertEqual(
-            _flag_value(cmd, "--ensemble-manifest"),
-            _PARAMS["ensemble_manifest"],
+            cmd,
+            [
+                sys.executable,
+                str(RECOMMEND_SCRIPT),
+                "--ensemble-manifest",
+                _PARAMS["ensemble_manifest"],
+                "--provider-uri",
+                _PARAMS["provider_uri"],
+                "--delisted-registry",
+                _PARAMS["delisted_registry"],
+                "--name-source",
+                _PARAMS["name_source"],
+                "--bundle-max-age-days",
+                "14",
+            ],
         )
-        self.assertEqual(
-            _flag_value(cmd, "--provider-uri"), _PARAMS["provider_uri"]
-        )
-        self.assertEqual(
-            _flag_value(cmd, "--delisted-registry"),
-            _PARAMS["delisted_registry"],
-        )
-        self.assertEqual(
-            _flag_value(cmd, "--name-source"), _PARAMS["name_source"]
-        )
-        self.assertEqual(_flag_value(cmd, "--bundle-max-age-days"), "14")
+        # Redundant with the equality above, kept as documentation of
+        # WHY the list is closed: these belong to the CLI-side binding
+        # chain and the ensemble-mode mutual-exclusion gate.
         for flag in _FORBIDDEN_FLAGS:
             self.assertNotIn(flag, cmd)
 

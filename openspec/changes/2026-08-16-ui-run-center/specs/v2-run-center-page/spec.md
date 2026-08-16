@@ -41,14 +41,22 @@ daily_update.log`），追加前 SHALL 写入一行携带完整日期时间的 l
 （既有日志行仅有时分秒）；子进程 env SHALL 经 `utf8_child_env()` 钉
 UTF-8。
 
-启动前 SHALL 预检并 fail-loud 拒绝（不启动进程）：(a) 子进程将继承的
-env 中 `TUSHARE_TOKEN` 缺失或为空白；(b) 状态工件属于该 provider 且
-state=running 且按 reader 语义分类为新鲜。预检 (b) 是 advisory——并发的
+启动前 SHALL 预检并 fail-loud 拒绝（不启动进程）：(a) argv 三路径
+（provider/tushare/registry）任一不是绝对路径——空串会被解析成当前
+工作目录，异约定拼写会把数据落到别处；(b) 子进程将继承的 env 中
+`TUSHARE_TOKEN` 缺失或为空白；(c) 状态工件属于该 provider 且
+state=running 且按 reader 语义分类为新鲜。预检 (c) 是 advisory——并发的
 权威仲裁是 `daily_update` 自身的单飞锁（撞锁 exit 17 落日志）；runner
 MUST NOT 触碰锁文件。
 
 `launched` 结果仅表示进程已创建（携 pid 与日志路径），MUST NOT 被呈现为
 「更新成功」——成败由状态工件与日志承载。
+
+#### Scenario: 非绝对路径拒绝启动
+
+- **GIVEN** 三路径中任一为空串（解析为 `.`）或相对/异约定拼写
+- **WHEN** 操作人点击启动
+- **THEN** 返回 `unusable_path` 并指名是哪个旗标，进程未被创建
 
 #### Scenario: token 缺失拒绝启动
 
@@ -114,8 +122,10 @@ SHALL 禁用。
 encoding="utf-8", errors="replace"`，`cwd=仓库根`（相对 `out_dir` 落
 `output/daily_recommend/`），env 经 `utf8_child_env()`，超时默认 900s。
 结果 SHALL fail-loud：exit 0 → 展示 stdout 尾部（含 entry_date 横幅）并
-引导至「今日推荐」页；exit≠0 → 展示 stderr 尾部（CLI 的拒绝原因）；
-timeout / launch 失败 / 脚本缺失各自如实展示。
+引导至「今日推荐」页；exit≠0 → **优先展示 stdout 尾部**——本仓 CLI 的
+拒绝原因经 logger 落 stdout（`StreamHandler(sys.stdout)`、
+`propagate=False`），stderr 多为 import 期环境噪音，SHALL 次序靠后
+（折叠展示）；timeout / launch 失败 / 脚本缺失各自如实展示。
 
 #### Scenario: ensemble 现任成功出单
 
@@ -140,7 +150,8 @@ timeout / launch 失败 / 脚本缺失各自如实展示。
 #### Scenario: CLI 拒绝如实转述
 
 - **WHEN** CLI exit≠0
-- **THEN** 页面展示 exit code 与 stderr 尾部，绝不吞掉拒绝原因
+- **THEN** 页面展示 exit code，并优先展示 stdout 尾部（拒绝原因所在），
+  绝不吞掉拒绝原因、绝不用 stderr 的环境噪音顶替它
 
 #### Scenario: 超时被杀且如实报告
 

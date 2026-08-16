@@ -21,7 +21,8 @@ openspec `2026-08-16-ui-run-center`。本页把两个例行动作从终端搬进
   `<provider 父目录>/logs/daily_update.log`（与调度器同一条流；UI 启动
   会先写入一行带完整日期的标记，因为既有日志行只有时分秒）。
 - 出单是 fail-loud 的：bundle 过期/完整性戳/ST 快照陈旧/绑定不等，一律
-  exit≠0 且原因在 stderr——页面原样转述，不存在静默错单。
+  exit≠0 且原因经本仓 logger 落 **stdout**（stderr 多为 import 期环境
+  噪音）——页面优先展示 stdout 尾部，不存在静默错单。
 - 本页**不代下单**：出单终点是落盘工件；清单与 HOLD 披露到「今日推荐」
   页看，**每次必读打印的 `entry_date`**（它是已收盘会话）。
 
@@ -57,5 +58,7 @@ cd /d "%REPO%"
 | 启动被拒 `no_token` | UI 进程没继承到 `TUSHARE_TOKEN` | 用上面的 `.bat` 启动，或先在环境里设好 |
 | 启动被拒 `already_running` | 状态工件显示一次更新正在进行且新鲜 | 等它结束；若确认已死，等记录按 reader 语义变陈旧（>6h）后再试 |
 | 日志见 exit 17 | 与另一次运行撞了单飞锁 | 无损；让先跑的那次跑完 |
-| 出单 exit≠0 | CLI 的 fail-loud 拒绝 | 读页面转述的 stderr 尾部，修好数据再跑 |
+| 出单 exit≠0 | CLI 的 fail-loud 拒绝 | 读页面转述的输出尾部（拒绝原因在 stdout），修好数据再跑 |
+| 启动被拒 `unusable_path` | 某个路径为空/相对/异约定拼写 | 修 `config.yaml` 或对应 `QUANT_*` 环境变量 |
+| 出单超时(900s)且日志无进展 | 已知风险：qlib kernels 在非交互子进程可能挂死（`init_qlib_canonical` 未钉 kernels） | 超时是兜底，无损；复现则升级处理（在 CLI init 侧钉 kernels，另行提案） |
 | 状态记录「属于另一个 provider」 | 状态文件被别的部署顶替 | 检查两台调度是否把 `--status-path` 指到了同一文件 |

@@ -47,8 +47,10 @@ class RecommendRunResult:
     * ``ok`` — CLI exit 0; the artifacts are on disk and ``stdout_tail``
       carries the banner (entry_date / rebalance_day / HOLD).
     * ``failed`` — CLI exit != 0. Every refusal in this CLI is loud on
-      stderr (stale bundle, integrity stamp, binding mismatch, …);
-      ``stderr_tail`` is the reason to show, verbatim.
+      STDOUT — the repo logger's handler is ``StreamHandler(sys.stdout)``
+      with ``propagate=False`` (``src/core/logger.py``), so
+      ``stdout_tail`` carries the reason; ``stderr_tail`` is mostly
+      import-time environment noise and is secondary.
     * ``timeout`` — exceeded ``timeout_s`` and was killed.
     * ``launch_failed`` — the interpreter could not be started.
     * ``run_failed`` — the script is missing (repo layout drift).
@@ -162,6 +164,9 @@ def run_daily_recommend(
         exit_code=proc.returncode,
         stdout_tail=_tail(proc.stdout),
         stderr_tail=_tail(proc.stderr),
-        error=f"出单 CLI 退出码 {proc.returncode}(拒绝原因见 stderr 尾部)。",
+        error=(
+            f"出单 CLI 退出码 {proc.returncode}"
+            "(拒绝原因见输出尾部;本仓 CLI 经 logger 落 stdout)。"
+        ),
         elapsed_s=elapsed,
     )

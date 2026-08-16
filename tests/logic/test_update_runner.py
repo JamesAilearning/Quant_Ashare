@@ -42,10 +42,6 @@ _CN_TZ = timezone(timedelta(hours=8))
 _ENV_OK = {TOKEN_ENV_VAR: "test-token", "PATH": os.environ.get("PATH", "")}
 
 
-def _flag_value(cmd: list[str], flag: str) -> str:
-    return cmd[cmd.index(flag) + 1]
-
-
 class _Sandbox:
     """A provider dir + optional status artifact in a temp tree."""
 
@@ -107,27 +103,28 @@ class CommandShapeTests(unittest.TestCase):
             self.assertEqual(result.kind, "launched")
             self.assertEqual(result.pid, 4321)
             cmd = captured["cmd"]
-            self.assertEqual(cmd[0], sys.executable)
-            self.assertEqual(cmd[1], str(UPDATE_SCRIPT))
+            # FULL-LIST equality, not per-flag membership: a smuggled
+            # extra flag (--end-date pins the tail to a fixed day,
+            # --dry-run silently skips the lock AND the status artifact,
+            # --status-path retargets #434's file) would pass any
+            # membership-style pin. Exactly the scheduler's argv or red.
             self.assertEqual(
-                _flag_value(cmd, "--provider-dir"), str(box.provider)
+                cmd,
+                [
+                    sys.executable,
+                    str(UPDATE_SCRIPT),
+                    "--tushare-dir",
+                    str(box.tushare),
+                    "--provider-dir",
+                    str(box.provider),
+                    "--delisted-registry",
+                    str(box.registry),
+                    "--reference-cases",
+                    str(REFERENCE_CASES),
+                    "--start-date",
+                    START_DATE,
+                ],
             )
-            self.assertEqual(
-                _flag_value(cmd, "--tushare-dir"), str(box.tushare)
-            )
-            self.assertEqual(
-                _flag_value(cmd, "--delisted-registry"), str(box.registry)
-            )
-            self.assertEqual(
-                _flag_value(cmd, "--reference-cases"), str(REFERENCE_CASES)
-            )
-            self.assertEqual(_flag_value(cmd, "--start-date"), START_DATE)
-            # The launcher must never smuggle in flags the scheduler does
-            # not pass — --dry-run would silently skip the lock AND the
-            # status artifact, --status-path would retarget #434's file.
-            self.assertNotIn("--dry-run", cmd)
-            self.assertNotIn("--status-path", cmd)
-            self.assertNotIn("--allow-holey-fetch", cmd)
 
     def test_detach_log_and_env_kwargs(self) -> None:
         captured: dict = {}
@@ -335,6 +332,27 @@ class RefusalBranchTests(unittest.TestCase):
             ):
                 result = self._launch_expect_no_popen(box, dict(_ENV_OK))
             self.assertEqual(result.kind, "script_missing")
+
+    def test_non_absolute_registry_refuses_before_any_launch(self) -> None:
+        # An empty QUANT_DELISTED_REGISTRY reaches the page as "" and
+        # Path("") is "." — handing that to a 2-hour detached run would
+        # scan the WORKING DIRECTORY. The morning command's _arg refuses
+        # the same class for pasteable text; the launcher must be no
+        # weaker.
+        with tempfile.TemporaryDirectory() as tmp:
+            box = _Sandbox(tmp)
+            box.registry = Path("")
+            result = self._launch_expect_no_popen(box, dict(_ENV_OK))
+            self.assertEqual(result.kind, "unusable_path")
+            self.assertIn("--delisted-registry", result.error)
+
+    def test_relative_provider_refuses_before_any_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            box = _Sandbox(tmp)
+            box.provider = Path("relative/bundle")
+            result = self._launch_expect_no_popen(box, dict(_ENV_OK))
+            self.assertEqual(result.kind, "unusable_path")
+            self.assertIn("--provider-dir", result.error)
 
 
 class LogTailTests(unittest.TestCase):
