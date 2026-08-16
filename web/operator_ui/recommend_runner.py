@@ -318,9 +318,19 @@ def _publish(
     try:
         for f in files:
             dest = OUT_DIR / f.name
-            if dest.exists():
+            # The ledger move is attempted DIRECTLY — ``exists()`` would
+            # fold any transient stat error into False and let the next
+            # replace overwrite a prior that never entered the ledger
+            # (a later rollback would then claim completeness while that
+            # artifact is gone — codex #440 r4). Only true absence
+            # (FileNotFoundError) means "no prior to save"; every other
+            # OSError falls through to the rollback below with this
+            # file's pair untouched.
+            try:
                 os.replace(dest, prior_dir / f.name)
                 saved.append(f.name)
+            except FileNotFoundError:
+                pass
             os.replace(f, dest)
             published.append(f.name)
     except OSError as exc:

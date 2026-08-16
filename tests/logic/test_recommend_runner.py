@@ -347,6 +347,57 @@ class StagingPublishTests(unittest.TestCase):
                 sorted(_ARTIFACTS),
             )
 
+    def test_ledger_move_failure_rolls_back_instead_of_overwriting(
+        self,
+    ) -> None:
+        # codex #440 r4: an exists() gate would fold a transient stat
+        # error into "no prior" and overwrite the old artifact without
+        # a ledger entry. The ledger move is attempted directly: a
+        # non-FileNotFoundError failure there must trigger the full
+        # rollback with the pair untouched — never a silent overwrite.
+        real_replace = os.replace
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            out.mkdir(exist_ok=True)
+            for name in _ARTIFACTS:
+                (out / name).write_text("OLD-" + name, encoding="utf-8")
+
+            def _flaky(src: str | Path, dst: str | Path) -> None:
+                # The .json's LEDGER move (dst inside .prior) hits a
+                # transient access error — not absence.
+                if (
+                    Path(dst).parent.name == ".prior"
+                    and Path(dst).name.endswith(".json")
+                ):
+                    raise PermissionError("transient stat/access error")
+                real_replace(src, dst)
+
+            with mock.patch(
+                "web.operator_ui.recommend_runner.OUT_DIR", out
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.subprocess.run",
+                _fake_run(_ARTIFACTS),
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.os.replace", _flaky
+            ), _patched_lock():
+                result = run_daily_recommend(**_PARAMS)
+
+            self.assertEqual(result.kind, "run_failed")
+            self.assertIn("已整体回滚", result.error)
+            # Every published name is the OLD run again — including the
+            # .json, whose prior was never silently overwritten.
+            for name in _ARTIFACTS:
+                self.assertEqual(
+                    (out / name).read_text(encoding="utf-8"),
+                    "OLD-" + name,
+                )
+            staging_dirs = list(out.glob(".staging-*"))
+            self.assertEqual(len(staging_dirs), 1)
+            self.assertEqual(
+                sorted(p.name for p in staging_dirs[0].iterdir()),
+                sorted(_ARTIFACTS),
+            )
+
     def test_incomplete_rollback_reports_residuals_loudly(self) -> None:
         # If the rollback itself also fails, the torn state must be
         # named residual by residual — never summarized away.

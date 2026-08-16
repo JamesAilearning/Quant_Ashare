@@ -136,8 +136,11 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 `output/daily_recommend/` 下的**每次一新的暂存目录**（`--out-dir`），
 完成（exit 0）后逐文件经同卷 `os.replace` 原子发布——超时被杀/退出≠0
 只清理暂存，已发布工件 MUST NOT 被触碰。发布 SHALL 带回滚账本：被
-替换的旧版本先移入暂存 `.prior`，任一步失败 SHALL 整体回滚（新文件
-退回暂存、旧版本复位）——顺序发布 MUST NOT 留下混批工件集；仅回滚
+替换的旧版本先移入暂存 `.prior`——账本移动 SHALL 直接尝试，仅真实
+缺失（`FileNotFoundError`）视为无旧版，其余检查/移动错误一律走整体
+回滚（`exists()` 式预检会把瞬态 stat 错误折成 False，让旧版未入账即
+被覆盖）；任一步失败 SHALL 整体回滚（新文件退回暂存、旧版本复位）
+——顺序发布 MUST NOT 留下混批工件集；仅回滚
 不完整才是撕裂态，且残留 SHALL 逐名指出（un-publish 失败的名字不再
 复位旧版——那会砸掉新文件的唯一副本，改为指名滞留）。所有发布失败
 情形暂存目录 SHALL 保留。

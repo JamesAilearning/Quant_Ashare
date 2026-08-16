@@ -73,6 +73,14 @@
 - [ ] 两个回滚测试:中途失败 → 发布目录逐字节复原+暂存完整;回滚
   不完整 → 残留逐名+证据目录保留
 
+## codex #440 r4（1 条 P1 实修）
+
+- [ ] `exists()` 预检吞瞬态 stat 错误 → 旧版未入账即被覆盖,事后
+  「完整回滚」实为丢件 → 账本移动直接尝试,仅 FileNotFoundError 视为
+  无旧版,其余 OSError 走整体回滚(该文件对未动)
+- [ ] 回归测试:账本移动遇 PermissionError → 整体回滚,发布目录逐字节
+  复原(含未被静默覆盖的旧版),暂存完整
+
 ## 验证
 
 - [ ] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`
