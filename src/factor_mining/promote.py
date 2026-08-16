@@ -416,12 +416,20 @@ def _verify_fundamental_identity(
             "record was edited after mining; re-mine before promoting."
         )
     skeleton = pd.DataFrame(np.nan, index=trade_dates, columns=instruments)
-    triple = factory(run_data, trade_dates, instruments)
     try:
+        # The factory runs research-side code (bridge, view, calendar
+        # loading) whose failures arrive as RuntimeError subclasses,
+        # ValueError or OSError — all of them mean "the recorded inputs
+        # cannot be rebuilt", which is this module's controlled-refusal
+        # contract, not a traceback.
+        triple = factory(run_data, trade_dates, instruments)
         values, evidence, periods = _verify_fundamental_triple(
             triple, skeleton, {})
-    except RuntimeError as exc:
-        raise PromotionError(str(exc)) from exc
+    except (RuntimeError, ValueError, OSError) as exc:
+        raise PromotionError(
+            f"fundamental factory failed on the mined window ({exc}); "
+            "the run's recorded identity cannot be re-derived."
+        ) from exc
     got = fundamental_output_sha256(values, evidence, periods)
     if got != recorded_output:
         raise PromotionError(
@@ -675,7 +683,7 @@ def promote_run(
             values, _evidence, periods, effective_output_sha = (
                 _build_fundamental_leg(
                     config.data, fundamental_panel_factory, fwd, panel))
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError, OSError) as exc:
             raise PromotionError(str(exc)) from exc
         panel = {**panel, **values}
         if config.validation_end_date is None:
