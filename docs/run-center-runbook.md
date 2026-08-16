@@ -60,5 +60,6 @@ cd /d "%REPO%"
 | 日志见 exit 17 | 与另一次运行撞了单飞锁 | 无损；让先跑的那次跑完 |
 | 出单 exit≠0 | CLI 的 fail-loud 拒绝 | 读页面转述的输出尾部（拒绝原因在 stdout），修好数据再跑 |
 | 启动被拒 `unusable_path` | 某个路径为空/相对/异约定拼写 | 修 `config.yaml` 或对应 `QUANT_*` 环境变量 |
+| 出单被拒 `blocked_by_update` | 更新器的 provider 单飞锁正被持有（权威判定；状态展示只是参考） | 等更新结束（锁随对方进程退出自动释放）再跑 |
 | 出单超时(900s)且日志无进展 | 已知风险：qlib kernels 在非交互子进程可能挂死（`init_qlib_canonical` 未钉 kernels） | 超时是兜底，无损；复现则升级处理（在 CLI init 侧钉 kernels，另行提案） |
 | 状态记录「属于另一个 provider」 | 状态文件被别的部署顶替 | 检查两台调度是否把 `--status-path` 指到了同一文件 |

@@ -95,6 +95,12 @@ class PageSourceTests(unittest.TestCase):
         # into the runnable expression.
         self.assertIn("and not _running_fresh", self.src)
 
+    def test_lock_refusal_is_rendered_as_the_authority(self) -> None:
+        # codex #440 r2: the status gate above is advisory UX only; the
+        # authoritative serialization is the runner holding the
+        # updater's provider lock, and its refusal must be rendered.
+        self.assertIn("blocked_by_update", self.src)
+
     def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
         # The repo logger writes refusals to STDOUT (StreamHandler on
         # sys.stdout, propagate=False); stderr mostly carries import-time

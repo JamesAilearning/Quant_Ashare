@@ -63,6 +63,15 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
   stderr 多为 import 期环境噪音，页面优先展示 stdout 尾部）/`timeout`/
   `launch_failed`/`run_failed`（脚本缺失）。
 
+### W2b `web/operator_ui/provider_lock.py` — 权威串行化（codex r2）
+
+- 状态工件闸门是 advisory（写失败不改更新器退出码；>6h「陈旧」可能仍是
+  活进程）。出单执行 SHALL 持有更新器自身的 provider 单飞锁——web 侧
+  镜像模块（不 import 管线层），镜像正确性由与
+  `src.data_pipeline.single_flight` 的双向互斥行为测试实证。锁忙/锁
+  文件不可用 → `blocked_by_update` fail-closed 拒绝；持锁期间真更新器
+  以其正常 exit 17 快速拒绝。锁只覆盖子进程读窗口。
+
 ### W3 `web/operator_ui/pages/run_center.py` + `app.py` 注册
 
 - 新页「运行中心」，注册进 `st.navigation` 的「运行」组 + `_ICON_MAP`。

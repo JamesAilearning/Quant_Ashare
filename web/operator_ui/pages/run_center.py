@@ -247,6 +247,11 @@ elif st.button(
             st.caption("已发布工件:" + "、".join(_result.published))
         if _result.stdout_tail:
             st.code(_result.stdout_tail)
+    elif _result.kind == "blocked_by_update":
+        st.warning(
+            f"⏳ 出单被更新单飞锁挡下(权威判定,状态展示只是参考):"
+            f"{_result.error}"
+        )
     elif _result.kind == "failed":
         st.error(
             f"出单被拒/失败(exit {_result.exit_code})。本 CLI 一律 "

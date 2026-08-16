@@ -120,6 +120,16 @@ SHALL 禁用。
 `--rebalance-cadence-days`——宇宙/节奏/topk 留给 serving config 两级
 绑定链在 CLI 内解析。
 
+页面的状态闸门只是 UX；**权威串行化 SHALL 由锁承担**：执行期间
+runner SHALL 持有更新器自身的 provider 单飞锁（web 侧镜像模块
+`provider_lock`，不 import 管线层；镜像正确性 SHALL 由与
+`src.data_pipeline.single_flight` 的**双向互斥行为测试**实证——持此
+锁时真更新器拒绝启动，真锁被持时此处拒绝）。锁忙或锁文件不可用 →
+`blocked_by_update` fail-closed 拒绝，不派生子进程；锁只覆盖子进程
+读窗口，发布（只写 `output/`）在释放后进行。状态工件写失败或
+running 记录陈旧时，这把锁就是防止出单撞进换库真空的唯一防线
+（状态是 advisory，锁是权威）。
+
 子进程 SHALL 同步运行：`capture_output=True, text=True,
 encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 `utf8_child_env()`，超时默认 900s。产物 SHALL 写入
@@ -159,6 +169,14 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 - **GIVEN** 状态工件属于该 provider、state=running 且新鲜
 - **WHEN** 渲染出单区
 - **THEN** 不出现执行按钮，并说明换库与读者不并发的原因
+
+#### Scenario: 状态失真时锁仍拦得住
+
+- **GIVEN** 更新器仍在运行，但状态工件缺失/写失败/running 记录已被
+  分类为陈旧（按钮因此可见）
+- **WHEN** 操作人点击出单
+- **THEN** runner 因拿不到 provider 单飞锁返回 `blocked_by_update`，
+  子进程未被派生，页面如实展示锁为权威的拒绝
 
 #### Scenario: 超时/失败不触碰已发布工件
 

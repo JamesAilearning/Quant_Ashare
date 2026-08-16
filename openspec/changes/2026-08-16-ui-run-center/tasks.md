@@ -54,6 +54,16 @@
 - [ ] P2 marker 缓冲：`log_fh.flush()` 先于 `Popen`；子进程抢写次序
   回归测试（无 flush 则红，反向验证过）
 
+## codex #440 r2（1 条 P1 实修）
+
+- [ ] 状态闸门非权威（写失败/陈旧即失真）→ 新增 `provider_lock.py`
+  （单飞锁 web 侧镜像，不 import src），出单执行持锁进行;锁忙/锁
+  文件不可用 → `blocked_by_update` fail-closed
+- [ ] 双向互斥行为测试:真 `single_flight` 持锁 → runner 拒绝(端到端);
+  stub 锁忙 → 不派生;通用测试全部改打锁桩(避免碰真锁文件/CI 无 D 盘)
+- [ ] 页面渲染 `blocked_by_update` 专属分支 + 源码钉;spec 增
+  「状态失真时锁仍拦得住」场景
+
 ## 验证
 
 - [ ] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

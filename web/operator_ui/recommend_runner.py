@@ -32,6 +32,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from scripts.child_env import utf8_child_env
+from web.operator_ui.provider_lock import hold_update_lock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RECOMMEND_SCRIPT = PROJECT_ROOT / "scripts" / "daily_recommend.py"
@@ -62,6 +63,10 @@ class RecommendRunResult:
       with ``propagate=False`` (``src/core/logger.py``), so
       ``stdout_tail`` carries the reason; ``stderr_tail`` is mostly
       import-time environment noise and is secondary.
+    * ``blocked_by_update`` — the updater's single-flight provider lock
+      is held (or cannot be opened): a data update is live, and the
+      swap window is not reader-concurrent. The page's status-based
+      gate is only UX; THIS refusal is the authority (codex #440 r2).
     * ``timeout`` — exceeded ``timeout_s`` and was killed. The staging
       dir (with any half-written files) is cleaned up; previously
       published artifacts are untouched.
@@ -152,36 +157,51 @@ def run_daily_recommend(
         python=python,
     )
     started = time.monotonic()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-            cwd=str(PROJECT_ROOT),
-            env=utf8_child_env(),
-        )
-    except subprocess.TimeoutExpired:
-        # Half-written files exist only in staging — junk, clean them.
-        # Published artifacts were never touched.
-        shutil.rmtree(staging, ignore_errors=True)
-        return RecommendRunResult(
-            kind="timeout",
-            error=(
-                f"超过 {timeout_s}s 上限,子进程已终止。半成品只在暂存"
-                "目录且已清理,已发布的工件未被触碰。"
-            ),
-            elapsed_s=time.monotonic() - started,
-        )
-    except OSError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
-        return RecommendRunResult(
-            kind="launch_failed",
-            error=f"无法启动解释器 {cmd[0]!r}:{exc}",
-            elapsed_s=time.monotonic() - started,
-        )
+    # The CLI's bundle READ must not overlap the updater's swap window —
+    # hold the updater's own provider lock for the child's lifetime
+    # (authoritative; the status artifact is advisory only). Publishing
+    # happens after release: it only touches output/, which the updater
+    # never writes.
+    with hold_update_lock(Path(provider_uri)) as held:
+        if not held:
+            return RecommendRunResult(
+                kind="blocked_by_update",
+                error=(
+                    "数据更新的单飞锁正被持有(或锁文件不可用)——换库"
+                    "不与读者并发,等更新结束后再跑;锁随对方进程退出"
+                    "自动释放。"
+                ),
+            )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+                cwd=str(PROJECT_ROOT),
+                env=utf8_child_env(),
+            )
+        except subprocess.TimeoutExpired:
+            # Half-written files exist only in staging — junk, clean
+            # them. Published artifacts were never touched.
+            shutil.rmtree(staging, ignore_errors=True)
+            return RecommendRunResult(
+                kind="timeout",
+                error=(
+                    f"超过 {timeout_s}s 上限,子进程已终止。半成品只在"
+                    "暂存目录且已清理,已发布的工件未被触碰。"
+                ),
+                elapsed_s=time.monotonic() - started,
+            )
+        except OSError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            return RecommendRunResult(
+                kind="launch_failed",
+                error=f"无法启动解释器 {cmd[0]!r}:{exc}",
+                elapsed_s=time.monotonic() - started,
+            )
     elapsed = time.monotonic() - started
     if proc.returncode != 0:
         shutil.rmtree(staging, ignore_errors=True)

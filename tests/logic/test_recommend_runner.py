@@ -13,6 +13,7 @@ single-target source pin.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,25 @@ def _no_leftover_staging(out_dir: Path) -> bool:
     return not any(out_dir.glob(".staging-*"))
 
 
+@contextlib.contextmanager
+def _stub_lock(held: bool):
+    yield held
+
+
+def _patched_lock(held: bool = True):
+    """Replace the runner's authoritative lock with a stub.
+
+    Every generic test MUST patch it: the real ``hold_update_lock``
+    derives the lock file from ``provider_uri`` — with the production
+    default in ``_PARAMS`` that is the REAL provider sibling on the
+    operator box (and a nonexistent drive on CI).
+    """
+    return mock.patch(
+        "web.operator_ui.recommend_runner.hold_update_lock",
+        lambda provider: _stub_lock(held),
+    )
+
+
 class CommandShapeTests(unittest.TestCase):
     def test_argv_is_exactly_the_cockpit_flags_plus_staging(self) -> None:
         captured: dict = {}
@@ -104,7 +124,7 @@ class CommandShapeTests(unittest.TestCase):
                 "web.operator_ui.recommend_runner.OUT_DIR", Path(tmp)
             ), mock.patch(
                 "web.operator_ui.recommend_runner.subprocess.run", _run
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
             cmd = captured["cmd"]
@@ -150,7 +170,7 @@ class CommandShapeTests(unittest.TestCase):
 
         with mock.patch(
             "web.operator_ui.recommend_runner.subprocess.run", _run
-        ):
+        ), _patched_lock():
             run_daily_recommend(**_PARAMS)
         kwargs = captured["kwargs"]
         self.assertTrue(kwargs["capture_output"])
@@ -189,7 +209,7 @@ class StagingPublishTests(unittest.TestCase):
             ), mock.patch(
                 "web.operator_ui.recommend_runner.subprocess.run",
                 _fake_run(_ARTIFACTS, stdout="entry_date=2026-08-14"),
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
             self.assertEqual(
@@ -212,7 +232,7 @@ class StagingPublishTests(unittest.TestCase):
             ), mock.patch(
                 "web.operator_ui.recommend_runner.subprocess.run",
                 _fake_run(_ARTIFACTS),
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
             self.assertEqual(prior.read_text(encoding="utf-8"), "OLD")
@@ -238,7 +258,7 @@ class StagingPublishTests(unittest.TestCase):
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
                 "web.operator_ui.recommend_runner.subprocess.run", _run
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "timeout")
             self.assertIn("已终止", result.error)
@@ -259,7 +279,7 @@ class StagingPublishTests(unittest.TestCase):
                     returncode=1,
                     stderr="bundle is stale: 20 > 14",
                 ),
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "failed")
             self.assertTrue(_no_leftover_staging(out))
@@ -272,7 +292,7 @@ class StagingPublishTests(unittest.TestCase):
             ), mock.patch(
                 "web.operator_ui.recommend_runner.subprocess.run",
                 _fake_run({}),  # creates the staging dir, writes nothing
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "run_failed")
             self.assertIn("无产物", result.error)
@@ -292,7 +312,7 @@ class StagingPublishTests(unittest.TestCase):
             ), mock.patch(
                 "web.operator_ui.recommend_runner.os.replace",
                 side_effect=OSError("cross-device or locked"),
-            ):
+            ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "run_failed")
             self.assertIn("保留", result.error)
@@ -308,7 +328,7 @@ class OutcomeBranchTests(unittest.TestCase):
     def _run_with(self, fake: object) -> RecommendRunResult:
         with mock.patch(
             "web.operator_ui.recommend_runner.subprocess.run", fake
-        ):
+        ), _patched_lock():
             return run_daily_recommend(**_PARAMS)
 
     def test_exit_zero_is_ok_with_stdout_banner(self) -> None:
@@ -363,6 +383,41 @@ class OutcomeBranchTests(unittest.TestCase):
         ):
             result = run_daily_recommend(**_PARAMS)
         self.assertEqual(result.kind, "run_failed")
+
+
+class UpdateLockGateTests(unittest.TestCase):
+    """codex #440 r2: the authoritative serialization is the updater's
+    own provider lock — the status artifact is advisory only."""
+
+    def test_busy_lock_refuses_without_spawning(self) -> None:
+        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            raise AssertionError("must not spawn while the lock is held")
+
+        with mock.patch(
+            "web.operator_ui.recommend_runner.subprocess.run", _run
+        ), _patched_lock(held=False):
+            result = run_daily_recommend(**_PARAMS)
+        self.assertEqual(result.kind, "blocked_by_update")
+        self.assertIn("\u5355\u98de\u9501", result.error)
+
+    def test_real_updater_lock_blocks_end_to_end(self) -> None:
+        # No stubs on the lock here: the REAL src single-flight lock is
+        # held (as the updater holds it), provider_uri points at a temp
+        # provider, and the runner must refuse before spawning.
+        from src.data_pipeline.single_flight import single_flight
+
+        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+            raise AssertionError("must not spawn while the updater runs")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = Path(tmp) / "prov"
+            provider.mkdir()
+            params = dict(_PARAMS, provider_uri=str(provider))
+            with single_flight(provider), mock.patch(
+                "web.operator_ui.recommend_runner.subprocess.run", _run
+            ):
+                result = run_daily_recommend(**params)
+        self.assertEqual(result.kind, "blocked_by_update")
 
 
 class SingleTargetSourcePinTests(unittest.TestCase):
