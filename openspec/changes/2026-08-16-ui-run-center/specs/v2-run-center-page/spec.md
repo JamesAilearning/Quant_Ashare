@@ -1,0 +1,172 @@
+# v2-run-center-page（运行中心：数据更新与出单的 UI 触发）
+
+## ADDED Requirements
+
+### Requirement: 页面注册与既有只读承诺不动
+
+运行中心页 SHALL 注册于 `web/operator_ui/app.py` 的 `st.navigation`
+「运行」分组，标题为「运行中心」，并调用 `render_page_header`。本页承担
+「代跑」职责的同时，既有页面的只读承诺 MUST 保持不动：驾驶舱
+（`v2-ops-cockpit-page`）仍只展示不代跑，数据检视页的 import 闭包守卫与
+`pit_validation_runner` 的源码钉（含 `06_validate_pit_data`、不含
+`daily_update.py`）仍然成立。
+
+#### Scenario: 页面已注册
+
+- **WHEN** 读取 `web/operator_ui/app.py`
+- **THEN** `st.navigation` 的「运行」组含 `run_center.py`、标题「运行中心」
+- **AND** `_ICON_MAP` 含「运行中心」条目
+
+#### Scenario: 驾驶舱与检视页承诺不因本页改变
+
+- **GIVEN** 本 change 合入
+- **WHEN** 运行既有 source-pin 守卫（驾驶舱禁 `st.button`/`subprocess`、
+  检视页闭包守卫、`pit_validation_runner` 源码钉）
+- **THEN** 全部保持通过，无需任何豁免扩列
+
+### Requirement: 数据更新手动启动为 detached 子进程
+
+页面 SHALL 经独立模块 `web/operator_ui/update_runner.py` 启动
+`scripts/daily_update.py` 子进程；页面自身 MUST NOT import `subprocess`。
+argv SHALL 镜像调度器（`run_daily_update.bat`）的参数形状：
+`--tushare-dir <provider 父目录/tushare_raw> --provider-dir <provider>
+--delisted-registry <registry> --reference-cases
+<仓库>/tests/pit/reference_cases.yaml --start-date 20180101`，首两元素为
+`<python 解释器>` 与仓库布局推导的脚本绝对路径。
+
+子进程 SHALL detached 于 UI 会话（Windows：`CREATE_NEW_PROCESS_GROUP |
+CREATE_NO_WINDOW`；POSIX：`start_new_session=True`），`stdin=DEVNULL`，
+stdout/stderr 追加写入调度器同一条日志流（`<provider 父目录>/logs/
+daily_update.log`），追加前 SHALL 写入一行携带完整日期时间的 launch 标记
+（既有日志行仅有时分秒）；子进程 env SHALL 经 `utf8_child_env()` 钉
+UTF-8。
+
+启动前 SHALL 预检并 fail-loud 拒绝（不启动进程）：(a) 子进程将继承的
+env 中 `TUSHARE_TOKEN` 缺失或为空白；(b) 状态工件属于该 provider 且
+state=running 且按 reader 语义分类为新鲜。预检 (b) 是 advisory——并发的
+权威仲裁是 `daily_update` 自身的单飞锁（撞锁 exit 17 落日志）；runner
+MUST NOT 触碰锁文件。
+
+`launched` 结果仅表示进程已创建（携 pid 与日志路径），MUST NOT 被呈现为
+「更新成功」——成败由状态工件与日志承载。
+
+#### Scenario: token 缺失拒绝启动
+
+- **GIVEN** 子进程将继承的 env 无 `TUSHARE_TOKEN`（或仅空白）
+- **WHEN** 操作人点击启动
+- **THEN** 返回 `no_token`，进程未被创建，页面展示修复指引
+
+#### Scenario: 正在运行时拒绝重复启动
+
+- **GIVEN** 状态工件属于该 provider、state=running 且新鲜
+- **WHEN** 操作人点击启动
+- **THEN** 返回 `already_running`，进程未被创建
+- **AND** 陈旧 running 记录或外来 provider 的记录不触发此拒绝
+  （交由单飞锁权威仲裁）
+
+#### Scenario: 成功启动只报告事实
+
+- **WHEN** 预检通过且 `Popen` 成功
+- **THEN** 返回 `launched`，携 pid 与日志路径
+- **AND** 页面文案不将其呈现为更新成功
+
+#### Scenario: 启动失败响亮
+
+- **WHEN** 日志目录不可创建或解释器无法启动（OSError）
+- **THEN** 返回 `launch_failed` 并携原因，绝不静默
+
+### Requirement: 数据更新状态展示复用 reader 语义
+
+页面 SHALL 复用 `web/operator_ui/update_status` reader 的既有语义展示
+「上次数据更新」：missing / corrupt / running（新鲜、陈旧、不可核实三态）/
+finished 成功 / finished 失败（exit code + 失败阶段），并拒绝展示属于
+其他 provider 的记录。页面 SHALL 提供手动刷新；running 且新鲜时启动按钮
+SHALL 禁用。
+
+#### Scenario: 运行中的展示与按钮禁用
+
+- **GIVEN** 状态工件 state=running 且新鲜
+- **WHEN** 渲染页面
+- **THEN** 展示进行中（始于时间），启动按钮为禁用态
+
+#### Scenario: 失败记录如实展示
+
+- **GIVEN** 状态工件 finished 且 exit_code≠0
+- **WHEN** 渲染页面
+- **THEN** 展示失败、exit code 含义与失败阶段，绝不用默认值粉饰
+
+### Requirement: 出单同步执行且参数与驾驶舱同源
+
+页面 SHALL 以 `st.code` 展示 `morning_command` 生成的权威命令文本（终端
+复制路径保持可用），并 SHALL 经独立模块
+`web/operator_ui/recommend_runner.py` 同步运行
+`scripts/daily_recommend.py`；执行所用参数值 SHALL 与展示命令来自同一组
+解析器取值（`resolve_incumbent` / provider / `resolve_delisted_registry` /
+`resolve_name_source` / `serving_bundle_max_age_days`）。
+
+按钮 SHALL 仅在现任为 ensemble 且命令文本可渲染（非拒绝态）时提供；
+单模型与不可解析现任只展示说明。argv MUST NOT 含 `--model` /
+`--fit-start` / `--fit-end` / `--topk` / `--instruments` /
+`--rebalance-cadence-days`——宇宙/节奏/topk 留给 serving config 两级
+绑定链在 CLI 内解析。
+
+子进程 SHALL 同步运行：`capture_output=True, text=True,
+encoding="utf-8", errors="replace"`，`cwd=仓库根`（相对 `out_dir` 落
+`output/daily_recommend/`），env 经 `utf8_child_env()`，超时默认 900s。
+结果 SHALL fail-loud：exit 0 → 展示 stdout 尾部（含 entry_date 横幅）并
+引导至「今日推荐」页；exit≠0 → 展示 stderr 尾部（CLI 的拒绝原因）；
+timeout / launch 失败 / 脚本缺失各自如实展示。
+
+#### Scenario: ensemble 现任成功出单
+
+- **GIVEN** 现任为 ensemble 且命令可渲染
+- **WHEN** 操作人点击出单且 CLI exit 0
+- **THEN** 展示成功、耗时与 stdout 尾部，并引导至今日推荐页
+
+#### Scenario: 非 ensemble 现任不提供按钮
+
+- **GIVEN** 现任为单模型或不可解析
+- **WHEN** 渲染页面
+- **THEN** 不出现执行按钮，仅展示说明与（可渲染时的）命令文本
+
+#### Scenario: 绑定参数不进 argv
+
+- **WHEN** runner 组装 argv
+- **THEN** argv 恰含 `--ensemble-manifest/--provider-uri/
+  --delisted-registry/--name-source/--bundle-max-age-days` 五个旗标
+- **AND** 不含 `--model/--fit-start/--fit-end/--topk/--instruments/
+  --rebalance-cadence-days` 中任何一个
+
+#### Scenario: CLI 拒绝如实转述
+
+- **WHEN** CLI exit≠0
+- **THEN** 页面展示 exit code 与 stderr 尾部，绝不吞掉拒绝原因
+
+#### Scenario: 超时被杀且如实报告
+
+- **WHEN** 子进程超过超时上限
+- **THEN** 子进程被终止，页面展示超时结果
+
+### Requirement: 执行边界与 runner 目标钉死
+
+spawn 只 SHALL 发生在 `update_runner` 与 `recommend_runner` 两个模块；
+页面源码 MUST NOT 含 `subprocess` / `Popen` / `os.system` / 写 API /
+`src.data_pipeline` import。每个 runner SHALL 恰指一个 CLI 目标并被
+测试钉死：`update_runner` 源码含 `daily_update.py` 且不含
+`06_validate_pit_data` / `daily_recommend.py`；`recommend_runner` 源码含
+`daily_recommend.py` 且不含 `daily_update.py` / `06_validate_pit_data`。
+两 runner MUST NOT import `src.data_pipeline` 下任何模块——与编排器的
+唯一耦合是 CLI 进程边界。argv 形状 SHALL 由 fake subprocess 的 logic
+测试钉住（首两元素、旗标集合、UTF-8/detach kwargs）。
+
+#### Scenario: 页面不直接 spawn
+
+- **WHEN** 扫描 `run_center.py` 源码
+- **THEN** 无 `subprocess`/`Popen`/`os.system`/`open(`/写 API/
+  `src.data_pipeline`，且引用了两个 runner 模块名
+
+#### Scenario: runner 目标互斥钉死
+
+- **WHEN** 扫描两个 runner 源码
+- **THEN** 各自含且仅含自己的 CLI 目标文件名，互不出现对方目标，
+  也不出现 `06_validate_pit_data`
