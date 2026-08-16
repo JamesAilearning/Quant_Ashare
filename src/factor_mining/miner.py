@@ -586,6 +586,45 @@ def _build_fundamental_leg(data: DataConfig, factory, fwd, panel):
     return values, evidence, periods, digest
 
 
+def fundamental_leg_declared(data: DataConfig) -> bool:
+    """Whether this data definition declares a fundamental leg — strictly.
+
+    Declaration is ANY populated field of the fundamental quartet, not
+    just the store root: ``financial_exclusions`` alone would slip past
+    a store-root-only flag and still cut the coverage denominator in
+    ``build_universe_mask`` while mining a price-volume-only panel — a
+    different experiment silently wearing a legacy config. A PARTIAL
+    quartet is therefore refused here (used by mining AND promotion),
+    never interpreted: the required trio must arrive together;
+    ``financial_exclusions`` alone stays optional WITHIN a declared leg.
+    """
+    populated = {
+        name for name, value in (
+            ("fundamental_store_root", data.fundamental_store_root),
+            ("fundamental_calendar_path", data.fundamental_calendar_path),
+            ("fundamental_fields", data.fundamental_fields),
+            ("financial_exclusions", data.financial_exclusions),
+        ) if value
+    }
+    if not populated:
+        return False
+    required_missing = {
+        "fundamental_store_root", "fundamental_calendar_path",
+        "fundamental_fields",
+    } - populated
+    if required_missing:
+        raise ValueError(
+            "fundamental configuration is PARTIAL: "
+            f"{sorted(populated)} set but {sorted(required_missing)} "
+            "empty — a partial quartet cannot be interpreted (e.g. "
+            "financial_exclusions alone would still cut the coverage "
+            "denominator while mining a price-volume-only panel: a "
+            "different experiment, not a config default). Populate the "
+            "fundamental leg fully or clear it."
+        )
+    return True
+
+
 def _check_fundamental_coherence(data: DataConfig, factory) -> None:
     """The factory and the fundamental config must arrive together.
 
@@ -594,7 +633,7 @@ def _check_fundamental_coherence(data: DataConfig, factory) -> None:
     that silently lacks the leg its config declares. Both directions
     are wiring failures — refuse before any expensive work.
     """
-    declared = bool(data.fundamental_store_root)
+    declared = fundamental_leg_declared(data)
     if declared and factory is None:
         raise ValueError(
             "DataConfig declares a fundamental leg "
@@ -609,18 +648,6 @@ def _check_fundamental_coherence(data: DataConfig, factory) -> None:
             "records no fundamental inputs (fundamental_store_root is "
             "empty) — promotion could never rebuild this panel from the "
             "run's persisted contract; record the inputs in DataConfig."
-        )
-    if declared and not data.fundamental_fields:
-        raise ValueError(
-            "fundamental_store_root is set but fundamental_fields is "
-            "empty — the factory would have no charter fields to panel; "
-            "declare the campaign's frozen field list."
-        )
-    if declared and not data.fundamental_calendar_path:
-        raise ValueError(
-            "fundamental_store_root is set but fundamental_calendar_path "
-            "is empty — the view's as-of semantics need the trading "
-            "calendar, and the content binding needs its identity."
         )
 
 

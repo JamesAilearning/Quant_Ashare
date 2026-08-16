@@ -571,3 +571,41 @@ def test_a_pre_extension_snapshot_still_verifies(tmp_path):
 def test_a_tampered_pre_extension_snapshot_is_still_refused(tmp_path):
     with pytest.raises(PromotionError, match="does not match the digest"):
         _load_run_data_config(_old_style_run(tmp_path, tamper=True))
+
+
+# --- 部分四元组必须拒绝（codex #439 r1 P1）----------------------------------
+
+def test_a_partial_fundamental_quartet_is_refused_at_mining(tmp_path):
+    """只有 financial_exclusions 的配置曾溜过 store-root-only 判定：
+    宇宙掩码照裁分母、面板却是纯量价 —— 另一个实验静默顶着存量配置跑。"""
+    config = _config(tmp_path, tmp_path, tmp_path,
+                     fundamental_store_root="",
+                     fundamental_calendar_path="",
+                     fundamental_fields=(),
+                     financial_exclusions=("SZ000001",))
+    with pytest.raises(ValueError, match="PARTIAL"):
+        run_mining(config)
+    with pytest.raises(ValueError, match="PARTIAL"):
+        run_mining(config, fundamental_panel_factory=build_panel_factory())
+    assert not (tmp_path / "mined").exists()
+
+
+def test_a_partial_quartet_in_a_run_snapshot_is_refused_at_promotion(
+        tmp_path):
+    import dataclasses
+
+    from src.factor_mining.miner import data_definition_sha256
+    run_dir = tmp_path / "partial-run"
+    run_dir.mkdir(parents=True)
+    pool = FactorPool()
+    pool.add(_pv_entry("cs_rank($volume)"))
+    pool.save(run_dir)
+    data = DataConfig(mode="synthetic",
+                      financial_exclusions=("SZ000001",))
+    (run_dir / "config.yaml").write_text(
+        yaml.safe_dump({
+            "run_id": "partial", "data": dataclasses.asdict(data),
+            "data_definition_sha256": data_definition_sha256(data),
+        }), encoding="utf-8")
+    with pytest.raises(PromotionError, match="PARTIAL"):
+        promote_run(_promotion_config(tmp_path, run_dir))

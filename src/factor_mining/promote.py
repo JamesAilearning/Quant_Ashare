@@ -33,6 +33,7 @@ from .miner import (
     build_panel_for_data,
     data_definition_sha256,
     fundamental_binding_fingerprints,
+    fundamental_leg_declared,
     normalize_yaml_dates,
 )
 from .validator import (
@@ -601,7 +602,13 @@ def promote_run(
     # caller's config verbatim, hash included, so the report's claim is
     # true by construction for every entry path.
     run_data, run_sha = _load_run_data_config(config.run_dir)
-    fundamental_declared = bool(run_data.fundamental_store_root)
+    try:
+        # Same strict declaration the miner uses: a PARTIAL quartet in a
+        # run snapshot is refused, never interpreted — promotion must not
+        # guess which experiment a half-configured leg meant.
+        fundamental_declared = fundamental_leg_declared(run_data)
+    except ValueError as exc:
+        raise PromotionError(str(exc)) from exc
     if fundamental_declared and fundamental_panel_factory is None:
         raise PromotionError(
             "this run was mined WITH a fundamental panel leg "
