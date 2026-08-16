@@ -30,6 +30,15 @@ from web.operator_ui.bundle_health import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pit_validation_runner import run_pit_validation
+from web.operator_ui.update_status import (
+    RUNNING_FRESH,
+    RUNNING_STALE,
+    RUNNING_STALE_AFTER,
+    classify_running,
+    read_update_status,
+    record_matches_provider,
+    status_path_for_provider,
+)
 
 render_page_header(
     "数据检视",
@@ -56,6 +65,124 @@ if not provider_uri.strip():
 # expander) and a `~` prefix — before the literal existence check, so a valid
 # production URI typed in a supported form is not rejected as missing.
 provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
+
+# ---------------------------------------------------------------------------
+# Section 0: last data-update run status (2026-08-14-daily-update-run-status).
+# The scheduled overnight refresh writes one machine-readable record per run as
+# a SIBLING of the provider dir; this section renders it read-only so the
+# operator sees "did the last refresh succeed, and if not, where did it die"
+# without leaving the UI. Missing file = never recorded (fresh machine), not an
+# error; a corrupt record is shown loud, never defaulted.
+# ---------------------------------------------------------------------------
+st.subheader("上次数据更新")
+_derived_status: Path | None
+try:
+    _derived_status = status_path_for_provider(provider_dir)
+except ValueError as _exc:
+    # A filesystem-root provider has no sibling to derive the artifact from.
+    # Say so; a traceback here would take the whole page down (codex #434 r5).
+    st.error(f"⚠ {_exc}")
+    _derived_status = None
+# The scheduler may run the updater with the advertised `--status-path`
+# override, and the writer then records somewhere this page's derivation
+# never looks — the operator would see 从未记录 (or a stale older record)
+# while last night's run sits in the custom file (codex #434 r10). Same
+# "paths explicit" discipline as the provider input: default = the derived
+# location, override to mirror the scheduler's flag.
+_status_input = st.text_input(
+    "状态工件路径（若计划任务用了 --status-path 覆盖，请填同一路径）",
+    value=str(_derived_status) if _derived_status else "",
+    # KEYED to the provider: Streamlit keeps a widget's state across reruns
+    # and applies `value=` only on first creation, so editing provider_uri
+    # above would leave this box holding the PREVIOUS provider's derived
+    # path — the bundle sections would inspect the new provider while this
+    # section silently read the old provider's artifact (codex #434 r13).
+    # A provider-derived key makes the widget a NEW widget when the provider
+    # changes, re-applying the fresh default; an operator override typed for
+    # the current provider still survives that provider's own reruns.
+    key=f"data_inspect::status_path::{provider_dir}",
+    help="默认从 provider 路径派生（<provider>.daily_update_status.json）。"
+         "本页对该文件只读。",
+)
+_status_file = Path(_status_input.strip()) if _status_input.strip() else None
+if _status_file is None:
+    st.info("无可用的状态工件路径——请在上方填写计划任务实际写入的位置。")
+_update_status = read_update_status(_status_file) if _status_file else None
+if _update_status is None:
+    pass
+elif (_update_status.kind not in ("missing", "corrupt")
+        and not record_matches_provider(_update_status, provider_dir)):
+    # The record names a DIFFERENT provider: two schedules pointing one
+    # explicit --status-path at the same file race through the same .tmp,
+    # and this file holds whichever finished last. Presenting it as THIS
+    # provider's status would be the r4 mix-up through a new door
+    # (codex #434 r18).
+    st.error(
+        f"⚠ 该状态记录属于**另一个 provider**"
+        f"（记录:`{_update_status.provider_dir or '未标注'}`;"
+        f"当前:`{provider_dir}`）——多个计划任务可能把同一个 --status-path "
+        "指向了这份文件。请为每个 provider 配置各自的状态路径;"
+        "本页拒绝把别人的运行当作本 bundle 的状态展示。"
+    )
+elif _update_status.kind == "missing":
+    st.info(
+        "从未记录数据更新运行（状态文件不存在）。新机或首跑前属正常；"
+        "若计划任务已在运行，请确认其写权限；若它用了 --status-path 覆盖，"
+        "请在上方路径框填写同一位置。"
+    )
+elif _update_status.kind == "corrupt":
+    st.error(
+        f"⚠ 更新状态记录损坏（绝不用默认值顶替）：{_update_status.error}"
+        f"（文件：{_update_status.path}）"
+    )
+elif _update_status.kind == "running":
+    # Classified by the reader (pure + tested), not inline: the r8 inline
+    # comparison let a negative age (future timestamp / clock skew) pass the
+    # upper-bound-only check, and its unknown-age fallback asserted
+    # 已超过 6 小时 about an age nobody computed (codex #434 r9).
+    _cls = classify_running(_update_status)
+    if _cls == RUNNING_FRESH:
+        st.info(
+            f"🔄 数据更新**正在运行**：始于 {_update_status.started_at or '?'} "
+            f"（run_date={_update_status.run_date or '?'}）。完成后本小节显示终态。"
+        )
+    elif _cls == RUNNING_STALE:
+        st.warning(
+            f"⚠ 状态记录停在**运行中**且已超过 "
+            f"{int(RUNNING_STALE_AFTER.total_seconds() // 3600)} 小时"
+            f"（始于 {_update_status.started_at or '?'}，"
+            f"run_date={_update_status.run_date or '?'}）——"
+            "进程可能已被中断（断电/被杀/未处理异常），也可能仍在异常缓慢地运行;"
+            "本页无法区分。请检查计划任务日志;下次运行会覆盖此记录。"
+        )
+    else:
+        st.warning(
+            f"⚠ 状态记录自称**运行中**，但其起始时间无法核实"
+            f"（`{_update_status.started_at or '缺失'}` —— 不可解析、无时区，"
+            "或在未来/时钟偏移）——本页**无法确认**它是否仍在运行,也无法给出"
+            "已运行时长。请检查计划任务日志;下次运行会覆盖此记录。"
+        )
+elif _update_status.ok:
+    st.success(
+        f"🟢 上次更新成功（exit 0 — {_update_status.exit_meaning}）："
+        f"run_date={_update_status.run_date or '?'}，"
+        f"{_update_status.started_at or '?'} → {_update_status.finished_at or '?'}"
+        f"{('。' + _update_status.detail) if _update_status.detail else ''}"
+    )
+else:
+    st.error(
+        f"🔴 上次更新**失败**：exit {_update_status.exit_code} "
+        f"（{_update_status.exit_meaning}），"
+        f"失败阶段：**{_update_status.failed_stage or '?'}** — "
+        f"{_update_status.detail or '（无详情）'}。"
+        f"run_date={_update_status.run_date or '?'}，"
+        f"失败于 {_update_status.finished_at or '?'}。排查后重跑。"
+    )
+
+# The existence check comes AFTER the status section on purpose: the artifact
+# is a SIBLING of the provider dir, so on a fresh machine whose first update
+# died before the swap it exists while the provider dir does not. Stopping
+# first would hide the one record that explains why (codex #434 r4).
 if not provider_dir.exists():
     st.error(f"目录不存在:{provider_dir}")
     st.stop()

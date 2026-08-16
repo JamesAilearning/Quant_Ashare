@@ -69,6 +69,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "stamped built-from-holey-fetch (P3-4c). Build-side "
                         "ONLY: the recommend boundary still refuses the bundle "
                         "unless --allow-holey-recommend is passed THERE.")
+    p.add_argument("--status-path", type=Path, default=None,
+                   help="Run-status JSON artifact path (default: "
+                        "<provider-dir>.daily_update_status.json — a sibling "
+                        "of the provider dir, unique to it). "
+                        "Observability only; a write failure never changes "
+                        "the exit code. Must NOT overlap the provider / "
+                        "tushare / registry / reference paths — an alias is "
+                        "rejected as a config error (exit 2) before any write.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print every stage's plan and the bundle state; "
                         "execute nothing, mutate nothing.")
@@ -89,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_holey_fetch=args.allow_holey_fetch,
             dry_run=args.dry_run,
             rate_limit_sleep_ms=args.rate_limit_sleep_ms,
+            status_path=args.status_path,
         )
     except (TypeError, ValueError) as exc:
         print(f"Config invalid: {exc}", file=sys.stderr)

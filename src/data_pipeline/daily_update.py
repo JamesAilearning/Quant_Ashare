@@ -52,10 +52,13 @@ Stage notes:
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
@@ -63,12 +66,32 @@ from src.core.logger import get_logger
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
 from src.data_pipeline.bundle_swap import (
     BundleSwapError,
+    bak_dir,
     check_and_repair,
     new_dir,
     swap,
 )
 
+# The lock NAMING is owned by single_flight; the status guard reads it from
+# there rather than restating `<name>.daily_update.lock`, so a rename of the
+# convention cannot leave this guard protecting a path nobody locks.
+from src.data_pipeline.single_flight import lock_path_for
+
 _logger = get_logger(__name__)
+
+# Operator-facing timestamps use fixed +08:00, mirroring the repo convention
+# (src/inference/daily_recommend.py, web/operator_ui/formatting.py). No DST in
+# China, so the fixed offset is exact and avoids a tzdata dependency.
+_CN_TZ = timezone(timedelta(hours=8))
+
+# Run-status artifact (2026-08-14-daily-update-run-status): one machine-readable
+# JSON per run so operators (and the read-only UI) can answer "did last night's
+# update succeed, and if not, where did it die" without parsing the rolling log.
+# Observability only — never a canonical input; see the proposal's Non-goals.
+STATUS_FILENAME = "daily_update_status.json"
+# Public so the read-only UI reader can pin its copy against the writer's
+# (the two modules deliberately do not import each other).
+STATUS_SCHEMA_VERSION = 1
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "data_pipeline"
 
@@ -91,6 +114,137 @@ class DailyUpdateError(RuntimeError):
     """Configuration / orchestration failure (fail-loud)."""
 
 
+def _status_path_from(provider_dir: Path) -> Path:
+    """``<provider>.<FILENAME>``, tolerating relative spellings.
+
+    ``resolve()`` first: a perfectly valid relative provider such as ``.``
+    has an empty ``name``, and ``with_name`` raises ValueError on it — which
+    would surface as a traceback rather than a message (codex #434 r5). A
+    filesystem ROOT stays nameless even after resolving; there is no
+    ``<root>.<name>`` sibling to write, so that is refused explicitly.
+    """
+    resolved = provider_dir.resolve()
+    if not resolved.name:
+        raise ValueError(
+            f"无法从 provider 路径 {provider_dir!r} 推导状态工件位置:"
+            f"它解析为文件系统根 {resolved!r},没有可派生的兄弟名"
+        )
+    return resolved.with_name(f"{resolved.name}.{STATUS_FILENAME}")
+
+
+def default_status_path(provider_dir: Path) -> Path:
+    """The run-status artifact's default location: ``<provider>.<FILENAME>``.
+
+    A SIBLING of the provider dir, so it survives the atomic swap (which only
+    renames the provider dir itself), and NAME-DERIVED so it is unique per
+    provider. The first cut used ``<provider>.parent/<FILENAME>``, which
+    collapses for sibling bundles — this repo ships exactly that layout
+    (``D:/qlib_data/my_cn_data_pit`` and ``…_2015`` both resolved to
+    ``D:/qlib_data/daily_update_status.json``), so inspecting the research
+    bundle would have shown the PRODUCTION run's status as if it were its own
+    (codex #434 r4). Same convention as ``single_flight.lock_path_for``."""
+    return _status_path_from(provider_dir)
+
+
+def _status_tmp_path(path: Path) -> Path:
+    """The HISTORICAL fixed staging name — a forbidden --status-path alias.
+
+    No longer the actual staging file (writes stage at a unique per-write
+    name since r19), kept because the guard still refuses configs aliasing
+    it — the historical name staying out of the config space costs nothing.
+
+    Named (rather than inlined) because the config guard must forbid aliases
+    of THIS path too: the `.tmp` sibling is written and then `os.replace`d
+    away, so an operational input sitting at exactly that name would first be
+    overwritten and then removed (codex #434 r7).
+    """
+    return path.with_name(path.name + ".tmp")
+
+
+def _write_status(path: Path, payload: Mapping[str, object]) -> None:
+    """Atomic status write (unique temp + rename).
+
+    The staging name is UNIQUE PER WRITE (pid + random), not the fixed
+    ``<target>.tmp``: two providers sharing an explicit ``--status-path``
+    write unlocked, and with a fixed staging name one writer can
+    open/truncate the file the other is about to ``os.replace`` — the winner
+    then publishes an empty or half-written artifact (codex #434 r19). With
+    unique names each write stages privately and the final ``os.replace`` is
+    the only shared step, which is atomic. The fixed ``.tmp`` sibling stays
+    FORBIDDEN as a --status-path alias (see ``_status_tmp_path``): it is the
+    historical staging name and keeping it out of the config space costs
+    nothing.
+
+    A killed process must never leave a half-written JSON that the UI would
+    read as corrupt — and on failure the private staging file is removed.
+    """
+    tmp = path.with_name(
+        f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    except BaseException:
+        # never leave private staging litter beside the artifact
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _record_status(path: Path, payload: Mapping[str, object]) -> None:
+    """Best-effort status write: an observability failure SHALL NOT change the
+    run's exit code (reverse coupling). Logged ERROR so the gap is visible."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_status(path, payload)
+    except Exception as exc:  # noqa: BLE001 — reverse-coupling contract
+        # EVERY failure, not just OSError: `ensure_ascii=False` raises
+        # UnicodeEncodeError (a ValueError) on an unpaired surrogate smuggled
+        # in via an exception detail, and json.dumps raises TypeError on an
+        # unserializable value — either escaping would invert the one
+        # guarantee this function exists for: an observability failure SHALL
+        # NOT change the run's exit code (codex #434 r24). BaseException
+        # (KeyboardInterrupt/SystemExit) still propagates.
+        _logger.error(
+            "run-status artifact write FAILED (%s): %s — the run's exit code "
+            "is unaffected; the UI will keep showing the previous record.",
+            path, exc,
+        )
+
+
+def _norm(path: Path) -> str:
+    """Case/separator-normalized absolute form for overlap comparison:
+    ``resolve()`` defeats ``..`` and ``normcase`` matches the Windows
+    case-insensitive filesystem semantics."""
+    return os.path.normcase(str(path.resolve()))
+
+
+def _path_within(target: str, root: str) -> bool:
+    """Is ``target`` the same as, or inside, ``root``?
+
+    Component-aware, NOT ``startswith(root + os.sep)``: when ``root`` is a
+    filesystem ROOT — a plausible layout for a dedicated data drive — that
+    spelling builds ``D:\\\\`` (or ``//`` on POSIX) and a genuine child like
+    ``D:\\active_stocks.parquet`` fails to match, so the guard would ACCEPT a
+    status path inside the canonical tree and the first atomic replace could
+    clobber a raw/provider file (codex #434 r3).
+
+    ``commonpath`` raises for inputs on different drives / mixed
+    absolute-relative; both inputs here are already ``_norm``-ed absolutes, and
+    a cross-drive pair simply is not contained.
+    """
+    if target == root:
+        return True
+    try:
+        return os.path.commonpath([target, root]) == root
+    except ValueError:      # different drives, or no common prefix at all
+        return False
+
+
 @dataclass(frozen=True)
 class DailyUpdateConfig:
     """Inputs for one daily update run. All paths explicit — no env coupling."""
@@ -110,9 +264,79 @@ class DailyUpdateConfig:
     allow_holey_fetch: bool = False
     dry_run: bool = False
     rate_limit_sleep_ms: int | None = None  # None -> 01's own default
+    # Run-status artifact location. None -> default_status_path(provider_dir)
+    # (sibling of the provider dir, surviving the swap). Explicit override via
+    # the CLI's --status-path keeps the chain's "paths explicit" discipline.
+    # Must NOT overlap any canonical input — see __post_init__ (codex P1).
+    status_path: Path | None = None
     # Injectable "today" (value-injection): drives end_date's default and the
     # snapshot-freshness verification. Production leaves None -> system date.
     now: date | None = None
+
+    def __post_init__(self) -> None:
+        # codex P1: the status write is an UNCONDITIONAL atomic replace — an
+        # operator-typo'd --status-path aliasing a canonical input (the live
+        # provider tree, the raw tushare tree, the delisted registry, the
+        # reference cases) would clobber that input with status JSON before
+        # orchestration starts, inverting the guarantee that observability can
+        # never affect canonical behavior. Reject overlaps at construction:
+        # the CLI maps ValueError to the config-error exit 2 BEFORE any write,
+        # consistent with "config errors never write the artifact".
+        final = self.status_path or default_status_path(self.provider_dir)
+        # BOTH paths the writer touches: the final artifact AND the `.tmp`
+        # staging sibling it overwrites-then-renames. Guarding only the final
+        # target let `--reference-cases /cfg/status.json.tmp` sit exactly
+        # where the staging write lands — the reference file would be
+        # overwritten and then os.replace'd away (codex #434 r7).
+        targets = (("--status-path", _norm(final)),
+                   ("--status-path 的 .tmp 暂存", _norm(_status_tmp_path(final))))
+        for label, root in (
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
+            # codex P1 round 2: the swap machinery's mandatory staging /
+            # rollback siblings are operational paths too — a status file at
+            # <provider>.new / <provider>.bak is rmtree'd by check_and_repair
+            # / swap, killing the run with exit 10/16.
+            ("<provider>.new", new_dir(self.provider_dir)),
+            ("<provider>.bak", bak_dir(self.provider_dir)),
+        ):
+            for what, target in targets:
+                if _path_within(target, _norm(root)):
+                    raise ValueError(
+                        f"{what} resolves inside {label} ({root}) — the "
+                        f"status artifact's write path would clobber canonical "
+                        f"data; refusing (observability must never affect data)"
+                    )
+        # codex P1 round 3: the single-flight LOCK files are siblings of the
+        # resources, so the tree checks above cannot see them. Replacing a lock
+        # is worse than clobbering data: on POSIX the atomic replace swaps the
+        # directory entry while the old inode stays locked, so a second run
+        # opens the NEW file, takes a different lock, and proceeds CONCURRENTLY
+        # against the same provider — observability would have disabled
+        # single-flight. Forbid every lock `scripts/daily_update.py` takes.
+        for label, f in (
+            ("--delisted-registry", self.delisted_registry),
+            ("--reference-cases", self.reference_cases),
+            *(("单飞锁", lock_path_for(Path(os.path.abspath(r))))
+              for r in (self.provider_dir, self.tushare_dir,
+                        self.delisted_registry)),
+        ):
+            for what, target in targets:
+                if target == _norm(f):
+                    raise ValueError(
+                        f"{what} aliases {label} ({f}) — the status "
+                        f"artifact's write path would clobber a canonical "
+                        f"input; refusing"
+                    )
+        # codex P2: a name-less path (".", a filesystem root) makes
+        # _write_status's path.with_name() raise ValueError — which
+        # _record_status does not catch (OSError only), so the mistake would
+        # abort the run instead of surfacing as a config error. Reject here.
+        if self.status_path is not None and not self.status_path.name:
+            raise ValueError(
+                f"--status-path {self.status_path!r} has no file name — the "
+                f"status artifact must be a file path, not a directory/root"
+            )
 
 
 def _load_script_main(filename: str) -> Runner:
@@ -319,8 +543,55 @@ def run_daily_update(
 ) -> int:
     """Run the full daily update; returns the process exit code.
 
+    Also persists the run-status artifact (schema v1, see STATUS_FILENAME):
+    ``state="running"`` at start, ``state="finished"`` + exit_code +
+    failed_stage at every terminal state. A ``--dry-run`` mutates nothing —
+    including this artifact — so it returns before any status write.
+    """
+    if config.dry_run:
+        return _execute_daily_update(config, runners)[0]
+    status_path = config.status_path or default_status_path(config.provider_dir)
+    # ONE date for the whole run — stamped here and threaded into the body, so
+    # the artifact and the fetch plan can never name different days.
+    run_date = config.now if config.now is not None else date.today()
+    started_at = datetime.now(tz=_CN_TZ)
+    base = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        # The record's IDENTITY (codex #434 r18): two independently scheduled
+        # providers may point the same explicit --status-path at one file,
+        # and their unlocked writes race through the same .tmp — the reader
+        # can only detect the mix-up if every record names the provider it
+        # describes. Normalized exactly like the guard's comparisons.
+        "provider_dir": _norm(config.provider_dir),
+        "run_date": run_date.isoformat(),
+        "started_at": started_at.isoformat(),
+    }
+    _record_status(status_path, {**base, "state": "running"})
+    exit_code, failed_stage, detail = _execute_daily_update(
+        config, runners, run_date=run_date)
+    _record_status(status_path, {
+        **base,
+        "state": "finished",
+        "finished_at": datetime.now(tz=_CN_TZ).isoformat(),
+        "exit_code": exit_code,
+        "failed_stage": failed_stage,
+        "detail": detail,
+    })
+    return exit_code
+
+
+def _execute_daily_update(
+    config: DailyUpdateConfig,
+    runners: Mapping[str, Runner] | None = None,
+    run_date: date | None = None,
+) -> tuple[int, str | None, str]:
+    """The orchestration body; returns ``(exit_code, failed_stage, detail)``.
+
     ``runners`` overrides the per-stage entry points (tests inject fakes; the
-    default loads the real numbered scripts).
+    default loads the real numbered scripts). ``failed_stage`` is the stage key
+    (``fetch`` / ``snapshot`` / ``registry`` / … / ``validate`` / ``swap`` /
+    ``startup_repair``), ``None`` on success; ``detail`` is a one-line
+    human-readable summary for the status artifact.
     """
     active = dict(_default_runners())
     if runners:
@@ -328,7 +599,14 @@ def run_daily_update(
     # Freeze the ONE run date up front (codex P2): the fetch stamp, the default
     # end_date, and the snapshot verification all use THIS value, so an
     # hours-long fetch crossing midnight cannot fail its own snapshot check.
-    run_date = config.now if config.now is not None else date.today()
+    #
+    # ACCEPTED from the caller when it already froze one (codex #434 r5): the
+    # status writer stamps `run_date` before calling in, and a second
+    # `date.today()` here would let a run that crosses local midnight report
+    # one date in the artifact while planning against the next — the
+    # operator-visible record would name a different day than the run used.
+    if run_date is None:
+        run_date = config.now if config.now is not None else date.today()
     plan = build_plan(config, run_date=run_date)
 
     if config.dry_run:
@@ -340,7 +618,7 @@ def run_daily_update(
         _logger.info("  [dry-run] startup bundle state: %s", state)
         _logger.info("  [dry-run] swap: %s -> %s", new_dir(config.provider_dir),
                      config.provider_dir)
-        return EXIT_OK
+        return EXIT_OK, None, "dry-run (nothing executed)"
 
     # Stage 0: resolve any crash-interrupted prior swap BEFORE the calendar gate. A
     # Friday swap that crashed mid-rename leaves the LIVE provider missing; repair either
@@ -357,7 +635,8 @@ def run_daily_update(
         action = check_and_repair(config.provider_dir)
     except OSError as exc:
         _logger.error("Startup bundle-state repair FAILED: %s", exc)
-        return EXIT_UNREPAIRABLE
+        return EXIT_UNREPAIRABLE, "startup_repair", (
+            f"startup bundle-state repair failed: {exc}")
     if action != "healthy":
         _logger.warning("Startup bundle-state action: %s", action)
 
@@ -387,7 +666,8 @@ def run_daily_update(
                 "(calendar gate; pass --end-date to force a backfill/catch-up).",
                 run_date.isoformat(),
             )
-            return EXIT_OK
+            return EXIT_OK, None, (
+                f"non-trading-day calendar gate no-op ({run_date.isoformat()})")
         _logger.warning(
             "daily_update: %s is a non-trading day but NO usable live bundle exists at "
             "%s — skipping the weekend no-op and running the full pipeline to BOOTSTRAP "
@@ -407,15 +687,17 @@ def run_daily_update(
             "Re-run to self-heal the holes, or pass --allow-holey-fetch to "
             "build a research bundle from partial data."
         )
-        return EXIT_FETCH_HOLES
+        return EXIT_FETCH_HOLES, "fetch", (
+            "fetch completed with holes; --allow-holey-fetch not given")
     if rc not in (0, 3):
         _logger.error("Fetch FAILED (exit %d); aborting the update.", rc)
-        return EXIT_FETCH_HARD
+        return EXIT_FETCH_HARD, "fetch", f"fetch failed hard (exit {rc})"
 
     # Stage 2: prove the active-stocks snapshot was refreshed today.
     rc = _verify_snapshot_refreshed(config, run_date)
     if rc != EXIT_OK:
-        return rc
+        return rc, "snapshot", (
+            "active-stocks snapshot not refreshed to the run date")
 
     # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04 -> 07;
     # 05 must precede 03/04/07 because its staging-promote REPLACES the output
@@ -427,7 +709,8 @@ def run_daily_update(
         if rc != 0:
             _logger.error("Rebuild stage %r FAILED (exit %d); the live bundle "
                           "is untouched.", stage, rc)
-            return EXIT_REBUILD
+            return EXIT_REBUILD, stage, (
+                f"rebuild stage {stage!r} failed (exit {rc})")
 
     # Stage 4: validate the STAGED bundle. Only a pass reaches the swap.
     # 06's exit convention: 0 = clean, 1 = WARNINGS ONLY (every check passed —
@@ -446,13 +729,14 @@ def run_daily_update(
             "Validation FAILED (exit %d) on %s; NOT swapping — the live "
             "bundle stays as it was.", rc, new_dir(config.provider_dir),
         )
-        return EXIT_VALIDATE
+        return EXIT_VALIDATE, "validate", (
+            f"validation failed (exit {rc}) on the staged bundle; not swapping")
 
     # Stage 5: atomic two-stage swap.
     try:
         swap(config.provider_dir)
     except (BundleSwapError, OSError) as exc:
         _logger.error("Swap FAILED: %s", exc)
-        return EXIT_SWAP
+        return EXIT_SWAP, "swap", f"swap failed: {exc}"
     _logger.info("Daily update complete: %s is live.", config.provider_dir)
-    return EXIT_OK
+    return EXIT_OK, None, f"daily update complete; {config.provider_dir} is live"

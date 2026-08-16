@@ -1,6 +1,8 @@
 """Orchestrator red-line tests (P3-6a). All fake runners + temp dirs — no real
 fetch, no real qlib build, no real paths."""
 
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -24,6 +26,7 @@ from src.data_pipeline.daily_update import (  # noqa: E402
     DailyUpdateConfig,
     _run_date_is_non_trading,
     build_plan,
+    default_status_path,
     run_daily_update,
 )
 
@@ -470,6 +473,367 @@ class TradingCalendarGateTests(unittest.TestCase):
             rc = run_daily_update(cfg, rec.all())
             self.assertEqual(rc, EXIT_OK)
             self.assertEqual(rec.calls, [])
+
+
+class StatusArtifactTests(unittest.TestCase):
+    """2026-08-14-daily-update-run-status: every non-dry-run run persists ONE
+    machine-readable terminal record; a write failure never changes the exit
+    code; --dry-run writes nothing."""
+
+    @staticmethod
+    def _read(cfg: DailyUpdateConfig) -> dict:
+        return json.loads(
+            default_status_path(cfg.provider_dir).read_text(encoding="utf-8"))
+
+    def test_success_writes_finished_status(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            st = self._read(cfg)
+            self.assertEqual(st["schema_version"], 1)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_OK)
+            self.assertIsNone(st["failed_stage"])
+            self.assertEqual(st["run_date"], TODAY.isoformat())
+            self.assertTrue(st["started_at"])
+            self.assertTrue(st["finished_at"])
+            self.assertIn("complete", st["detail"])
+            # identity stamp (codex #434 r18): the record must name the
+            # provider it describes, normalized as the guard normalizes —
+            # without it, two schedules sharing one --status-path mix up
+            # silently and the reader cannot even in principle notice.
+            from src.data_pipeline.daily_update import _norm
+            self.assertEqual(st["provider_dir"], _norm(cfg.provider_dir))
+
+    def test_running_state_visible_mid_run(self) -> None:
+        # A fake fetch runner reads the artifact MID-RUN: the "running" record
+        # must already be on disk (start-write precedes every stage).
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            seen: dict = {}
+
+            def fetch(argv: list[str]) -> int:
+                seen.update(self._read(cfg))
+                return 1  # hard-fail so the run stops after fetch
+
+            rc = run_daily_update(cfg, {**_Recorder().all(), "fetch": fetch})
+            self.assertEqual(rc, EXIT_FETCH_HARD)
+            self.assertEqual(seen.get("state"), "running")
+            self.assertNotIn("exit_code", seen)
+            # ...and the terminal record overwrote it with the failure.
+            st = self._read(cfg)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_FETCH_HARD)
+            self.assertEqual(st["failed_stage"], "fetch")
+
+    def test_rebuild_failure_records_the_stage_key(self) -> None:
+        # exit 14 covers five stages; the artifact must name WHICH one died.
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            _write_snapshot(cfg.tushare_dir)
+            rec = _Recorder(codes={"bins": 2})
+            rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_REBUILD)
+            st = self._read(cfg)
+            self.assertEqual(st["exit_code"], EXIT_REBUILD)
+            self.assertEqual(st["failed_stage"], "bins")
+
+    def test_dry_run_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), dry_run=True)
+            rc = run_daily_update(cfg, _Recorder().all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertFalse(default_status_path(cfg.provider_dir).exists())
+
+    def test_status_write_failure_keeps_exit_code(self) -> None:
+        # status_path's parent is a FILE -> mkdir/rename raises OSError ->
+        # ERROR log, run still reports its own exit code (observability never
+        # flips the data-update result).
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            blocker = tmp / "blocker"
+            blocker.write_text("not a dir", encoding="utf-8")
+            cfg = _config(tmp, status_path=blocker / "status.json")
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rec = _Recorder(staging=new_dir(cfg.provider_dir))
+            with self.assertLogs("src.data_pipeline.daily_update", level="ERROR"):
+                rc = run_daily_update(cfg, rec.all())
+            self.assertEqual(rc, EXIT_OK)
+            self.assertEqual(_marker(cfg.provider_dir), "NEW")  # swap still happened
+
+    def test_weekend_noop_records_exit_0(self) -> None:
+        # The calendar-gate no-op is a deliberate "ran correctly, did nothing" —
+        # the artifact MUST record it so operators can tell it apart from
+        # "the task never fired".
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t), now=date(2026, 6, 13))  # Saturday
+            _mk_bundle(cfg.provider_dir, "OLD")
+            rc = run_daily_update(cfg, _Recorder().all())
+            self.assertEqual(rc, EXIT_OK)
+            st = self._read(cfg)
+            self.assertEqual(st["state"], "finished")
+            self.assertEqual(st["exit_code"], EXIT_OK)
+            self.assertIsNone(st["failed_stage"])
+            self.assertIn("no-op", st["detail"])
+
+
+class StatusPathGuardTests(unittest.TestCase):
+    """codex P1: --status-path must never alias a canonical input. The status
+    write is an UNCONDITIONAL atomic replace, so an operator-typo'd path that
+    resolves inside the provider/tushare trees or onto the registry/reference
+    files would clobber canonical data BEFORE orchestration starts — the exact
+    reverse coupling the artifact's design forbids. Rejection happens at
+    config construction (ValueError -> CLI config-error exit 2, no write)."""
+
+    def test_status_path_inside_provider_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "provider" / "status.json")
+
+    def test_status_path_equal_to_provider_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "provider")
+
+    def test_status_path_inside_tushare_dir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "raw" / "status.json")
+
+    def test_status_path_aliasing_delisted_registry_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=tmp / "raw" / "delisted_registry.parquet",
+                )
+
+    def test_status_path_aliasing_reference_cases_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=tmp / "reference_cases.yaml")
+
+    def test_dotdot_escape_into_provider_rejected(self) -> None:
+        # The `..` spelling of the same alias must not slip past the guard.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=tmp / "elsewhere" / ".." / "provider" / "s.json",
+                )
+
+    def test_status_path_aliasing_provider_new_rejected(self) -> None:
+        # codex P1 round 2: <provider>.new is the swap's mandatory staging
+        # dir — a status file there is rmtree'd by check_and_repair/swap,
+        # killing the run with exit 10/16.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=new_dir(tmp / "provider"))
+
+    def test_status_path_aliasing_provider_bak_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=bak_dir(tmp / "provider"))
+
+    def test_status_path_inside_provider_new_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(
+                    tmp,
+                    status_path=new_dir(tmp / "provider") / "status.json",
+                )
+
+    def test_nameless_status_path_rejected(self) -> None:
+        # codex P2: "." (or a filesystem root) has no file name — the atomic
+        # write's with_name() would raise ValueError, which _record_status
+        # does not catch; reject at config construction instead.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                _config(tmp, status_path=Path("."))
+
+    def test_status_tmp_sibling_aliases_are_rejected_too(self) -> None:
+        # codex #434 r7 (P1): the writer stages at `<target>.tmp` and then
+        # os.replace's it away. Guarding only the FINAL target let
+        # `--reference-cases /cfg/status.json.tmp` sit exactly where the
+        # staging write lands — overwritten, then renamed away.
+        # Built directly: the `_config` helper pins reference_cases /
+        # delisted_registry itself, and this test needs to place THOSE at
+        # the status target's `.tmp` sibling.
+        def build(**kw):
+            base = dict(tushare_dir=None, provider_dir=None,
+                        delisted_registry=None, reference_cases=None,
+                        now=TODAY)
+            base.update(kw)
+            return DailyUpdateConfig(**base)
+
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            with self.assertRaises(ValueError):
+                build(tushare_dir=tmp / "raw", provider_dir=tmp / "provider",
+                      delisted_registry=tmp / "raw" / "dr.parquet",
+                      reference_cases=tmp / "cfg" / "status.json.tmp",
+                      status_path=tmp / "cfg" / "status.json")
+            # the reverse aliasing (registry at the tmp name) as well
+            with self.assertRaises(ValueError):
+                build(tushare_dir=tmp / "raw", provider_dir=tmp / "provider",
+                      delisted_registry=tmp / "s.json.tmp",
+                      reference_cases=tmp / "reference_cases.yaml",
+                      status_path=tmp / "s.json")
+            # …and an ordinary sibling override still passes
+            _config(tmp, status_path=tmp / "custom_status.json")
+
+    def test_non_oserror_write_failures_stay_contained(self) -> None:
+        # codex #434 r24: `ensure_ascii=False` raises UnicodeEncodeError (a
+        # ValueError) on an unpaired surrogate smuggled in via an exception
+        # detail, and json.dumps raises TypeError on an unserializable value.
+        # Either escaping _record_status would invert the reverse-coupling
+        # contract: an observability failure SHALL NOT change the exit code.
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            # UnicodeEncodeError path — must not raise
+            du._record_status(target, {"detail": "bad" + chr(0xDC80)})
+            # TypeError path (unserializable payload) — must not raise
+            du._record_status(target, {"detail": object()})
+            # …and a well-formed write afterwards still succeeds
+            du._record_status(target, {"detail": "ok"})
+            self.assertIn("ok", target.read_text(encoding="utf-8"))
+
+    def test_each_status_write_stages_at_a_unique_name(self) -> None:
+        # codex #434 r19: with a FIXED `<target>.tmp`, two providers sharing
+        # an explicit --status-path race through the same staging file — one
+        # writer truncates what the other is about to os.replace, and the
+        # winner publishes an empty or half-written artifact. Unique staging
+        # makes the final atomic replace the only shared step.
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        staged: list[str] = []
+        real_replace = du.os.replace
+
+        def spy(src, dst):
+            staged.append(str(src))
+            return real_replace(src, dst)
+
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            with patch.object(du.os, "replace", spy):
+                du._write_status(target, {"a": 1})
+                du._write_status(target, {"a": 2})
+        self.assertEqual(2, len(staged))
+        self.assertNotEqual(staged[0], staged[1],
+                            "两次写必须用不同的暂存名,否则共用路径的双写会竞速")
+        for name in staged:
+            self.assertTrue(name.endswith(".tmp"))
+            self.assertNotEqual(name, str(target) + ".tmp",
+                                "不得退回固定的 <target>.tmp")
+
+    def test_failed_status_write_leaves_no_staging_litter(self) -> None:
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "s.json"
+            with patch.object(du.os, "replace",
+                              side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    du._write_status(target, {"a": 1})
+            leftovers = list(Path(t).glob("*.tmp"))
+            self.assertEqual([], leftovers, "失败后不得留下暂存残骸")
+
+    def test_one_run_date_for_the_artifact_and_the_plan(self) -> None:
+        # codex #434 r5: the status writer stamped `run_date` from its own
+        # `date.today()` and the body froze a SECOND one, so a run crossing
+        # local midnight between the two would report one day in the artifact
+        # while planning against the next.
+        #
+        # No fake clock needed: before the fix the body was called with NO
+        # run_date at all, so "the caller passed the one it stamped" is the
+        # exact regression signal.
+        import json
+        from unittest.mock import patch
+
+        import src.data_pipeline.daily_update as du
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp, now=None)
+            seen: list[object] = []
+
+            def spy(config, runners=None, run_date=None):
+                seen.append(run_date)
+                return (0, None, "ok")
+
+            with patch.object(du, "_execute_daily_update", spy):
+                du.run_daily_update(cfg)
+            written = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(
+                    encoding="utf-8"))
+        self.assertEqual(1, len(seen))
+        self.assertIsNotNone(
+            seen[0], "run_date 必须由调用方传入,不得让执行体自己再算一次")
+        self.assertEqual(
+            str(seen[0]), written["run_date"],
+            "工件里的 run_date 必须与执行体所用的是同一个")
+
+    def test_status_path_aliasing_a_single_flight_lock_rejected(self) -> None:
+        # codex #434 r3 (P1): the locks are SIBLINGS of the resources, so the
+        # tree checks cannot see them. Replacing one is worse than clobbering
+        # data — on POSIX the atomic replace swaps the directory entry while
+        # the old inode stays locked, so a second run opens the NEW file, takes
+        # a DIFFERENT lock, and proceeds concurrently against the same
+        # provider. Observability would have disabled single-flight.
+        from src.data_pipeline.single_flight import lock_path_for
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp)
+            for resource in (cfg.provider_dir, cfg.tushare_dir,
+                             cfg.delisted_registry):
+                lock = lock_path_for(Path(os.path.abspath(resource)))
+                with self.subTest(lock=lock.name):
+                    with self.assertRaises(ValueError):
+                        _config(tmp, status_path=lock)
+
+    def test_containment_holds_when_a_root_is_a_filesystem_root(self) -> None:
+        # codex #434 r3 (P1): `root + os.sep` builds "D:\\" (or "//") for a
+        # filesystem root, so a genuine child never matched and the guard
+        # ACCEPTED a status path inside the canonical tree. Asserted on the
+        # predicate itself — a real root-level provider_dir is not creatable
+        # in a test, and the defect lives in the containment rule.
+        from src.data_pipeline.daily_update import _norm, _path_within
+        for root, child in ((Path("D:/"), Path("D:/active_stocks.parquet")),
+                            (Path("/"), Path("/active_stocks.parquet"))):
+            with self.subTest(root=str(root)):
+                self.assertTrue(
+                    _path_within(_norm(child), _norm(root)),
+                    f"{child} 应被判为在 {root} 之内")
+        # …and unrelated trees must still be OUTSIDE (no over-broad guard).
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertFalse(
+                _path_within(_norm(tmp / "a" / "x.json"), _norm(tmp / "b")))
+
+    def test_default_and_sibling_override_accepted(self) -> None:
+        # The derived default and an ordinary sibling override keep working.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            self.assertIsNone(_config(tmp).status_path)
+            cfg = _config(tmp, status_path=tmp / "custom_status.json")
+            self.assertEqual(cfg.status_path, tmp / "custom_status.json")
 
 
 if __name__ == "__main__":
