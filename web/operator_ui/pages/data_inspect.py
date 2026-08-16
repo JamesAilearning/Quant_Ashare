@@ -75,6 +75,7 @@ provider_dir = Path(normalize_provider_uri(provider_uri.strip()))
 # error; a corrupt record is shown loud, never defaulted.
 # ---------------------------------------------------------------------------
 st.subheader("上次数据更新")
+_derived_status: Path | None
 try:
     _derived_status = status_path_for_provider(provider_dir)
 except ValueError as _exc:
