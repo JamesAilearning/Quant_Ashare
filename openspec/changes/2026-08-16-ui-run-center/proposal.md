@@ -50,8 +50,10 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
   `cwd=repo 根`，env 经 `utf8_child_env()`。产物写入
   `output/daily_recommend/` 下每次一新的**暂存目录**（`--out-dir`），
   exit 0 后逐文件同卷 `os.replace` 原子发布——超时杀在
-  `write_outputs` 中间绝不撕裂已发布的当日工件；发布中断保留暂存
-  （唯一完整副本）并指名（codex #440 r1）。
+  `write_outputs` 中间绝不撕裂已发布的当日工件（codex #440 r1）。
+  发布带回滚账本：旧版本先入暂存 `.prior`，中途失败整体回滚（新文件
+  退回、旧版本复位），绝不留混批工件集；仅回滚不完整为撕裂态且残留
+  逐名指出（codex #440 r3）。
 - argv：`<python> scripts/daily_recommend.py --ensemble-manifest <m>
   --provider-uri <p> --delisted-registry <r> --name-source <n>
   --bundle-max-age-days <d>`——与驾驶舱 `morning_command` ensemble 分支

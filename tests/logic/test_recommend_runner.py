@@ -14,6 +14,7 @@ single-target source pin.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -296,6 +297,100 @@ class StagingPublishTests(unittest.TestCase):
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "run_failed")
             self.assertIn("无产物", result.error)
+
+    def test_mid_publish_failure_rolls_back_the_prior_set(self) -> None:
+        # codex #440 r3: with a sequential publish, a failure at the
+        # SECOND replace used to leave file #1 from the new run next to
+        # file #2/#3 from the old run — and staging was no longer a
+        # complete copy. The rollback ledger must restore the old set
+        # exactly and return every new file to staging.
+        real_replace = os.replace
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            out.mkdir(exist_ok=True)
+            for name in _ARTIFACTS:
+                (out / name).write_text("OLD-" + name, encoding="utf-8")
+
+            def _flaky(src: str | Path, dst: str | Path) -> None:
+                # Fail publishing the .json (second in sorted order) —
+                # the .csv has already replaced its prior by then.
+                if (
+                    Path(dst).name.endswith(".json")
+                    and Path(src).parent.name.startswith(".staging-")
+                ):
+                    raise OSError("destination locked")
+                real_replace(src, dst)
+
+            with mock.patch(
+                "web.operator_ui.recommend_runner.OUT_DIR", out
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.subprocess.run",
+                _fake_run(_ARTIFACTS),
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.os.replace", _flaky
+            ), _patched_lock():
+                result = run_daily_recommend(**_PARAMS)
+
+            self.assertEqual(result.kind, "run_failed")
+            self.assertIn("已整体回滚", result.error)
+            # The published set is the OLD run again, byte for byte.
+            for name in _ARTIFACTS:
+                self.assertEqual(
+                    (out / name).read_text(encoding="utf-8"),
+                    "OLD-" + name,
+                )
+            # Staging holds the complete NEW set (and no rollback dir).
+            staging_dirs = list(out.glob(".staging-*"))
+            self.assertEqual(len(staging_dirs), 1)
+            self.assertEqual(
+                sorted(p.name for p in staging_dirs[0].iterdir()),
+                sorted(_ARTIFACTS),
+            )
+
+    def test_incomplete_rollback_reports_residuals_loudly(self) -> None:
+        # If the rollback itself also fails, the torn state must be
+        # named residual by residual — never summarized away.
+        real_replace = os.replace
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            out.mkdir(exist_ok=True)
+            for name in _ARTIFACTS:
+                (out / name).write_text("OLD-" + name, encoding="utf-8")
+
+            def _flaky(src: str | Path, dst: str | Path) -> None:
+                src_p, dst_p = Path(src), Path(dst)
+                publishing = src_p.parent.name.startswith(".staging-")
+                unpublishing = dst_p.parent.name.startswith(".staging-")
+                if publishing and dst_p.name.endswith(".json"):
+                    raise OSError("destination locked")
+                if unpublishing and dst_p.name.endswith(".csv"):
+                    raise OSError("still locked")
+                real_replace(src, dst)
+
+            with mock.patch(
+                "web.operator_ui.recommend_runner.OUT_DIR", out
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.subprocess.run",
+                _fake_run(_ARTIFACTS),
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.os.replace", _flaky
+            ), _patched_lock():
+                result = run_daily_recommend(**_PARAMS)
+
+            self.assertEqual(result.kind, "run_failed")
+            self.assertIn("残留", result.error)
+            self.assertIn("(新文件仍在发布目录)", result.error)
+            # The stuck name's prior must NOT clobber the new file (the
+            # only copy left) — it stays in the ledger dir, said so.
+            self.assertIn("(旧版本滞留在回滚目录)", result.error)
+            self.assertEqual(
+                (out / "daily_recommendation_2026-08-14.csv").read_text(
+                    encoding="utf-8"
+                ),
+                _ARTIFACTS["daily_recommendation_2026-08-14.csv"],
+            )
+            # Staging (with the rollback dir) is preserved as evidence.
+            self.assertEqual(len(list(out.glob(".staging-*"))), 1)
 
     def test_publish_interruption_keeps_staging_for_manual_disposal(
         self,

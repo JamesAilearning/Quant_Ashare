@@ -64,6 +64,15 @@
 - [ ] 页面渲染 `blocked_by_update` 专属分支 + 源码钉;spec 增
   「状态失真时锁仍拦得住」场景
 
+## codex #440 r3（1 条 P1 实修）
+
+- [ ] 顺序发布第 2/3 个 replace 失败会留混批工件集且暂存不再完整 →
+  发布改带回滚账本:旧版本先入暂存 `.prior`,失败则新文件退回暂存+
+  旧版本复位(整体回滚);un-publish 失败的名字不复位旧版(避免砸掉
+  新文件唯一副本),逐名指名滞留
+- [ ] 两个回滚测试:中途失败 → 发布目录逐字节复原+暂存完整;回滚
+  不完整 → 残留逐名+证据目录保留
+
 ## 验证
 
 - [ ] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

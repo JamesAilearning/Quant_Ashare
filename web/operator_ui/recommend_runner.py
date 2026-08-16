@@ -73,8 +73,13 @@ class RecommendRunResult:
     * ``launch_failed`` — the interpreter could not be started.
     * ``run_failed`` — the script is missing (repo layout drift), the
       CLI broke its contract (exit 0 without artifacts), or publishing
-      from staging failed (then the staging dir is KEPT for manual
-      disposal and named in ``error``).
+      failed. A mid-publish failure is ROLLED BACK (new files return to
+      staging, replaced prior versions are restored from the staging
+      ``.prior`` dir — codex #440 r3: a sequential publish must never
+      leave a mixed-run artifact set); only an INCOMPLETE rollback is a
+      torn state, and then ``error`` names every residual exactly. The
+      staging dir is kept for manual disposal in every publish-failure
+      case.
     """
 
     kind: str
@@ -219,15 +224,58 @@ def run_daily_recommend(
     return _publish(staging, proc.stdout, proc.stderr, elapsed)
 
 
+def _rollback(
+    staging: Path,
+    prior_dir: Path,
+    published: list[str],
+    saved: list[str],
+) -> list[str]:
+    """Undo a partial publish. Returns residuals (empty = fully undone).
+
+    Order matters: first move every published NEW file back to staging
+    (clearing the destinations), then restore every saved prior version.
+    The publish loop's precedent is the rotation executor's late-write
+    rollback (created files undone in reverse); here the unit is the
+    per-name pair (new file, prior version).
+    """
+    residual: list[str] = []
+    failed_unpublish: set[str] = set()
+    for name in published:
+        try:
+            os.replace(OUT_DIR / name, staging / name)
+        except OSError:
+            residual.append(f"{name}(新文件仍在发布目录)")
+            failed_unpublish.add(name)
+    for name in saved:
+        if name in failed_unpublish:
+            # Restoring the prior would OVERWRITE the new file still
+            # sitting at the destination — the only copy left. Keep the
+            # prior in the ledger dir and say so instead.
+            residual.append(f"{name}(旧版本滞留在回滚目录)")
+            continue
+        try:
+            os.replace(prior_dir / name, OUT_DIR / name)
+        except OSError:
+            residual.append(f"{name}(旧版本未能恢复)")
+    if not residual:
+        # Empty now — every prior went back.
+        shutil.rmtree(prior_dir, ignore_errors=True)
+    return residual
+
+
 def _publish(
     staging: Path, stdout: str, stderr: str, elapsed: float
 ) -> RecommendRunResult:
     """Move the finished artifacts from staging into ``OUT_DIR``.
 
-    Per-file ``os.replace`` on the same volume: each published file is
-    complete by construction, and the pre-existing artifact for a day is
-    replaced atomically or not at all. On a publish error the staging
-    dir is KEPT (deleting it would destroy the only complete copy).
+    Per-file ``os.replace`` on the same volume, with a rollback ledger
+    (codex #440 r3): each replaced prior version is FIRST moved into
+    ``staging/.prior``, so a failure at the second or third replace
+    never strands a mixed-run artifact set — new files return to
+    staging, priors return to the publish dir. Only an incomplete
+    rollback is a torn state, and it is reported name by name. The
+    staging dir is kept on every publish failure (it holds the only
+    complete copy).
     """
     try:
         files = sorted(p for p in staging.iterdir() if p.is_file())
@@ -250,11 +298,9 @@ def _publish(
             error="退出码 0 但暂存目录无产物——CLI 契约被违反。",
             elapsed_s=elapsed,
         )
-    published: list[str] = []
+    prior_dir = staging / ".prior"
     try:
-        for f in files:
-            os.replace(f, OUT_DIR / f.name)
-            published.append(f.name)
+        prior_dir.mkdir()
     except OSError as exc:
         return RecommendRunResult(
             kind="run_failed",
@@ -262,8 +308,44 @@ def _publish(
             stdout_tail=_tail(stdout),
             stderr_tail=_tail(stderr),
             error=(
-                f"产物发布中断(已发布 {published or '无'};暂存目录保留在 "
-                f"{staging} 以便手工处置):{exc}"
+                f"发布前无法创建回滚目录({exc})——一个文件都没动;"
+                f"本次产物完整保留在暂存 {staging}。"
+            ),
+            elapsed_s=elapsed,
+        )
+    published: list[str] = []
+    saved: list[str] = []
+    try:
+        for f in files:
+            dest = OUT_DIR / f.name
+            if dest.exists():
+                os.replace(dest, prior_dir / f.name)
+                saved.append(f.name)
+            os.replace(f, dest)
+            published.append(f.name)
+    except OSError as exc:
+        residual = _rollback(staging, prior_dir, published, saved)
+        if residual:
+            return RecommendRunResult(
+                kind="run_failed",
+                exit_code=0,
+                stdout_tail=_tail(stdout),
+                stderr_tail=_tail(stderr),
+                error=(
+                    f"发布在中途失败({exc})且回滚不完整——发布目录可能"
+                    f"混着两次运行的文件。残留:{';'.join(residual)}。"
+                    f"暂存与回滚目录保留在 {staging},请手工处置。"
+                ),
+                elapsed_s=elapsed,
+            )
+        return RecommendRunResult(
+            kind="run_failed",
+            exit_code=0,
+            stdout_tail=_tail(stdout),
+            stderr_tail=_tail(stderr),
+            error=(
+                f"发布在中途失败({exc});已整体回滚——发布目录恢复原状,"
+                f"本次产物完整保留在暂存 {staging} 以便手工处置。"
             ),
             elapsed_s=elapsed,
         )

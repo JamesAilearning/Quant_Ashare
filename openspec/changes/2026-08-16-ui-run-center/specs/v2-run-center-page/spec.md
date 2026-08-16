@@ -135,8 +135,12 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 `utf8_child_env()`，超时默认 900s。产物 SHALL 写入
 `output/daily_recommend/` 下的**每次一新的暂存目录**（`--out-dir`），
 完成（exit 0）后逐文件经同卷 `os.replace` 原子发布——超时被杀/退出≠0
-只清理暂存，已发布工件 MUST NOT 被触碰；发布中断时暂存目录 SHALL
-保留（删除会毁掉唯一完整副本）并在错误里指名。
+只清理暂存，已发布工件 MUST NOT 被触碰。发布 SHALL 带回滚账本：被
+替换的旧版本先移入暂存 `.prior`，任一步失败 SHALL 整体回滚（新文件
+退回暂存、旧版本复位）——顺序发布 MUST NOT 留下混批工件集；仅回滚
+不完整才是撕裂态，且残留 SHALL 逐名指出（un-publish 失败的名字不再
+复位旧版——那会砸掉新文件的唯一副本，改为指名滞留）。所有发布失败
+情形暂存目录 SHALL 保留。
 结果 SHALL fail-loud：exit 0 → 展示 stdout 尾部（含 entry_date 横幅）并
 引导至「今日推荐」页；exit≠0 → **优先展示 stdout 尾部**——本仓 CLI 的
 拒绝原因经 logger 落 stdout（`StreamHandler(sys.stdout)`、
@@ -183,7 +187,9 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 - **GIVEN** 前一交易日的工件已在 `output/daily_recommend/`
 - **WHEN** 本次运行超时被杀或退出≠0
 - **THEN** 已发布工件逐字节不变，暂存目录被清理
-- **AND** 发布中断（`os.replace` 失败）时暂存目录保留并在错误里指名
+- **AND** 发布在第二/第三个文件处失败时整体回滚：发布目录恢复为
+  旧集合，本次产物完整退回暂存
+- **AND** 回滚不完整时残留逐名指出，暂存与回滚目录保留为证据
 
 #### Scenario: CLI 拒绝如实转述
 
