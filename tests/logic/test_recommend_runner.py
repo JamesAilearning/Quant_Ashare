@@ -1,14 +1,16 @@
 """Recommend-runner tests (openspec 2026-08-16-ui-run-center W2/W4).
 
 The runner executes the SAME command the cockpit prints (ensemble form),
-synchronously, pointing the CLI at a per-run STAGING dir and publishing
-finished files via per-file atomic ``os.replace`` (codex #440 r1: a
-timeout kill mid-``write_outputs`` must never tear a published day's
-artifact). These tests fake ``subprocess.run`` — they pin the argv (the
-five same-source flags plus the staging ``--out-dir``, and NONE of the
-flags the serving-config binding chain owns), the UTF-8 text-mode
-kwargs, the staging/publish life cycle, every outcome branch, and the
-single-target source pin.
+synchronously in its OWN process group (codex #440 r5: joblib
+grandchildren hold the captured pipes, so a timeout must kill the whole
+tree or the drain blocks forever while the provider lock is held),
+pointing the CLI at a per-run STAGING dir and publishing finished files
+via per-file atomic ``os.replace`` with a rollback ledger (codex #440
+r1/r3/r4). These tests fake ``subprocess.Popen`` — they pin the argv
+(the five same-source flags plus the staging ``--out-dir``, and NONE of
+the flags the serving-config binding chain owns), the UTF-8/pipe/group
+kwargs, the lock gate, the staging/publish/rollback life cycle, every
+outcome branch, and the single-target source pin.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -66,27 +67,66 @@ def _staging_of(cmd: list[str]) -> Path:
     return Path(cmd[cmd.index("--out-dir") + 1])
 
 
-def _fake_run(
-    files: dict[str, str] | None,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-):
-    """A subprocess.run stand-in that materializes artifacts in the
-    staging dir the way the real CLI's write_outputs does (or not, when
-    files is None)."""
+class _FakeProc:
+    """Popen stand-in. Materializes staging artifacts at construction —
+    the way the real CLI writes them while running — then hands the
+    outcome to ``communicate()``. ``hang_first`` makes the first
+    ``communicate`` raise TimeoutExpired (the r5 timeout path)."""
 
-    def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+    def __init__(
+        self,
+        cmd: list[str],
+        files: dict[str, str] | None,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        hang_first: bool = False,
+    ) -> None:
+        self.pid = 4321
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self._hang_first = hang_first
+        self._cmd = cmd
+        self.communicate_timeouts: list[float | None] = []
         if files is not None:
             staging = _staging_of(cmd)
             staging.mkdir(parents=True, exist_ok=True)
             for name, content in files.items():
                 (staging / name).write_text(content, encoding="utf-8")
-        return SimpleNamespace(
-            returncode=returncode, stdout=stdout, stderr=stderr
-        )
 
-    return _run
+    def communicate(
+        self, timeout: float | None = None
+    ) -> tuple[str, str]:
+        self.communicate_timeouts.append(timeout)
+        if self._hang_first:
+            self._hang_first = False
+            raise subprocess.TimeoutExpired(
+                cmd=self._cmd, timeout=timeout or 0
+            )
+        return self._stdout, self._stderr
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def _fake_popen(
+    files: dict[str, str] | None,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+    hang_first: bool = False,
+):
+    """A ``subprocess.Popen`` stand-in factory; records created procs."""
+    made: list[_FakeProc] = []
+
+    def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
+        proc = _FakeProc(cmd, files, returncode, stdout, stderr, hang_first)
+        made.append(proc)
+        return proc
+
+    _popen.made = made  # type: ignore[attr-defined]
+    return _popen
 
 
 def _no_leftover_staging(out_dir: Path) -> bool:
@@ -114,21 +154,16 @@ def _patched_lock(held: bool = True):
 
 class CommandShapeTests(unittest.TestCase):
     def test_argv_is_exactly_the_cockpit_flags_plus_staging(self) -> None:
-        captured: dict = {}
-
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
-            captured["cmd"] = cmd
-            return _fake_run(_ARTIFACTS)(cmd, **kwargs)
-
+        fake = _fake_popen(_ARTIFACTS)
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", Path(tmp)
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run", _run
+                "web.operator_ui.recommend_runner.subprocess.Popen", fake
             ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
-            cmd = captured["cmd"]
+            cmd = fake.made[0]._cmd  # type: ignore[attr-defined]
             # CLOSED-LIST pin: everything except the (per-run) staging
             # value is byte-equal. A smuggled extra flag
             # (--allow-holey-recommend would bypass the fetch-integrity
@@ -161,28 +196,45 @@ class CommandShapeTests(unittest.TestCase):
             # WHY it is closed.
             for flag in _FORBIDDEN_FLAGS:
                 self.assertNotIn(flag, cmd)
+            # The run ceiling goes to communicate(), not Popen.
+            self.assertEqual(
+                fake.made[0].communicate_timeouts,  # type: ignore[attr-defined]
+                [DEFAULT_TIMEOUT_S],
+            )
 
-    def test_utf8_text_mode_kwargs_are_pinned(self) -> None:
+    def test_utf8_pipe_and_process_group_kwargs_are_pinned(self) -> None:
         captured: dict = {}
 
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
             captured["kwargs"] = kwargs
-            return SimpleNamespace(returncode=1, stdout="", stderr="x")
+            return _FakeProc(cmd, None, 1, "", "x")
 
         with mock.patch(
-            "web.operator_ui.recommend_runner.subprocess.run", _run
+            "web.operator_ui.recommend_runner.subprocess.Popen", _popen
         ), _patched_lock():
             run_daily_recommend(**_PARAMS)
         kwargs = captured["kwargs"]
-        self.assertTrue(kwargs["capture_output"])
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], subprocess.PIPE)
+        self.assertIs(kwargs["stderr"], subprocess.PIPE)
         self.assertTrue(kwargs["text"])
         self.assertEqual(kwargs["encoding"], "utf-8")
         self.assertEqual(kwargs["errors"], "replace")
-        self.assertEqual(kwargs["timeout"], DEFAULT_TIMEOUT_S)
         # cwd = repo root, matching a terminal run's anchor.
         self.assertEqual(kwargs["cwd"], str(PROJECT_ROOT))
         # Both pipe ends pinned: the child encodes UTF-8 too.
         self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
+        # Own process group/session — the r5 tree-kill precondition.
+        if sys.platform == "win32":
+            self.assertEqual(
+                kwargs["creationflags"],
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertNotIn("start_new_session", kwargs)
+        else:
+            self.assertTrue(kwargs["start_new_session"])
+            self.assertNotIn("creationflags", kwargs)
 
     def test_python_override_is_honored(self) -> None:
         cmd = build_recommend_argv(
@@ -208,14 +260,12 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS, stdout="entry_date=2026-08-14"),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS, stdout="entry_date=2026-08-14"),
             ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
-            self.assertEqual(
-                sorted(result.published), sorted(_ARTIFACTS)
-            )
+            self.assertEqual(sorted(result.published), sorted(_ARTIFACTS))
             for name, content in _ARTIFACTS.items():
                 self.assertEqual(
                     (out / name).read_text(encoding="utf-8"), content
@@ -231,42 +281,65 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS),
             ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "ok")
             self.assertEqual(prior.read_text(encoding="utf-8"), "OLD")
 
-    def test_timeout_cleans_staging_and_preserves_published(self) -> None:
+    def test_timeout_kills_the_tree_then_cleans_staging(self) -> None:
         # Simulate a kill mid-write_outputs: partial file in staging,
-        # then the TimeoutExpired surfaces.
+        # first communicate raises, the tree-kill succeeds, the drain
+        # returns. Prior-day artifacts stay untouched.
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             out.mkdir(exist_ok=True)
             prior = out / "daily_recommendation_2026-08-13.json"
             prior.write_text("VALID-PRIOR-DAY", encoding="utf-8")
-
-            def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
-                staging = _staging_of(cmd)
-                staging.mkdir(parents=True, exist_ok=True)
-                (staging / "daily_recommendation_2026-08-13.json").write_text(
-                    '{"torn":', encoding="utf-8"
-                )
-                raise subprocess.TimeoutExpired(cmd=cmd, timeout=900)
-
+            fake = _fake_popen(
+                {"daily_recommendation_2026-08-13.json": '{"torn":'},
+                hang_first=True,
+            )
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run", _run
-            ), _patched_lock():
+                "web.operator_ui.recommend_runner.subprocess.Popen", fake
+            ), mock.patch(
+                "web.operator_ui.recommend_runner._kill_tree",
+                return_value=None,
+            ) as kill, _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "timeout")
-            self.assertIn("已终止", result.error)
+            kill.assert_called_once()
+            self.assertIn("整棵进程树已终止", result.error)
             self.assertEqual(
                 prior.read_text(encoding="utf-8"), "VALID-PRIOR-DAY"
             )
             self.assertTrue(_no_leftover_staging(out))
+
+    def test_incomplete_tree_kill_keeps_staging_and_names_the_pid(
+        self,
+    ) -> None:
+        # codex #440 r5: if descendants survive, deleting staging would
+        # race live writers — keep it, name the pid, stay loud.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            fake = _fake_popen(_ARTIFACTS, hang_first=True)
+            with mock.patch(
+                "web.operator_ui.recommend_runner.OUT_DIR", out
+            ), mock.patch(
+                "web.operator_ui.recommend_runner.subprocess.Popen", fake
+            ), mock.patch(
+                "web.operator_ui.recommend_runner._kill_tree",
+                return_value="taskkill 退出码 1:access denied",
+            ), _patched_lock():
+                result = run_daily_recommend(**_PARAMS)
+            self.assertEqual(result.kind, "timeout")
+            self.assertIn("终止不完整", result.error)
+            self.assertIn("4321", result.error)
+            self.assertIn("保留", result.error)
+            self.assertEqual(len(list(out.glob(".staging-*"))), 1)
 
     def test_nonzero_exit_cleans_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,8 +347,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(
                     {"daily_recommendation_2026-08-14.json": "half"},
                     returncode=1,
                     stderr="bundle is stale: 20 > 14",
@@ -291,8 +364,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", Path(tmp)
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run({}),  # creates the staging dir, writes nothing
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen({}),  # creates the staging dir, writes nothing
             ), _patched_lock():
                 result = run_daily_recommend(**_PARAMS)
             self.assertEqual(result.kind, "run_failed")
@@ -324,8 +397,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS),
             ), mock.patch(
                 "web.operator_ui.recommend_runner.os.replace", _flaky
             ), _patched_lock():
@@ -375,8 +448,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS),
             ), mock.patch(
                 "web.operator_ui.recommend_runner.os.replace", _flaky
             ), _patched_lock():
@@ -421,8 +494,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS),
             ), mock.patch(
                 "web.operator_ui.recommend_runner.os.replace", _flaky
             ), _patched_lock():
@@ -453,8 +526,8 @@ class StagingPublishTests(unittest.TestCase):
             with mock.patch(
                 "web.operator_ui.recommend_runner.OUT_DIR", out
             ), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run",
-                _fake_run(_ARTIFACTS),
+                "web.operator_ui.recommend_runner.subprocess.Popen",
+                _fake_popen(_ARTIFACTS),
             ), mock.patch(
                 "web.operator_ui.recommend_runner.os.replace",
                 side_effect=OSError("cross-device or locked"),
@@ -465,7 +538,9 @@ class StagingPublishTests(unittest.TestCase):
             staging_dirs = list(out.glob(".staging-*"))
             self.assertEqual(len(staging_dirs), 1)
             self.assertEqual(
-                sorted(p.name for p in staging_dirs[0].iterdir()),
+                sorted(
+                    p.name for p in staging_dirs[0].iterdir() if p.is_file()
+                ),
                 sorted(_ARTIFACTS),
             )
 
@@ -473,7 +548,7 @@ class StagingPublishTests(unittest.TestCase):
 class OutcomeBranchTests(unittest.TestCase):
     def _run_with(self, fake: object) -> RecommendRunResult:
         with mock.patch(
-            "web.operator_ui.recommend_runner.subprocess.run", fake
+            "web.operator_ui.recommend_runner.subprocess.Popen", fake
         ), _patched_lock():
             return run_daily_recommend(**_PARAMS)
 
@@ -483,7 +558,7 @@ class OutcomeBranchTests(unittest.TestCase):
                 "web.operator_ui.recommend_runner.OUT_DIR", Path(tmp)
             ):
                 result = self._run_with(
-                    _fake_run(
+                    _fake_popen(
                         _ARTIFACTS, stdout="entry_date=2026-08-18\n"
                     )
                 )
@@ -496,7 +571,7 @@ class OutcomeBranchTests(unittest.TestCase):
         # The repo logger writes refusals to STDOUT; the runner hands
         # both tails to the page, which prefers stdout.
         result = self._run_with(
-            _fake_run(
+            _fake_popen(
                 None,
                 returncode=1,
                 stdout="ERROR daily_recommend: bundle is stale: 20 > 14",
@@ -510,22 +585,22 @@ class OutcomeBranchTests(unittest.TestCase):
         self.assertIn("退出码 1", result.error)
 
     def test_launch_failure_is_distinct_and_loud(self) -> None:
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
             raise OSError("permission denied")
 
-        result = self._run_with(_run)
+        result = self._run_with(_popen)
         self.assertEqual(result.kind, "launch_failed")
         self.assertIn("无法启动解释器", result.error)
 
     def test_missing_script_is_run_failed_without_spawning(self) -> None:
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
             raise AssertionError("must not spawn when the script is gone")
 
         with mock.patch(
             "web.operator_ui.recommend_runner.RECOMMEND_SCRIPT",
             Path("/no/such/daily_recommend_script.py"),
         ), mock.patch(
-            "web.operator_ui.recommend_runner.subprocess.run", _run
+            "web.operator_ui.recommend_runner.subprocess.Popen", _popen
         ):
             result = run_daily_recommend(**_PARAMS)
         self.assertEqual(result.kind, "run_failed")
@@ -533,18 +608,20 @@ class OutcomeBranchTests(unittest.TestCase):
 
 class UpdateLockGateTests(unittest.TestCase):
     """codex #440 r2: the authoritative serialization is the updater's
-    own provider lock — the status artifact is advisory only."""
+    own provider lock — the status artifact is advisory only. The lock
+    mirror's correctness is proven BIDIRECTIONALLY against the real
+    ``src`` implementation (codex #440 r5)."""
 
     def test_busy_lock_refuses_without_spawning(self) -> None:
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
             raise AssertionError("must not spawn while the lock is held")
 
         with mock.patch(
-            "web.operator_ui.recommend_runner.subprocess.run", _run
+            "web.operator_ui.recommend_runner.subprocess.Popen", _popen
         ), _patched_lock(held=False):
             result = run_daily_recommend(**_PARAMS)
         self.assertEqual(result.kind, "blocked_by_update")
-        self.assertIn("\u5355\u98de\u9501", result.error)
+        self.assertIn("单飞锁", result.error)
 
     def test_real_updater_lock_blocks_end_to_end(self) -> None:
         # No stubs on the lock here: the REAL src single-flight lock is
@@ -552,7 +629,7 @@ class UpdateLockGateTests(unittest.TestCase):
         # provider, and the runner must refuse before spawning.
         from src.data_pipeline.single_flight import single_flight
 
-        def _run(cmd: list[str], **kwargs: object) -> SimpleNamespace:
+        def _popen(cmd: list[str], **kwargs: object) -> _FakeProc:
             raise AssertionError("must not spawn while the updater runs")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -560,10 +637,32 @@ class UpdateLockGateTests(unittest.TestCase):
             provider.mkdir()
             params = dict(_PARAMS, provider_uri=str(provider))
             with single_flight(provider), mock.patch(
-                "web.operator_ui.recommend_runner.subprocess.run", _run
+                "web.operator_ui.recommend_runner.subprocess.Popen", _popen
             ):
                 result = run_daily_recommend(**params)
         self.assertEqual(result.kind, "blocked_by_update")
+
+    def test_web_holder_blocks_the_real_updater(self) -> None:
+        # The REVERSE direction (codex #440 r5): while the web mirror
+        # holds the lock, the real updater must refuse with its normal
+        # AlreadyRunningError — and acquire cleanly after release.
+        from src.data_pipeline.single_flight import (
+            AlreadyRunningError,
+            single_flight,
+        )
+        from web.operator_ui.provider_lock import hold_update_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = Path(tmp) / "prov"
+            provider.mkdir()
+            with hold_update_lock(provider) as held:
+                self.assertTrue(held)
+                with self.assertRaises(AlreadyRunningError):
+                    with single_flight(provider):
+                        pass
+            # Released on exit — the updater acquires cleanly now.
+            with single_flight(provider):
+                pass
 
 
 class SingleTargetSourcePinTests(unittest.TestCase):

@@ -130,9 +130,14 @@ runner SHALL 持有更新器自身的 provider 单飞锁（web 侧镜像模块
 running 记录陈旧时，这把锁就是防止出单撞进换库真空的唯一防线
 （状态是 advisory，锁是权威）。
 
-子进程 SHALL 同步运行：`capture_output=True, text=True,
-encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
-`utf8_child_env()`，超时默认 900s。产物 SHALL 写入
+子进程 SHALL 同步运行且以**自有进程组/会话**启动（win32
+`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`；POSIX
+`start_new_session`）：管道捕获 + `text/encoding="utf-8"/
+errors="replace"`，`cwd=仓库根`，env 经 `utf8_child_env()`，超时默认
+900s。超时 SHALL 先终止**整棵进程树**（win32 `taskkill /F /T`；POSIX
+`killpg`）再作宽限 drain——joblib 孙进程握着捕获管道，只杀顶层会让
+drain 永久阻塞且锁不释放；终止不完整时 SHALL 保留暂存（避免与残留
+写者赛跑）、指名顶层 pid、并如实声明锁将在返回后释放。产物 SHALL 写入
 `output/daily_recommend/` 下的**每次一新的暂存目录**（`--out-dir`），
 完成（exit 0）后逐文件经同卷 `os.replace` 原子发布——超时被杀/退出≠0
 只清理暂存，已发布工件 MUST NOT 被触碰。发布 SHALL 带回滚账本：被
@@ -203,7 +208,9 @@ encoding="utf-8", errors="replace"`，`cwd=仓库根`，env 经
 #### Scenario: 超时被杀且如实报告
 
 - **WHEN** 子进程超过超时上限
-- **THEN** 子进程被终止，页面展示超时结果
+- **THEN** 整棵进程树被终止（含 joblib 孙进程），页面展示超时结果
+- **AND** 进程树终止不完整时，暂存保留、顶层 pid 被指名、锁的释放
+  被如实声明
 
 ### Requirement: 执行边界与 runner 目标钉死
 

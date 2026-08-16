@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -48,6 +49,10 @@ OUT_DIR = PROJECT_ROOT / "output" / "daily_recommend"
 # The CLI loads the bundle, scores ~800 names and writes three files —
 # minutes, not hours. 15 min mirrors the PIT runner's generous ceiling.
 DEFAULT_TIMEOUT_S = 900
+
+# After a tree-kill, how long the drain ``communicate`` may wait for the
+# pipes to close before we declare the kill incomplete.
+KILL_GRACE_S = 30
 
 _STD_TAIL_CHARS = 4000
 
@@ -177,34 +182,81 @@ def run_daily_recommend(
                     "自动释放。"
                 ),
             )
+        # A process GROUP/session, not a bare child: Alpha158's joblib
+        # workers are grandchildren holding the captured pipes — with
+        # ``subprocess.run(timeout=)`` only the top-level python dies,
+        # the drain ``communicate()`` then blocks forever on the pipes
+        # and the provider lock is never released (codex #440 r5).
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout_s,
-                cwd=str(PROJECT_ROOT),
-                env=utf8_child_env(),
-            )
-        except subprocess.TimeoutExpired:
-            # Half-written files exist only in staging — junk, clean
-            # them. Published artifacts were never touched.
-            shutil.rmtree(staging, ignore_errors=True)
-            return RecommendRunResult(
-                kind="timeout",
-                error=(
-                    f"超过 {timeout_s}s 上限,子进程已终止。半成品只在"
-                    "暂存目录且已清理,已发布的工件未被触碰。"
-                ),
-                elapsed_s=time.monotonic() - started,
-            )
+            if sys.platform == "win32":
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=str(PROJECT_ROOT),
+                    env=utf8_child_env(),
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP
+                        | subprocess.CREATE_NO_WINDOW
+                    ),
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=str(PROJECT_ROOT),
+                    env=utf8_child_env(),
+                    start_new_session=True,
+                )
         except OSError as exc:
             shutil.rmtree(staging, ignore_errors=True)
             return RecommendRunResult(
                 kind="launch_failed",
                 error=f"无法启动解释器 {cmd[0]!r}:{exc}",
+                elapsed_s=time.monotonic() - started,
+            )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            kill_note = _kill_tree(proc)
+            # Drain with a grace ceiling: once the tree is dead the
+            # pipes close and this returns promptly.
+            try:
+                stdout, stderr = proc.communicate(timeout=KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                kill_note = (
+                    (kill_note + ";" if kill_note else "")
+                    + f"宽限 {KILL_GRACE_S}s 后管道仍未关闭"
+                )
+            if kill_note:
+                # Writers may still be alive — deleting staging would
+                # race them; keep it as evidence and say so.
+                return RecommendRunResult(
+                    kind="timeout",
+                    error=(
+                        f"超过 {timeout_s}s 上限,但进程树终止不完整"
+                        f"({kill_note})。暂存目录保留在 {staging},残留"
+                        f"进程请手工排查(顶层 pid {proc.pid});已发布"
+                        "工件未被触碰,锁在本结果返回后释放。"
+                    ),
+                    elapsed_s=time.monotonic() - started,
+                )
+            shutil.rmtree(staging, ignore_errors=True)
+            return RecommendRunResult(
+                kind="timeout",
+                error=(
+                    f"超过 {timeout_s}s 上限,整棵进程树已终止。半成品"
+                    "只在暂存目录且已清理,已发布的工件未被触碰。"
+                ),
                 elapsed_s=time.monotonic() - started,
             )
     elapsed = time.monotonic() - started
@@ -213,15 +265,47 @@ def run_daily_recommend(
         return RecommendRunResult(
             kind="failed",
             exit_code=proc.returncode,
-            stdout_tail=_tail(proc.stdout),
-            stderr_tail=_tail(proc.stderr),
+            stdout_tail=_tail(stdout),
+            stderr_tail=_tail(stderr),
             error=(
                 f"出单 CLI 退出码 {proc.returncode}"
                 "(拒绝原因见输出尾部;本仓 CLI 经 logger 落 stdout)。"
             ),
             elapsed_s=elapsed,
         )
-    return _publish(staging, proc.stdout, proc.stderr, elapsed)
+    return _publish(staging, stdout, stderr, elapsed)
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> str | None:
+    """Kill the child's WHOLE process tree. None = done, else the reason.
+
+    Windows: ``taskkill /F /T`` walks the tree from the top pid (the
+    child was created in its own process group with no window). POSIX:
+    the child leads its own session (``start_new_session``), so its
+    pgid == pid and one ``killpg`` takes the tree.
+    """
+    try:
+        if sys.platform == "win32":
+            kill = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=KILL_GRACE_S,
+            )
+            if kill.returncode != 0 and proc.poll() is None:
+                return (
+                    f"taskkill 退出码 {kill.returncode}:"
+                    f"{(kill.stderr or kill.stdout).strip()}"
+                )
+            return None
+        os.killpg(proc.pid, signal.SIGKILL)
+        return None
+    except ProcessLookupError:
+        return None  # already gone — that is the goal
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{type(exc).__name__}: {exc}"
 
 
 def _rollback(

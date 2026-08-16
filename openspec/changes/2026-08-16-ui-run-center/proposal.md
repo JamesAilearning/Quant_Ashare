@@ -45,9 +45,11 @@ argv 钉死 + 治理豁免 + logic 测试钉 argv 形状）。缺的只是一个
 
 ### W2 `web/operator_ui/recommend_runner.py` — 出单同步 runner
 
-- 比照 `pit_validation_runner`：同步 `subprocess.run`，`capture_output +
-  text + encoding="utf-8" + errors="replace"`，`timeout` 默认 900s，
-  `cwd=repo 根`，env 经 `utf8_child_env()`。产物写入
+- 同步执行但以**自有进程组/会话**启动（codex #440 r5：joblib 孙进程
+  握着捕获管道，`subprocess.run(timeout=)` 只杀顶层会让 drain 永久
+  阻塞且锁不释放）——超时先整树终止（win `taskkill /F /T`/posix
+  `killpg`）再宽限 drain；管道捕获 + UTF-8 text，`timeout` 默认
+  900s，`cwd=repo 根`，env 经 `utf8_child_env()`。产物写入
   `output/daily_recommend/` 下每次一新的**暂存目录**（`--out-dir`），
   exit 0 后逐文件同卷 `os.replace` 原子发布——超时杀在
   `write_outputs` 中间绝不撕裂已发布的当日工件（codex #440 r1）。
