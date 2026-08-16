@@ -221,20 +221,25 @@ def test_geometry_violation_is_refused(tmp_path):
                    fundamental_panel_factory=dropped_column)
 
 
-def test_key_collision_with_the_pv_panel_is_refused(tmp_path):
-    store, calendar = _mk_fundamental_inputs(tmp_path)
-    real = build_panel_factory()
+def test_key_collision_with_the_pv_panel_is_refused():
+    """纵深防御：键集相等检查已挡住一切未声明键，碰撞检查防的是剩下的
+    病态路径 —— 声明的字段名本身撞上 qlib 终端（declared=("close",)）。
+    经 run_mining 走不到这里（真桥拒绝未知 charter 字段），故直接测缝
+    校验函数。"""
+    from src.factor_mining.miner import _verify_fundamental_triple
 
-    def shadowing(data, trade_dates, instruments):
-        values, evidence, periods = real(data, trade_dates, instruments)
-        values = {"$close": next(iter(values.values())), **values}
-        evidence = {"$close": next(iter(evidence.values())), **evidence}
-        periods = {"$close": next(iter(periods.values())), **periods}
-        return values, evidence, periods
-
+    idx = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=3, freq="D"))
+    frame = pd.DataFrame(0.0, index=idx, columns=list(_QLIB_TICKERS))
+    obj = pd.DataFrame("20230930", index=idx, columns=list(_QLIB_TICKERS),
+                       dtype="object")
+    triple = (
+        {"$close": frame, "$close__prior": frame},
+        {"$close": obj, "$close__prior": obj},
+        {"$close": obj, "$close__prior": obj},
+    )
+    pv_panel = {"$close": frame}
     with pytest.raises(RuntimeError, match="collide"):
-        run_mining(_config(tmp_path, store, calendar),
-                   fundamental_panel_factory=shadowing)
+        _verify_fundamental_triple(triple, frame, pv_panel, ("close",))
 
 
 def test_store_refresh_during_mining_is_refused(tmp_path, monkeypatch):
@@ -609,3 +614,33 @@ def test_a_partial_quartet_in_a_run_snapshot_is_refused_at_promotion(
         }), encoding="utf-8")
     with pytest.raises(PromotionError, match="PARTIAL"):
         promote_run(_promotion_config(tmp_path, run_dir))
+
+
+def test_factory_keys_must_match_the_declared_fields(tmp_path):
+    """接错线的工厂两侧自洽（行为摘要照样复现），只有"与持久化契约的
+    对应"能抓它（codex #439 r2 P1）：键集必须恰好等于声明字段的
+    当前+prior 终端对，多一个少一个换一个都拒。"""
+    store, calendar = _mk_fundamental_inputs(tmp_path)
+    real = build_panel_factory()
+
+    def renamed(data, trade_dates, instruments):
+        values, evidence, periods = real(data, trade_dates, instruments)
+        def swap(m):
+            return {k.replace("$revenue", "$total_assets"): v
+                    for k, v in m.items()}
+        return swap(values), swap(evidence), swap(periods)
+
+    with pytest.raises(RuntimeError, match="declared"):
+        run_mining(_config(tmp_path, store, calendar),
+                   fundamental_panel_factory=renamed)
+
+    def extra_key(data, trade_dates, instruments):
+        values, evidence, periods = real(data, trade_dates, instruments)
+        spare = next(iter(values.values()))
+        return ({**values, "$oper_cost": spare},
+                {**evidence, "$oper_cost": spare},
+                {**periods, "$oper_cost": spare})
+
+    with pytest.raises(RuntimeError, match="declared"):
+        run_mining(_config(tmp_path, store, calendar, run_id="seam-run-2"),
+                   fundamental_panel_factory=extra_key)

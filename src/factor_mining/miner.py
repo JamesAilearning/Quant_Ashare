@@ -512,14 +512,24 @@ def build_panel(config: MinerConfig):
 # self-reported metadata.
 
 
-def _verify_fundamental_triple(triple, fwd, panel):
+def _verify_fundamental_triple(triple, fwd, panel, declared_fields):
     """Validate the factory's output against the seam contract.
 
     Returns the verified ``(values, evidence, periods)``. Refuses:
     anything but a 3-tuple of mappings; key sets that disagree between
-    the three sections; frames whose geometry differs from the run's
-    (trade date × instrument) panel; and keys that collide with the
-    price-volume panel (a factory must never shadow a qlib terminal).
+    the three sections; a key set that is not EXACTLY the current+prior
+    terminal pair of every declared charter field; frames whose geometry
+    differs from the run's (trade date × instrument) panel; and keys
+    that collide with the price-volume panel (a factory must never
+    shadow a qlib terminal).
+
+    The declared-fields equality is the binding between the persisted
+    ``DataConfig`` and what actually reaches evaluation: a miswired
+    factory handed to BOTH mining and promotion is self-consistent —
+    its behavioral digest reproduces perfectly — while the GP breeds on
+    a terminal whitelist the run's data definition never declared.
+    Self-consistency proves "same builder", only this check proves
+    "the builder the contract describes".
     """
     try:
         values, evidence, periods = triple
@@ -545,11 +555,20 @@ def _verify_fundamental_triple(triple, fwd, panel):
             f"evidence={sorted(keysets['evidence'])}, "
             f"periods={sorted(keysets['periods'])}."
         )
-    if not keysets["values"]:
+    from .grammar import FeatureRegistry  # noqa: PLC0415
+
+    expected = set()
+    for field_name in declared_fields:
+        expected.add(f"${field_name}")
+        expected.add(f"${field_name}{FeatureRegistry.PRIOR_SUFFIX}")
+    if keysets["values"] != expected:
         raise RuntimeError(
-            "fundamental factory returned an empty panel — a configured "
-            "fundamental leg that contributes nothing is a wiring "
-            "failure, not a valid run."
+            "fundamental factory keys do not match the run's declared "
+            f"fields: got {sorted(keysets['values'])}, the persisted "
+            f"DataConfig declares {sorted(declared_fields)} (expected "
+            f"terminals {sorted(expected)}) — the panel that reaches "
+            "evaluation must be exactly the one the run's data "
+            "definition describes."
         )
     collisions = keysets["values"] & set(panel.keys())
     if collisions:
@@ -581,7 +600,8 @@ def _build_fundamental_leg(data: DataConfig, factory, fwd, panel):
     from .panel_digest import fundamental_output_sha256  # noqa: PLC0415
 
     triple = factory(data, fwd.index, list(fwd.columns))
-    values, evidence, periods = _verify_fundamental_triple(triple, fwd, panel)
+    values, evidence, periods = _verify_fundamental_triple(
+        triple, fwd, panel, data.fundamental_fields)
     digest = fundamental_output_sha256(values, evidence, periods)
     return values, evidence, periods, digest
 

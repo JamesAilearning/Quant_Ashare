@@ -425,7 +425,7 @@ def _verify_fundamental_identity(
         # contract, not a traceback.
         triple = factory(run_data, trade_dates, instruments)
         values, evidence, periods = _verify_fundamental_triple(
-            triple, skeleton, {})
+            triple, skeleton, {}, run_data.fundamental_fields)
     except (RuntimeError, ValueError, OSError) as exc:
         raise PromotionError(
             f"fundamental factory failed on the mined window ({exc}); "
