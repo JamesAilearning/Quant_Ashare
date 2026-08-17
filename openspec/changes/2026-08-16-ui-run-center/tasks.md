@@ -130,6 +130,17 @@
   `classify_running` 分类
 - [x] 两条源码钉(有界标记 + 分类入签名)
 
+## codex #442 r2（两条 P2 全实修——r1 的修法被证伪）
+
+- [x] **r1 的签名修法实际无效**:片段内对两侧各算一次分类,跨 6 小时线时
+  两边同时变 stale、元组照样相等 → 基线签名改在**整页渲染时刻**算定并
+  闭包捕获,片段只算新读到的那一侧
+- [x] 陈旧记录不得让等待标记退休:恢复性启动(带一条陈旧 running 记录去
+  补跑)时按 kind==running 清标记,会让 _watching 落回 False,新运行直到
+  手动刷新才被看见 → 退休条件收紧为 `_running_fresh`(新运行的 started_at
+  就是刚才,分类必为 fresh)
+- [x] 两条源码钉(基线定格位置 + 退休条件不得只看 kind)
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

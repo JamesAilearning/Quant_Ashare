@@ -178,8 +178,12 @@ if _awaiting_raw:
         and _read_at - _awaiting_since < _AWAIT_LAUNCH_WINDOW
     ):
         _awaiting_launch = True
-if _status.kind == "running" and record_matches_provider(_status, _provider_path):
-    # 记录已经出现,正常的 running 轮询接手,等待标记功成身退。
+if _running_fresh:
+    # 只有**新鲜**的 running 记录才证明子进程已经写出了自己的记录:新运行
+    # 的 started_at 就是刚才,分类必为 fresh。一条**陈旧**的旧记录不是
+    # 「新运行已出现」——恢复性启动(带着一条陈旧 running 记录去补跑)时把
+    # 标记按它清掉,会让 _watching 落回 False,新运行直到手动刷新才被看见
+    # (codex #442 r2)。此后由 _running_fresh 自己驱动轮询,标记功成身退。
     st.session_state.pop(_AWAIT_LAUNCH_KEY, None)
     _awaiting_launch = False
 elif not _awaiting_launch:
@@ -198,19 +202,23 @@ st.caption(
     f"上次读取:{_read_at:%H:%M:%S}(点任意按钮或刷新页面都会重读{_poll_note})"
 )
 
+# 基线签名必须在**整页渲染时刻**算定并闭包捕获。在片段里对两侧各算
+# 一次是行不通的:跨过 6 小时线时,片段用同一个 now 去分类新读到的记录
+# 和旧的 `_status` 对象,两边同时变成 stale,元组照样相等、永不 rerun
+# ——闸门继续锁着、陈旧告警仍然不出(codex #442 r2)。
+_baseline_signature = _status_signature(_status)
+
 if _watching:
     @st.fragment(run_every=_POLL_SECONDS)
     def _watch_update_completion() -> None:
-        """轮询状态工件,状态跃迁时把整页拉起来重绘。
+        """轮询状态工件,与整页渲染时的基线签名比对,变了就整页重绘。
 
         只在 fragment 内重读,不渲染任何东西:反复读到同一签名 = 静默
-        继续。一旦签名变化(running→finished、新鲜→陈旧、或换了一次
+        继续。一旦偏离基线(running→finished、新鲜→陈旧、或换了一次
         运行),整页 rerun——下方出单按钮的闸门与陈旧告警都依赖主脚本
         作用域的判断,只刷新片段会让两处显示自相矛盾。
         """
-        if _status_signature(read_update_status(_status_path)) != _status_signature(
-            _status
-        ):
+        if _status_signature(read_update_status(_status_path)) != _baseline_signature:
             st.rerun(scope="app")
 
     _watch_update_completion()

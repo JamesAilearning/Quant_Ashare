@@ -116,6 +116,35 @@ class PageSourceTests(unittest.TestCase):
         # The rerun is what makes the marker take effect this interaction.
         self.assertIn("st.rerun()", self.src)
 
+    def test_baseline_signature_is_captured_at_full_render(self) -> None:
+        # codex #442 r2: 在片段里对两侧各算一次分类是**无效**的——跨过
+        # 6 小时线时,片段用同一个 now 分类新读到的记录和旧的 _status
+        # 对象,两边同时变 stale,元组照样相等,永不 rerun。基线必须在
+        # 整页渲染时刻定格并被闭包捕获。
+        self.assertIn("_baseline_signature = _status_signature(_status)", self.src)
+        baseline_at = self.src.index("_baseline_signature = _status_signature")
+        watch_at = self.src.index("if _watching:")
+        self.assertLess(baseline_at, watch_at, "基线必须在片段注册之前算定")
+        # 片段内只算「新读到的那一侧」,另一侧用捕获的基线。
+        self.assertIn(
+            "if _status_signature(read_update_status(_status_path)) != _baseline_signature:",
+            self.src,
+        )
+        self.assertNotIn("!= _status_signature(\n            _status\n        )", self.src)
+
+    def test_stale_record_does_not_retire_the_launch_marker(self) -> None:
+        # codex #442 r2: 恢复性启动(带着一条陈旧 running 记录去补跑)时,
+        # 若把这条旧记录当成「新运行已出现」而清掉等待标记,_watching 会
+        # 落回 False,新运行直到手动刷新才被看见。只有**新鲜**记录才算数。
+        self.assertIn("if _running_fresh:", self.src)
+        retire_at = self.src.index("if _running_fresh:")
+        block = self.src[retire_at : retire_at + 700]
+        self.assertIn("_AWAIT_LAUNCH_KEY", block)
+        # 退休条件不得只看 kind == running（那正是 r2 指出的缺陷）。
+        self.assertNotIn(
+            'if _status.kind == "running" and record_matches_provider(', self.src
+        )
+
     def test_freshness_transition_is_part_of_the_watch_signature(self) -> None:
         # codex #442 r1: kind/started_at/finished_at are byte-identical as a
         # run crosses the 6h staleness line, so a crashed run kept the gates
