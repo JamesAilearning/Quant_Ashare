@@ -56,6 +56,19 @@ def mul(a, b):
     return a * b
 
 
+def coalesce(a, b):
+    """Element-wise first-non-NA selection: ``a`` where present, else ``b``.
+
+    Exists for charter formulas whose logical input spans a reporting
+    reclassification (the frozen C3 accrual's
+    ``coalesce(adv_receipts, contract_liab)`` across the 2020 预收→
+    合同负债 move): the pair is ONE logical input, merged per period
+    BEFORE differencing. Both-NA stays NA — coalesce never invents a
+    value.
+    """
+    return a.where(a.notna(), b)
+
+
 def div_safe(a, b):
     """Element-wise division with NaN (not ±Inf) at near-zero denominators.
 

@@ -248,6 +248,20 @@ def _rule_mul(a: ExprType, b: ExprType) -> ExprType:
     return ExprType("FLOAT", taint)
 
 
+def _rule_coalesce(a: ExprType, b: ExprType) -> ExprType:
+    _check_float(a, "coalesce", "first")
+    _check_float(b, "coalesce", "second")
+    if a.taint != b.taint:
+        # First-non-NA selection only makes sense between same-unit
+        # inputs — mixing PURE and ADJ_TAINTED would silently switch the
+        # cell's unit depending on which side is NA.
+        raise GrammarError(
+            f"coalesce: taint mismatch ({a.taint!r}, {b.taint!r}); "
+            "first-non-NA selection requires same-taint inputs"
+        )
+    return ExprType("FLOAT", a.taint)
+
+
 def _rule_div_safe(a: ExprType, b: ExprType) -> ExprType:
     _check_float(a, "div_safe", "numerator")
     _check_float(b, "div_safe", "denominator")
@@ -411,6 +425,17 @@ def _register_all() -> None:
         Operator(
             "div_safe", 2, ("FLOAT", "FLOAT"),
             _rule_div_safe, _ops.div_safe, commutative=False,
+        )
+    )
+    REGISTRY.register(
+        Operator(
+            # First-wins, hence NOT commutative. Registered for the
+            # frozen C3 charter formula (merge-then-difference across
+            # the 2020 预收→合同负债 reclassification); ordinary GP
+            # sampling may also draw it — a NA-selection between two
+            # same-taint inputs is a legitimate expression.
+            "coalesce", 2, ("FLOAT", "FLOAT"),
+            _rule_coalesce, _ops.coalesce, commutative=False,
         )
     )
 

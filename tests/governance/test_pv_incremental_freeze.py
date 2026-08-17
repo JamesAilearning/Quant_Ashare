@@ -27,13 +27,31 @@ class PvIncrementalFreezePins(unittest.TestCase):
         self.assertEqual("pv_incremental_v1", _PLAN["protocol_id"])
         self.assertIs(False, _PLAN["holdout_unblinded"])
 
-    def test_operator_whitelist_is_the_registry_verbatim(self) -> None:
-        # PV-DP-4: exactly the baseline 28, zero extensions, no ts_cov.
+    def test_operator_whitelist_is_frozen_and_reproducible(self) -> None:
+        # PV-DP-4: the CAMPAIGN whitelist is exactly the baseline 28,
+        # zero extensions, no ts_cov. "Zero extensions" freezes the
+        # PLAN — the yaml never changes — not the living registry: the
+        # original equality pin (registry == plan verbatim) silently
+        # assumed the registry would never grow, and the first
+        # post-campaign operator (coalesce, for the fundamental C3
+        # charter formula) broke it. What the freeze must actually
+        # guarantee, with the campaign closed, is (a) the frozen list
+        # itself is untouched and (b) every frozen operator still
+        # exists, so the campaign's persisted expressions remain
+        # evaluable verbatim. Canonical replay evaluates STORED ASTs —
+        # registry growth cannot alter them. If a pv-line campaign is
+        # ever re-ignited, the operator set must be re-frozen in ITS
+        # pre-registration; this pin deliberately does not police that.
         from src.factor_mining.grammar import REGISTRY
 
-        self.assertEqual(sorted(REGISTRY.names()),
-                         sorted(_PLAN["operators"]))
         self.assertEqual(28, len(_PLAN["operators"]))
+        self.assertEqual(len(_PLAN["operators"]),
+                         len(set(_PLAN["operators"])))
+        missing = set(_PLAN["operators"]) - set(REGISTRY.names())
+        self.assertFalse(
+            missing,
+            f"frozen operators no longer registered: {sorted(missing)} — "
+            "the campaign's persisted expressions would not evaluate.")
         self.assertNotIn("ts_cov", _PLAN["operators"])
         self.assertIs(True, _PLAN["ts_cov_excluded"])
 

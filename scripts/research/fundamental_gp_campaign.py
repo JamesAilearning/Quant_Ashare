@@ -146,6 +146,97 @@ def build_panel_factory() -> PanelFactory:
     return factory
 
 
+# The starter three factors as DETERMINISTIC ASTs (frozen source:
+# docs/prereg/quality_profitability.yaml + the asset-growth Δ form).
+# The link check cannot rely on the GP's random population to construct
+# them — C3 alone needs four income terms, five current/prior deltas and
+# the coalesce pair, far beyond any small-run depth — so the OpenSpec
+# "starter three-factor end-to-end" obligation is discharged by
+# evaluating these expressions EXPLICITLY through the canonical
+# evaluator (values, forward returns, report-period provenance and the
+# terminal-level alignment mask all on the same path the GP uses).
+# Δx = sub(x, x__prior); the coalesce pair merges per period BEFORE
+# differencing, exactly as the frozen formula requires.
+_STARTER_EXPRESSIONS: dict[str, str] = {
+    "C1_GPA": (
+        "cs_rank(div_safe(sub($revenue, $oper_cost), $total_assets))"
+    ),
+    "asset_growth": (
+        "cs_rank(div_safe(sub($total_assets, $total_assets__prior), "
+        "$total_assets__prior))"
+    ),
+    "C3_cash_based_OP": (
+        "cs_rank(div_safe("
+        "add(add(sub(sub(sub("
+        "sub(sub(sub($revenue, $oper_cost), $sell_exp), $admin_exp), "
+        "sub($accounts_receiv, $accounts_receiv__prior)), "
+        "sub($inventories, $inventories__prior)), "
+        "sub($prepayment, $prepayment__prior)), "
+        "sub($accounts_pay, $accounts_pay__prior)), "
+        "sub(coalesce($adv_receipts, $contract_liab), "
+        "coalesce($adv_receipts__prior, $contract_liab__prior))), "
+        "$total_assets))"
+    ),
+}
+
+
+def _cmd_starter_check(args: argparse.Namespace) -> int:
+    """Evaluate the three frozen starter factors deterministically.
+
+    Panelization → canonical evaluation → marginal-contribution metrics,
+    with NO adjudication: the numbers are reported verbatim for the
+    link-check record and never feed any promotion or ledger.
+    """
+    from src.factor_mining.evaluator import evaluate_factor
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.miner import build_universe_mask
+
+    config = load_config(args.config)
+    panel, fwd = build_panel_for_data(config.data)
+    factory = build_panel_factory()
+    values, _evidence, periods = factory(
+        config.data, fwd.index, list(fwd.columns))
+    panel = {**panel, **values}
+    universe_mask = build_universe_mask(config)
+
+    report: dict[str, dict[str, float | int | str]] = {}
+    for name, text in _STARTER_EXPRESSIONS.items():
+        result = evaluate_factor(
+            parse_expression(text), panel, fwd, method="rank",
+            universe_mask=universe_mask, periods=periods)
+        entry: dict[str, float | int | str] = {
+            "expression": text,
+            "rank_ic_mean": float(result.rank_ic_mean),
+            "rank_ic_std": float(result.rank_ic_std),
+            "rank_ir": float(result.rank_ir),
+            "coverage": float(result.coverage),
+            "turnover_daily": float(result.turnover_daily),
+            "n_obs_per_day_min": int(result.n_obs_per_day_min),
+        }
+        report[name] = entry
+        print(f"{name}: rank_ic_mean={entry['rank_ic_mean']:+.6f} "
+              f"rank_ir={entry['rank_ir']:+.4f} "
+              f"coverage={entry['coverage']:.4f} "
+              f"turnover={entry['turnover_daily']:.4f}")
+
+    out = Path(args.out)
+    try:
+        with out.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "purpose": "starter-three-factor-link-check",
+                "config": str(args.config),
+                "adjudication_standing": "none — link verification only",
+                "factors": report,
+            }, indent=2))
+    except FileExistsError:
+        print(f"starter-check: {out} already exists — refusing to "
+              "overwrite an earlier record; pick a fresh path.",
+              file=sys.stderr)
+        return 1
+    print(f"Starter report -> {out}")
+    return 0
+
+
 def _cmd_mine(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     result = run_mining(
@@ -244,6 +335,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="validation end date (the governed extension)")
     rb.add_argument("--out", type=Path, required=True)
     rb.set_defaults(func=_cmd_record_baseline)
+
+    sc = sub.add_parser(
+        "starter-check",
+        help="deterministically evaluate the three frozen starter factors")
+    sc.add_argument("--config", type=Path, required=True)
+    sc.add_argument("--out", type=Path, required=True)
+    sc.set_defaults(func=_cmd_starter_check)
 
     pr = sub.add_parser("promote", help="promote with the injected factory")
     pr.add_argument("--run", type=Path, required=True)
