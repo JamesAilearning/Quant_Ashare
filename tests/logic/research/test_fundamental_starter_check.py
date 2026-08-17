@@ -176,7 +176,10 @@ def test_a_broken_leg_is_refused_not_reported(tmp_path, capsys):
     result = _mine(tmp_path, store, calendar, run_id="broken-run")
     assert main(["starter-check", "--run", str(result.output_dir)]) == 1
     assert not (result.output_dir / "starter_factor_report.json").exists()
-    assert "no evaluable observations" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # 两道门都是"断腿即拒"家族：GP 的 -inf 裁决（更早触发）或零观测门。
+    assert ("rejected by the GP" in err
+            or "no evaluable observations" in err), err
 
 
 def test_an_existing_report_is_never_overwritten(tmp_path):

@@ -349,6 +349,19 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
                   "bundle (cache hit on a fresh engine is impossible; "
                   "scoring failed) — refusing.", file=sys.stderr)
             return 1
+        import math
+        if not math.isfinite(fitness):
+            # -inf is the GP's OWN verdict that the candidate is invalid
+            # (coverage floor, cross-sectional variance, non-finite IC…)
+            # — a leg the search rejected has NO marginal score, and a
+            # link report must not claim completion over it
+            # (codex #441 r10 P1). Distinct from the zero-observation
+            # guard below: here the factor evaluated, and was refused.
+            print(f"starter-check: {name} was rejected by the GP "
+                  f"fitness path (fitness={fitness!r}) — a refused leg "
+                  "is not a completed check. Refusing; nothing written.",
+                  file=sys.stderr)
+            return 1
         if result.coverage <= 0.0 or result.n_obs_per_day_min < 1:
             # A starter leg with nothing evaluable means a required
             # field is missing/empty or alignment masked everything —
