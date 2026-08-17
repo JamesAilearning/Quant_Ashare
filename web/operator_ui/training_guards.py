@@ -375,6 +375,46 @@ def _validate_segment_embargo(
             )
 
 
+def validate_csi800_guard_triple(
+    instruments: str,
+    attribution_sleeve_grouping: bool,
+    risk_constraints_enabled: bool,
+    risk_constraints_calibration: str,
+    errors: list[str],
+) -> None:
+    """Refuse a csi800 config that lacks the expansion-guard triple.
+
+    ``instruments="csi800"`` is a CONTRACT, not just a universe name: the
+    backend (``PipelineConfig`` / ``WalkForwardConfig``) refuses to
+    construct unless sleeve grouping + the campaign risk constraints ride
+    along, because official csi800 metrics without the sleeve report and
+    the campaign constraint are not comparable to the certified numbers.
+
+    The page used to emit ``instruments`` WITHOUT the triple, so an
+    operator who opened the page (Default preset = csi800) and clicked
+    Run got "✓ 配置有效 / 作业已启动" followed by a job that died at
+    config construction. This guard moves that refusal to where it can
+    be read and fixed.
+
+    The verdict is delegated to the canonical validator rather than
+    restated here — a UI copy of the rule is exactly the drift that
+    produced the bug (the page already imports qlib-bound modules, so
+    this adds no new dependency weight).
+    """
+    from src.core._shared_validators import validate_csi800_expansion_guards
+
+    try:
+        validate_csi800_expansion_guards(
+            instruments=str(instruments or "").strip(),
+            attribution_sleeve_grouping=bool(attribution_sleeve_grouping),
+            risk_constraints_enabled=bool(risk_constraints_enabled),
+            risk_constraints_calibration=str(risk_constraints_calibration or ""),
+            error_class=ValueError,
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+
+
 def _validate_universe_benchmark_alignment(
     instruments: str,
     benchmark_code: str,

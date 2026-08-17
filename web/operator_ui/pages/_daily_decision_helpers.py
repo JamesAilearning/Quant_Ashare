@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scripts.eval_profiles import EVAL_PROFILES
 from web.operator_ui._path_guard import output_path
 
 # The incumbent resolver now lives at package level so 今日推荐 and 生产运维
@@ -70,10 +71,43 @@ BANNER_FIELDS: tuple[str, ...] = (
     "model_type",
 )
 
-# Display-only cost reference: 30 bps round-trip (工单 §2, James' decision).
-# NOT a backtest input — a per-row visual anchor comparing the predicted
-# score against a realistic in-and-out cost.
-ROUND_TRIP_COST = 0.0030
+# Display-only cost reference: ONE full round trip at the CERTIFIED
+# production cost convention. NOT a backtest input — a per-row visual
+# anchor comparing the predicted score against a realistic in-and-out
+# cost.
+#
+# Derived, not restated: the previous 30 bps literal predated the csi800
+# N5 certification (20 bps one-way conservative) and understated the real
+# cost by roughly half, so every row's anchor was optimistic.
+#
+# Sources of the three components:
+#   * slippage — imported live from the certified guard profile
+#     (``scripts/eval_profiles.py`` is a deliberately qlib-free module,
+#     built so pins can read campaign semantics without dragging qlib
+#     onto the import path).
+#   * commission / stamp tax — market-wide canonical values that live in
+#     ``PipelineConfig.commission_rate`` (the dataclass default both
+#     engines share) and
+#     ``src/core/canonical_backtest_contract.CN_STAMP_TAX_SCHEDULE_DEFAULT``.
+#     Those are DELIBERATELY duplicated here rather than imported: the
+#     contract module pulls qlib into the process, and this is a
+#     production-facing read-only page. Consistency is pinned by
+#     ``tests/logic/test_daily_decision_page_source.py`` — the same
+#     "duplicate + pin, never import across the layer" treatment
+#     ``web/operator_ui/update_status.py`` gives the writer's constants.
+#
+# Assembly mirrors ``src/core/backtest_runner.py``'s exchange kwargs:
+#   open  = commission + slippage
+#   close = commission + stamp tax + slippage
+_CERTIFIED_SLIPPAGE_BPS = float(EVAL_PROFILES["csi800_n5"]["slippage_bps"])
+_COMMISSION_RATE = 0.0005
+_STAMP_TAX_BPS = 5.0
+
+_OPEN_COST = _COMMISSION_RATE + _CERTIFIED_SLIPPAGE_BPS / 1e4
+_CLOSE_COST = (
+    _COMMISSION_RATE + _STAMP_TAX_BPS / 1e4 + _CERTIFIED_SLIPPAGE_BPS / 1e4
+)
+ROUND_TRIP_COST = _OPEN_COST + _CLOSE_COST
 
 
 
@@ -305,8 +339,19 @@ def journal_model_id(payload: dict[str, Any]) -> str:
     return "unknown(v1-artifact)"
 
 
+#: 候选表里成本参照列的表头。由常量派生——列名与所减的数字
+#: 永远同源(旧代码把 30 写死在表头,口径一改就自相矛盾)。
+COST_REFERENCE_COLUMN = f"评分−{ROUND_TRIP_COST * 1e4:.0f}bps(往返成本参照)"
+
+
 def cost_reference(score: float) -> float:
-    """score − 30 bps round-trip (display-only column)."""
+    """score − one certified round trip (display-only column).
+
+    Read it as a CONSERVATIVE LOWER BOUND, not a per-day hurdle: the
+    score is a 1-day predicted return (``label_horizon_days=1``) while
+    production holds a week (N5), so one round trip is amortized over
+    ~5 days rather than paid daily.
+    """
     return score - ROUND_TRIP_COST
 
 
@@ -343,7 +388,7 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             "代码": pick.get("stock_code"),
             "名称": pick.get("stock_name"),
             "评分": score_val,
-            "评分−30bps(往返成本参照)": (
+            COST_REFERENCE_COLUMN: (
                 cost_reference(score_val) if score_val is not None else None
             ),
             "可交易": pick.get("tradable_flag"),

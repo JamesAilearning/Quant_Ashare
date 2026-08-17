@@ -62,6 +62,7 @@ from web.operator_ui.training_guards import (
     inspect_provider_metadata,
     non_production_bundle_error,
     provider_metadata_summary,
+    validate_csi800_guard_triple,
     validate_pipeline_training_inputs,
 )
 
@@ -94,6 +95,28 @@ _COST_FIELD_DEFAULTS: dict[str, Any] = {
     "min_cost": 5.0,
     "init_cash": 100_000_000.0,
     "seed": 42,
+}
+
+# The csi800 expansion-guard triple. Same single-source role as the cost
+# defaults above: widgets, preset apply and preset detect all read these,
+# so a preset that predates the fields normalizes instead of carrying a
+# stale value from the previously selected preset.
+#
+# Values mirror the canonical dataclass defaults (``PipelineConfig`` /
+# ``WalkForwardConfig``) — NOT the csi800 contract values. csi800 demands
+# True/True/campaign_v1, but that demand belongs to the guard (which
+# refuses loudly and offers the fix), not to a default that would silently
+# stamp campaign semantics onto a csi300 run.
+_GUARD_FIELD_DEFAULTS: dict[str, Any] = {
+    "attribution_sleeve_grouping": False,
+    "risk_constraints_enabled": False,
+    "risk_constraints_calibration": "default",
+}
+
+#: Every field a preset switch must normalize (cost + guard).
+_RESET_FIELD_DEFAULTS: dict[str, Any] = {
+    **_COST_FIELD_DEFAULTS,
+    **_GUARD_FIELD_DEFAULTS,
 }
 
 
@@ -198,10 +221,11 @@ def _apply_preset(preset_name: str) -> None:
         return
     for key, value in preset.items():
         st.session_state[f"cr_{key}"] = value
-    # Reset cost-model fields the preset doesn't define to canonical defaults so
-    # an older / custom preset (saved before these fields existed) can't carry
-    # stale advanced values over from a prior selection (codex P2 on #308).
-    for key, default in _COST_FIELD_DEFAULTS.items():
+    # Reset cost-model AND csi800-guard fields the preset doesn't define to
+    # canonical defaults so an older / custom preset (saved before these
+    # fields existed) can't carry stale advanced values over from a prior
+    # selection (codex P2 on #308; guards added with the csi800 fix).
+    for key, default in _RESET_FIELD_DEFAULTS.items():
         if key not in preset:
             st.session_state[f"cr_{key}"] = default
     st.session_state["cr_preset"] = preset_name
@@ -216,10 +240,11 @@ def _detect_preset() -> str:
         if not preset:
             continue
         match = True
-        # Treat cost fields the preset omits as their canonical defaults (mirrors
-        # _apply_preset), so a preset without these keys isn't reported as the
-        # active selection while the form carries non-default cost values.
-        effective = {**_COST_FIELD_DEFAULTS, **preset}
+        # Treat cost AND guard fields the preset omits as their canonical
+        # defaults (mirrors _apply_preset), so a preset without these keys
+        # isn't reported as the active selection while the form carries
+        # non-default cost / guard values.
+        effective = {**_RESET_FIELD_DEFAULTS, **preset}
         for key, expected in effective.items():
             current = st.session_state.get(f"cr_{key}")
             # Normalize types for comparison
@@ -588,6 +613,16 @@ with form_col:
                 value=float(_cr("slippage_bps", _COST_FIELD_DEFAULTS["slippage_bps"])),
                 min_value=0.0, step=0.5, format="%.1f",
                 key="cr_slippage_bps",
+                # 两个敏感带都是"正确值",取决于你在回答哪个问题——所以这里
+                # 说明而不是改默认:把 in-code 默认改成 20 会让每个未声明该键
+                # 的预设被静默拖进 conservative 带(csi800 扩池守卫的治理钉
+                # 把 5.0 定义为 base 带的 in-code 默认)。
+                help=(
+                    "base 敏感带 = 5.0（in-code 默认，csi800 扩池战役的基准档）；"
+                    "**认证生产口径 = 20.0**（conservative 单边，N5 晋升与 "
+                    "config/serving/csi800_n5_production.yaml 同值，盈亏平衡"
+                    "参考 ≈73 bps/单边）。要复现认证数字请显式填 20.0。"
+                ),
             )
             min_cost = st.number_input(
                 "最低单笔成本 (min_cost)",
@@ -619,6 +654,57 @@ with form_col:
             )
         with cc2:
             st.caption("Workers：auto")
+
+    with st.expander("🛡️ csi800 扩池守卫（instruments=csi800 时为必填契约）"):
+        st.caption(
+            "后端把这三项当作 `instruments=csi800` 的**构造前置**:缺一项即"
+            "拒绝构造配置(没有 sleeve 分解与 campaign 约束的 csi800 指标,"
+            "与认证数字不可比)。本区把它们摆到台面上——以前页面发出的 "
+            "csi800 配置不带这三项,作业会在配置构造阶段直接死掉。"
+        )
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            attribution_sleeve_grouping = st.checkbox(
+                "分腿归因 (attribution_sleeve_grouping)",
+                value=bool(
+                    _cr(
+                        "attribution_sleeve_grouping",
+                        _GUARD_FIELD_DEFAULTS["attribution_sleeve_grouping"],
+                    )
+                ),
+                key="cr_attribution_sleeve_grouping",
+                help="csi800 契约要求为真;与 industry_artifact_path 互斥。",
+            )
+            risk_constraints_enabled = st.checkbox(
+                "风控约束 (risk_constraints_enabled)",
+                value=bool(
+                    _cr(
+                        "risk_constraints_enabled",
+                        _GUARD_FIELD_DEFAULTS["risk_constraints_enabled"],
+                    )
+                ),
+                key="cr_risk_constraints_enabled",
+                help="csi800 契约要求为真。",
+            )
+        with gc2:
+            _calibrations = ("default", "campaign_v1")
+            _current_calibration = str(
+                _cr(
+                    "risk_constraints_calibration",
+                    _GUARD_FIELD_DEFAULTS["risk_constraints_calibration"],
+                )
+            )
+            risk_constraints_calibration = st.selectbox(
+                "风控标定 (risk_constraints_calibration)",
+                _calibrations,
+                index=(
+                    _calibrations.index(_current_calibration)
+                    if _current_calibration in _calibrations
+                    else 0
+                ),
+                key="cr_risk_constraints_calibration",
+                help="csi800 契约要求 campaign_v1（认证战役标定）。",
+            )
 
     # --- Validation ---
     guard_errors: list[str] = []
@@ -658,6 +744,15 @@ with form_col:
         _validate_universe_benchmark_alignment(
             instruments, benchmark_code, guard_warnings,
         )
+    # Mode-agnostic: the csi800 triple is a construction precondition for
+    # BOTH engines, so it is checked outside the mode split.
+    validate_csi800_guard_triple(
+        instruments,
+        attribution_sleeve_grouping,
+        risk_constraints_enabled,
+        risk_constraints_calibration,
+        guard_errors,
+    )
 
     # feature_handler must be one registered in THIS UI process. MinedFactor
     # (and other PIT factor handlers) is only registered when
@@ -732,6 +827,12 @@ with form_col:
         "min_cost": min_cost,
         "init_cash": init_cash,
         "seed": seed,
+        # csi800 扩池守卫三件套。两侧 schema 都收(pipeline + walk_forward),
+        # 所以放在 mode 切分之前的共享段;不带它们发出的 csi800 配置会在
+        # 后端构造时 raise,而页面此前显示的是「✓ 配置有效 / 作业已启动」。
+        "attribution_sleeve_grouping": attribution_sleeve_grouping,
+        "risk_constraints_enabled": risk_constraints_enabled,
+        "risk_constraints_calibration": risk_constraints_calibration,
     }
     if mode == "pipeline":
         config_dict.update({
@@ -838,6 +939,23 @@ with form_col:
         _np_msg = non_production_bundle_error(provider_uri)
         if _np_msg:
             st.error("提交前的最终校验失败，作业未启动：\n- " + _np_msg)
+            st.stop()
+        # Mode-agnostic csi800 recheck (same stale-frame defense as below):
+        # the operator can flip a guard checkbox and hit Run inside the
+        # still-enabled frame before the rerun disables the button.
+        _guard_errors_final: list[str] = []
+        validate_csi800_guard_triple(
+            instruments,
+            attribution_sleeve_grouping,
+            risk_constraints_enabled,
+            risk_constraints_calibration,
+            _guard_errors_final,
+        )
+        if _guard_errors_final:
+            st.error(
+                "提交前的最终校验失败，作业未启动：\n- "
+                + "\n- ".join(_guard_errors_final)
+            )
             st.stop()
         # Mode-agnostic: re-check feature_handler on the submit path too. The
         # operator can switch to MinedFactor / a typo and click Run within the

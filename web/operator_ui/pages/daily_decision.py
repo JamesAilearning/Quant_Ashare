@@ -33,6 +33,7 @@ from web.operator_ui.decision_journal import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    COST_REFERENCE_COLUMN,
     VERDICT_ENSEMBLE_SHA_MISSING,
     VERDICT_ENSEMBLE_UNDER_SINGLE,
     VERDICT_INCUMBENT_UNRESOLVED,
@@ -344,6 +345,21 @@ st.caption(
     f"as_of {_payload.get('as_of_date', '—')} → entry {_payload.get('entry_date', '—')} · "
     f"n_scored={_payload.get('n_scored', '—')} · n_masked={_payload.get('n_masked', '—')} · "
     f"n_st_excluded={_payload.get('n_st_excluded', '—')}"
+)
+# runbook 红线:entry 是**已收盘**会话,不是"明早买入"。可交易性筛选
+# (停牌/一字板)需要 entry 当天的真实 bar,所以本工具永远出不了面向未来
+# 会话的单——把它读成明早的买入指令,就会用一个已经走完的价格去下单。
+st.caption(
+    f"⚠ **entry {_payload.get('entry_date', '—')} 是已收盘会话**,不是"
+    "「明早买入」——每次必读这一行。清单是按该会话打分并做过可交易性"
+    "校验的目标持仓;实际下单如何向它靠拢,由操作人的执行约定决定"
+    "(观察期正在记录这段偏离)。"
+)
+# 成本参照列的读法(列名与所减数字同源,见 _daily_decision_helpers)。
+st.caption(
+    f"「{COST_REFERENCE_COLUMN}」= 生产认证成本口径的一次完整往返"
+    "(20 bps 单边滑点 + 佣金 + 印花税)。评分是**1 日**预测收益而生产"
+    "周频持有约 5 日,故该列是**保守下界**,不是逐日门槛。"
 )
 if _rows:
     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)

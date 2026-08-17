@@ -761,9 +761,64 @@ class CostModelFieldsTests(unittest.TestCase):
         # _COST_FIELD_DEFAULTS and _detect_preset treats the omitted keys as
         # those defaults, so switching never leaves stale advanced values under
         # a clean-looking preset (codex P2 round 2 on #308).
+        #
+        # The reset map GREW (csi800 guard triple) — the pin follows the
+        # property, not the old spelling: both families must flow through
+        # ONE map that apply and detect share, so they can never diverge.
         self.assertIn("_COST_FIELD_DEFAULTS", self.source)
+        self.assertIn("_GUARD_FIELD_DEFAULTS", self.source)
         self.assertIn("if key not in preset:", self.source)
-        self.assertIn("{**_COST_FIELD_DEFAULTS, **preset}", self.source)
+        self.assertIn(
+            "_RESET_FIELD_DEFAULTS: dict[str, Any] = {\n"
+            "    **_COST_FIELD_DEFAULTS,\n"
+            "    **_GUARD_FIELD_DEFAULTS,\n"
+            "}",
+            self.source,
+            "the reset map must be the union of both families",
+        )
+        self.assertIn("for key, default in _RESET_FIELD_DEFAULTS.items():", self.source)
+        self.assertIn("{**_RESET_FIELD_DEFAULTS, **preset}", self.source)
+        # Neither family may keep a private reset path: a second loop over
+        # one family alone is exactly how apply and detect drift apart.
+        self.assertNotIn("for key, default in _COST_FIELD_DEFAULTS.items():", self.source)
+        self.assertNotIn("{**_COST_FIELD_DEFAULTS, **preset}", self.source)
+
+    def test_csi800_guard_triple_is_emitted_and_refused_loudly(self) -> None:
+        # The page used to emit instruments=csi800 WITHOUT the guard triple,
+        # so the Default preset (csi800) produced a config the backend
+        # refuses to construct — while the page said "✓ 配置有效 / 作业已启动".
+        for key in (
+            "attribution_sleeve_grouping",
+            "risk_constraints_enabled",
+            "risk_constraints_calibration",
+        ):
+            with self.subTest(key=key):
+                self.assertIn(f'"{key}": {key},', self.source)
+                self.assertIn(f'key="cr_{key}"', self.source)
+        # The verdict is delegated to the canonical validator (a UI copy of
+        # the rule is the drift that produced the bug) and runs on BOTH the
+        # render guard and the submit recheck (stale-frame defense).
+        self.assertIn("validate_csi800_guard_triple", self.source)
+        self.assertGreaterEqual(
+            self.source.count("validate_csi800_guard_triple("), 2,
+            "guard must run on the render path AND the submit recheck",
+        )
+
+    @unittest.skipUnless(
+        _HAS_CONFIG_SCHEMAS, "config schemas unavailable (no qlib)"
+    )
+    def test_guard_keys_valid_in_both_config_schemas(self) -> None:
+        # They ride in the SHARED config_dict (before the mode split), so
+        # both schemas must accept them or validate_config_keys rejects.
+        for key in (
+            "attribution_sleeve_grouping",
+            "risk_constraints_enabled",
+            "risk_constraints_calibration",
+        ):
+            self.assertIn(key, _PIPELINE_KEYS, f"{key} not in PIPELINE_KEYS")
+            self.assertIn(
+                key, _WALK_FORWARD_KEYS, f"{key} not in WALK_FORWARD_KEYS"
+            )
 
     def test_cost_widgets_use_single_source_defaults(self) -> None:
         # Widget defaults reference _COST_FIELD_DEFAULTS (no literal drift vs the

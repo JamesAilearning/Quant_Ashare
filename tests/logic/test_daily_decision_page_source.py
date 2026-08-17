@@ -136,13 +136,98 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertIn("_hold.is_hold", src)
         self.assertIn("不构成入场指令", src)
 
-    def test_cost_reference_is_score_minus_30bps(self) -> None:
+    def test_cost_reference_uses_the_certified_round_trip(self) -> None:
+        # The old 30 bps literal predated the csi800 N5 certification
+        # (20 bps one-way conservative) and understated the true cost by
+        # roughly half — every row's anchor was optimistic. The value is
+        # now ASSEMBLED from the certified components, so it cannot rot
+        # independently of them.
         from web.operator_ui.pages._daily_decision_helpers import (
             ROUND_TRIP_COST,
             cost_reference,
         )
-        self.assertEqual(ROUND_TRIP_COST, 0.0030)
-        self.assertAlmostEqual(cost_reference(0.0123), 0.0093)
+        self.assertAlmostEqual(ROUND_TRIP_COST, 0.0055)
+        self.assertAlmostEqual(cost_reference(0.0123), 0.0068)
+
+    def test_round_trip_tracks_the_certified_profile_not_a_literal(self) -> None:
+        # Move-the-source linkage: the slippage term is READ from the
+        # certified guard profile, so re-pointing the profile moves the
+        # UI anchor with it. A restated literal would silently disagree.
+        from unittest import mock
+
+        import web.operator_ui.pages._daily_decision_helpers as helpers
+        from scripts.eval_profiles import EVAL_PROFILES
+
+        self.assertAlmostEqual(
+            helpers._CERTIFIED_SLIPPAGE_BPS,
+            float(EVAL_PROFILES["csi800_n5"]["slippage_bps"]),
+        )
+        moved = {**EVAL_PROFILES, "csi800_n5": {
+            **EVAL_PROFILES["csi800_n5"], "slippage_bps": 33.0,
+        }}
+        with mock.patch.dict(
+            "scripts.eval_profiles.EVAL_PROFILES", moved, clear=True
+        ):
+            import importlib
+            reloaded = importlib.reload(helpers)
+            try:
+                self.assertAlmostEqual(reloaded._CERTIFIED_SLIPPAGE_BPS, 33.0)
+                # open + close each carry one slippage leg.
+                self.assertAlmostEqual(
+                    reloaded.ROUND_TRIP_COST, 0.0005 * 2 + 0.0005 + 0.0033 * 2
+                )
+            finally:
+                importlib.reload(helpers)
+
+    def test_duplicated_cost_constants_match_their_canonical_sources(self) -> None:
+        # commission / stamp are duplicated here on purpose (the contract
+        # module pulls qlib into a production-facing page), so CI — not a
+        # rotting literal — is what keeps them honest. Same treatment
+        # update_status.py gets for the writer's constants.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            _COMMISSION_RATE,
+            _STAMP_TAX_BPS,
+        )
+        try:
+            from src.core.canonical_backtest_contract import (
+                CN_STAMP_TAX_SCHEDULE_DEFAULT,
+            )
+            from src.core.pipeline import PipelineConfig
+            from src.core.walk_forward.config import WalkForwardConfig
+        except Exception:  # pragma: no cover - qlib-less environment
+            self.skipTest("canonical config schemas unavailable (no qlib)")
+        canonical_commission = PipelineConfig.__dataclass_fields__[
+            "commission_rate"
+        ].default
+        self.assertAlmostEqual(
+            _COMMISSION_RATE, float(canonical_commission),
+            "commission drifted from the canonical dataclass default",
+        )
+        # Both engines must agree, or "the canonical default" is ambiguous.
+        self.assertAlmostEqual(
+            float(canonical_commission),
+            float(
+                WalkForwardConfig.__dataclass_fields__["commission_rate"].default
+            ),
+        )
+        self.assertAlmostEqual(
+            _STAMP_TAX_BPS, float(CN_STAMP_TAX_SCHEDULE_DEFAULT[-1].bps),
+            "stamp tax drifted from the canonical CN schedule",
+        )
+
+    def test_cost_column_header_is_derived_from_the_constant(self) -> None:
+        # The old header hardcoded "30bps" next to a value that could move —
+        # header and subtrahend must come from one source or the table lies.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            COST_REFERENCE_COLUMN,
+            ROUND_TRIP_COST,
+        )
+        self.assertIn(f"{ROUND_TRIP_COST * 1e4:.0f}bps", COST_REFERENCE_COLUMN)
+        src = (
+            _ROOT / "web" / "operator_ui" / "pages"
+            / "_daily_decision_helpers.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("评分−30bps", src, "stale literal header must be gone")
 
     def test_banner_status_flags_missing_never_defaults(self) -> None:
         from web.operator_ui.pages._daily_decision_helpers import (
@@ -452,8 +537,14 @@ class HelpersRuntimeTests(unittest.TestCase):
         rows = picks_table_rows(payload)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["代码"], "SH600000")
+        # Header comes from the constant, so this reads the same key the
+        # page renders even after a cost-convention change.
+        from web.operator_ui.pages._daily_decision_helpers import (
+            COST_REFERENCE_COLUMN,
+            cost_reference,
+        )
         self.assertAlmostEqual(
-            float(rows[0]["评分−30bps(往返成本参照)"]), 0.0093,
+            float(rows[0][COST_REFERENCE_COLUMN]), cost_reference(0.0123),
         )
         self.assertEqual(rows[0]["不可用原因"], "")
 
