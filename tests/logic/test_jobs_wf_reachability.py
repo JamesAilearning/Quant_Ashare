@@ -137,6 +137,61 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("count_cli_rows_outside_output_tree", src)
         self.assertIn("未列出", src)
 
+    def test_disclosure_does_not_swallow_the_pagination_controls(self) -> None:
+        # codex #444 r1: 最初把披露段插在 pg_indicator 与 pg_next 之间，
+        # 缩进把 `with pg_next:` 一起吞进了 `if _set_aside:` —— 没有搁置行
+        # 时「下一页」按钮直接消失。披露必须整体在分页块之后。
+        src = _PAGE_JOBS.read_text(encoding="utf-8")
+        next_at = src.index("with pg_next:")
+        disclosure_at = src.index("_set_aside = count_cli_rows_outside_output_tree()")
+        self.assertLess(
+            next_at, disclosure_at, "分页控件必须在披露段之前且不受其条件控制"
+        )
+        # 且披露块内不得出现任何分页控件。
+        block = src[disclosure_at : disclosure_at + 800]
+        self.assertNotIn("pg_next", block)
+        self.assertNotIn("pg_prev", block)
+
+    def test_cli_options_are_anchored_like_the_inspectability_check(self) -> None:
+        # codex #444 r1: 判据把相对 output_dir 锚在仓库根，而页面下游的
+        # `Path(selected)` → guard_output_path 走进程 CWD。存原始相对串会
+        # 让「判定可达」的运行反被守卫拒绝（在仓库根之外启动 UI 时）。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("PROJECT_ROOT", src)
+        self.assertIn("if not Path(_resolved).is_absolute():", src)
+        self.assertIn("str(PROJECT_ROOT / _resolved)", src)
+
+    def test_anchor_caption_matches_the_governance_pin(self) -> None:
+        # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉
+        # 明写 winner=fold_phase / isoweek 复核=iso_week；页面若反过来说，
+        # 合法的认证证据会被当成参照运行。这里直接对着治理钉断言，而不是
+        # 断言某句措辞，这样将来钉子挪了测试也会跟着响。
+        import yaml
+
+        presets = PROJECT_ROOT / "config" / "presets"
+        winner = yaml.safe_load(
+            (presets / "csi800_cadence5_conservative.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        isoweek = yaml.safe_load(
+            (presets / "csi800_cadence5_conservative_isoweek.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(winner["rebalance_anchor"], "fold_phase")
+        self.assertEqual(isoweek["rebalance_anchor"], "iso_week")
+
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        fold_at = src.index('if _anchor == "fold_phase":')
+        fold_block = src[fold_at : fold_at + 400]
+        # fold_phase 段必须称它为认证胜者，且不得称 iso_week 为认证胜者。
+        self.assertIn("认证胜者", fold_block)
+        self.assertNotIn("生产认证的胜者是 `iso_week`", src)
+        iso_at = src.index('elif _anchor == "iso_week":')
+        iso_block = src[iso_at : iso_at + 400]
+        self.assertIn("生产服务锚", iso_block)
+
 
 if __name__ == "__main__":
     unittest.main()

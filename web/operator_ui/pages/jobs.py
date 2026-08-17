@@ -673,17 +673,6 @@ if _total_pages > 1 or total > _page_size:
             unsafe_allow_html=True,
         )
 
-# 搁置的行必须被**报数**,不能静默截断:CLI 运行目录的默认路径是 CWD 相对,
-# 测试从仓库根跑时会把记录写进操作人的真实目录,而产物落在随后被删掉的临时
-# 目录里(本机 3404 条 vs 105 条真实运行)。它们既打不开、也在本页读边界之外。
-_set_aside = count_cli_rows_outside_output_tree()
-if _set_aside:
-    st.caption(
-        f"另有 **{_set_aside}** 条 CLI 记录未列出:其产物目录在 `output/` 树"
-        "之外(多为测试运行写到临时目录,现已不存在),本页读不到也打不开。"
-        "根因是运行目录索引的默认路径按当前工作目录解析——测试与真实运行"
-        "共用了同一份索引。"
-    )
     with pg_next:
         if st.button(
             "下一页 →",
@@ -693,6 +682,24 @@ if _set_aside:
         ):
             st.session_state["jobs_page"] = str(_page + 1)
             st.rerun()
+
+# 搁置的行必须被**报数**,不能静默截断:CLI 运行目录索引的默认路径按当前
+# 工作目录解析,测试从仓库根跑时会把记录写进操作人的真实索引,而产物落在
+# 随后被删掉的临时目录里(本机 3404 条 vs 105 条真实运行)。它们既打不开、
+# 也在本页读边界之外。
+#
+# 位置在整个分页块**之后**:codex #444 r1 抓到我最初把它插在 pg_indicator
+# 与 pg_next 之间,缩进把 `with pg_next:` 一起吞进了 `if _set_aside:`——
+# 没有搁置行时「下一页」按钮直接消失。只有 caption 该受条件控制。
+_set_aside = count_cli_rows_outside_output_tree()
+if _set_aside:
+    st.caption(
+        f"另有 **{_set_aside}** 条 CLI 记录未列出:其产物目录在 `output/` 树"
+        "之外(多为测试运行写到临时目录,现已不存在),本页读不到也打不开。"
+        "根因是运行目录索引的默认路径按当前工作目录解析——测试与真实运行"
+        "共用了同一份索引。"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Auto-refresh (only when there is at least one running job)

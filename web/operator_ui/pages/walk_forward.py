@@ -28,7 +28,7 @@ import pandas as pd
 import streamlit as st
 
 from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
-from web.operator_ui._path_guard import output_path
+from web.operator_ui._path_guard import PROJECT_ROOT, output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import (
     render_empty_state,
@@ -124,8 +124,17 @@ _cli_wf, _, _ = list_all_jobs(
     type_filter="walk_forward", source_filter="cli", page=1, page_size=100_000,
 )
 for _job in _cli_wf:
-    if _job.run_dir and _job.run_dir not in run_options:
-        run_options[_job.run_dir] = _job.run_id
+    if not _job.run_dir:
+        continue
+    # 必须与可检视判据**同一套锚定**:判据把相对 output_dir 锚在仓库根,
+    # 而下面 `Path(selected)` → `guard_output_path` 走的是进程 CWD。若在
+    # 仓库根之外启动 UI,存原始相对串会让「判定可达」的运行反被守卫拒绝
+    # (codex #444 r1)。
+    _resolved = _job.run_dir
+    if not Path(_resolved).is_absolute():
+        _resolved = str(PROJECT_ROOT / _resolved)
+    if _resolved not in run_options:
+        run_options[_resolved] = _job.run_id
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -365,11 +374,26 @@ if isinstance(_wf_config, dict) and _wf_config:
         f"{_wf_config.get('slippage_bps', '?')}bps",
     ]
     st.caption("运行身份:" + " · ".join(_identity_bits))
+    # anchor 决定这份报告属于**哪条证据链**,两条链都合法、含义不同
+    # (spec v2-daily-stock-recommendation「两级治理绑定链」;治理钉
+    # tests/governance/test_csi800_n5_production_serving.py 钉死
+    # winner=fold_phase、isoweek 复核=iso_week):
+    #   fold_phase = 认证胜者所用的锚(战役主判据)
+    #   iso_week   = 生产服务锚(经单独门控;复核 run 净超额>0 是晋升门之一)
+    # 起初这里写反了(把 iso_week 说成认证胜者),会让合法的认证证据被
+    # 当成参照运行(codex #444 r1)。
     if _anchor == "fold_phase":
         st.caption(
-            "⚠ `anchor=fold_phase` 锚在折起点,跨折相位不连续;生产认证的"
-            "胜者是 `iso_week`。两者其余字段可能逐值相同——只有这一项决定"
-            "谁上生产,勿把参照运行当认证运行读。"
+            "ℹ `anchor=fold_phase` = **认证胜者**所用的锚（战役主判据）。"
+            "它与生产**服务**锚 `iso_week` 是两条不同 schedule,不可互相"
+            "顶替;`iso_week` 复核切片经单独门控才成为生产锚。"
+        )
+    elif _anchor == "iso_week":
+        st.caption(
+            "ℹ `anchor=iso_week` = **生产服务锚**（复核切片形态）。认证"
+            "胜者本身跑在 `fold_phase` 上,两者恰差 {rebalance_anchor, "
+            "output_dir} 且被治理测试钉死——按哪条证据链读这份报告,取决于"
+            "本行。"
         )
     _commit = str(wf_report.get("git_commit") or "")
     if _commit:
