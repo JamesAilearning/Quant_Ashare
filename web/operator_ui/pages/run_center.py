@@ -10,6 +10,7 @@ openspec 2026-08-16-ui-run-center。
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -52,6 +53,24 @@ render_page_header(
     "本页只触发既有 CLI 的子进程,绝不改写任何数据。",
 )
 
+# 运行中的更新每这么久自动重读一次状态工件(仅 running 期间轮询;
+# 非运行态没有会变的东西)。读一个小 JSON,成本可忽略。
+_POLL_SECONDS = 30
+_CN_TZ = timezone(timedelta(hours=8))
+
+
+def _status_signature(status: object) -> tuple[str, str, str]:
+    """状态里「值得触发整页重绘」的部分。
+
+    只取三样:kind/started_at/finished_at。运行中反复重读得到的是同一个
+    签名,只有真正的状态跃迁(running→finished、或换了一次运行)才会变。
+    """
+    return (
+        str(getattr(status, "kind", "")),
+        str(getattr(status, "started_at", "")),
+        str(getattr(status, "finished_at", "")),
+    )
+
 _provider = anchored_to_repo(resolve_default_provider_uri())
 if not provider_is_resolved(_provider):
     st.error(
@@ -82,6 +101,7 @@ except ValueError as _exc:
     st.error(f"⚠ {_exc}")
     st.stop()
 _status = read_update_status(_status_path)
+_read_at = datetime.now(tz=_CN_TZ)
 _running_fresh = (
     _status.kind == "running"
     and record_matches_provider(_status, _provider_path)
@@ -129,6 +149,34 @@ else:
         f" — {_status.detail}"
     )
 
+# 「我刚点的刷新到底生效了没」——状态没变时整页重绘长得一模一样,读取
+# 时刻是唯一能证明重读发生过的痕迹(#440 后续:操作人反馈按钮像坏的)。
+_poll_note = (
+    f";更新进行中,每 {_POLL_SECONDS} 秒自动重读,完成时整页刷新"
+    if _running_fresh
+    else ""
+)
+st.caption(
+    f"上次读取:{_read_at:%H:%M:%S}(点任意按钮或刷新页面都会重读{_poll_note})"
+)
+
+if _running_fresh:
+    @st.fragment(run_every=_POLL_SECONDS)
+    def _watch_update_completion() -> None:
+        """轮询状态工件,状态跃迁时把整页拉起来重绘。
+
+        只在 fragment 内重读,不渲染任何东西:运行中反复读到同一签名 =
+        静默继续。一旦 running→finished(或换了一次运行),整页 rerun,
+        下方出单按钮的闸门(依赖主脚本作用域的 ``_running_fresh``)才能
+        跟着解锁——只刷新片段会让两处显示自相矛盾。
+        """
+        if _status_signature(read_update_status(_status_path)) != _status_signature(
+            _status
+        ):
+            st.rerun(scope="app")
+
+    _watch_update_completion()
+
 _tushare_dir = _provider_path.parent / "tushare_raw"
 _update_registry = Path(anchored_to_repo(resolve_delisted_registry()))
 st.caption(
@@ -141,7 +189,9 @@ st.caption(
 
 _col_refresh, _col_launch = st.columns(2)
 with _col_refresh:
-    st.button(
+    # 点击本身就重跑脚本、重读工件;下方 toast 与上方「上次读取」时刻是
+    # 给操作人的确证——没有它们,一次成功的刷新和一个坏按钮长得一样。
+    _refresh_clicked = st.button(
         "🔄 刷新状态",
         key="run_center::refresh_status",
         use_container_width=True,
@@ -154,6 +204,8 @@ with _col_launch:
         disabled=_running_fresh,
         use_container_width=True,
     )
+if _refresh_clicked:
+    st.toast(f"已重读状态工件({_read_at:%H:%M:%S})")
 if _launch_clicked:
     _launch = launch_daily_update(
         _provider_path, _tushare_dir, _update_registry

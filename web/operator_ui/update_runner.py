@@ -275,6 +275,26 @@ def launch_daily_update(
     return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path)
 
 
+def _decode_log_line(raw: bytes) -> str:
+    """一行日志,按它的写入者实际用的编码解码。
+
+    这条共享日志有两个写入者:本模块启动的运行钉了 UTF-8
+    （``utf8_child_env``），而计划任务的 .bat 没有钉,它的中文行落在
+    控制台代码页（本机 cp936）。整块按单一编码解码会把另一个写入者的
+    行变成一片替换符（操作人看到的乱码）。行永远不跨进程,所以逐行
+    解码对两者都精确。
+
+    顺序固定 UTF-8 → GBK:UTF-8 是自校验编码,GBK 文本几乎不可能通过
+    UTF-8 解码,反向则会静默出乱码,所以只有这个方向是安全的。
+    """
+    for codec in ("utf-8", "gbk"):
+        try:
+            return raw.decode(codec)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
     """Last ``chars`` characters of the log, decoded leniently.
 
@@ -285,10 +305,15 @@ def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
         with open(log_path, "rb") as fh:
             fh.seek(0, 2)
             size = fh.tell()
-            fh.seek(max(0, size - chars * 4))  # UTF-8 worst case
+            start = max(0, size - chars * 4)  # UTF-8 worst case
+            fh.seek(start)
             data = fh.read()
     except FileNotFoundError:
         return ""
     except OSError as exc:
         return f"(日志不可读:{exc})"
-    return data.decode("utf-8", errors="replace")[-chars:]
+    lines = data.split(b"\n")
+    if start > 0 and len(lines) > 1:
+        # 从中间起读,首行多半被切成半个字符序列——丢掉它,别拿半行去猜编码。
+        lines = lines[1:]
+    return "\n".join(_decode_log_line(line) for line in lines)[-chars:]

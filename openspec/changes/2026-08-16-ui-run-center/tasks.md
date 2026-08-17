@@ -106,6 +106,20 @@
   「launch attempt」+ 失败路径追加「launch FAILED」标记;两处日志
   状态回归测试
 
+## 后续修复（#440 并后操作人实测反馈，2026-08-17）
+
+- [x] 刷新按钮"像坏的":它本就可用(无 disabled,点击即重跑重读),但状态
+  未变时整页重绘与未点击不可区分 → 加「上次读取 HH:MM:SS」+ 点击 toast
+- [x] 更新进行中自动轮询(`st.fragment(run_every=30)`),状态跃迁时
+  `st.rerun(scope="app")` 整页重绘——只刷片段会让出单闸门(依赖主脚本
+  作用域)与状态展示自相矛盾
+- [x] 日志尾部乱码:共享日志双写入者(本页钉 UTF-8 / 计划任务未钉,中文落
+  cp936) → 逐行解码 UTF-8→GBK→replace;真日志实测 `INFO ��` → `INFO —`;
+  两个新测试(混编码各自还原 / 不可解码字节不抛异常)
+- [ ] 源头修:调度器 `run_daily_update.bat` 补 `PYTHONIOENCODING=utf-8`
+  ——**今晚运行中不可动**(cmd 边执行边读取批处理文件,改动会破坏执行),
+  且与 tracked 模板对齐任务有交集,待运行结束后另行处置
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

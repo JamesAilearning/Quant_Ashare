@@ -399,6 +399,29 @@ class LogTailTests(unittest.TestCase):
     def test_missing_log_is_an_empty_state_not_an_error(self) -> None:
         self.assertEqual(log_tail(Path("/no/such/dir/x.log")), "")
 
+    def test_mixed_encoding_lines_each_decode_correctly(self) -> None:
+        # The shared log has TWO writers: runs launched here pin UTF-8,
+        # the Task Scheduler wrapper does not (its Chinese lands in the
+        # console codepage, cp936 on a CN box). Decoding the whole tail
+        # with one codec turns the other writer's lines into replacement
+        # chars — the mojibake an operator sees in the log panel.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "daily_update.log"
+            with open(log, "wb") as fh:
+                # 刻意两种编码写同一文件——正是生产里的真实形态。
+                fh.write("UI 启动的行:数据更新\n".encode())
+                fh.write("调度器的行:抓取完成\n".encode("gbk"))
+            tail = log_tail(log)
+            self.assertIn("UI 启动的行:数据更新", tail)
+            self.assertIn("调度器的行:抓取完成", tail)
+            self.assertNotIn("�", tail)
+
+    def test_undecodable_bytes_degrade_instead_of_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "daily_update.log"
+            log.write_bytes(b"\xff\xfe\x00 broken\n")
+            self.assertIn("broken", log_tail(log))
+
     def test_tail_returns_the_end_of_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "daily_update.log"
