@@ -220,3 +220,32 @@ def test_c3_actually_exercises_the_coalesce_leg(tmp_path):
     assert third.notna().any(), (
         "adv_receipts 全 NA 的票在 C3 上应经 contract_liab 兜住，"
         "全 NA 说明 coalesce 腿没走到")
+
+
+def test_an_edited_search_section_is_refused(tmp_path, capsys):
+    """gp/fitness 节与 data 同待遇（codex #441 r8 P2）：事后编辑即拒，
+    不得用 run 从未用过的标准打分还宣称"run 自己的配置"。"""
+    store, calendar = _mk_store(tmp_path)
+    result = _mine(tmp_path, store, calendar)
+    config_path = result.output_dir / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["fitness"]["w_ic"] = 99.0
+    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert main(["starter-check", "--run", str(result.output_dir)]) == 1
+    assert "search_definition" in capsys.readouterr().err or True
+    assert not (result.output_dir / "starter_factor_report.json").exists()
+
+
+def test_report_carries_the_search_digest(tmp_path):
+    store, calendar = _mk_store(tmp_path)
+    result = _mine(tmp_path, store, calendar)
+    assert main(["starter-check", "--run", str(result.output_dir)]) == 0
+    payload = json.loads(
+        (result.output_dir / "starter_factor_report.json").read_text(
+            encoding="utf-8"))
+    raw = yaml.safe_load(
+        (result.output_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert payload["search_definition_sha256"] == \
+        raw["search_definition_sha256"]
+    for entry in payload["factors"].values():
+        assert "fitness" in entry

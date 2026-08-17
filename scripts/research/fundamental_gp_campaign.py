@@ -202,7 +202,12 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
     from src.factor_mining.expression import parse_expression
     from src.factor_mining.fitness import FitnessConfig
     from src.factor_mining.gp_engine import GPConfig, GPEngine
-    from src.factor_mining.miner import MinerConfig, build_universe_mask
+    from src.factor_mining.miner import (
+        MinerConfig,
+        build_universe_mask,
+        load_baseline_predictions,
+        search_definition_sha256,
+    )
 
     run_dir = Path(args.run)
     try:
@@ -262,12 +267,61 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
     # bare evaluator metric bundle.
     raw_snapshot = yaml.safe_load(
         (run_dir / "config.yaml").read_text(encoding="utf-8"))
-    gp_config = GPConfig(**raw_snapshot.get("gp", {}))
-    fitness_config = FitnessConfig(**raw_snapshot.get("fitness", {}))
+    try:
+        gp_config = GPConfig(**raw_snapshot.get("gp", {}))
+        fitness_config = FitnessConfig(**raw_snapshot.get("fitness", {}))
+    except TypeError as exc:
+        print(f"starter-check: run snapshot gp/fitness sections do not "
+              f"parse ({exc}); re-mine.", file=sys.stderr)
+        return 1
+    # The data section has been digest-bound since #415; the gp/fitness
+    # sections get the same treatment (codex #441 r8): an edited
+    # snapshot must not let this check claim "the run's own criteria"
+    # while scoring with something else.
+    recorded_search = raw_snapshot.get("search_definition_sha256")
+    if not recorded_search:
+        print("starter-check: run snapshot carries no "
+              "search_definition_sha256 — the gp/fitness sections "
+              "cannot be verified; re-mine.", file=sys.stderr)
+        return 1
+    recomputed_search = search_definition_sha256(gp_config, fitness_config)
+    if recorded_search != recomputed_search:
+        print("starter-check: gp/fitness sections do not match the "
+              f"digest recorded at mining time (recorded "
+              f"{recorded_search!r}, recomputed {recomputed_search!r}) "
+              "— the snapshot was edited after mining; refusing to "
+              "score with criteria the run never used.", file=sys.stderr)
+        return 1
     engine = GPEngine(gp_config, fitness_config)
-    universe_mask = build_universe_mask(MinerConfig(
+    miner_config = MinerConfig(
         data=run_data, gp=gp_config, fitness=fitness_config,
-        output_dir=run_dir))
+        output_dir=run_dir)
+    universe_mask = build_universe_mask(miner_config)
+    # The run's orthogonality baseline joins the scoring context: with
+    # w_orthogonality configured, a None baseline silently zeroes the
+    # penalty and the reported fitness is NOT the run's composition
+    # (codex #441 r8 P1). The canonical loader re-verifies the sidecar;
+    # the digest must also equal the bytes mining actually consumed.
+    try:
+        baseline = load_baseline_predictions(miner_config)
+    except ValueError as exc:
+        print(f"starter-check: baseline load failed ({exc}); the run's "
+              "fitness composition cannot be reproduced.", file=sys.stderr)
+        return 1
+    recorded_baseline_sha = raw_snapshot.get("baseline_preds_sha256")
+    if baseline is not None:
+        got_sha = baseline.attrs.get("baseline_preds_sha256")
+        if recorded_baseline_sha != got_sha:
+            print("starter-check: baseline bytes differ from what "
+                  f"mining consumed (recorded {recorded_baseline_sha!r}, "
+                  f"loaded {got_sha!r}); refusing.", file=sys.stderr)
+            return 1
+    elif recorded_baseline_sha:
+        print("starter-check: the run recorded a baseline "
+              "(baseline_preds_sha256) but none can be loaded now — the "
+              "fitness composition cannot be reproduced; refusing.",
+              file=sys.stderr)
+        return 1
 
     def _finite(x: float) -> float | None:
         # Bare NaN is not JSON; a strict consumer downstream would
@@ -280,7 +334,8 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
     for name, text in _STARTER_EXPRESSIONS.items():
         fitness, result = engine.score_expression(
             parse_expression(text), merged, fwd,
-            universe_mask=universe_mask, periods=periods)
+            universe_mask=universe_mask, periods=periods,
+            baseline=baseline)
         if result is None:
             print(f"starter-check: {name} returned no evaluation "
                   "bundle (cache hit on a fresh engine is impossible; "
@@ -332,6 +387,7 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
                 "purpose": "starter-three-factor-link-check",
                 "run_dir": str(run_dir),
                 "data_definition_sha256": run_sha,
+                "search_definition_sha256": recorded_search,
                 "fundamental_output_sha256": got,
                 "adjudication_standing": "none — link verification only",
                 "scoring_path": "GPEngine.score_expression (the search's "

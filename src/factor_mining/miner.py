@@ -466,6 +466,21 @@ def data_definition_sha256(
     ).hexdigest()
 
 
+def search_definition_sha256(gp, fitness) -> str:
+    """Canonical digest of the SEARCH definition (gp + fitness sections).
+
+    The data definition has had a mining-time digest since #415; the gp
+    and fitness sections did not, so a post-mining edit of the snapshot
+    could re-score artifacts "with the run's own criteria" that the run
+    never used (codex #441 r8). Recorded at mining time, recomputed by
+    any consumer that claims to use the run's search configuration.
+    """
+    return hashlib.sha256(
+        json.dumps({"gp": asdict(gp), "fitness": asdict(fitness)},
+                   sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def build_panel_for_data(data: DataConfig):
     """Build (panel, forward_returns) for a ``DataConfig``.
 
@@ -907,6 +922,13 @@ def run_mining(
         "data_definition_sha256": definition_sha,
         "gp": asdict(config.gp),
         "fitness": asdict(config.fitness),
+        # Mining-time digest over the gp+fitness sections (codex #441
+        # r8): consumers that re-score with "the run's own criteria"
+        # (starter-check) recompute this over the snapshot they parsed
+        # and refuse a mismatch — an edited section cannot silently
+        # re-bind the pool to criteria it was never mined with.
+        "search_definition_sha256": search_definition_sha256(
+            config.gp, config.fitness),
     }
     if fingerprints is not None:
         # Bind the run to the CONTENT of its PIT inputs, not just their
