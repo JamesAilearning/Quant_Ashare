@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -112,9 +113,28 @@ class PageSourceTests(unittest.TestCase):
         self.assertIn("_watching = _running_fresh or _awaiting_launch", self.src)
         self.assertIn("if _watching:", self.src)
         # The marker must be bounded, or a failed launch polls forever.
-        self.assertIn("_read_at - _awaiting_since < _AWAIT_LAUNCH_WINDOW", self.src)
+        # (r3 起判据抽成纯函数 await_window_expired,主脚本与片段共用同一
+        # 个判据——两处各写一份不等式正是它们会分叉的方式。)
+        self.assertIn("await_window_expired(", self.src)
+        self.assertIn(
+            "not await_window_expired(\n        _awaiting_since, _read_at\n    )",
+            self.src,
+        )
         # The rerun is what makes the marker take effect this interaction.
         self.assertIn("st.rerun()", self.src)
+
+    def test_await_deadline_is_enforced_inside_the_fragment(self) -> None:
+        # codex #442 r3: 片段计时**只重跑片段**,主脚本不再执行——主脚本里
+        # 算出的窗口判断在片段注册之后永远不会被重新求值。子进程若在写出
+        # running 记录前就死掉(如撞单飞锁秒退 exit 17),签名永不变化,五分钟
+        # 的「有界」窗口形同虚设,会一直轮询下去。
+        self.assertIn("_await_deadline", self.src)
+        fragment_at = self.src.index("def _watch_update_completion()")
+        body = self.src[fragment_at : fragment_at + 1400]
+        self.assertIn("await_window_expired", body)
+        self.assertIn("st.rerun(scope=\"app\")", body)
+        # 签名分支必须 return,否则到期判断会在同一次 tick 里重复触发。
+        self.assertIn("return", body)
 
     def test_baseline_signature_is_captured_at_full_render(self) -> None:
         # codex #442 r2: 在片段里对两侧各算一次分类是**无效**的——跨过
@@ -162,6 +182,44 @@ class PageSourceTests(unittest.TestCase):
         # environment noise. A page that prefers stderr would show the
         # noise instead of the reason — pin the preference order.
         self.assertIn("_result.stdout_tail or _result.stderr_tail", self.src)
+
+
+class AwaitWindowBehaviorTests(unittest.TestCase):
+    """启动等待窗的**行为**覆盖(codex #442 r3 要求)。
+
+    判据抽成纯函数并注入 ``now``,所以「状态一直不变时窗口会到期」这件事
+    可以被真正执行一遍,而不是只钉源码里出现过某个符号。
+    """
+
+    def setUp(self) -> None:
+        from web.operator_ui.pages.run_center import (
+            _AWAIT_LAUNCH_WINDOW,
+            await_window_expired,
+        )
+
+        self.window = _AWAIT_LAUNCH_WINDOW
+        self.expired = await_window_expired
+        self.t0 = datetime(2026, 8, 18, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    def test_not_expired_at_launch(self) -> None:
+        self.assertFalse(self.expired(self.t0, self.t0))
+
+    def test_not_expired_just_before_the_deadline(self) -> None:
+        self.assertFalse(
+            self.expired(self.t0, self.t0 + self.window - timedelta(seconds=1))
+        )
+
+    def test_expired_exactly_at_the_deadline(self) -> None:
+        # 边界取 >=:恰好到点就该停,否则「五分钟」在实现上是开区间。
+        self.assertTrue(self.expired(self.t0, self.t0 + self.window))
+
+    def test_expired_well_past_the_deadline(self) -> None:
+        self.assertTrue(self.expired(self.t0, self.t0 + self.window * 3))
+
+    def test_window_is_bounded_and_short(self) -> None:
+        # 窗口是给「子进程还没来得及写记录」留的余量,不是一个长轮询开关。
+        self.assertLessEqual(self.window, timedelta(minutes=15))
+        self.assertGreater(self.window, timedelta(0))
 
 
 class RegistrationTests(unittest.TestCase):

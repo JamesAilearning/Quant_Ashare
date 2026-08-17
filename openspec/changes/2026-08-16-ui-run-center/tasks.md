@@ -141,6 +141,16 @@
   就是刚才,分类必为 fresh)
 - [x] 两条源码钉(基线定格位置 + 退休条件不得只看 kind)
 
+## codex #442 r3（1 条 P2 实修）
+
+- [x] 「有界」等待窗形同虚设:片段计时**只重跑片段**,主脚本不再执行,所以
+  主脚本里算出的窗口判断在片段注册后永远不会被重新求值。子进程若在写出
+  running 记录前就死掉(如撞单飞锁秒退 exit 17),签名永不变化 → 无限轮询。
+  修:判据抽成纯函数 `await_window_expired`(注入 now),主脚本与**片段内**
+  共用同一判据,片段到期即整页 rerun
+- [x] 行为覆盖(codex 明确要求):五个边界用例真跑一遍(启动即刻/临界前一秒/
+  恰好到点/远超/窗口有界且短),而不是只钉源码里出现过某个符号
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

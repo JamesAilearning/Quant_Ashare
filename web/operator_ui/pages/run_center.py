@@ -66,6 +66,16 @@ _AWAIT_LAUNCH_WINDOW = timedelta(minutes=5)
 _LAST_LAUNCH_KEY = "run_center::last_launch"
 
 
+def await_window_expired(awaiting_since: datetime, now: datetime) -> bool:
+    """启动等待窗是否已过期(纯函数,注入 ``now`` 便于行为测试)。
+
+    主脚本与片段**两处**都用它:片段计时只重跑片段,主脚本算出的窗口判断
+    在片段注册后不会被重新求值,所以片段必须自己判过期并把整页拉起来,
+    否则「有界」窗口形同虚设(codex #442 r3)。
+    """
+    return now - awaiting_since >= _AWAIT_LAUNCH_WINDOW
+
+
 def _status_signature(status: object) -> tuple[str, str, str, str]:
     """状态里「值得触发整页重绘」的部分。
 
@@ -166,6 +176,7 @@ else:
 # 启动后的页面会停在启动前的状态直到手点刷新(codex #442 r1)。有界:
 # 超过窗口就停,启动失败时不会无限空转。
 _awaiting_launch = False
+_await_deadline: datetime | None = None
 _awaiting_raw = st.session_state.get(_AWAIT_LAUNCH_KEY)
 if _awaiting_raw:
     _awaiting_since: datetime | None
@@ -173,11 +184,11 @@ if _awaiting_raw:
         _awaiting_since = datetime.fromisoformat(str(_awaiting_raw))
     except ValueError:
         _awaiting_since = None
-    if (
-        _awaiting_since is not None
-        and _read_at - _awaiting_since < _AWAIT_LAUNCH_WINDOW
+    if _awaiting_since is not None and not await_window_expired(
+        _awaiting_since, _read_at
     ):
         _awaiting_launch = True
+        _await_deadline = _awaiting_since + _AWAIT_LAUNCH_WINDOW
 if _running_fresh:
     # 只有**新鲜**的 running 记录才证明子进程已经写出了自己的记录:新运行
     # 的 started_at 就是刚才,分类必为 fresh。一条**陈旧**的旧记录不是
@@ -219,6 +230,16 @@ if _watching:
         作用域的判断,只刷新片段会让两处显示自相矛盾。
         """
         if _status_signature(read_update_status(_status_path)) != _baseline_signature:
+            st.rerun(scope="app")
+            return
+        # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
+        # 执行,所以主脚本里算出的窗口判断在片段注册之后永远不会被重新求值。
+        # 子进程若在写出 running 记录前就死掉(例如撞单飞锁秒退 exit 17),
+        # 签名永不变化——没有这一支,五分钟的"有界"窗口形同虚设,会一直轮询
+        # 下去(codex #442 r3)。
+        if _await_deadline is not None and await_window_expired(
+            _await_deadline - _AWAIT_LAUNCH_WINDOW, datetime.now(tz=_CN_TZ)
+        ):
             st.rerun(scope="app")
 
     _watch_update_completion()
