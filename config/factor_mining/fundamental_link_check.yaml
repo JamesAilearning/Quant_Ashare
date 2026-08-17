@@ -5,9 +5,14 @@
 # add-fundamental-gp-panel-bridge 的链路验证 + 性能实测任务），并给出
 # 全窗墙钟读数。GP 参数因此取小；结果数字不进任何裁决台账。
 #
-# 点火（操作人；CPU 任务，非 GPU）：
+# 点火（操作人；CPU 任务，非 GPU）——链路验证是**两步**，只跑 mine 不算完成：
+#     # 第一步：GP 链路（面板化 + 合并终端 + 搜索内 provenance 遮蔽）
 #     python -m scripts.research.fundamental_gp_campaign mine \
 #         --config config/factor_mining/fundamental_link_check.yaml
+#     # 第二步：三个冻结起步因子的确定性求值（绑上一步的 run 目录，
+#     # 工厂输出摘要须复现 run 记录的身份；报告落 run 目录内）
+#     python -m scripts.research.fundamental_gp_campaign starter-check \
+#         --run <第一步打印的 run 目录>
 # 裸 CLI（python -m src.factor_mining.miner）会因缺注入工厂而拒跑——
 # 这是缝的契约，不是缺陷。
 #

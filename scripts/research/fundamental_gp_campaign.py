@@ -12,6 +12,9 @@ Subcommands::
     python -m scripts.research.fundamental_gp_campaign mine \
         --config config/factor_mining/<campaign>.yaml
 
+    python -m scripts.research.fundamental_gp_campaign starter-check \
+        --run <run_dir>
+
     python -m scripts.research.fundamental_gp_campaign record-baseline \
         --run <run_dir> --end-date <validation_end> --out <baseline.json>
 
@@ -28,9 +31,12 @@ requires the injected factory to reproduce that digest bit-for-bit on
 the extension window — a baseline the promoted callable cannot issue to
 itself.
 
-The starter-three-factor link-through (GP/A, asset growth, the pure-BS
-accrual) runs through ``mine`` with a campaign config whose
-``fundamental_fields`` cover those factors' inputs; igniting it on real
+The starter-three-factor link check is a TWO-step sequence: ``mine``
+proves the GP path (panelization, merged terminals, provenance-masked
+evaluation inside the search), then ``starter-check`` proves the three
+frozen factors themselves — the GP's random population cannot construct
+C3, so its deterministic evaluation is a separate, run-bound step.
+Running ``mine`` alone is NOT a completed link check. Igniting on real
 data is an operator action, not a CI one.
 """
 
@@ -181,53 +187,114 @@ _STARTER_EXPRESSIONS: dict[str, str] = {
 
 
 def _cmd_starter_check(args: argparse.Namespace) -> int:
-    """Evaluate the three frozen starter factors deterministically.
+    """Evaluate the three frozen starter factors against a MINED RUN.
 
-    Panelization → canonical evaluation → marginal-contribution metrics,
-    with NO adjudication: the numbers are reported verbatim for the
-    link-check record and never feed any promotion or ledger.
+    Bound to a run directory, not to a mutable config path: the run
+    snapshot's data definition is digest-verified on load, the factory
+    is re-invoked on the run's RECORDED geometry, and its output digest
+    must reproduce the recorded identity — so the starter record
+    describes exactly the panel the run mined, auditable after the
+    fact. A starter factor with NO evaluable observations is a broken
+    leg, not a completed check: refused, nothing written.
     """
     from src.factor_mining.evaluator import evaluate_factor
     from src.factor_mining.expression import parse_expression
-    from src.factor_mining.miner import build_universe_mask
+    from src.factor_mining.fitness import FitnessConfig
+    from src.factor_mining.gp_engine import GPConfig
+    from src.factor_mining.miner import MinerConfig, build_universe_mask
 
-    config = load_config(args.config)
-    panel, fwd = build_panel_for_data(config.data)
+    run_dir = Path(args.run)
+    try:
+        run_data, run_sha = _load_run_data_config(run_dir)
+    except PromotionError as exc:
+        print(f"starter-check failed: {exc}", file=sys.stderr)
+        return 1
+    if not run_data.fundamental_store_root:
+        print("starter-check: the run records no fundamental leg — "
+              "nothing to check.", file=sys.stderr)
+        return 1
+    binding_path = run_dir / "fundamental_binding.json"
+    if not binding_path.is_file():
+        print("starter-check: run has no fundamental_binding.json — it "
+              "predates factory-identity recording; re-mine.",
+              file=sys.stderr)
+        return 1
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    dates = pd.DatetimeIndex(
+        [pd.Timestamp(d) for d in binding["trade_dates"]])
+    instruments = [str(c) for c in binding["instruments"]]
+
     factory = build_panel_factory()
-    values, _evidence, periods = factory(
-        config.data, fwd.index, list(fwd.columns))
-    panel = {**panel, **values}
-    universe_mask = build_universe_mask(config)
+    values, evidence, periods = factory(run_data, dates, instruments)
+    got = fundamental_output_sha256(values, evidence, periods)
+    if got != binding["output_sha256"]:
+        print("starter-check: factory output does not reproduce the "
+              f"run's recorded identity (recorded "
+              f"{binding['output_sha256']!r}, got {got!r}) — the store "
+              "changed or the builder drifted since mining; the starter "
+              "record would describe a different panel. Refusing.",
+              file=sys.stderr)
+        return 1
 
-    report: dict[str, dict[str, float | int | str]] = {}
+    panel, fwd = build_panel_for_data(run_data)
+    if ([str(d.date()) for d in fwd.index] != list(binding["trade_dates"])
+            or [str(c) for c in fwd.columns] != instruments):
+        print("starter-check: the rebuilt price-volume panel geometry "
+              "does not match the run's recorded geometry — the pv "
+              "inputs moved since mining. Refusing.", file=sys.stderr)
+        return 1
+    merged = {**panel, **values}
+    universe_mask = build_universe_mask(MinerConfig(
+        data=run_data, gp=GPConfig(), fitness=FitnessConfig(),
+        output_dir=run_dir))
+
+    def _finite(x: float) -> float | None:
+        # Bare NaN is not JSON; a strict consumer downstream would
+        # reject the whole record. None is the honest spelling of
+        # "metric undefined here" (empty/zero-variance IC series).
+        import math
+        return float(x) if math.isfinite(x) else None
+
+    report: dict[str, dict[str, float | int | str | None]] = {}
     for name, text in _STARTER_EXPRESSIONS.items():
         result = evaluate_factor(
-            parse_expression(text), panel, fwd, method="rank",
+            parse_expression(text), merged, fwd, method="rank",
             universe_mask=universe_mask, periods=periods)
-        entry: dict[str, float | int | str] = {
+        if result.coverage <= 0.0 or result.n_obs_per_day_min < 1:
+            # A starter leg with nothing evaluable means a required
+            # field is missing/empty or alignment masked everything —
+            # the link is NOT verified for this factor.
+            print(f"starter-check: {name} produced no evaluable "
+                  f"observations (coverage={result.coverage!r}) — a "
+                  "broken leg is not a completed check. Refusing; "
+                  "nothing written.", file=sys.stderr)
+            return 1
+        entry: dict[str, float | int | str | None] = {
             "expression": text,
-            "rank_ic_mean": float(result.rank_ic_mean),
-            "rank_ic_std": float(result.rank_ic_std),
-            "rank_ir": float(result.rank_ir),
+            "rank_ic_mean": _finite(result.rank_ic_mean),
+            "rank_ic_std": _finite(result.rank_ic_std),
+            "rank_ir": _finite(result.rank_ir),
             "coverage": float(result.coverage),
-            "turnover_daily": float(result.turnover_daily),
+            "turnover_daily": _finite(result.turnover_daily),
             "n_obs_per_day_min": int(result.n_obs_per_day_min),
         }
         report[name] = entry
-        print(f"{name}: rank_ic_mean={entry['rank_ic_mean']:+.6f} "
-              f"rank_ir={entry['rank_ir']:+.4f} "
-              f"coverage={entry['coverage']:.4f} "
-              f"turnover={entry['turnover_daily']:.4f}")
+        print(f"{name}: rank_ic_mean={entry['rank_ic_mean']} "
+              f"rank_ir={entry['rank_ir']} "
+              f"coverage={entry['coverage']:.4f}")
 
-    out = Path(args.out)
+    out = (Path(args.out) if args.out is not None
+           else run_dir / "starter_factor_report.json")
     try:
         with out.open("x", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "purpose": "starter-three-factor-link-check",
-                "config": str(args.config),
+                "run_dir": str(run_dir),
+                "data_definition_sha256": run_sha,
+                "fundamental_output_sha256": got,
                 "adjudication_standing": "none — link verification only",
                 "factors": report,
-            }, indent=2))
+            }, indent=2, allow_nan=False))
     except FileExistsError:
         print(f"starter-check: {out} already exists — refusing to "
               "overwrite an earlier record; pick a fresh path.",
@@ -338,9 +405,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     sc = sub.add_parser(
         "starter-check",
-        help="deterministically evaluate the three frozen starter factors")
-    sc.add_argument("--config", type=Path, required=True)
-    sc.add_argument("--out", type=Path, required=True)
+        help="deterministically evaluate the three frozen starter "
+             "factors against a mined run")
+    sc.add_argument("--run", type=Path, required=True,
+                    help="run directory produced by the mine subcommand")
+    sc.add_argument("--out", type=Path, default=None,
+                    help="report path (default: "
+                         "<run>/starter_factor_report.json)")
     sc.set_defaults(func=_cmd_starter_check)
 
     pr = sub.add_parser("promote", help="promote with the injected factory")
