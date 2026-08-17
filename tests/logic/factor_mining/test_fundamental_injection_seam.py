@@ -644,3 +644,26 @@ def test_factory_keys_must_match_the_declared_fields(tmp_path):
     with pytest.raises(RuntimeError, match="declared"):
         run_mining(_config(tmp_path, store, calendar, run_id="seam-run-2"),
                    fundamental_panel_factory=extra_key)
+
+
+def test_exclusion_cross_check_disagreements_are_reported(tmp_path, caplog):
+    """preset 承诺的 cross-check 必须真的在工厂里跑（codex #441 r3 P2）。
+
+    合成 store 的 oper_cost 全 NA 且无排除集 —— 每只票都构成
+    "nonfinancial_never_reports_oper_cost" 分歧，工厂须逐条 WARNING
+    报告（报告不解决：面板照常构建）。
+    """
+    import logging
+
+    store, calendar = _mk_fundamental_inputs(tmp_path)
+    config = _config(tmp_path, store, calendar)
+    with caplog.at_level(
+            logging.WARNING, logger="scripts.research.fundamental_gp_campaign"):
+        result = run_mining(
+            config, fundamental_panel_factory=build_panel_factory())
+    assert result.pool is not None            # 分歧不阻断构建
+    text = caplog.text
+    assert "cross-check" in text
+    assert "nonfinancial_never_reports_oper_cost" in text
+    for ts in _TS_CODES:
+        assert ts in text                     # 逐条点名

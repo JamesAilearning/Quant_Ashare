@@ -294,10 +294,17 @@ def build_fundamental_panel(
                 prior_period_rows[terminal].append(
                     served[f"_report_period_prior__{endpoint}"])
 
-    panels = {t: _frame(rows, ordered_dates) for t, rows in value_rows.items()}
+    # VALUE frames are numeric panels by contract: a column whose store
+    # rows mix floats with pd.NA stacks as object dtype, and the
+    # evaluator's arithmetic (isinf/NaN handling) breaks on object
+    # cells. float64 coercion turns pd.NA into NaN and fails LOUD on a
+    # genuinely non-numeric value — evidence/period frames stay object
+    # (dates and tokens are not numbers).
+    panels = {t: _numeric(_frame(rows, ordered_dates))
+              for t, rows in value_rows.items()}
     evidence = {t: _frame(rows, ordered_dates) for t, rows in evidence_rows.items()}
     periods = {t: _frame(rows, ordered_dates) for t, rows in period_rows.items()}
-    prior_panels = {t: _frame(r, ordered_dates)
+    prior_panels = {t: _numeric(_frame(r, ordered_dates))
                     for t, r in prior_value_rows.items()} if include_prior_period else {}
     prior_evidence = {t: _frame(r, ordered_dates)
                       for t, r in prior_evidence_rows.items()} if include_prior_period else {}
@@ -370,6 +377,14 @@ def _endpoint_of(view: FinancialPITDataView, field: str) -> str:
             f"unknown charter field {field!r} — it has no endpoint in the "
             "view's field table, so no panel key could be mapped to it."
         ) from exc
+
+
+def _numeric(frame: pd.DataFrame) -> pd.DataFrame:
+    """Coerce a VALUE frame to float64 (pd.NA -> NaN), failing LOUD on
+    genuinely non-numeric cells. ``astype`` alone rejects NAType; going
+    through ``pd.to_numeric`` per column keeps the refusal for real junk
+    while normalizing the store's NA spelling."""
+    return frame.apply(pd.to_numeric).astype("float64")
 
 
 def _frame(rows: list[pd.Series], index: Sequence[date]) -> pd.DataFrame:

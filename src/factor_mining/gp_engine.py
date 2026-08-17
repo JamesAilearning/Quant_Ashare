@@ -33,6 +33,8 @@ from .fitness import (
     fitness_uses_novelty,
 )
 from .grammar import (
+    REGISTRY,
+    V1_OPERATORS,
     WINDOW_LITERALS,
     ExprType,
     FeatureRegistry,
@@ -88,6 +90,13 @@ class GPConfig:
     target_kind: str = "CSF"
     target_taint: str = "PURE"
     seed: int = 42
+    # Operator whitelist for generation/mutation sampling. Empty =
+    # the frozen V1 baseline pool (28 operators) — NOT the registry,
+    # so registry growth cannot silently widen a frozen preset's
+    # search. A campaign admitting a newer operator (coalesce) lists
+    # its complete operator set here; the config dump freezes it with
+    # the run.
+    allowed_operators: tuple[str, ...] = ()
 
     @property
     def target_type(self) -> ExprType:
@@ -204,6 +213,19 @@ class GPEngine:
         # from the panel actually loaded, so the generator and point
         # mutation can only build expressions over admitted inputs.
         self._allowed_terminals: frozenset[str] | None = None
+        if config.allowed_operators:
+            unknown = set(config.allowed_operators) - {
+                op.name for op in REGISTRY.all_operators()}
+            if unknown:
+                raise GrammarError(
+                    f"allowed_operators contains unregistered name(s) "
+                    f"{sorted(unknown)} — a typo would silently narrow "
+                    "the search while the config dump still claims the "
+                    "declared pool; refusing before generation."
+                )
+        self._allowed_operators: frozenset[str] | None = (
+            frozenset(config.allowed_operators)
+            if config.allowed_operators else None)
         self._baseline: pd.DataFrame | None = None
         self._baseline_key: str | None = None
         self._periods_key: str | None = None
@@ -248,6 +270,7 @@ class GPEngine:
                     min_depth=self.config.min_depth,
                     rng=self.rng,
                     allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -274,6 +297,52 @@ class GPEngine:
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
+
+    def score_expression(
+        self,
+        expr: Expression,
+        panel,
+        fwd_ret: pd.DataFrame,
+        *,
+        universe_mask: pd.DataFrame | None = None,
+        periods: dict[str, pd.DataFrame] | None = None,
+        baseline: pd.DataFrame | None = None,
+    ) -> tuple[float, EvaluationResult | None]:
+        """Score ONE externally-supplied expression on the search's own path.
+
+        The deterministic starter check must produce the SAME marginal-
+        contribution number the GP would assign — evaluator metrics
+        alone bypass the fitness composition (IC/IR weights, coverage
+        and turnover terms, the orthogonality penalty). This sets the
+        evaluation context exactly like ``run`` does and routes through
+        ``evaluate_individual``, so an injected frozen AST is scored by
+        the same code that scores every bred candidate.
+        """
+        allowed = (self._allowed_operators
+                   if self._allowed_operators is not None
+                   else V1_OPERATORS)
+        used = _operators_of(expr)
+        outside = used - allowed
+        if outside:
+            # An injected AST must live inside the run's own sampling
+            # pool: scoring an expression this configuration could never
+            # BREED would let a report claim "the GP link is verified
+            # under this run" for a search that cannot construct it
+            # (codex #441 r11). Terminals are guarded by the panel keys
+            # (a missing key fails loud in the evaluator); operators are
+            # the pool this engine was configured with.
+            raise GrammarError(
+                f"expression uses operator(s) {sorted(outside)} outside "
+                "this engine's sampling pool "
+                f"({'default V1 baseline' if self._allowed_operators is None else 'campaign whitelist'}) "
+                "— a score under a configuration that cannot breed the "
+                "expression is not a marginal contribution of this run."
+            )
+        self._universe_mask = universe_mask
+        self._periods = periods
+        self._baseline = baseline
+        self._baseline_stack = None
+        return self.evaluate_individual(expr, panel, fwd_ret)
 
     def evaluate_individual(
         self,
@@ -518,6 +587,7 @@ class GPEngine:
             new_sub = random_expression(
                 target_type, max_depth=remaining, min_depth=sub_min,
                 rng=self.rng, allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
             )
             return _replace_subtree(expr, pos_path, new_sub)
         except (GrammarError, ValueError):
@@ -645,6 +715,7 @@ class GPEngine:
                     min_depth=self.config.min_depth,
                     rng=self.rng,
                     allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -1048,6 +1119,18 @@ def _periods_key_for(periods: dict[str, pd.DataFrame] | None) -> str:
 
     fp = periods_fingerprint(periods)
     return "no_periods" if fp is None else f"periods:{fp}"
+
+
+def _operators_of(expr: Expression) -> frozenset[str]:
+    """Every operator name an AST references (for pool-membership checks)."""
+    out: set[str] = set()
+    stack: list[Expression] = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, OperatorCall):
+            out.add(node.op_name)
+            stack.extend(node.children)
+    return frozenset(out)
 
 
 def _coverage_key_for(mask: pd.DataFrame | None) -> str:

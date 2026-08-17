@@ -22,8 +22,10 @@ from src.factor_mining.grammar import (
 
 
 EXPECTED_OPERATORS = {
-    # Arithmetic (4)
-    "add", "sub", "mul", "div_safe",
+    # Arithmetic (5) — coalesce registered for the frozen C3 charter
+    # formula (merge-then-difference across the 2020 预收→合同负债
+    # reclassification); first-non-NA selection, same-taint only.
+    "add", "sub", "mul", "div_safe", "coalesce",
     # Unary (5)
     "neg", "abs", "sign", "log_safe", "sqrt_safe",
     # Time-series — taint-preserving (7)
@@ -40,8 +42,8 @@ EXPECTED_OPERATORS = {
 }
 
 
-def test_registry_has_28_operators():
-    assert len(REGISTRY.all_operators()) == 28
+def test_registry_has_29_operators():
+    assert len(REGISTRY.all_operators()) == 29
 
 
 def test_registry_exact_operator_names():

@@ -248,6 +248,20 @@ def _rule_mul(a: ExprType, b: ExprType) -> ExprType:
     return ExprType("FLOAT", taint)
 
 
+def _rule_coalesce(a: ExprType, b: ExprType) -> ExprType:
+    _check_float(a, "coalesce", "first")
+    _check_float(b, "coalesce", "second")
+    if a.taint != b.taint:
+        # First-non-NA selection only makes sense between same-unit
+        # inputs — mixing PURE and ADJ_TAINTED would silently switch the
+        # cell's unit depending on which side is NA.
+        raise GrammarError(
+            f"coalesce: taint mismatch ({a.taint!r}, {b.taint!r}); "
+            "first-non-NA selection requires same-taint inputs"
+        )
+    return ExprType("FLOAT", a.taint)
+
+
 def _rule_div_safe(a: ExprType, b: ExprType) -> ExprType:
     _check_float(a, "div_safe", "numerator")
     _check_float(b, "div_safe", "denominator")
@@ -386,6 +400,26 @@ class _OperatorRegistry:
 
 REGISTRY = _OperatorRegistry()
 
+# The BASELINE operator set every frozen v1-era campaign sampled from.
+# Registering a new operator (coalesce was the first) must not change
+# what a frozen preset's search can breed: the REGISTRY may grow, the
+# DEFAULT sampling pool may not. ``random_expression`` therefore samples
+# from this set unless a campaign passes an explicit operator whitelist
+# — the exact opt-in pattern the financial-statement TERMINALS use
+# (outside V1, activated per campaign). Spelled out verbatim, not
+# computed from the registry, so growth cannot silently leak in; the
+# pv_incremental freeze test pins this list against the frozen plan.
+V1_OPERATORS: frozenset[str] = frozenset({
+    "add", "sub", "mul", "div_safe",
+    "neg", "abs", "sign", "log_safe", "sqrt_safe", "where",
+    "ts_mean", "ts_std", "ts_max", "ts_min", "ts_sum", "ts_delta",
+    "ts_decay_linear",
+    "ts_pctchange", "ts_rank", "ts_argmax", "ts_argmin", "ts_skew",
+    "ts_kurt",
+    "ts_corr",
+    "cs_rank", "cs_zscore", "cs_demean", "cs_winsorize",
+})
+
 
 def _register_all() -> None:
     # Arithmetic
@@ -411,6 +445,17 @@ def _register_all() -> None:
         Operator(
             "div_safe", 2, ("FLOAT", "FLOAT"),
             _rule_div_safe, _ops.div_safe, commutative=False,
+        )
+    )
+    REGISTRY.register(
+        Operator(
+            # First-wins, hence NOT commutative. Registered for the
+            # frozen C3 charter formula (merge-then-difference across
+            # the 2020 预收→合同负债 reclassification); ordinary GP
+            # sampling may also draw it — a NA-selection between two
+            # same-taint inputs is a legitimate expression.
+            "coalesce", 2, ("FLOAT", "FLOAT"),
+            _rule_coalesce, _ops.coalesce, commutative=False,
         )
     )
 
@@ -642,11 +687,20 @@ def _random_operator(
     min_depth: int,
     rng: Random,
     allowed: frozenset[str] | None = None,
+    allowed_operators: frozenset[str] | None = None,
 ):
     from .expression import OperatorCall  # deferred
 
     key = (target_type.kind, target_type.taint)
-    candidates = _generator_table().get(key, [])
+    # None = the frozen V1 baseline pool, NOT the whole registry: a
+    # registry extension must never widen what an existing frozen
+    # preset can breed (codex #441 r6 P1). A campaign that wants a
+    # newer operator whitelists it explicitly.
+    op_pool = V1_OPERATORS if allowed_operators is None else allowed_operators
+    candidates = [
+        c for c in _generator_table().get(key, [])
+        if c[0].name in op_pool
+    ]
     if not candidates:
         # No operator can produce this type; fall back to leaf if any.
         if _has_leaves_for(target_type):
@@ -675,7 +729,8 @@ def _random_operator(
             # whole call instead of picking another candidate — a whitelist of
             # one taint could not generate at all.
             children = tuple(
-                _gen(t, max_depth - 1, min_depth - 1, rng, allowed)
+                _gen(t, max_depth - 1, min_depth - 1, rng, allowed,
+                     allowed_operators)
                 for t in input_types
             )
             return OperatorCall(op.name, children)
@@ -698,6 +753,7 @@ def _gen(
     min_depth: int,
     rng: Random,
     allowed: frozenset[str] | None = None,
+    allowed_operators: frozenset[str] | None = None,
 ):
     has_leaves = _has_leaves_for(target_type)
     if max_depth <= 0 and has_leaves and min_depth <= 0:
@@ -705,18 +761,18 @@ def _gen(
     if not has_leaves:
         # Must use an operator (e.g. target=CSF with no leaves)
         return _random_operator(target_type, max_depth, min_depth, rng,
-                            allowed)
+                            allowed, allowed_operators)
     if min_depth > 0:
         # Forced to descend through at least one more operator level
         return _random_operator(target_type, max_depth, min_depth, rng,
-                            allowed)
+                            allowed, allowed_operators)
     if max_depth <= 0:
         return _random_leaf(target_type, rng, allowed)
     # Weighted choice — bias toward operators so trees aren't too shallow
     if rng.random() < 0.3:
         return _random_leaf(target_type, rng, allowed)
     return _random_operator(target_type, max_depth, min_depth, rng,
-                            allowed)
+                            allowed, allowed_operators)
 
 
 def random_expression(
@@ -725,6 +781,7 @@ def random_expression(
     min_depth: int = 2,
     rng: Random | None = None,
     allowed_terminals: frozenset[str] | None = None,
+    allowed_operators: frozenset[str] | None = None,
 ):
     """Generate a random expression with the given target output type.
 
@@ -752,11 +809,31 @@ def random_expression(
         ``FeatureRegistry.V1`` registry — legacy behaviour verbatim. A
         campaign passes its frozen field set so no expression can be
         built on inputs the pre-registration excludes.
+    allowed_operators
+        Optional whitelist of operator NAMES the generator may sample.
+        ``None`` (default) samples the frozen ``V1_OPERATORS`` baseline
+        — NOT the whole registry, so registering a new operator never
+        changes what an existing frozen preset can breed. A campaign
+        that wants a post-baseline operator (e.g. ``coalesce``) lists
+        its full operator set explicitly.
     """
     if max_depth < min_depth:
         raise ValueError(
             f"max_depth ({max_depth}) must be >= min_depth ({min_depth})"
         )
+    if allowed_operators is not None:
+        unknown = set(allowed_operators) - {
+            op.name for op in REGISTRY.all_operators()}
+        if unknown:
+            # Silently dropping a typo'd name would narrow the search
+            # while the resolved config still records the declared pool
+            # — the artifact would misrepresent the experiment.
+            raise GrammarError(
+                f"allowed_operators contains unregistered name(s) "
+                f"{sorted(unknown)}; refusing to sample from a pool "
+                "narrower than the one declared."
+            )
     if rng is None:
         rng = Random()
-    return _gen(target_type, max_depth, min_depth, rng, allowed_terminals)
+    return _gen(target_type, max_depth, min_depth, rng, allowed_terminals,
+                allowed_operators)

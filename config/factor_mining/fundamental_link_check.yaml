@@ -1,0 +1,233 @@
+# fundamental_link_check —— 起步三因子链路验证批次（阶段8 基本面方向）。
+#
+# 这**不是战役**：不挂 prereg 门、不做因子裁决，唯一目的是验证
+# 「面板化 → GP → 边际贡献」链路与防线（openspec
+# add-fundamental-gp-panel-bridge 的链路验证 + 性能实测任务），并给出
+# 全窗墙钟读数。GP 参数因此取小；结果数字不进任何裁决台账。
+#
+# 点火（操作人；CPU 任务，非 GPU）——链路验证是**两步**，只跑 mine 不算完成：
+#     # 第一步：GP 链路（面板化 + 合并终端 + 搜索内 provenance 遮蔽）
+#     python -m scripts.research.fundamental_gp_campaign mine \
+#         --config config/factor_mining/fundamental_link_check.yaml
+#     # 第二步：三个冻结起步因子的确定性求值（绑上一步的 run 目录，
+#     # 工厂输出摘要须复现 run 记录的身份；报告落 run 目录内）
+#     python -m scripts.research.fundamental_gp_campaign starter-check \
+#         --run <第一步打印的 run 目录>
+# 裸 CLI（python -m src.factor_mining.miner）会因缺注入工厂而拒跑——
+# 这是缝的契约，不是缺陷。
+#
+# 短窗铁律：end_date 止于 2022-12-31（IS 内）。2025 holdout 与 2023+
+# 段绝不进本配置——tests/logic/factor_mining/test_fundamental_link_check_preset.py
+# 钉住这条边界。
+
+run_id: null                # 每次点火自动生成唯一 run_id
+output_dir: output/factor_mining/fundamental_link_check
+pool_top_k: 20
+
+data:
+  mode: pit
+  pit_provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
+  delisted_registry_path: "${QUANT_DELISTED_REGISTRY:-D:/qlib_data/tushare_raw/delisted_registry.parquet}"
+  universe_name: csi800
+  start_date: "2021-01-01"
+  end_date: "2022-12-31"
+  forward_horizon: 1
+  forward_return_price: close
+  # pv 侧留空 = 既有 V1 十二终端（链路验证无冻结义务；战役自会收窄）。
+  fields: []
+  # --- 基本面腿（四元组；工厂经 campaign 脚本注入）---
+  fundamental_store_root: "${QUANT_FIN_STORE:-D:/qlib_data/financial_pit_raw}"
+  fundamental_calendar_path: "${QUANT_FIN_CALENDAR:-D:/qlib_data/my_cn_data_pit/calendars/day.txt}"
+  # 起步三因子输入并集（冻结出处 docs/prereg/quality_profitability.yaml）：
+  #   C1_GPA = revenue, oper_cost, total_assets
+  #   资产增长 = total_assets（+prior，工厂恒带 __prior 代）
+  #   C3_cash_based_OP = + sell_exp, admin_exp, accounts_receiv, inventories,
+  #                        prepayment, accounts_pay, adv_receipts, contract_liab
+  fundamental_fields:
+    - revenue
+    - oper_cost
+    - sell_exp
+    - admin_exp
+    - total_assets
+    - accounts_receiv
+    - inventories
+    - prepayment
+    - accounts_pay
+    - adv_receipts
+    - contract_liab
+  # 金融排除集：120 只，操作人 2026-08-17 签收（导出脚本
+  # scripts/research/export_financial_exclusions.py，规则 =
+  # financial_issuers_from_industry 稳定行业名单，快照 20260817）。
+  # 签收即冻结——不随快照漂移。campaign 工厂每次构建面板前跑 view 的
+  # oper_cost cross-check，对签收名单与实际申报行为的分歧逐条 WARNING
+  # （报告不解决，spec: v2-financial-pit-contract）。qlib 形式
+  # （宇宙掩码按列名裁）。
+  financial_exclusions:
+    - SZ000001
+    - SZ000166
+    - SZ000415
+    - SZ000532
+    - SZ000563
+    - SZ000567
+    - SZ000617
+    - SZ000686
+    - SZ000712
+    - SZ000728
+    - SZ000750
+    - SZ000776
+    - SZ000783
+    - SZ000987
+    - SZ001227
+    - SZ001236
+    - SZ002142
+    - SZ002423
+    - SZ002500
+    - SZ002647
+    - SZ002670
+    - SZ002673
+    - SZ002736
+    - SZ002797
+    - SZ002807
+    - SZ002839
+    - SZ002926
+    - SZ002936
+    - SZ002939
+    - SZ002945
+    - SZ002948
+    - SZ002958
+    - SZ002961
+    - SZ002966
+    - SZ300059
+    - SH600000
+    - SH600015
+    - SH600016
+    - SH600030
+    - SH600036
+    - SH600053
+    - SH600061
+    - SH600095
+    - SH600109
+    - SH600120
+    - SH600155
+    - SH600318
+    - SH600369
+    - SH600390
+    - SH600517
+    - SH600621
+    - SH600643
+    - SH600816
+    - SH600830
+    - SH600864
+    - SH600901
+    - SH600906
+    - SH600908
+    - SH600909
+    - SH600918
+    - SH600919
+    - SH600926
+    - SH600927
+    - SH600928
+    - SH600958
+    - SH600999
+    - SH601009
+    - SH601059
+    - SH601066
+    - SH601077
+    - SH601099
+    - SH601108
+    - SH601128
+    - SH601136
+    - SH601162
+    - SH601166
+    - SH601169
+    - SH601187
+    - SH601198
+    - SH601211
+    - SH601229
+    - SH601236
+    - SH601288
+    - SH601318
+    - SH601319
+    - SH601328
+    - SH601336
+    - SH601375
+    - SH601377
+    - SH601398
+    - SH601456
+    - SH601528
+    - SH601555
+    - SH601577
+    - SH601601
+    - SH601628
+    - SH601658
+    - SH601665
+    - SH601688
+    - SH601696
+    - SH601788
+    - SH601818
+    - SH601825
+    - SH601838
+    - SH601860
+    - SH601878
+    - SH601881
+    - SH601901
+    - SH601916
+    - SH601939
+    - SH601963
+    - SH601988
+    - SH601990
+    - SH601995
+    - SH601997
+    - SH601998
+    - SH603093
+    - SH603123
+    - SH603300
+    - SH603323
+gp:
+  # 链路验证规模：足以育出并求值跨端点/含 prior 的表达式，不足以
+  # 构成任何有统计意义的搜索——这正是意图。
+  population_size: 40
+  n_generations: 3
+  tournament_size: 3
+  elite_frac: 0.05
+  p_crossover: 0.7
+  p_mutate_subtree: 0.15
+  p_mutate_point: 0.10
+  p_mutate_const: 0.05
+  max_depth: 4
+  min_depth: 2
+  seed: 20260817
+  # 完整算子白名单 = V1 基线 28 + coalesce（冻结 C3 的合并-再-差分需要）。
+  # 缺省（空）= 基线 28：注册表增长不会拓宽任何未显式声明的搜索。
+  allowed_operators:
+    - add
+    - sub
+    - mul
+    - div_safe
+    - neg
+    - abs
+    - sign
+    - log_safe
+    - sqrt_safe
+    - ts_mean
+    - ts_std
+    - ts_max
+    - ts_min
+    - ts_sum
+    - ts_delta
+    - ts_decay_linear
+    - ts_pctchange
+    - ts_rank
+    - ts_argmax
+    - ts_argmin
+    - ts_skew
+    - ts_kurt
+    - ts_corr
+    - cs_rank
+    - cs_zscore
+    - cs_demean
+    - cs_winsorize
+    - where
+    - coalesce
+
+fitness: {}

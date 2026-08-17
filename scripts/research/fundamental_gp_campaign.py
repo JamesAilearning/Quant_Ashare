@@ -12,6 +12,9 @@ Subcommands::
     python -m scripts.research.fundamental_gp_campaign mine \
         --config config/factor_mining/<campaign>.yaml
 
+    python -m scripts.research.fundamental_gp_campaign starter-check \
+        --run <run_dir>
+
     python -m scripts.research.fundamental_gp_campaign record-baseline \
         --run <run_dir> --end-date <validation_end> --out <baseline.json>
 
@@ -28,9 +31,12 @@ requires the injected factory to reproduce that digest bit-for-bit on
 the extension window — a baseline the promoted callable cannot issue to
 itself.
 
-The starter-three-factor link-through (GP/A, asset growth, the pure-BS
-accrual) runs through ``mine`` with a campaign config whose
-``fundamental_fields`` cover those factors' inputs; igniting it on real
+The starter-three-factor link check is a TWO-step sequence: ``mine``
+proves the GP path (panelization, merged terminals, provenance-masked
+evaluation inside the search), then ``starter-check`` proves the three
+frozen factors themselves — the GP's random population cannot construct
+C3, so its deterministic evaluation is a separate, run-bound step.
+Running ``mine`` alone is NOT a completed link check. Igniting on real
 data is an operator action, not a CI one.
 """
 
@@ -38,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -45,6 +52,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from src.data.trading_calendar import StaticTradingCalendar
 from src.factor_mining.miner import (
@@ -59,10 +67,13 @@ from src.factor_mining.promote import (
     PromotionError,
     _load_config,
     _load_run_data_config,
+    _verify_pit_binding,
     promote_run,
 )
 from src.research.financial_pit_view import FinancialPITDataView
 from src.research.fundamental_panel import build_fundamental_panel
+
+_log = logging.getLogger(__name__)
 
 
 def _load_calendar(path: str) -> StaticTradingCalendar:
@@ -101,6 +112,20 @@ def build_panel_factory() -> PanelFactory:
             _load_calendar(data.fundamental_calendar_path),
             financial_issuers=data.financial_exclusions,
         )
+        # The exclusion cross-check REPORTS disagreements, never resolves
+        # them (spec: v2-financial-pit-contract): a financial-listed
+        # issuer that does report oper_cost, or a non-excluded issuer
+        # that never does, each gets a visible line. Runs on every
+        # factory invocation (mining and promotion alike) so the signed
+        # list is re-examined against the store the run actually reads.
+        disagreements = view.cross_check_exclusion(list(instruments))
+        if disagreements:
+            _log.warning(
+                "financial-exclusion cross-check: %d disagreement(s) "
+                "between the signed industry list and oper_cost "
+                "reporting behavior:", len(disagreements))
+            for d in disagreements:
+                _log.warning("  %s: %s", d.ts_code, d.kind)
         panel = build_fundamental_panel(
             view,
             list(data.fundamental_fields),
@@ -127,6 +152,290 @@ def build_panel_factory() -> PanelFactory:
             periods)
 
     return factory
+
+
+# The starter three factors as DETERMINISTIC ASTs (frozen source:
+# docs/prereg/quality_profitability.yaml + the asset-growth Δ form).
+# The link check cannot rely on the GP's random population to construct
+# them — C3 alone needs four income terms, five current/prior deltas and
+# the coalesce pair, far beyond any small-run depth — so the OpenSpec
+# "starter three-factor end-to-end" obligation is discharged by
+# evaluating these expressions EXPLICITLY through the canonical
+# evaluator (values, forward returns, report-period provenance and the
+# terminal-level alignment mask all on the same path the GP uses).
+# Δx = sub(x, x__prior); the coalesce pair merges per period BEFORE
+# differencing, exactly as the frozen formula requires.
+_STARTER_EXPRESSIONS: dict[str, str] = {
+    "C1_GPA": (
+        "cs_rank(div_safe(sub($revenue, $oper_cost), $total_assets))"
+    ),
+    "asset_growth": (
+        "cs_rank(div_safe(sub($total_assets, $total_assets__prior), "
+        "$total_assets__prior))"
+    ),
+    "C3_cash_based_OP": (
+        "cs_rank(div_safe("
+        "add(add(sub(sub(sub("
+        "sub(sub(sub($revenue, $oper_cost), $sell_exp), $admin_exp), "
+        "sub($accounts_receiv, $accounts_receiv__prior)), "
+        "sub($inventories, $inventories__prior)), "
+        "sub($prepayment, $prepayment__prior)), "
+        "sub($accounts_pay, $accounts_pay__prior)), "
+        "sub(coalesce($adv_receipts, $contract_liab), "
+        "coalesce($adv_receipts__prior, $contract_liab__prior))), "
+        "$total_assets))"
+    ),
+}
+
+
+def _cmd_starter_check(args: argparse.Namespace) -> int:
+    """Evaluate the three frozen starter factors against a MINED RUN.
+
+    Bound to a run directory, not to a mutable config path: the run
+    snapshot's data definition is digest-verified on load, the factory
+    is re-invoked on the run's RECORDED geometry, and its output digest
+    must reproduce the recorded identity — so the starter record
+    describes exactly the panel the run mined, auditable after the
+    fact. A starter factor with NO evaluable observations is a broken
+    leg, not a completed check: refused, nothing written.
+    """
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.fitness import FitnessConfig
+    from src.factor_mining.gp_engine import GPConfig, GPEngine
+    from src.factor_mining.miner import (
+        MinerConfig,
+        build_universe_mask,
+        load_baseline_predictions,
+        search_definition_sha256,
+    )
+
+    run_dir = Path(args.run)
+    try:
+        run_data, run_sha = _load_run_data_config(run_dir)
+    except PromotionError as exc:
+        print(f"starter-check failed: {exc}", file=sys.stderr)
+        return 1
+    if not run_data.fundamental_store_root:
+        print("starter-check: the run records no fundamental leg — "
+              "nothing to check.", file=sys.stderr)
+        return 1
+    binding_path = run_dir / "fundamental_binding.json"
+    if not binding_path.is_file():
+        print("starter-check: run has no fundamental_binding.json — it "
+              "predates factory-identity recording; re-mine.",
+              file=sys.stderr)
+        return 1
+    if run_data.mode == "pit":
+        # Geometry alone cannot see an in-place PIT bundle refresh:
+        # prices can move under unchanged dates x instruments, and the
+        # starter metrics would then describe data the mining run never
+        # used. The run records content fingerprints; verify them like
+        # promotion does (codex #441 r6 P1).
+        try:
+            _verify_pit_binding(run_dir, run_data)
+        except PromotionError as exc:
+            print(f"starter-check failed: {exc}", file=sys.stderr)
+            return 1
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    dates = pd.DatetimeIndex(
+        [pd.Timestamp(d) for d in binding["trade_dates"]])
+    instruments = [str(c) for c in binding["instruments"]]
+
+    factory = build_panel_factory()
+    values, evidence, periods = factory(run_data, dates, instruments)
+    got = fundamental_output_sha256(values, evidence, periods)
+    if got != binding["output_sha256"]:
+        print("starter-check: factory output does not reproduce the "
+              f"run's recorded identity (recorded "
+              f"{binding['output_sha256']!r}, got {got!r}) — the store "
+              "changed or the builder drifted since mining; the starter "
+              "record would describe a different panel. Refusing.",
+              file=sys.stderr)
+        return 1
+
+    panel, fwd = build_panel_for_data(run_data)
+    if ([str(d.date()) for d in fwd.index] != list(binding["trade_dates"])
+            or [str(c) for c in fwd.columns] != instruments):
+        print("starter-check: the rebuilt price-volume panel geometry "
+              "does not match the run's recorded geometry — the pv "
+              "inputs moved since mining. Refusing.", file=sys.stderr)
+        return 1
+    merged = {**panel, **values}
+    # The run's OWN gp/fitness configuration scores the starter factors:
+    # "panel -> GP -> marginal contribution" means the number the GP
+    # search itself would assign (fitness composition included), not a
+    # bare evaluator metric bundle.
+    raw_snapshot = yaml.safe_load(
+        (run_dir / "config.yaml").read_text(encoding="utf-8"))
+    try:
+        gp_config = GPConfig(**raw_snapshot.get("gp", {}))
+        fitness_config = FitnessConfig(**raw_snapshot.get("fitness", {}))
+    except TypeError as exc:
+        print(f"starter-check: run snapshot gp/fitness sections do not "
+              f"parse ({exc}); re-mine.", file=sys.stderr)
+        return 1
+    # The data section has been digest-bound since #415; the gp/fitness
+    # sections get the same treatment (codex #441 r8): an edited
+    # snapshot must not let this check claim "the run's own criteria"
+    # while scoring with something else.
+    recorded_search = raw_snapshot.get("search_definition_sha256")
+    if not recorded_search:
+        print("starter-check: run snapshot carries no "
+              "search_definition_sha256 — the gp/fitness sections "
+              "cannot be verified; re-mine.", file=sys.stderr)
+        return 1
+    recomputed_search = search_definition_sha256(gp_config, fitness_config)
+    if recorded_search != recomputed_search:
+        print("starter-check: gp/fitness sections do not match the "
+              f"digest recorded at mining time (recorded "
+              f"{recorded_search!r}, recomputed {recomputed_search!r}) "
+              "— the snapshot was edited after mining; refusing to "
+              "score with criteria the run never used.", file=sys.stderr)
+        return 1
+    miner_config = MinerConfig(
+        data=run_data, gp=gp_config, fitness=fitness_config,
+        output_dir=run_dir)
+    universe_mask = build_universe_mask(miner_config)
+    # The run's orthogonality baseline joins the scoring context: with
+    # w_orthogonality configured, a None baseline silently zeroes the
+    # penalty and the reported fitness is NOT the run's composition
+    # (codex #441 r8 P1). The canonical loader re-verifies the sidecar;
+    # the digest must also equal the bytes mining actually consumed.
+    try:
+        baseline = load_baseline_predictions(miner_config)
+    except ValueError as exc:
+        print(f"starter-check: baseline load failed ({exc}); the run's "
+              "fitness composition cannot be reproduced.", file=sys.stderr)
+        return 1
+    recorded_baseline_sha = raw_snapshot.get("baseline_preds_sha256")
+    if baseline is not None:
+        got_sha = baseline.attrs.get("baseline_preds_sha256")
+        if recorded_baseline_sha != got_sha:
+            print("starter-check: baseline bytes differ from what "
+                  f"mining consumed (recorded {recorded_baseline_sha!r}, "
+                  f"loaded {got_sha!r}); refusing.", file=sys.stderr)
+            return 1
+    elif recorded_baseline_sha:
+        print("starter-check: the run recorded a baseline "
+              "(baseline_preds_sha256) but none can be loaded now — the "
+              "fitness composition cannot be reproduced; refusing.",
+              file=sys.stderr)
+        return 1
+
+    def _finite(x: float) -> float | None:
+        # Bare NaN is not JSON; a strict consumer downstream would
+        # reject the whole record. None is the honest spelling of
+        # "metric undefined here" (empty/zero-variance IC series).
+        import math
+        return float(x) if math.isfinite(x) else None
+
+    from src.factor_mining.grammar import GrammarError
+
+    report: dict[str, dict[str, float | int | str | None]] = {}
+    for name, text in _STARTER_EXPRESSIONS.items():
+        # ONE FRESH ENGINE PER FACTOR: the fitness composition's
+        # novelty/correlation term compares against the engine's
+        # accumulated per-generation pool, so a reused engine makes the
+        # reported number depend on dict ORDER (C1 vs empty pool, C3 vs
+        # both predecessors) — reordering the mapping would change the
+        # audit artifact with no run input changing (codex #441 r9 P1).
+        # Independent scoring = novelty term against an empty pool
+        # (identically zero for every factor), declared in the report.
+        engine = GPEngine(gp_config, fitness_config)
+        try:
+            fitness, result = engine.score_expression(
+                parse_expression(text), merged, fwd,
+                universe_mask=universe_mask, periods=periods,
+                baseline=baseline)
+        except GrammarError as exc:
+            # The run's own sampling pool refuses the injected AST
+            # (e.g. a baseline-pool run cannot breed C3's coalesce) —
+            # the link claim would be about a search that cannot
+            # construct the factor; controlled refusal, not a traceback.
+            print(f"starter-check: {name} rejected by the run's "
+                  f"configuration ({exc}); refusing.", file=sys.stderr)
+            return 1
+        if result is None:
+            print(f"starter-check: {name} returned no evaluation "
+                  "bundle (cache hit on a fresh engine is impossible; "
+                  "scoring failed) — refusing.", file=sys.stderr)
+            return 1
+        import math
+        if not math.isfinite(fitness):
+            # -inf is the GP's OWN verdict that the candidate is invalid
+            # (coverage floor, cross-sectional variance, non-finite IC…)
+            # — a leg the search rejected has NO marginal score, and a
+            # link report must not claim completion over it
+            # (codex #441 r10 P1). Distinct from the zero-observation
+            # guard below: here the factor evaluated, and was refused.
+            print(f"starter-check: {name} was rejected by the GP "
+                  f"fitness path (fitness={fitness!r}) — a refused leg "
+                  "is not a completed check. Refusing; nothing written.",
+                  file=sys.stderr)
+            return 1
+        if result.coverage <= 0.0 or result.n_obs_per_day_min < 1:
+            # A starter leg with nothing evaluable means a required
+            # field is missing/empty or alignment masked everything —
+            # the link is NOT verified for this factor.
+            print(f"starter-check: {name} produced no evaluable "
+                  f"observations (coverage={result.coverage!r}) — a "
+                  "broken leg is not a completed check. Refusing; "
+                  "nothing written.", file=sys.stderr)
+            return 1
+        entry: dict[str, float | int | str | None] = {
+            "expression": text,
+            "fitness": _finite(fitness),
+            "rank_ic_mean": _finite(result.rank_ic_mean),
+            "rank_ic_std": _finite(result.rank_ic_std),
+            "rank_ir": _finite(result.rank_ir),
+            "coverage": float(result.coverage),
+            "turnover_daily": _finite(result.turnover_daily),
+            "n_obs_per_day_min": int(result.n_obs_per_day_min),
+        }
+        report[name] = entry
+        print(f"{name}: fitness={entry['fitness']} "
+              f"rank_ic_mean={entry['rank_ic_mean']} "
+              f"rank_ir={entry['rank_ir']} "
+              f"coverage={entry['coverage']:.4f}")
+
+    if run_data.mode == "pit":
+        # Before/after stability, same as mining and promotion: the
+        # entry check cannot see a refresh that starts DURING the panel
+        # rebuild or the scoring window — re-verify after all PIT reads,
+        # before anything is persisted (codex #441 r7 P1).
+        try:
+            _verify_pit_binding(run_dir, run_data)
+        except PromotionError as exc:
+            print(f"starter-check failed after evaluation: {exc} — "
+                  "the PIT inputs moved mid-check; nothing written.",
+                  file=sys.stderr)
+            return 1
+
+    out = (Path(args.out) if args.out is not None
+           else run_dir / "starter_factor_report.json")
+    try:
+        with out.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "purpose": "starter-three-factor-link-check",
+                "run_dir": str(run_dir),
+                "data_definition_sha256": run_sha,
+                "search_definition_sha256": recorded_search,
+                "fundamental_output_sha256": got,
+                "adjudication_standing": "none — link verification only",
+                "scoring_path": (
+                    "GPEngine.score_expression, one fresh engine per "
+                    "factor: independent scores, novelty/correlation "
+                    "term against an empty comparison pool (=0 for "
+                    "every factor, order-independent)"),
+                "factors": report,
+            }, indent=2, allow_nan=False))
+    except FileExistsError:
+        print(f"starter-check: {out} already exists — refusing to "
+              "overwrite an earlier record; pick a fresh path.",
+              file=sys.stderr)
+        return 1
+    print(f"Starter report -> {out}")
+    return 0
 
 
 def _cmd_mine(args: argparse.Namespace) -> int:
@@ -160,16 +469,22 @@ def _cmd_record_baseline(args: argparse.Namespace) -> int:
             values, evidence, periods),
     }
     out = Path(args.out)
-    if out.exists():
-        # A baseline is a pre-authorization: silently replacing one that
-        # a pending promotion may already reference would let a second
-        # recording rewrite what was authorized.
+    try:
+        # Exclusive create ("x"), not exists()+write: a baseline is a
+        # pre-authorization — silently replacing one that a pending
+        # promotion may already reference would let a second recording
+        # rewrite what was authorized, and a racing pair of recorders
+        # could both pass a separate pre-check. The filesystem enforces
+        # the no-overwrite contract atomically (same fix class as the
+        # exclusion exporter, codex #441 r3).
+        with out.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2))
+    except FileExistsError:
         print(
             f"record-baseline: {out} already exists — refusing to "
             "overwrite a recorded authorization; pick a fresh path.",
             file=sys.stderr)
         return 1
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Baseline recorded: {out}")
     print(f"  output_sha256: {payload['output_sha256']}")
     return 0
@@ -222,6 +537,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     rb.add_argument("--out", type=Path, required=True)
     rb.set_defaults(func=_cmd_record_baseline)
 
+    sc = sub.add_parser(
+        "starter-check",
+        help="deterministically evaluate the three frozen starter "
+             "factors against a mined run")
+    sc.add_argument("--run", type=Path, required=True,
+                    help="run directory produced by the mine subcommand")
+    sc.add_argument("--out", type=Path, default=None,
+                    help="report path (default: "
+                         "<run>/starter_factor_report.json)")
+    sc.set_defaults(func=_cmd_starter_check)
+
     pr = sub.add_parser("promote", help="promote with the injected factory")
     pr.add_argument("--run", type=Path, required=True)
     pr.add_argument("--to", dest="version", required=True)
@@ -239,6 +565,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Cross-check disagreements arrive via logging.warning — without a
+    # configured handler Python's lastResort prints them, but INFO-level
+    # progress would vanish; mirror the miner CLI's explicit config so
+    # "visible output" is a property of the command, not of the caller.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        force=True,
+    )
     args = _parse_args(argv)
     result: int = args.func(args)
     return result
