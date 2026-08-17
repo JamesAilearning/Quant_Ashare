@@ -129,6 +129,13 @@ _cli_wf, _, _ = list_all_jobs(
 # 最新报告)。但"取最新"不能静默:下面对匹配失败给出明确告警,并在此统计
 # 被覆盖的条目数(codex #444 r2)。
 _superseded_runs = 0
+# id → 目录。选择器每个目录只放一条,但跳转要认**所有**已知 id:UI 作业 id
+# 与 CLI 目录 id 常常指向同一个目录(见下),旧的 CLI 运行也可能与新的共用目录。
+_run_id_to_dir: dict[str, str] = {
+    str(j.get("job_id") or ""): str(j.get("run_dir") or "")
+    for j in wf_jobs
+    if j.get("job_id") and j.get("run_dir")
+}
 for _job in _cli_wf:
     if not _job.run_dir:
         continue
@@ -139,6 +146,11 @@ for _job in _cli_wf:
     _resolved = _job.run_dir
     if not Path(_resolved).is_absolute():
         _resolved = str(PROJECT_ROOT / _resolved)
+    # 每一个已知 id 都要能定位到目录。UI 启动的滚动验证会**同时**留下一条
+    # UI 作业和一条 CLI 目录记录,指向同一个 output_dir(JobManager 把结果目录
+    # 写进 config["output_dir"],引擎再按它编目)——只保留先到的那个 id,会让
+    # 另一个 id 的跳转永远匹配不上(codex #444 r3)。
+    _run_id_to_dir.setdefault(_job.run_id, _resolved)
     if _resolved not in run_options:
         # _cli_wf 按 completed_at 倒序,首次出现即最新的那一次。
         run_options[_resolved] = _job.run_id
@@ -181,8 +193,11 @@ else:
     _requested_found = False
     if _requested_run_id:
         _keys = list(run_options.keys())
+        # 先按 id→目录索引定位(覆盖 UI id 与 CLI id 两套命名),再退回
+        # 「选择器上恰好展示的那个 id」。只比后者会漏掉同目录的另一个 id。
+        _target_dir = _run_id_to_dir.get(_requested_run_id)
         for idx, key in enumerate(_keys):
-            if run_options[key] == _requested_run_id:
+            if key == _target_dir or run_options[key] == _requested_run_id:
                 _default_index = idx
                 _requested_found = True
                 break

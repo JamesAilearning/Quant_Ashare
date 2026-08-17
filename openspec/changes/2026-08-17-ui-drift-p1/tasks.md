@@ -59,6 +59,18 @@
   「胜者只由 anchor=iso_week 决定」。修:全文一致化(fold_phase=认证胜者 /
   iso_week=生产服务锚),grep 复查无残留
 
+## codex #444 r3（两条 P1 全实修）
+
+- [x] UI 与 CLI **共用同一 output_dir**:UI 启动的滚动验证会同时留下一条
+  UI 作业和一条 CLI 目录记录(JobManager 把结果目录写进 config["output_dir"],
+  引擎再按它编目),而选择器每目录只存一个 id → 另一个 id 的跳转永远匹配
+  不上。修:新增 `_run_id_to_dir` 索引(同时收 UI 与 CLI 两套 id),跳转先按
+  id→目录定位、再退回旧比法
+- [x] spec delta 仍写「anchor 单独决定谁是生产」:r2 只清了 proposal 与源码
+  注释。归档时这句会把治理错误重新引回来。修:改述为两级链(认证胜者跑
+  fold_phase;iso_week 是单独门控的复核,其净超额>0 是晋升条件之一,之后才是
+  服务参数绑定),并显式写下「anchor 单独 SHALL NOT 被当作生产判据」
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

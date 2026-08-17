@@ -176,6 +176,32 @@ class PageSourcePinsTests(unittest.TestCase):
         select_at = src.index("selected = st.selectbox(")
         self.assertLess(warn_at, select_at)
 
+    def test_every_known_run_id_can_locate_its_directory(self) -> None:
+        # codex #444 r3: UI 启动的滚动验证会**同时**留下一条 UI 作业和一条
+        # CLI 目录记录，指向同一个 output_dir（JobManager 把结果目录写进
+        # config["output_dir"]，引擎再按它编目）。选择器每目录只放一条，
+        # 若只比「选择器上恰好展示的那个 id」，另一个 id 的跳转永远匹配不上。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_run_id_to_dir", src)
+        self.assertIn("_run_id_to_dir.setdefault(_job.run_id, _resolved)", src)
+        self.assertIn("_target_dir = _run_id_to_dir.get(_requested_run_id)", src)
+        self.assertIn("if key == _target_dir or run_options[key]", src)
+        # 索引必须**同时**收 UI 作业与 CLI 记录，只收一边等于没修。
+        idx_at = src.index("_run_id_to_dir: dict[str, str] = {")
+        seed = src[idx_at : idx_at + 400]
+        self.assertIn("wf_jobs", seed)
+
+    def test_spec_delta_does_not_encode_anchor_only_governance(self) -> None:
+        # codex #444 r3: 归档时 spec delta 里的错话会把治理错误重新引回来
+        # —— 比 UI 上的一句话更持久。
+        spec = (
+            PROJECT_ROOT / "openspec" / "changes" / "2026-08-17-ui-drift-p1"
+            / "specs" / "v2-operator-ui-console" / "spec.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("SHALL NOT be presented as deciding what is production", spec)
+        self.assertIn("certified winner runs on\n`fold_phase`", spec)
+        self.assertIn("separately gated re-check", spec)
+
     def test_anchor_caption_matches_the_governance_pin(self) -> None:
         # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉
         # 明写 winner=fold_phase / isoweek 复核=iso_week；页面若反过来说，

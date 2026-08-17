@@ -60,9 +60,13 @@ invention.
 The page SHALL show which run produced the numbers — universe,
 benchmark, topk, cadence, **rebalance anchor**, ensemble window, label
 horizon, slippage — plus the code identity (`git_commit`, with a dirty
-tree stated as such). The anchor is load-bearing: certified and
-reference runs can be byte-identical in every other field, and the
-anchor alone decides which one is production.
+tree stated as such). The anchor is load-bearing because it says WHICH
+EVIDENCE CHAIN a report belongs to: the certified winner runs on
+`fold_phase`, while `iso_week` is a separately gated re-check whose
+positive net excess is one promotion condition, followed by a
+serving-parameter binding. Two runs can be byte-identical in every other
+field, so without the anchor the page cannot tell those chains apart.
+The anchor alone SHALL NOT be presented as deciding what is production.
 
 The page SHALL render the engine's `metric_status` stamp. A MISSING
 stamp SHALL be labelled as missing and explicitly NOT treated as
@@ -77,8 +81,9 @@ can only worsen the verdict, never improve it).
 
 - **GIVEN** two runs identical except `rebalance_anchor`
 - **WHEN** each is opened
-- **THEN** the page names the anchor of each, and flags `fold_phase` as
-  not the production anchor
+- **THEN** the page names the anchor of each, identifying `fold_phase`
+  as the certified winner's anchor and `iso_week` as the separately
+  gated production-serving anchor
 
 #### Scenario: a missing metric stamp is never read as official
 
