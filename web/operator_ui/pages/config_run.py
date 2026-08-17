@@ -28,6 +28,8 @@ from web.operator_ui.config_forms import (
 )
 from web.operator_ui.config_presets import (
     CUSTOM_PRESET_NAME,
+    classify_preset_names,
+    frozen_preset_runner,
     list_preset_names,
     load_preset,
     sanitise_preset_name,
@@ -81,6 +83,16 @@ _ESTIMATE_CALIBRATION_WINDOW = 5
 # pre-submit validation and the final-guard re-check (intentionally duplicated
 # predicate) can never drift on wording.
 _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
+
+# 选择器上的**显示名**。选项值仍是内置名(``load_preset`` 按它解析文件名),
+# 只把标签改成不会撒谎的说法:``production.yaml`` 是 instruments=all 的日频
+# 单模型全市场基线,与生产(csi800 / N5 三成员 / 周频 iso_week)无关,而操作人
+# 多半只看选项、不展开帮助气泡(codex #445 r1)。
+_PRESET_DISPLAY_NAMES: dict[str, str] = {
+    "Smoke": "Smoke（快速冒烟）",
+    "Default": "Default（标准研究配置）",
+    "Production": "全市场基线（instruments=all，日频；**非**生产服务配置）",
+}
 
 # Canonical defaults for the backtest / cost-model fields (mirror PipelineConfig
 # / WalkForwardConfig). SINGLE source used by the form widgets AND by preset
@@ -232,8 +244,17 @@ def _apply_preset(preset_name: str) -> None:
 
 
 def _detect_preset() -> str:
-    """Return the preset name whose values match all current fields, or 'Custom'."""
-    for name in _preset_options():
+    """Return the preset name whose values match all current fields, or 'Custom'.
+
+    Only RUNNABLE presets are candidates: a frozen campaign file reported
+    as "active" would name an option the dropdown no longer offers, so the
+    selectbox would silently fall back to Default while the state said
+    otherwise. It also could never be true in substance — the form has no
+    widgets for the very keys (cadence / anchor / scope) that define
+    those files.
+    """
+    runnable, _ = classify_preset_names(_PRESETS_DIR)
+    for name in runnable:
         if name == CUSTOM_PRESET_NAME:
             continue
         preset = _load_preset(name)
@@ -325,7 +346,11 @@ if "cr_preset_initialized" not in st.session_state:
 # ---------------------------------------------------------------------------
 bar_col1, bar_col2 = st.columns(2)
 with bar_col2:
-    preset_options = _preset_options()
+    # 只有 UI 形状的预设进下拉框。战役冻结件(无 mode 键)本页跑不了:
+    # extends 不解析、rebalance_*/output_dir 无控件会被静默丢弃 —— 混在
+    # 一起会让标签显示某个战役预设、发出去的却是日频 pipeline 配置。
+    _runnable_presets, _frozen_presets = classify_preset_names(_PRESETS_DIR)
+    preset_options = (*_runnable_presets, CUSTOM_PRESET_NAME)
     preset_idx = 1  # Default
     current_preset = st.session_state.get("cr_preset", "Default")
     if current_preset in preset_options:
@@ -335,7 +360,18 @@ with bar_col2:
         preset_options,
         index=preset_idx,
         key="cr_preset_selector",
-        help="Smoke = 快速冒烟；Default = 标准；Production = 全量生产；Custom = 自定义。",
+        # 选项**值**保持内置名(文件名解析依赖它),只改**显示名**:
+        # 帮助文本说清了「Production 不是生产」,但选择器上仍写着
+        # Production,操作人多半只看选项不看气泡(codex #445 r1)。
+        format_func=lambda name: _PRESET_DISPLAY_NAMES.get(name, name),
+        help=(
+            "Smoke = 快速冒烟；Default = 标准研究配置；"
+            "Production = **全市场基线**（instruments=all，日频单模型）；"
+            "Custom = 自定义。**没有一个是生产服务配置** —— 生产跑的是 "
+            "csi800 / N5 三成员 ensemble / 周频 iso_week，权威在 "
+            "config/serving/csi800_n5_production.yaml，本页产出的一律是"
+            "日频研究配置。"
+        ),
     )
     if preset_choice != current_preset and preset_choice != CUSTOM_PRESET_NAME:
         _apply_preset(preset_choice)
@@ -359,6 +395,49 @@ with bar_col1:
 # Auto-detect custom when fields diverge
 _detected = _detect_preset()
 st.session_state["cr_preset"] = _detected
+
+# 「本页产出的是什么」——一句话把生产与研究分开。三项与生产同值
+# (宇宙 csi800 / 基准 SH000906TR / topk 50)恰恰最容易让人误以为这就是
+# 生产配置的可编辑副本,而唯一不同的那项(节奏)本页既看不见也改不了。
+st.caption(
+    "本页产出的是**日频研究配置**:没有再平衡节奏控件,提交的配置一律按 "
+    "N=1 跑。生产是**周频 iso_week**(N=5,非再平衡日出 HOLD),其权威在 "
+    "`config/serving/csi800_n5_production.yaml`,不经本页。"
+)
+
+if _frozen_presets:
+    with st.expander(f"战役冻结件（{len(_frozen_presets)} 份，只读，不可从本页运行）"):
+        st.caption(
+            "这些是预注册/认证证据,不是坏文件——但**本页跑不了它们**,原因有三:"
+            "① 本页产出 standalone 配置、不解析 `extends`,父配置的窗口/成本/"
+            "ST 口径会丢;② `rebalance_*` / `risk_constraint_scope` / "
+            "`output_dir` 等键本页没有控件,提交时被静默丢弃;③ 带 `gate3_*` "
+            "的几份连命令行 runner 也会硬拒。"
+        )
+        # 复跑命令按**各自的实际 runner**给,不能一句话统一成
+        # run_walk_forward:bootstrap 三成员与 candidate 是 pipeline 形状
+        # (extends config.yaml + pipeline 窗口键),walk-forward 加载器会
+        # 拒绝它们;gate3 那批根本不该给命令(codex #445 r1)。
+        _by_runner: dict[str, list[str]] = {}
+        for _name in _frozen_presets:
+            _by_runner.setdefault(
+                frozen_preset_runner(_load_preset(_name)), []
+            ).append(_name)
+        _RUNNER_HINTS = {
+            "walk_forward": "复跑：`python scripts/run_walk_forward.py "
+                            "config/presets/<name>.yaml`",
+            "pipeline": "复跑：`python main.py config/presets/<name>.yaml`"
+                        "（pipeline 形状，walk-forward 加载器会拒绝它们）",
+            "none": "**不可复跑**：带 `gate3_*` 键，runner 硬拒——它们是预注册"
+                    "裁决包，不是可跑配置。",
+            "unknown": "运行方式未能从文件内容判定——请读该文件头部的运行纪律。",
+        }
+        for _runner in ("walk_forward", "pipeline", "none", "unknown"):
+            _names = _by_runner.get(_runner)
+            if not _names:
+                continue
+            st.caption(f"**{len(_names)} 份** · {_RUNNER_HINTS[_runner]}")
+            st.code("\n".join(_names))
 
 # ---------------------------------------------------------------------------
 # Two-column layout: form (left) + YAML preview (right)
@@ -523,7 +602,20 @@ with form_col:
                 test_months = st.number_input("test_months", value=_cr("test_months", 3), min_value=1, key="cr_test_months")
             with wf2:
                 step_months = st.number_input("step_months", value=_cr("step_months", 3), min_value=1, key="cr_step_months")
-                ensemble_window = st.number_input("ensemble_window", value=_cr("ensemble_window", 1), min_value=1, key="cr_ensemble_window")
+                ensemble_window = st.number_input(
+                    "ensemble_window",
+                    value=_cr("ensemble_window", 1),
+                    min_value=1,
+                    key="cr_ensemble_window",
+                    # 默认保持 dataclass 默认值 1(改成 3 会与 canonical
+                    # 分叉);差异用文案说清而不是偷偷换默认。
+                    help=(
+                        "1 = 不做 ensemble（in-code 默认）。**正典滚动验证用 3**"
+                        "（扫描证据：N=3 在 mean IC / IR / 年化上最优，7/7 折"
+                        "配对符号检验 p≈0.008），当前生产模型本身也是三成员 "
+                        "ensemble。要与正典基线可比请填 3。"
+                    ),
+                )
 
     # --- Model section ---
     with st.expander("🧠 模型", expanded=True):
