@@ -88,6 +88,13 @@ class GPConfig:
     target_kind: str = "CSF"
     target_taint: str = "PURE"
     seed: int = 42
+    # Operator whitelist for generation/mutation sampling. Empty =
+    # the frozen V1 baseline pool (28 operators) — NOT the registry,
+    # so registry growth cannot silently widen a frozen preset's
+    # search. A campaign admitting a newer operator (coalesce) lists
+    # its complete operator set here; the config dump freezes it with
+    # the run.
+    allowed_operators: tuple[str, ...] = ()
 
     @property
     def target_type(self) -> ExprType:
@@ -204,6 +211,9 @@ class GPEngine:
         # from the panel actually loaded, so the generator and point
         # mutation can only build expressions over admitted inputs.
         self._allowed_terminals: frozenset[str] | None = None
+        self._allowed_operators: frozenset[str] | None = (
+            frozenset(config.allowed_operators)
+            if config.allowed_operators else None)
         self._baseline: pd.DataFrame | None = None
         self._baseline_key: str | None = None
         self._periods_key: str | None = None
@@ -248,6 +258,7 @@ class GPEngine:
                     min_depth=self.config.min_depth,
                     rng=self.rng,
                     allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
                 continue
@@ -518,6 +529,7 @@ class GPEngine:
             new_sub = random_expression(
                 target_type, max_depth=remaining, min_depth=sub_min,
                 rng=self.rng, allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
             )
             return _replace_subtree(expr, pos_path, new_sub)
         except (GrammarError, ValueError):
@@ -645,6 +657,7 @@ class GPEngine:
                     min_depth=self.config.min_depth,
                     rng=self.rng,
                     allowed_terminals=self._allowed_terminals,
+                    allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
                 continue

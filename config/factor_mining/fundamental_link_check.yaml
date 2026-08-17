@@ -197,5 +197,37 @@ gp:
   max_depth: 4
   min_depth: 2
   seed: 20260817
+  # 完整算子白名单 = V1 基线 28 + coalesce（冻结 C3 的合并-再-差分需要）。
+  # 缺省（空）= 基线 28：注册表增长不会拓宽任何未显式声明的搜索。
+  allowed_operators:
+    - add
+    - sub
+    - mul
+    - div_safe
+    - neg
+    - abs
+    - sign
+    - log_safe
+    - sqrt_safe
+    - ts_mean
+    - ts_std
+    - ts_max
+    - ts_min
+    - ts_sum
+    - ts_delta
+    - ts_decay_linear
+    - ts_pctchange
+    - ts_rank
+    - ts_argmax
+    - ts_argmin
+    - ts_skew
+    - ts_kurt
+    - ts_corr
+    - cs_rank
+    - cs_zscore
+    - cs_demean
+    - cs_winsorize
+    - where
+    - coalesce
 
 fitness: {}

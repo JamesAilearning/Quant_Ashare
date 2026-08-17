@@ -66,6 +66,7 @@ from src.factor_mining.promote import (
     PromotionError,
     _load_config,
     _load_run_data_config,
+    _verify_pit_binding,
     promote_run,
 )
 from src.research.financial_pit_view import FinancialPITDataView
@@ -219,6 +220,17 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
               "predates factory-identity recording; re-mine.",
               file=sys.stderr)
         return 1
+    if run_data.mode == "pit":
+        # Geometry alone cannot see an in-place PIT bundle refresh:
+        # prices can move under unchanged dates x instruments, and the
+        # starter metrics would then describe data the mining run never
+        # used. The run records content fingerprints; verify them like
+        # promotion does (codex #441 r6 P1).
+        try:
+            _verify_pit_binding(run_dir, run_data)
+        except PromotionError as exc:
+            print(f"starter-check failed: {exc}", file=sys.stderr)
+            return 1
     binding = json.loads(binding_path.read_text(encoding="utf-8"))
     dates = pd.DatetimeIndex(
         [pd.Timestamp(d) for d in binding["trade_dates"]])

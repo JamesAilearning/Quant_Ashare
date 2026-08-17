@@ -42,8 +42,14 @@ class PvIncrementalFreezePins(unittest.TestCase):
         # registry growth cannot alter them. If a pv-line campaign is
         # ever re-ignited, the operator set must be re-frozen in ITS
         # pre-registration; this pin deliberately does not police that.
-        from src.factor_mining.grammar import REGISTRY
+        from src.factor_mining.grammar import REGISTRY, V1_OPERATORS
 
+        # The DEFAULT sampling pool is the frozen 28 verbatim: a
+        # re-ignition of this preset (no explicit operator whitelist)
+        # samples exactly what the plan froze, registry growth
+        # notwithstanding (codex #441 r6 P1 — the runtime pin the
+        # earlier subset-only relaxation lacked).
+        self.assertEqual(sorted(V1_OPERATORS), sorted(_PLAN["operators"]))
         self.assertEqual(28, len(_PLAN["operators"]))
         self.assertEqual(len(_PLAN["operators"]),
                          len(set(_PLAN["operators"])))
