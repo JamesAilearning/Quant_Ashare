@@ -88,12 +88,17 @@ def main(argv: list[str] | None = None) -> int:
         "ts_codes": excluded,
         "qlib_tickers": [to_qlib_ticker(t) for t in excluded],
     }
-    if args.out.exists():
+    try:
+        # Exclusive create ("x"), not exists()+write: two concurrent
+        # exports could both pass the pre-check and the later truncating
+        # write would replace an artifact already under review — the
+        # filesystem enforces the no-overwrite contract atomically.
+        with args.out.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2, ensure_ascii=False))
+    except FileExistsError:
         print(f"{args.out} already exists — refusing to overwrite a "
               "list that may already be under review.", file=sys.stderr)
         return 1
-    args.out.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"exported {len(excluded)} exclusions -> {args.out}")
     return 0
 

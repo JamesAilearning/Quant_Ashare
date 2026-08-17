@@ -53,8 +53,10 @@ data:
   # 金融排除集：120 只，操作人 2026-08-17 签收（导出脚本
   # scripts/research/export_financial_exclusions.py，规则 =
   # financial_issuers_from_industry 稳定行业名单，快照 20260817）。
-  # 签收即冻结——不随快照漂移；view 的 oper_cost cross-check 运行时
-  # 对分歧逐一报告。qlib 形式（宇宙掩码按列名裁）。
+  # 签收即冻结——不随快照漂移。campaign 工厂每次构建面板前跑 view 的
+  # oper_cost cross-check，对签收名单与实际申报行为的分歧逐条 WARNING
+  # （报告不解决，spec: v2-financial-pit-contract）。qlib 形式
+  # （宇宙掩码按列名裁）。
   financial_exclusions:
     - SZ000001
     - SZ000166

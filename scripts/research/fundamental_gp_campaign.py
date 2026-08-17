@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -63,6 +64,8 @@ from src.factor_mining.promote import (
 )
 from src.research.financial_pit_view import FinancialPITDataView
 from src.research.fundamental_panel import build_fundamental_panel
+
+_log = logging.getLogger(__name__)
 
 
 def _load_calendar(path: str) -> StaticTradingCalendar:
@@ -101,6 +104,20 @@ def build_panel_factory() -> PanelFactory:
             _load_calendar(data.fundamental_calendar_path),
             financial_issuers=data.financial_exclusions,
         )
+        # The exclusion cross-check REPORTS disagreements, never resolves
+        # them (spec: v2-financial-pit-contract): a financial-listed
+        # issuer that does report oper_cost, or a non-excluded issuer
+        # that never does, each gets a visible line. Runs on every
+        # factory invocation (mining and promotion alike) so the signed
+        # list is re-examined against the store the run actually reads.
+        disagreements = view.cross_check_exclusion(list(instruments))
+        if disagreements:
+            _log.warning(
+                "financial-exclusion cross-check: %d disagreement(s) "
+                "between the signed industry list and oper_cost "
+                "reporting behavior:", len(disagreements))
+            for d in disagreements:
+                _log.warning("  %s: %s", d.ts_code, d.kind)
         panel = build_fundamental_panel(
             view,
             list(data.fundamental_fields),
@@ -160,16 +177,22 @@ def _cmd_record_baseline(args: argparse.Namespace) -> int:
             values, evidence, periods),
     }
     out = Path(args.out)
-    if out.exists():
-        # A baseline is a pre-authorization: silently replacing one that
-        # a pending promotion may already reference would let a second
-        # recording rewrite what was authorized.
+    try:
+        # Exclusive create ("x"), not exists()+write: a baseline is a
+        # pre-authorization — silently replacing one that a pending
+        # promotion may already reference would let a second recording
+        # rewrite what was authorized, and a racing pair of recorders
+        # could both pass a separate pre-check. The filesystem enforces
+        # the no-overwrite contract atomically (same fix class as the
+        # exclusion exporter, codex #441 r3).
+        with out.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2))
+    except FileExistsError:
         print(
             f"record-baseline: {out} already exists — refusing to "
             "overwrite a recorded authorization; pick a fresh path.",
             file=sys.stderr)
         return 1
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Baseline recorded: {out}")
     print(f"  output_sha256: {payload['output_sha256']}")
     return 0
@@ -239,6 +262,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Cross-check disagreements arrive via logging.warning — without a
+    # configured handler Python's lastResort prints them, but INFO-level
+    # progress would vanish; mirror the miner CLI's explicit config so
+    # "visible output" is a property of the command, not of the caller.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+        force=True,
+    )
     args = _parse_args(argv)
     result: int = args.func(args)
     return result
