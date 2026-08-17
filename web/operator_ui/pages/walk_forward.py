@@ -123,6 +123,12 @@ run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run
 _cli_wf, _, _ = list_all_jobs(
     type_filter="walk_forward", source_filter="cli", page=1, page_size=100_000,
 )
+# 同一个 preset 反复跑会**追加**新的目录条目,却把报告写回**同一个**
+# output_dir——旧运行的产物已被覆盖,盘上只剩最新那一次。所以按目录取最新
+# 是唯一诚实的做法(把旧 run_id 也列成独立条目,只会让它们渲染出同一份
+# 最新报告)。但"取最新"不能静默:下面对匹配失败给出明确告警,并在此统计
+# 被覆盖的条目数(codex #444 r2)。
+_superseded_runs = 0
 for _job in _cli_wf:
     if not _job.run_dir:
         continue
@@ -134,7 +140,10 @@ for _job in _cli_wf:
     if not Path(_resolved).is_absolute():
         _resolved = str(PROJECT_ROOT / _resolved)
     if _resolved not in run_options:
+        # _cli_wf 按 completed_at 倒序,首次出现即最新的那一次。
         run_options[_resolved] = _job.run_id
+    else:
+        _superseded_runs += 1
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -169,12 +178,30 @@ else:
         "run_id", st.query_params.get("run_id", ""), default="",
     ) or str(st.session_state.get("wf_selected_run", "") or "")
     _default_index = 0
+    _requested_found = False
     if _requested_run_id:
         _keys = list(run_options.keys())
         for idx, key in enumerate(_keys):
             if run_options[key] == _requested_run_id:
                 _default_index = idx
+                _requested_found = True
                 break
+    if _requested_run_id and not _requested_found:
+        # 静默落到 index 0 会让操作人以为看的是自己点的那次运行,实际是
+        # 另一次(本机 92 条目录条目折叠成 20 个目录,8 个目录被反复覆盖)。
+        # 说清楚:请求的那次产物已被同目录的更晚运行覆盖(codex #444 r2)。
+        st.warning(
+            f"⚠ 请求的运行 `{_requested_run_id}` 不在可打开清单中——"
+            "同一个 preset 反复跑会把报告写回**同一个** output_dir,"
+            "旧运行的产物已被更晚的那次覆盖,盘上只剩最新一份。"
+            "下方默认选中的**不是**你点的那次,请按目录核对。"
+        )
+    if _superseded_runs:
+        st.caption(
+            f"目录条目中有 **{_superseded_runs}** 条因产物被同目录的更晚"
+            "运行覆盖而未单独列出——每个目录只保留最新一次(旧条目若也列出,"
+            "只会渲染出同一份最新报告)。"
+        )
     selected = st.selectbox(
         "运行",
         options=list(run_options.keys()),
@@ -357,9 +384,10 @@ if score >= 0:
 # benchmark is the total-return index SH000300TR.
 # --- 运行身份 ---
 # 这批数字来自哪个宇宙/基准/节奏,页面此前一个字都不说。实测:
-# csi800_cadence5_conservative 与 …_isoweek 除 rebalance_anchor 外字段全同、
-# 同为 23 折,而认证上生产的胜者**恰恰只由 anchor=iso_week 这一个字段决定**
-# ——两者在页面上曾完全无法区分(UI drift 审计)。
+# csi800_cadence5_conservative(**认证胜者**,anchor=fold_phase)与
+# …_isoweek(**生产服务锚**的复核切片,anchor=iso_week)除 rebalance_anchor
+# 外字段全同、同为 23 折——anchor 决定这份报告属于**哪条证据链**,而两者
+# 在页面上曾完全无法区分(UI drift 审计)。
 _wf_config = wf_report.get("config") or {}
 if isinstance(_wf_config, dict) and _wf_config:
     _anchor = str(_wf_config.get("rebalance_anchor") or "?")

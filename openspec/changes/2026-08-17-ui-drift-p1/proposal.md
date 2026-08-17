@@ -34,9 +34,10 @@ CLI 索引写的是 `ok`(1055) / `partial`(2443)，**从不写 `completed`**；
   predictions_only / unverified）在该页**零引用**——被 RAISE 拒绝过的
   数字与认证数字长得一模一样。
 - 页面不显示宇宙/基准/anchor。实测
-  `csi800_cadence5_conservative` 与 `…_isoweek` 除 `rebalance_anchor`
-  外字段全同、同为 23 折，而**认证上生产的胜者恰恰只由这一个字段
-  决定**——两者在页面上无法区分。
+  `csi800_cadence5_conservative`（**认证胜者**，`anchor=fold_phase`）与
+  `…_isoweek`（**生产服务锚**的复核切片，`anchor=iso_week`）除
+  `rebalance_anchor` 外字段全同、同为 23 折——anchor 决定这份报告属于
+  **哪条证据链**，而两者在页面上无法区分。
 
 ## What changes
 
@@ -69,7 +70,11 @@ spec 的读边界，且相对路径按**仓库根**而非进程 CWD 解析（索
   source_filter="cli")` 的行，跳转不再是死路。
 - **运行身份**一行：宇宙 · 基准 · topk · N · **anchor** · ensemble ·
   label · 滑点，外加代码身份（`git_commit`，脏树运行显式标注）；
-  `anchor=fold_phase` 额外给出「生产胜者是 iso_week」的对照说明。
+  两个 anchor 各给一条准确说明：`fold_phase` = 认证胜者所用的锚（战役
+  主判据），`iso_week` = 生产服务锚（经单独门控；复核 run 净超额 > 0 是
+  晋升门之一）。两者是不同 schedule，不可互相顶替（治理钉
+  `test_csi800_n5_production_serving.py` 钉死 winner=fold_phase /
+  isoweek=iso_week）。
 - **指标口径判定**四分支，其中「键缺失」是**主路径**：本机 21 个真实
   运行里 16 个没有该键（含全部 csi800 战役运行，它们早于 #406）。缺失
   一律显式标注「未标注 ≠ official」，绝不落进 official 分支——否则

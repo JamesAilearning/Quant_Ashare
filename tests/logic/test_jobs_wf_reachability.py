@@ -161,6 +161,21 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("if not Path(_resolved).is_absolute():", src)
         self.assertIn("str(PROJECT_ROOT / _resolved)", src)
 
+    def test_unmatched_requested_run_is_not_silently_swapped(self) -> None:
+        # codex #444 r2: 同一 preset 反复跑会把报告写回同一个 output_dir，
+        # 目录键因此把多条 catalog 行折叠成一条。点旧行时匹配不上，页面
+        # 原本静默落到 index 0 —— 操作人会以为看的是自己点的那次。
+        # 实测本机 92 条折叠成 20 个目录、8 个目录被反复覆盖。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_requested_found", src)
+        self.assertIn("不在可打开清单中", src)
+        self.assertIn("_superseded_runs", src)
+        # 告警必须在 selectbox **之前**渲染，否则操作人先看到选中项、
+        # 再看到告警，第一印象已经错了。
+        warn_at = src.index("不在可打开清单中")
+        select_at = src.index("selected = st.selectbox(")
+        self.assertLess(warn_at, select_at)
+
     def test_anchor_caption_matches_the_governance_pin(self) -> None:
         # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉
         # 明写 winner=fold_phase / isoweek 复核=iso_week；页面若反过来说，
