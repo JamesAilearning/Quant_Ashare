@@ -58,17 +58,30 @@ render_page_header(
 _POLL_SECONDS = 30
 _CN_TZ = timezone(timedelta(hours=8))
 
+#: 刚点过启动、但子进程还没来得及写 running 记录的那段窗口。期间照常
+#: 轮询,否则启动后的页面会一直停在「尚无记录」直到操作人手点刷新
+#: (codex #442 r1)。有界:超时即停,免得启动失败时无限轮询。
+_AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
+_AWAIT_LAUNCH_WINDOW = timedelta(minutes=5)
+_LAST_LAUNCH_KEY = "run_center::last_launch"
 
-def _status_signature(status: object) -> tuple[str, str, str]:
+
+def _status_signature(status: object) -> tuple[str, str, str, str]:
     """状态里「值得触发整页重绘」的部分。
 
-    只取三样:kind/started_at/finished_at。运行中反复重读得到的是同一个
-    签名,只有真正的状态跃迁(running→finished、或换了一次运行)才会变。
+    kind/started_at/finished_at **加上新鲜度分类**:前三项在一次运行
+    跨过 6 小时陈旧线时逐字不变,只有分类会 fresh→stale 翻面。少了它,
+    崩掉的运行会让闸门一直锁着、陈旧告警一直不出现,直到操作人手动
+    整页刷新(codex #442 r1)。
+
+    分类按**调用时刻**计算,所以片段轮询时算出的与整页渲染时算出的
+    在跨线那一刻自然不等——这正是触发条件。
     """
     return (
         str(getattr(status, "kind", "")),
         str(getattr(status, "started_at", "")),
         str(getattr(status, "finished_at", "")),
+        str(classify_running(status) or ""),  # type: ignore[arg-type]
     )
 
 _provider = anchored_to_repo(resolve_default_provider_uri())
@@ -149,26 +162,51 @@ else:
         f" — {_status.detail}"
     )
 
+# 刚点过启动、子进程还没写出 running 记录的那段窗口也要轮询——否则
+# 启动后的页面会停在启动前的状态直到手点刷新(codex #442 r1)。有界:
+# 超过窗口就停,启动失败时不会无限空转。
+_awaiting_launch = False
+_awaiting_raw = st.session_state.get(_AWAIT_LAUNCH_KEY)
+if _awaiting_raw:
+    _awaiting_since: datetime | None
+    try:
+        _awaiting_since = datetime.fromisoformat(str(_awaiting_raw))
+    except ValueError:
+        _awaiting_since = None
+    if (
+        _awaiting_since is not None
+        and _read_at - _awaiting_since < _AWAIT_LAUNCH_WINDOW
+    ):
+        _awaiting_launch = True
+if _status.kind == "running" and record_matches_provider(_status, _provider_path):
+    # 记录已经出现,正常的 running 轮询接手,等待标记功成身退。
+    st.session_state.pop(_AWAIT_LAUNCH_KEY, None)
+    _awaiting_launch = False
+elif not _awaiting_launch:
+    st.session_state.pop(_AWAIT_LAUNCH_KEY, None)
+
+_watching = _running_fresh or _awaiting_launch
+
 # 「我刚点的刷新到底生效了没」——状态没变时整页重绘长得一模一样,读取
 # 时刻是唯一能证明重读发生过的痕迹(#440 后续:操作人反馈按钮像坏的)。
 _poll_note = (
-    f";更新进行中,每 {_POLL_SECONDS} 秒自动重读,完成时整页刷新"
-    if _running_fresh
+    f";每 {_POLL_SECONDS} 秒自动重读,状态一变就整页刷新"
+    if _watching
     else ""
 )
 st.caption(
     f"上次读取:{_read_at:%H:%M:%S}(点任意按钮或刷新页面都会重读{_poll_note})"
 )
 
-if _running_fresh:
+if _watching:
     @st.fragment(run_every=_POLL_SECONDS)
     def _watch_update_completion() -> None:
         """轮询状态工件,状态跃迁时把整页拉起来重绘。
 
-        只在 fragment 内重读,不渲染任何东西:运行中反复读到同一签名 =
-        静默继续。一旦 running→finished(或换了一次运行),整页 rerun,
-        下方出单按钮的闸门(依赖主脚本作用域的 ``_running_fresh``)才能
-        跟着解锁——只刷新片段会让两处显示自相矛盾。
+        只在 fragment 内重读,不渲染任何东西:反复读到同一签名 = 静默
+        继续。一旦签名变化(running→finished、新鲜→陈旧、或换了一次
+        运行),整页 rerun——下方出单按钮的闸门与陈旧告警都依赖主脚本
+        作用域的判断,只刷新片段会让两处显示自相矛盾。
         """
         if _status_signature(read_update_status(_status_path)) != _status_signature(
             _status
@@ -210,13 +248,33 @@ if _launch_clicked:
     _launch = launch_daily_update(
         _provider_path, _tushare_dir, _update_registry
     )
+    # 结果暂存 + 整页 rerun:守望者的注册发生在本行**之上**,所以本次
+    # 脚本运行里设的等待标记要等下一轮才生效。立刻 rerun 让它当场生效,
+    # 否则启动后的页面不轮询(codex #442 r1)。
+    st.session_state[_LAST_LAUNCH_KEY] = {
+        "kind": _launch.kind,
+        "pid": _launch.pid,
+        "log_path": str(_launch.log_path) if _launch.log_path else "",
+        "error": _launch.error,
+    }
     if _launch.kind == "launched":
+        st.session_state[_AWAIT_LAUNCH_KEY] = datetime.now(
+            tz=_CN_TZ
+        ).isoformat()
+    st.rerun()
+
+_last_launch = st.session_state.pop(_LAST_LAUNCH_KEY, None)
+if isinstance(_last_launch, dict):
+    if _last_launch.get("kind") == "launched":
         st.success(
-            f"已在后台启动(pid {_launch.pid}),日志:`{_launch.log_path}`。"
-            "**启动≠成功**——成败以上方状态(点「刷新状态」)与日志为准。"
+            f"已在后台启动(pid {_last_launch.get('pid')}),日志:"
+            f"`{_last_launch.get('log_path')}`。**启动≠成功**——成败以上方"
+            "状态与日志为准(本页已开始自动重读)。"
         )
     else:
-        st.error(f"未启动({_launch.kind}):{_launch.error}")
+        st.error(
+            f"未启动({_last_launch.get('kind')}):{_last_launch.get('error')}"
+        )
 
 with st.expander("日志尾部(只读)"):
     _log_text = log_tail(default_log_path(_provider_path))

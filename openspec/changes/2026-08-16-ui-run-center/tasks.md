@@ -120,6 +120,16 @@
   ——**今晚运行中不可动**(cmd 边执行边读取批处理文件,改动会破坏执行),
   且与 tracked 模板对齐任务有交集,待运行结束后另行处置
 
+## codex #442 r1（两条 P2 全实修）
+
+- [x] 启动后不轮询:`_running_fresh` 在子进程写 running 记录**之前**算出,
+  从空闲页启动时守望者不注册 → 启动加**有界**等待标记(5 分钟)+ 立即
+  `st.rerun()` 让标记当场生效;结果暂存后重绘展示
+- [x] 陈旧跃迁不触发:kind/started_at/finished_at 在跨过 6 小时线时逐字
+  不变,崩掉的运行会一直锁着闸门、不出陈旧告警 → 签名纳入
+  `classify_running` 分类
+- [x] 两条源码钉(有界标记 + 分类入签名)
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

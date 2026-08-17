@@ -101,6 +101,32 @@ class PageSourceTests(unittest.TestCase):
         # updater's provider lock, and its refusal must be rendered.
         self.assertIn("blocked_by_update", self.src)
 
+    def test_polling_survives_a_freshly_launched_update(self) -> None:
+        # codex #442 r1: _running_fresh is computed BEFORE the child writes
+        # its running record, so a launch from an idle page registered no
+        # watcher — the page sat on the pre-launch status until a manual
+        # refresh. The launch now stamps a bounded await marker and reruns
+        # so the watcher registers in the same interaction.
+        self.assertIn("_AWAIT_LAUNCH_KEY", self.src)
+        self.assertIn("_AWAIT_LAUNCH_WINDOW", self.src)
+        self.assertIn("_watching = _running_fresh or _awaiting_launch", self.src)
+        self.assertIn("if _watching:", self.src)
+        # The marker must be bounded, or a failed launch polls forever.
+        self.assertIn("_read_at - _awaiting_since < _AWAIT_LAUNCH_WINDOW", self.src)
+        # The rerun is what makes the marker take effect this interaction.
+        self.assertIn("st.rerun()", self.src)
+
+    def test_freshness_transition_is_part_of_the_watch_signature(self) -> None:
+        # codex #442 r1: kind/started_at/finished_at are byte-identical as a
+        # run crosses the 6h staleness line, so a crashed run kept the gates
+        # locked and the stale warning hidden. The classification is part of
+        # the signature now.
+        self.assertIn("classify_running(status)", self.src)
+        sig_at = self.src.index("def _status_signature")
+        body = self.src[sig_at : sig_at + 1200]
+        self.assertIn("classify_running", body)
+        self.assertIn("tuple[str, str, str, str]", body)
+
     def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
         # The repo logger writes refusals to STDOUT (StreamHandler on
         # sys.stdout, propagate=False); stderr mostly carries import-time
