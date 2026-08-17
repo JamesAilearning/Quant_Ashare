@@ -416,42 +416,35 @@ class LogTailTests(unittest.TestCase):
             self.assertIn("调度器的行:抓取完成", tail)
             self.assertNotIn("�", tail)
 
-    def test_gbk_lines_that_are_valid_utf8_are_still_recovered(self) -> None:
-        # codex #442 r4: 「UTF-8 解码成功」不等于「本来就是 UTF-8」。
-        # '抓取'.encode('gbk') 是合法 UTF-8，解出 'ץȡ' 且**无替换符**——
-        # 而「抓取」正是抓取阶段日志里的高频词，所以这不是理论边角。
+    def test_utf8_lines_with_extended_characters_are_never_damaged(self) -> None:
+        # codex #442 r5: 曾按字符区段猜「像不像乱码」,结果**损坏合法新行**
+        # —— provider 路径里一个 José 被改写成 Jos茅。源头已钉 UTF-8,读侧
+        # 再猜是净损失,所以规则收紧为「解码成功即采信」。
         from web.operator_ui.update_runner import _decode_log_line
 
-        # 只取「GBK 字节恰好也是合法 UTF-8」的那一类——其余词靠解码失败就能
-        # 回退救回，不是本用例的靶子。动态筛选而非写死名单，避免哪天换了
-        # 判据后名单里全是不合格样本、用例空转。
-        candidates = ("抓取", "一", "换库", "日线", "进度", "掩码", "补跑")
-        qualifying = []
-        for word in candidates:
+        for line in (
+            "provider: C:/Users/José/qlib_data",
+            "München 数据更新完成",
+            "Ω 阈值 0.05",
+            "[run_center] 2026-08-18T00:30:00+08:00 launch attempt",
+            "progress: 2400/5883 tickers (written=3263)",
+        ):
+            with self.subTest(line=line[:24]):
+                self.assertEqual(_decode_log_line(line.encode("utf-8")), line)
+
+    def test_legacy_gbk_lines_are_recovered_when_utf8_fails(self) -> None:
+        # 绝大多数历史 GBK 行的字节不是合法 UTF-8，回退能救回。
+        from web.operator_ui.update_runner import _decode_log_line
+
+        recovered = 0
+        for word in ("数据更新完成", "一二三", "日线", "进度", "换库分区"):
             gbk = word.encode("gbk")
             try:
                 gbk.decode("utf-8")
             except UnicodeDecodeError:
-                continue  # 这类会解码失败 → 现有回退已能救回
-            qualifying.append(word)
-        self.assertTrue(
-            qualifying,
-            "样本里没有『GBK 恰好是合法 UTF-8』的词，本用例等于没测",
-        )
-        for word in qualifying:
-            with self.subTest(word=word):
-                self.assertEqual(_decode_log_line(word.encode("gbk")), word)
-
-    def test_genuine_utf8_lines_are_not_misread_as_gbk(self) -> None:
-        from web.operator_ui.update_runner import _decode_log_line
-
-        for line in (
-            "数据更新完成",
-            "[run_center] 2026-08-18T00:30:00+08:00 launch attempt",
-            "progress: 2400/5883 tickers (written=3263)",
-        ):
-            with self.subTest(line=line[:20]):
-                self.assertEqual(_decode_log_line(line.encode("utf-8")), line)
+                self.assertEqual(_decode_log_line(gbk), word)
+                recovered += 1
+        self.assertGreater(recovered, 0, "样本里没有可被回退救回的历史行")
 
     def test_undecodable_bytes_degrade_instead_of_raising(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

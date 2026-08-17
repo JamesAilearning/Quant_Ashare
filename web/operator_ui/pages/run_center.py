@@ -315,6 +315,12 @@ if isinstance(_last_launch, dict):
         )
 
 with st.expander("日志尾部(只读)"):
+    st.caption(
+        "两个写入者(本页启动的运行、调度器 .bat)如今都钉了 UTF-8。"
+        "**编码钉之前**写下的少数历史行可能仍显示为乱码——那种行的字节"
+        "恰好既是合法 GBK 又是合法 UTF-8,读侧无法还原,只能从日志文件本身"
+        "追溯。"
+    )
     _log_text = log_tail(default_log_path(_provider_path))
     if _log_text:
         st.code(_log_text)
