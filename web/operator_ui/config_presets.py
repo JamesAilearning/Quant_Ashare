@@ -97,6 +97,49 @@ def _list_preset_names_cached(
     return (*BUILT_IN_PRESET_NAMES, *saved, CUSTOM_PRESET_NAME)
 
 
+#: UI 形状的判据。``mode`` 是 UI 专用键——两条 runtime 入口
+#: (``scripts/run_walk_forward.py`` / ``main.py``)都把它当未知键硬拒,而
+#: UI 的保存路径必然写入它。所以「带 mode ⟺ 本页能跑」这条判据**自维护**:
+#: 新存的预设自动进白名单,新落地的战役冻结件自动进黑名单,无需任何人
+#: 手工登记。
+UI_SHAPE_MARKER_KEY = "mode"
+
+
+def classify_preset_names(
+    presets_dir: Path,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """把预设分成(本页可跑的, 战役冻结件)两组。
+
+    冻结件不是"坏文件"——它们是预注册/认证证据,只是**不能从本页启动**:
+    本页产出的是 standalone 配置,不解析 ``extends``(父配置的窗口/成本/ST
+    口径会丢),而 ``rebalance_*`` / ``risk_constraint_scope`` / ``output_dir``
+    等键本页没有控件、提交时被静默丢弃。把它们和可跑预设混在同一个下拉框里
+    就会出现「标签显示 csi800_cadence5_conservative_isoweek、发出去的却是
+    日频 pipeline 配置」——操作人读到的节奏不是将要跑的节奏。
+
+    不改 :func:`list_preset_names` 的返回值语义(既有调用方与测试不受影响);
+    分类不自建缓存,而是复用它的目录级缓存 + ``load_preset`` 的 per-file
+    缓存,避免"目录 mtime 在原地编辑文件时不变 → 分类陈旧"这个坑。
+    """
+    runnable: list[str] = []
+    frozen: list[str] = []
+    for name in list_preset_names(presets_dir):
+        if name == CUSTOM_PRESET_NAME:
+            continue
+        raw = load_preset(presets_dir, name)
+        if raw and UI_SHAPE_MARKER_KEY in raw:
+            runnable.append(name)
+        elif raw:
+            frozen.append(name)
+        else:
+            # 读不出来(缺失/畸形)的既不能跑也不该当冻结证据展示;
+            # 内置名即使文件暂时读不到也保留在可选项里,否则页面会
+            # 因为一个损坏文件而失去默认预设。
+            if name in BUILT_IN_PRESET_NAMES:
+                runnable.append(name)
+    return tuple(runnable), tuple(frozen)
+
+
 def load_preset(presets_dir: Path, name: str) -> dict[str, Any]:
     """Load a preset by display name or saved preset stem.
 
