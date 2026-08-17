@@ -83,6 +83,77 @@ class ClassificationTests(unittest.TestCase):
             self.assertIn(name, runnable)
 
 
+class CacheBehaviorTests(unittest.TestCase):
+    """codex #445 r3: 配置页每次 rerun 调两次分类、每次扫 36 份文件，
+    而 load 缓存只有 32 格 —— 全量扫描把自己将要复用的条目逐出，实测
+    hits=0 / misses=72，每次控件编辑都白付几十次 YAML 解析。"""
+
+    def test_load_cache_exceeds_the_preset_count(self) -> None:
+        from web.operator_ui.config_presets import _LOAD_CACHE_SIZE
+
+        on_disk = len(list(_PRESETS.glob("*.yaml")))
+        self.assertGreater(
+            _LOAD_CACHE_SIZE, on_disk,
+            "一次全量扫描不得能把自己逐出——缓存必须大于预设文件数",
+        )
+
+    def test_repeat_classification_hits_the_cache(self) -> None:
+        from web.operator_ui.config_presets import (
+            _classify_preset_names_cached,
+            classify_preset_names,
+            clear_preset_caches,
+        )
+
+        clear_preset_caches()
+        first = classify_preset_names(_PRESETS)
+        before = _classify_preset_names_cached.cache_info().hits
+        for _ in range(5):
+            self.assertEqual(classify_preset_names(_PRESETS), first)
+        gained = _classify_preset_names_cached.cache_info().hits - before
+        self.assertEqual(gained, 5, "重复调用必须全部命中分类缓存")
+
+    def test_touching_one_preset_invalidates_the_classification(self) -> None:
+        # 指纹含每个文件的 mtime：原地编辑单个文件时目录 mtime 不变，
+        # 只靠目录级缓存会给出陈旧分类。
+        import tempfile
+
+        from web.operator_ui.config_presets import (
+            classify_preset_names,
+            clear_preset_caches,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "alpha.yaml").write_text("mode: pipeline\ntopk: 5\n", encoding="utf-8")
+            clear_preset_caches()
+            runnable, frozen = classify_preset_names(d)
+            self.assertIn("alpha", runnable)
+            self.assertEqual(frozen, ())
+            # 原地改写：去掉 mode → 该文件变成「冻结件」形状。
+            import os
+            import time
+
+            path = d / "alpha.yaml"
+            path.write_text("topk: 5\n", encoding="utf-8")
+            stt = path.stat()
+            os.utime(path, (stt.st_atime, stt.st_mtime + 10))  # 保证 mtime 变化
+            time.sleep(0.01)
+            runnable2, frozen2 = classify_preset_names(d)
+            self.assertIn("alpha", frozen2)
+            self.assertNotIn("alpha", runnable2)
+
+    def test_clear_drops_the_classification_cache_too(self) -> None:
+        from web.operator_ui.config_presets import (
+            _classify_preset_names_cached,
+            classify_preset_names,
+            clear_preset_caches,
+        )
+
+        classify_preset_names(_PRESETS)
+        clear_preset_caches()
+        self.assertEqual(_classify_preset_names_cached.cache_info().currsize, 0)
+
+
 class PageWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.src = _PAGE.read_text(encoding="utf-8")

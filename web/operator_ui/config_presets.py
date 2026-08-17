@@ -40,7 +40,11 @@ CUSTOM_PRESET_NAME = "Custom"
 # caches bounded prevents long-lived UI sessions from accumulating
 # stale entries.
 _LIST_CACHE_SIZE = 8
-_LOAD_CACHE_SIZE = 32
+# 必须 **大于** 预设目录里的文件数,否则一次全量扫描会把自己将要复用的
+# 条目逐出——实测 36 份预设配 32 格时 hits=0 / misses=72(codex #445 r3)。
+# 留足余量,避免加几份战役件就重新开始抖。
+_LOAD_CACHE_SIZE = 256
+_CLASSIFY_CACHE_SIZE = 8
 
 
 def sanitise_preset_name(raw: str) -> str:
@@ -143,15 +147,34 @@ def classify_preset_names(
     就会出现「标签显示 csi800_cadence5_conservative_isoweek、发出去的却是
     日频 pipeline 配置」——操作人读到的节奏不是将要跑的节奏。
 
-    不改 :func:`list_preset_names` 的返回值语义(既有调用方与测试不受影响);
-    分类不自建缓存,而是复用它的目录级缓存 + ``load_preset`` 的 per-file
-    缓存,避免"目录 mtime 在原地编辑文件时不变 → 分类陈旧"这个坑。
+    不改 :func:`list_preset_names` 的返回值语义(既有调用方与测试不受影响)。
+
+    结果**整体缓存**,键 = 全部预设文件的 (名字, mtime)。只 stat 不读取:
+    命中时零次 YAML 解析。此前依赖 ``load_preset`` 的 per-file 缓存,而
+    配置页每次 rerun 要调本函数两次、每次扫 36 份文件,32 格的 LRU 被自己
+    逐出,实测 hits=0(codex #445 r3)。指纹含每个文件的 mtime,所以原地
+    编辑某一份也会失效——目录 mtime 在这种编辑下是不变的。
     """
+    names = tuple(
+        n for n in list_preset_names(presets_dir) if n != CUSTOM_PRESET_NAME
+    )
+    fingerprint = tuple(
+        (n, _safe_mtime(presets_dir / f"{sanitise_preset_name(n).lower()}.yaml"))
+        for n in names
+    )
+    return _classify_preset_names_cached(str(presets_dir), names, fingerprint)
+
+
+@functools.lru_cache(maxsize=_CLASSIFY_CACHE_SIZE)
+def _classify_preset_names_cached(
+    presets_dir_str: str,
+    names: tuple[str, ...],
+    _fingerprint: tuple[tuple[str, float], ...],  # noqa: ARG001 — cache key only
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    presets_dir = Path(presets_dir_str)
     runnable: list[str] = []
     frozen: list[str] = []
-    for name in list_preset_names(presets_dir):
-        if name == CUSTOM_PRESET_NAME:
-            continue
+    for name in names:
         raw = load_preset(presets_dir, name)
         if raw and UI_SHAPE_MARKER_KEY in raw:
             runnable.append(name)
@@ -211,9 +234,13 @@ def _load_preset_cached(
 
 
 def clear_preset_caches() -> None:
-    """Drop both LRU caches. Useful in tests and rare runtime cases
+    """Drop ALL preset LRU caches. Useful in tests and rare runtime cases
     (e.g., the operator manually edits a YAML and Streamlit's session
-    doesn't naturally rerender)."""
+    doesn't naturally rerender).
+
+    分类缓存也必须清:漏掉它会让「清了缓存却还看到旧分类」成为一类
+    极难查的偶发。"""
 
     _list_preset_names_cached.cache_clear()
     _load_preset_cached.cache_clear()
+    _classify_preset_names_cached.cache_clear()
