@@ -25,6 +25,7 @@ from scripts.research.fundamental_gp_campaign import (
 )
 from src.factor_mining.fitness import FitnessConfig
 from src.factor_mining.gp_engine import GPConfig
+from src.factor_mining.grammar import V1_OPERATORS
 from src.factor_mining.miner import DataConfig, MinerConfig, run_mining
 
 _TS = ("000000.SZ", "000001.SZ", "000002.SZ")
@@ -122,7 +123,12 @@ def _mine(tmp_path, store, calendar, run_id="starter-run"):
             fundamental_fields=_STARTER_FIELDS,
             financial_exclusions=(),
         ),
-        gp=GPConfig(population_size=6, n_generations=1, max_depth=3, seed=7),
+        gp=GPConfig(population_size=6, n_generations=1, max_depth=3, seed=7,
+                    # 与链路验证 preset 同款：完整白名单 = 基线 + coalesce。
+                    # run 的池若不含 coalesce，注入 C3 打分会被
+                    # score_expression 拒（见下方专项回归）。
+                    allowed_operators=tuple(sorted(V1_OPERATORS))
+                    + ("coalesce",)),
         fitness=FitnessConfig(),
         output_dir=tmp_path / "mined",
         run_id=run_id,
@@ -273,3 +279,30 @@ def test_starter_fitness_is_order_independent(tmp_path, monkeypatch):
     b = json.loads(out_b.read_text(encoding="utf-8"))["factors"]
     for name in a:
         assert a[name]["fitness"] == b[name]["fitness"], name
+
+
+def test_a_run_whose_pool_forbids_coalesce_is_refused(tmp_path, capsys):
+    """run 的算子池不含 coalesce（默认基线）时，注入 C3 打分必须被拒 ——
+    "该 run 配置下链路成立"的宣称不能建立在它育不出的表达式上
+    （codex #441 r11）。"""
+    import src.factor_mining.miner as miner_mod
+
+    store, calendar = _mk_store(tmp_path)
+    config = MinerConfig(
+        data=DataConfig(
+            mode="synthetic", synthetic_n_tickers=3, synthetic_n_dates=40,
+            synthetic_seed=7,
+            fundamental_store_root=str(store),
+            fundamental_calendar_path=str(calendar),
+            fundamental_fields=_STARTER_FIELDS,
+            financial_exclusions=(),
+        ),
+        gp=GPConfig(population_size=6, n_generations=1, max_depth=3, seed=7),
+        fitness=FitnessConfig(),
+        output_dir=tmp_path / "mined", run_id="baseline-pool-run",
+    )
+    result = miner_mod.run_mining(
+        config, fundamental_panel_factory=build_panel_factory())
+    assert main(["starter-check", "--run", str(result.output_dir)]) == 1
+    assert not (result.output_dir / "starter_factor_report.json").exists()
+    assert "sampling pool" in capsys.readouterr().err

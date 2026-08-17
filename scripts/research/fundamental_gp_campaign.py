@@ -329,6 +329,8 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
         import math
         return float(x) if math.isfinite(x) else None
 
+    from src.factor_mining.grammar import GrammarError
+
     report: dict[str, dict[str, float | int | str | None]] = {}
     for name, text in _STARTER_EXPRESSIONS.items():
         # ONE FRESH ENGINE PER FACTOR: the fitness composition's
@@ -340,10 +342,19 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
         # Independent scoring = novelty term against an empty pool
         # (identically zero for every factor), declared in the report.
         engine = GPEngine(gp_config, fitness_config)
-        fitness, result = engine.score_expression(
-            parse_expression(text), merged, fwd,
-            universe_mask=universe_mask, periods=periods,
-            baseline=baseline)
+        try:
+            fitness, result = engine.score_expression(
+                parse_expression(text), merged, fwd,
+                universe_mask=universe_mask, periods=periods,
+                baseline=baseline)
+        except GrammarError as exc:
+            # The run's own sampling pool refuses the injected AST
+            # (e.g. a baseline-pool run cannot breed C3's coalesce) —
+            # the link claim would be about a search that cannot
+            # construct the factor; controlled refusal, not a traceback.
+            print(f"starter-check: {name} rejected by the run's "
+                  f"configuration ({exc}); refusing.", file=sys.stderr)
+            return 1
         if result is None:
             print(f"starter-check: {name} returned no evaluation "
                   "bundle (cache hit on a fresh engine is impossible; "

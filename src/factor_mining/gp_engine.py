@@ -34,6 +34,7 @@ from .fitness import (
 )
 from .grammar import (
     REGISTRY,
+    V1_OPERATORS,
     WINDOW_LITERALS,
     ExprType,
     FeatureRegistry,
@@ -317,6 +318,26 @@ class GPEngine:
         ``evaluate_individual``, so an injected frozen AST is scored by
         the same code that scores every bred candidate.
         """
+        allowed = (self._allowed_operators
+                   if self._allowed_operators is not None
+                   else V1_OPERATORS)
+        used = _operators_of(expr)
+        outside = used - allowed
+        if outside:
+            # An injected AST must live inside the run's own sampling
+            # pool: scoring an expression this configuration could never
+            # BREED would let a report claim "the GP link is verified
+            # under this run" for a search that cannot construct it
+            # (codex #441 r11). Terminals are guarded by the panel keys
+            # (a missing key fails loud in the evaluator); operators are
+            # the pool this engine was configured with.
+            raise GrammarError(
+                f"expression uses operator(s) {sorted(outside)} outside "
+                "this engine's sampling pool "
+                f"({'default V1 baseline' if self._allowed_operators is None else 'campaign whitelist'}) "
+                "— a score under a configuration that cannot breed the "
+                "expression is not a marginal contribution of this run."
+            )
         self._universe_mask = universe_mask
         self._periods = periods
         self._baseline = baseline
@@ -1098,6 +1119,18 @@ def _periods_key_for(periods: dict[str, pd.DataFrame] | None) -> str:
 
     fp = periods_fingerprint(periods)
     return "no_periods" if fp is None else f"periods:{fp}"
+
+
+def _operators_of(expr: Expression) -> frozenset[str]:
+    """Every operator name an AST references (for pool-membership checks)."""
+    out: set[str] = set()
+    stack: list[Expression] = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, OperatorCall):
+            out.add(node.op_name)
+            stack.extend(node.children)
+    return frozenset(out)
 
 
 def _coverage_key_for(mask: pd.DataFrame | None) -> str:
