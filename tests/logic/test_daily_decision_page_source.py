@@ -203,8 +203,19 @@ class HelpersRuntimeTests(unittest.TestCase):
             )
             from src.core.pipeline import PipelineConfig
             from src.core.walk_forward.config import WalkForwardConfig
-        except Exception:  # pragma: no cover - qlib-less environment
-            self.skipTest("canonical config schemas unavailable (no qlib)")
+        except ImportError as exc:  # pragma: no cover - dep-light cell
+            # 只在**确认 qlib 缺席**时跳过。本测试是那两个刻意复制的常量
+            # 唯一的防漂移机制——宽泛地吞掉任何异常,会让一个 import 期的
+            # NameError/误删模块把它静默摘掉而 CI 报绿(codex #443 r2)。
+            try:
+                import qlib  # noqa: F401
+            except ImportError:
+                self.skipTest("qlib absent (dep-light cell)")
+            raise AssertionError(
+                f"qlib is present but the canonical modules failed to "
+                f"import — this is a regression, not a missing dependency: "
+                f"{exc!r}"
+            ) from exc
         canonical_commission = PipelineConfig.__dataclass_fields__[
             "commission_rate"
         ].default
@@ -236,6 +247,20 @@ class HelpersRuntimeTests(unittest.TestCase):
         # 旧的笼统措辞不得残留。
         self.assertNotIn("不是\n    「明早买入」", src)
         self.assertNotIn("」——每次必读这一行", src)
+
+    def test_missing_entry_date_is_refused_not_certified(self) -> None:
+        # codex #443 r2: 缺 entry_date 的工件若走进那条 caption，会渲染出
+        # 「entry — 是已收盘会话」——把一份违约的数据当成可信引导来背书。
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("工件契约被违反", src)
+        # 断言必须在 caption **之前**，否则先背书再校验等于没校验。
+        guard_at = src.index("_entry_date = _payload.get(\"entry_date\")")
+        caption_at = src.index("是已收盘会话**")
+        self.assertLess(guard_at, caption_at)
+        # 且 caption 只能读已校验过的局部变量，不能再从 payload 里取。
+        self.assertNotIn(
+            "**entry {_payload.get('entry_date', '—')} 是已收盘会话**", src
+        )
 
     def test_slippage_in_caption_is_derived_not_restated(self) -> None:
         # codex #443 r1: 常量与列名都随 profile 走，而文案里写死的

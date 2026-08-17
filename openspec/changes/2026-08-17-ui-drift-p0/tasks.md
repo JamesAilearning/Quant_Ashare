@@ -43,6 +43,15 @@
   patch 上下文**内**,重载把 33.0 固化进模块常量泄漏给后续用例(批量跑
   失败、单独跑通过)。恢复移到 patch 退出之后,并加恢复断言
 
+## codex #443 r2（两条 P2 全实修）
+
+- [x] 缺 `entry_date` 的工件会渲染出「entry — 是已收盘会话」——把违约数据
+  当可信引导背书。修:校验非空字符串在前,缺失则 fail-loud 拒绝给任何入场
+  时点结论;钉住「校验必须在 caption 之前」且 caption 只读校验过的局部变量
+- [x] 同文件另一处宽泛 except(成本常量对齐钉)——它是那两个刻意复制的常量
+  唯一的防漂移机制,被静默摘掉等于防线消失。修:qlib 在场时任何 import 失败
+  一律炸成 AssertionError,只在确认 qlib 缺席时跳过
+
 ## 验证
 
 - [x] 定向：`test_csi800_guard_triple_ui` + `test_operator_ui_config_run_source`
