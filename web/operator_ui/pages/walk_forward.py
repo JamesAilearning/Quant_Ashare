@@ -27,6 +27,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import (
@@ -38,6 +39,7 @@ from web.operator_ui.formatting import (
     format_number,
     format_percent,
 )
+from web.operator_ui.job_io import list_all_jobs
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
 
@@ -114,6 +116,16 @@ render_page_header("滚动验证详情", "单折结果、稳定性分析以及�
 jobs = JobManager.list_jobs()
 wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
 run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run_dir")}
+# CLI 跑出来的滚动验证也要能打开。作业页把它们列出来并路由到本页,而本页
+# 此前只认 UI 作业目录——于是占列表绝大多数的 CLI 行点「查看详情」反而
+# 得到「暂无滚动验证记录」(UI drift 审计)。只收产物在 output 树内的行,
+# 这与本页的读边界一致(spec v2-operator-ui-console:105)。
+_cli_wf, _, _ = list_all_jobs(
+    type_filter="walk_forward", source_filter="cli", page=1, page_size=100_000,
+)
+for _job in _cli_wf:
+    if _job.run_dir and _job.run_dir not in run_options:
+        run_options[_job.run_dir] = _job.run_id
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -334,6 +346,65 @@ if score >= 0:
 # return. Say so up front (mirrors the pipeline KPI card's honest labels) so
 # the cards / table are not misread as absolute, especially now the canonical
 # benchmark is the total-return index SH000300TR.
+# --- 运行身份 ---
+# 这批数字来自哪个宇宙/基准/节奏,页面此前一个字都不说。实测:
+# csi800_cadence5_conservative 与 …_isoweek 除 rebalance_anchor 外字段全同、
+# 同为 23 折,而认证上生产的胜者**恰恰只由 anchor=iso_week 这一个字段决定**
+# ——两者在页面上曾完全无法区分(UI drift 审计)。
+_wf_config = wf_report.get("config") or {}
+if isinstance(_wf_config, dict) and _wf_config:
+    _anchor = str(_wf_config.get("rebalance_anchor") or "?")
+    _identity_bits = [
+        str(_wf_config.get("instruments") or "?"),
+        str(_wf_config.get("benchmark_code") or "?"),
+        f"topk {_wf_config.get('topk', '?')}",
+        f"N={_wf_config.get('rebalance_cadence_days', '?')}",
+        f"anchor={_anchor}",
+        f"ensemble {_wf_config.get('ensemble_window', '?')}",
+        f"label {_wf_config.get('label_horizon_days', '?')}d",
+        f"{_wf_config.get('slippage_bps', '?')}bps",
+    ]
+    st.caption("运行身份:" + " · ".join(_identity_bits))
+    if _anchor == "fold_phase":
+        st.caption(
+            "⚠ `anchor=fold_phase` 锚在折起点,跨折相位不连续;生产认证的"
+            "胜者是 `iso_week`。两者其余字段可能逐值相同——只有这一项决定"
+            "谁上生产,勿把参照运行当认证运行读。"
+        )
+    _commit = str(wf_report.get("git_commit") or "")
+    if _commit:
+        _dirty = bool(wf_report.get("git_dirty"))
+        st.caption(
+            f"代码身份:`{_commit[:8]}`"
+            + ("(**脏树运行**——产物不可溯源到某个提交)" if _dirty else "")
+        )
+
+# --- 指标口径判定 ---
+# 引擎自 codex #406 起给报告盖 metric_status 戳,专为防止把 RAISE 拒绝过的
+# (clip 后持仓上算的)数字当正式结果发布。页面此前对它零引用,于是
+# predictions_only / unverified 的运行与认证运行长得一模一样。
+# **缺失是主路径不是边角**:本机 21 个真实运行里 16 个没有这个键(含全部
+# csi800 战役运行,它们早于 #406)——缺失一律显式标注,绝不落进 official。
+_metric_status = wf_report.get("metric_status")
+_metrics_purpose = wf_report.get("metrics_purpose")
+if _metric_status is None:
+    st.info(
+        "ℹ 指标状态:**未标注**——该运行产出于 metric_status 落地(#406)之前。"
+        "缺失**不等于** official。"
+    )
+elif _metric_status == OFFICIAL_METRIC_STATUS:
+    st.caption(f"✓ 指标状态:{_metric_status}(全部折过 canonical 边界)")
+else:
+    st.warning(
+        f"⚠ 指标状态:**{_metric_status}**——这批数字未通过 canonical 校验,"
+        "**不可用于晋升裁决**。"
+    )
+if _metrics_purpose is not None and _metrics_purpose != _metric_status:
+    st.caption(
+        f"(声明用途 metrics_purpose={_metrics_purpose},实测判定 "
+        f"metric_status={_metric_status}——声明只能让判定更差,不能更好)"
+    )
+
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"
 )

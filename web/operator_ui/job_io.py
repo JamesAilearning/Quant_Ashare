@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from web.operator_ui._path_guard import PROJECT_ROOT, allowed_output_roots
 from web.operator_ui.formatting import to_cn_date
 
 # Platform-conditional locking primitives. ``sys.platform`` (not
@@ -105,6 +106,10 @@ class JobSummary:
     type: str  # pipeline / walk_forward
     status: str
     source: str = "ui"  # "ui" or "cli"
+    #: 该运行的产物目录。UI 作业取 job.json 的 run_dir，CLI 运行取索引
+    #: 的 output_dir —— 详情页据此打开 CLI 运行（此前只认 UI 作业目录，
+    #: 于是列表里占绝大多数的 CLI 滚动验证行点进去是「暂无记录」）。
+    run_dir: str = ""
     created_at: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -120,6 +125,7 @@ class JobSummary:
             "type": self.type,
             "status": self.status,
             "source": self.source,
+            "run_dir": self.run_dir,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -301,6 +307,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
         type=mode,
         status=status,
         source="ui",
+        run_dir=str(raw.get("run_dir") or ""),
         created_at=created,
         started_at=started,
         finished_at=finished,
@@ -312,12 +319,74 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     )
 
 
+def run_dir_is_inspectable(run_dir: str) -> bool:
+    """True iff a run's artifacts could be opened from the detail pages.
+
+    Pure path arithmetic — no filesystem I/O, so it stays cheap across
+    thousands of catalog rows. The predicate is exactly the console
+    spec's read boundary (file access confined to ``output/`` and
+    ``output/operator_ui/``): a run whose artifacts live anywhere else
+    can never be rendered, whatever its status says.
+
+    This matters because the catalog's default path is CWD-relative, so
+    test runs executed from the repo root append their records to the
+    OPERATOR's catalog while writing artifacts to a temp dir that is
+    then deleted (this box: 3404 such rows against 105 real ones). They
+    are not runs the operator can inspect; the page discloses how many
+    it set aside rather than silently truncating.
+    """
+    text = str(run_dir or "").strip()
+    if not text:
+        return False
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        # Relative rows were written relative to the repo root (the CWD
+        # of a real run), NOT to whatever directory the UI was started
+        # from — resolving against the process CWD would answer about a
+        # different place on every launcher.
+        candidate = PROJECT_ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    for root in allowed_output_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def count_cli_rows_outside_output_tree() -> int:
+    """How many catalog rows ``list_all_jobs`` set aside as unopenable.
+
+    A separate read rather than a side channel out of ``list_all_jobs``:
+    the page needs ONE number for a disclosure line, and threading it
+    through a pinned return signature (or a module global) would couple
+    two unrelated concerns. The catalog read is a single small file.
+    """
+    return sum(
+        1
+        for raw in _load_cli_entries()
+        if not run_dir_is_inspectable(str(raw.get("output_dir") or ""))
+    )
+
+
 def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
     # See `_normalise_ui_job` — keep the full run id; display layer truncates.
     run_id = str(raw.get("run_id") or "")
     engine = str(raw.get("engine") or "")
     etype = engine if engine else "unknown"
     status = str(raw.get("status") or "completed")
+    # CLI 侧词汇归一到 UI 词汇。运行目录写的是 ok / partial(见
+    # src/core/pipeline.py 与 walk_forward/engine.py),而本页的筛选下拉、
+    # 标签与图标都说 completed/partial —— 不归一的话,列表把一千多条
+    # ok 行标成「已完成」,筛选「已完成」却一条都选不出来(UI drift 审计)。
+    # 与上面 _normalise_ui_job 的 success→completed 同源;partial 原样
+    # 保留:它已经是下拉选项、有标签、有图标、在 _param_guard 白名单里。
+    if status == "ok":
+        status = "completed"
     created = str(raw.get("completed_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
 
@@ -332,6 +401,7 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         type=etype,
         status=status,
         source="cli",
+        run_dir=str(raw.get("output_dir") or ""),
         created_at=created,
         finished_at=created,
         duration_seconds=dur,
@@ -474,8 +544,15 @@ def list_all_jobs(
     all_items: list[JobSummary] = []
     for raw in ui_raw:
         all_items.append(_normalise_ui_job(raw))
+    # CLI rows whose artifacts sit outside the readable output tree can
+    # never be opened from a detail page (see run_dir_is_inspectable).
+    # They are set aside rather than listed — but COUNTED, so the page
+    # can disclose the number instead of silently truncating.
     for raw in cli_raw:
-        all_items.append(_normalise_cli_entry(raw))
+        summary = _normalise_cli_entry(raw)
+        if not run_dir_is_inspectable(summary.run_dir):
+            continue
+        all_items.append(summary)
 
     # Filter
     filtered = _apply_filters(
