@@ -1,6 +1,17 @@
 # v2-factor-mining-foundations — delta
 
-## MODIFIED Requirements
+改名以 REMOVED + ADDED 显式表达（codex #441 r13 P1）：MODIFIED 按标题
+匹配，新标题对不上主 spec 的原标题会让 sync 留下新旧并存的矛盾条款 ——
+原「恰 28」条款必须被明确移除，才谈得上被修订后的条款取代。
+
+## REMOVED Requirements
+
+### Requirement: Operator library SHALL provide 28 CPU operators excluding `ts_cov`
+
+被下方修订条款取代：注册表从"恰 28（枚举）"改为"基线 28 + 显式修订的
+扩展"，`ts_cov` 拒绝与 CPU-only 约束原样并入新条款。
+
+## ADDED Requirements
 
 ### Requirement: Operator library SHALL provide the 28-operator v1 baseline plus explicitly amended extensions
 
