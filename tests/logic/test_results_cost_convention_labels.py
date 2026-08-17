@@ -68,6 +68,26 @@ class CostConventionLabelTests(unittest.TestCase):
         # 本项目最贵的教训：毛净可以反号（csi800 战役毛 +3.68% / 净均负）。
         self.assertIn("反号", self.src)
 
+    def test_sharpe_carries_the_net_excess_label(self) -> None:
+        # codex #445 r1: 夏普与 IR 同源（risk_analysis.excess_return_with_cost），
+        # 同样是扣费后超额；不标注就会被当成上方绝对毛主指标的配套。
+        self.assertIn("夏普比率（扣费后超额）", self.src)
+        self.assertNotIn('f"夏普比率：', self.src)
+        # help 里的净超额清单必须把夏普也列进去。
+        self.assertIn("扣费后年化超额、信息比率、夏普比率", self.src)
+
+    def test_help_text_follows_the_primary_metric_branch(self) -> None:
+        # codex #445 r1: 老工件没有 strategy_annualized_return 时，主指标
+        # 兜底成扣费后超额；此时若仍无条件说「主指标是绝对毛」，同一张卡片
+        # 自相矛盾。help 必须跟着实际取到的分支走。
+        self.assertIn("if strategy_annualized is not None", self.src)
+        self.assertIn("旧工件兜底路径", self.src)
+        # 兜底分支必须同时说明「总收益/净值/月度仍是绝对毛」——否则读者会
+        # 以为整张卡都翻成了净超额。
+        fallback_at = self.src.index("旧工件兜底路径")
+        block = self.src[fallback_at : fallback_at + 400]
+        self.assertIn("仍是**绝对毛**", block)
+
     def test_walk_forward_summary_convention_note_survives(self) -> None:
         # 既有的正确范本不得被本次改动碰掉。
         self.assertIn(

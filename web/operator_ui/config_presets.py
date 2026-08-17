@@ -105,6 +105,32 @@ def _list_preset_names_cached(
 UI_SHAPE_MARKER_KEY = "mode"
 
 
+#: gate3 冻结件带这个键前缀,``run_walk_forward.py`` 见到就硬拒——它们是
+#: 预注册裁决包,不是可跑配置。
+GATE3_KEY_PREFIX = "gate3_"
+
+
+def frozen_preset_runner(preset: dict[str, Any]) -> str:
+    """冻结件实际该用哪个 runner 复跑:``walk_forward`` / ``pipeline`` /
+    ``none``(不可跑) / ``unknown``。
+
+    一份冻结件说明里若统一写「用 run_walk_forward.py」,对 pipeline 形状
+    的那几份(bootstrap 三成员、candidate)就是错的——它们 extends
+    ``config.yaml``、带 pipeline 窗口键,walk-forward 加载器会拒绝;gate3
+    那批则根本不可跑(codex #445 r1)。判据取自各自的窗口键与 gate3 前缀,
+    而不是文件名约定。
+    """
+    if any(str(k).startswith(GATE3_KEY_PREFIX) for k in preset):
+        return "none"
+    if any(k in preset for k in ("overall_start", "train_months", "step_months")):
+        return "walk_forward"
+    if "config_walk" in str(preset.get("extends") or ""):
+        return "walk_forward"
+    if any(k in preset for k in ("train_start", "valid_start", "test_start")):
+        return "pipeline"
+    return "unknown"
+
+
 def classify_preset_names(
     presets_dir: Path,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

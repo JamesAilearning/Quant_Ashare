@@ -513,7 +513,10 @@ def _render_kpis(
             # IR 与它上方的主指标口径**相反**(IR 是扣费后超额,主指标是
             # 绝对毛),并排摆着不标注就是在请人误读。
             f"信息比率（IR，扣费后超额）：{_fmt_number(information_ratio)}",
-            f"夏普比率：{_fmt_number(sharpe)}",
+            # 与 IR 同源(risk_analysis.excess_return_with_cost),同样是
+            # 扣费后超额——不标注就会被当成上方绝对毛主指标的配套
+            # (codex #445 r1)。
+            f"夏普比率（扣费后超额）：{_fmt_number(sharpe)}",
             f"基准：{_fmt_text(benchmark_code)}",
         ])
         _render_card(
@@ -521,12 +524,23 @@ def _render_kpis(
             _fmt_percent(primary_value, signed=True),
             _metric_color(primary_value),
             secondary_lines,
+            # 主指标的口径**随分支而变**:老工件没有 strategy_annualized_return
+            # 时会兜底到扣费后超额,此时若仍写「主指标是绝对毛」,同一张卡片
+            # 就自相矛盾(codex #445 r1)。所以这段按实际取到的分支说话。
             help_text=(
-                "收益卡片同时摆着两种口径，别混读：\n"
-                "• 主指标 / 总收益 / 下方净值曲线 / 月度收益 = **绝对毛**"
-                "（不减基准、不扣成本）。qlib 的收益序列把成本加回去了，"
-                "本仓库取净口径时要手工再减一次。\n"
-                "• 扣费后年化超额、信息比率 = **扣费后超额**"
+                (
+                    "收益卡片同时摆着两种口径，别混读：\n"
+                    "• 主指标 / 总收益 / 下方净值曲线 / 月度收益 = **绝对毛**"
+                    "（不减基准、不扣成本）。qlib 的收益序列把成本加回去了，"
+                    "本仓库取净口径时要手工再减一次。\n"
+                    if strategy_annualized is not None
+                    else
+                    "⚠ 本次是**旧工件兜底路径**：产物没有绝对毛的"
+                    "`strategy_annualized_return`，主指标退回**扣费后超额**"
+                    "（与下方 IR / 夏普同口径）。但总收益 / 净值曲线 / 月度收益"
+                    "仍是**绝对毛**——同卡两种口径，务必按各自标签读。\n"
+                )
+                + "• 扣费后年化超额、信息比率、夏普比率 = **扣费后超额**"
                 "（策略 − 基准 − 成本）。\n"
                 "本项目的核心教训正是两者可以反号：csi800 战役里毛超额 "
                 "+3.68% 而净均为负。短窗口下年化指标参考价值有限。"

@@ -29,6 +29,7 @@ from web.operator_ui.config_forms import (
 from web.operator_ui.config_presets import (
     CUSTOM_PRESET_NAME,
     classify_preset_names,
+    frozen_preset_runner,
     list_preset_names,
     load_preset,
     sanitise_preset_name,
@@ -81,6 +82,16 @@ _ESTIMATE_CALIBRATION_WINDOW = 5
 # pre-submit validation and the final-guard re-check (intentionally duplicated
 # predicate) can never drift on wording.
 _GPU_ONLY_LGB_MSG = "目前仅 LGBModel 支持 GPU 训练。"
+
+# 选择器上的**显示名**。选项值仍是内置名(``load_preset`` 按它解析文件名),
+# 只把标签改成不会撒谎的说法:``production.yaml`` 是 instruments=all 的日频
+# 单模型全市场基线,与生产(csi800 / N5 三成员 / 周频 iso_week)无关,而操作人
+# 多半只看选项、不展开帮助气泡(codex #445 r1)。
+_PRESET_DISPLAY_NAMES: dict[str, str] = {
+    "Smoke": "Smoke（快速冒烟）",
+    "Default": "Default（标准研究配置）",
+    "Production": "全市场基线（instruments=all，日频；**非**生产服务配置）",
+}
 
 # Canonical defaults for the backtest / cost-model fields (mirror PipelineConfig
 # / WalkForwardConfig). SINGLE source used by the form widgets AND by preset
@@ -324,6 +335,10 @@ with bar_col2:
         preset_options,
         index=preset_idx,
         key="cr_preset_selector",
+        # 选项**值**保持内置名(文件名解析依赖它),只改**显示名**:
+        # 帮助文本说清了「Production 不是生产」,但选择器上仍写着
+        # Production,操作人多半只看选项不看气泡(codex #445 r1)。
+        format_func=lambda name: _PRESET_DISPLAY_NAMES.get(name, name),
         help=(
             "Smoke = 快速冒烟；Default = 标准研究配置；"
             "Production = **全市场基线**（instruments=all，日频单模型）；"
@@ -372,10 +387,32 @@ if _frozen_presets:
             "① 本页产出 standalone 配置、不解析 `extends`,父配置的窗口/成本/"
             "ST 口径会丢;② `rebalance_*` / `risk_constraint_scope` / "
             "`output_dir` 等键本页没有控件,提交时被静默丢弃;③ 带 `gate3_*` "
-            "的几份会被 runner 直接硬拒。要复跑它们请用命令行 "
-            "`python scripts/run_walk_forward.py <preset>`(见各文件头的运行纪律)。"
+            "的几份连命令行 runner 也会硬拒。"
         )
-        st.code("\n".join(_frozen_presets))
+        # 复跑命令按**各自的实际 runner**给,不能一句话统一成
+        # run_walk_forward:bootstrap 三成员与 candidate 是 pipeline 形状
+        # (extends config.yaml + pipeline 窗口键),walk-forward 加载器会
+        # 拒绝它们;gate3 那批根本不该给命令(codex #445 r1)。
+        _by_runner: dict[str, list[str]] = {}
+        for _name in _frozen_presets:
+            _by_runner.setdefault(
+                frozen_preset_runner(_load_preset(_name)), []
+            ).append(_name)
+        _RUNNER_HINTS = {
+            "walk_forward": "复跑：`python scripts/run_walk_forward.py "
+                            "config/presets/<name>.yaml`",
+            "pipeline": "复跑：`python main.py config/presets/<name>.yaml`"
+                        "（pipeline 形状，walk-forward 加载器会拒绝它们）",
+            "none": "**不可复跑**：带 `gate3_*` 键，runner 硬拒——它们是预注册"
+                    "裁决包，不是可跑配置。",
+            "unknown": "运行方式未能从文件内容判定——请读该文件头部的运行纪律。",
+        }
+        for _runner in ("walk_forward", "pipeline", "none", "unknown"):
+            _names = _by_runner.get(_runner)
+            if not _names:
+                continue
+            st.caption(f"**{len(_names)} 份** · {_RUNNER_HINTS[_runner]}")
+            st.code("\n".join(_names))
 
 # ---------------------------------------------------------------------------
 # Two-column layout: form (left) + YAML preview (right)

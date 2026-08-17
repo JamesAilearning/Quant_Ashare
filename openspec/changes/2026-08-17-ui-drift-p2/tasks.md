@@ -39,6 +39,23 @@
 解释 21bp，两数差 395bp）。按审计表述写标注会让操作人更糊涂。审计的
 行号也有一处错（月度收益在 838-915，不在 759）。
 
+## codex #445 r1（四条 P2 全实修）
+
+- [x] 选择器**标签本身**仍写着 Production——帮助气泡说清了但操作人多半只看
+  选项。加 `format_func` + `_PRESET_DISPLAY_NAMES`,显示名改「全市场基线
+  (instruments=all,日频;**非**生产服务配置)」;选项**值**保持内置名
+  (`load_preset` 按它解析文件名)
+- [x] 复跑指引一句话统一成 run_walk_forward 对 pipeline 形状的冻结件是错的
+  (bootstrap 三成员 / candidate extends config.yaml,walk-forward 加载器会
+  拒绝),gate3 那批根本不可跑。新增 `frozen_preset_runner`(按**内容**判:
+  gate3 前缀优先 → walk-forward 窗口键/extends → pipeline 窗口键),冻结件
+  按实际 runner 分组给命令。实测 16 wf / 4 pipeline / 8 不可跑 / 2 未定
+- [x] 收益卡 help 无条件说「主指标是绝对毛」,而老工件会兜底成扣费后超额
+  → 同卡自相矛盾。help 改为**随分支**,兜底分支同时说明总收益/净值/月度
+  仍是绝对毛
+- [x] 夏普与 IR 同源(扣费后超额)却只写「夏普比率」→ 会被当成绝对毛主指标
+  的配套。标注补齐并列入 help 的净超额清单
+
 ## 验证
 
 - [x] 定向 72 passed；mypy CI 精确命令 220 文件 Success；ruff 全过
