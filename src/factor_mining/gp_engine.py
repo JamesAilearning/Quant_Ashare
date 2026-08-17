@@ -184,6 +184,9 @@ class GPEngine:
         # members-only. None for synthetic / dense panels — see
         # evaluator._coverage.
         self._universe_mask: pd.DataFrame | None = None
+        # Report-period provenance of a FUNDAMENTAL panel (terminal-level
+        # alignment masking); None = the legacy price-volume path.
+        self._periods: dict[str, pd.DataFrame] | None = None
         # Coverage-cache key under which the scores in fitness_cache /
         # _all_evaluated were produced: "all_cells" or "members:<mask
         # fingerprint>". Set on ``run`` and persisted in checkpoints so a
@@ -203,6 +206,7 @@ class GPEngine:
         self._allowed_terminals: frozenset[str] | None = None
         self._baseline: pd.DataFrame | None = None
         self._baseline_key: str | None = None
+        self._periods_key: str | None = None
         # Fingerprint of the FULL fitness configuration the cached
         # scores were produced under (codex #401 r13): the campaign
         # fields (ic_term / min_names_per_day / orthogonality band and
@@ -299,7 +303,8 @@ class GPEngine:
             )
             result = evaluate_factor(
                 expr, panel, fwd_ret, method=FITNESS_EVALUATOR_METHOD,
-                universe_mask=self._universe_mask, **extra_kw,
+                universe_mask=self._universe_mask,
+                periods=self._periods, **extra_kw,
             )
         except KeyError as exc:
             # The evaluator raises KeyError only when a Terminal references
@@ -658,6 +663,7 @@ class GPEngine:
         n_generations: int | None = None,
         universe_mask: pd.DataFrame | None = None,
         baseline: pd.DataFrame | None = None,
+        periods: dict[str, pd.DataFrame] | None = None,
     ) -> FactorPool:
         """Run the GP loop and return the final ``FactorPool``.
 
@@ -677,6 +683,11 @@ class GPEngine:
         # rather than retain stale membership from the old panel. Codex P2
         # on #217.
         self._universe_mask = universe_mask
+        # Like the mask, assigned on EVERY run (including None): scores
+        # bred under a terminal-level alignment mask are not comparable
+        # to unmasked ones, and a reused engine must not leak either
+        # direction across runs.
+        self._periods = periods
         # The panel IS the contract (codex #401 r9): a campaign whose
         # frozen protocol admits only a subset of the registry loads
         # exactly those fields, so deriving the generator whitelist
@@ -762,6 +773,30 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._baseline_key = run_baseline_key
+        # Same discipline for report-period provenance: the terminal-level
+        # alignment mask is a pure function of the period frames and is
+        # invisible to both the coverage and the baseline keys, so a
+        # resume across a periods change (content, not just presence)
+        # would silently mix masked and unmasked scores in one pool.
+        run_periods_key = _periods_key_for(periods)
+        if (
+            self._periods_key is not None
+            and self._periods_key != run_periods_key
+            and (self.fitness_cache or self._all_evaluated)
+        ):
+            _log.warning(
+                "periods cache key %r (prior run/checkpoint) != this run "
+                "%r — discarding fitness_cache (%d) and all_evaluated "
+                "(%d); re-scoring from scratch to avoid mixing alignment-"
+                "mask semantics across a provenance change.",
+                self._periods_key,
+                run_periods_key,
+                len(self.fitness_cache),
+                len(self._all_evaluated),
+            )
+            self.fitness_cache = {}
+            self._all_evaluated = {}
+        self._periods_key = run_periods_key
         run_fitness_key = _fitness_key_for(self.fitness_config)
         if (
             self._fitness_key is not None
@@ -873,6 +908,15 @@ class GPEngine:
             # Fitness configuration the cached scores were produced
             # under (codex #401 r13) — campaign criteria are invisible
             # to the coverage/baseline keys.
+            # Report-period provenance the cached scores were masked
+            # under ("no_periods" / "periods:<fp>"); invisible to every
+            # other key, so a resume across a provenance change must
+            # invalidate the cache too.
+            "periods_key": (
+                self._periods_key
+                if self._periods_key is not None
+                else _periods_key_for(self._periods)
+            ),
             "fitness_key": (
                 self._fitness_key
                 if self._fitness_key is not None
@@ -945,6 +989,9 @@ class GPEngine:
         # "unknown" makes ``run`` invalidate on the first campaign
         # resume, which is the safe direction.
         engine._fitness_key = state.get("fitness_key") or "legacy_unknown"
+        # Legacy checkpoints predate the fundamental campaign and were
+        # necessarily written WITHOUT period provenance.
+        engine._periods_key = state.get("periods_key") or "no_periods"
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
@@ -988,6 +1035,19 @@ def _mask_fingerprint(mask: pd.DataFrame) -> str:
     h.update("|".join(map(str, mask.columns)).encode("utf-8"))
     h.update(np.ascontiguousarray(mask.to_numpy(dtype=bool)).tobytes())
     return h.hexdigest()[:16]
+
+
+def _periods_key_for(periods: dict[str, pd.DataFrame] | None) -> str:
+    """Cache-comparability key for report-period provenance.
+
+    Content-based (via ``panel_digest.periods_fingerprint``), not
+    presence-based: two runs can both carry periods whose frames differ,
+    and their alignment masks — hence their scores — differ with them.
+    """
+    from .panel_digest import periods_fingerprint  # noqa: PLC0415
+
+    fp = periods_fingerprint(periods)
+    return "no_periods" if fp is None else f"periods:{fp}"
 
 
 def _coverage_key_for(mask: pd.DataFrame | None) -> str:

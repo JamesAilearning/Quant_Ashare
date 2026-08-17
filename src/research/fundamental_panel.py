@@ -172,6 +172,25 @@ class FundamentalPanel:
             periods[f"{terminal}{PRIOR_SUFFIX}"] = frame
         return values, periods
 
+    def flatten(self) -> tuple[
+        dict[str, pd.DataFrame], dict[str, pd.DataFrame],
+        dict[str, pd.DataFrame],
+    ]:
+        """``(values, evidence, periods)`` with prior folded in flat.
+
+        The miner's injection seam records the factory's behavioral
+        identity as a digest over its FULL output — values, availability
+        evidence AND report periods, both generations. This is that
+        output shape: three flat mappings sharing one key set
+        (``$field`` and ``$field__prior``), so the seam owner can verify
+        key-set agreement and geometry without knowing this class.
+        """
+        values, periods = self.as_evaluation_mapping()
+        evidence = dict(self.evidence)
+        for terminal, frame in self.prior_evidence.items():
+            evidence[f"{terminal}{PRIOR_SUFFIX}"] = frame
+        return values, evidence, periods
+
 
 # A resolver mapping (trade_date, instruments) -> group labels. Reserved for the
 # PIT-industry artifact (a separate change): the signature is fixed NOW so

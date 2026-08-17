@@ -308,3 +308,44 @@ def test_asymmetric_period_axes_do_not_abort_evaluation():
     got = evaluate_expression(expr, panel, periods=periods)   # 不抛
     assert got.iloc[-1].isna().all()          # 缺口行按违规遮蔽
     assert got.iloc[0].notna().all()
+
+
+# --- 混合面板（量价 + 财报终端并存，PR-4 的合并面板）------------------------
+
+def test_a_mixed_pv_and_statement_expression_is_not_refused():
+    """`div_safe($revenue, $money)`：量价腿没有报告期可言。
+
+    对齐层若要求"被引用的全部终端"都有期帧，合并面板上 GP 育出的普通
+    混合比率会整批被拒（KeyError → 引擎按 setup 级契约失败中止挖掘）。
+    财报终端判据 = 注册表减默认集，与生产写盘拒绝同一条 —— "谁需要
+    provenance"不得在求值与出厂之间漂移。
+    """
+    panel, periods = _panel_and_periods()
+    money = _frame([[7.0, 8.0]] * 10)
+    panel["$money"] = money
+    expr = parse_expression("div_safe($revenue, $money)")
+    masked = align_periods_at_terminals(panel, periods, expr)
+    assert masked is panel                      # 单财报终端：天然不遮蔽
+
+
+def test_mixed_expression_still_masks_between_statement_terminals():
+    """pv 终端在场不豁免财报终端之间的同期问题。"""
+    panel, periods = _panel_and_periods(misaligned_on=(2,))
+    panel["$money"] = _frame([[7.0, 8.0]] * 10)
+    expr = parse_expression(
+        "add(div_safe($revenue, $total_assets), ts_mean($money, 5))")
+    masked = align_periods_at_terminals(panel, periods, expr)
+    for terminal in ("$revenue", "$total_assets"):
+        assert masked[terminal].iloc[2].isna().all(), terminal
+    pd.testing.assert_frame_equal(masked["$money"], panel["$money"])
+
+
+def test_statement_terminal_missing_its_period_frame_is_still_refused():
+    """豁免只给量价 —— 财报终端缺期帧仍是契约失败，不得借道混合豁免逃逸。"""
+    panel, periods = _panel_and_periods()
+    panel["$money"] = _frame([[7.0, 8.0]] * 10)
+    del periods["$total_assets"]
+    expr = parse_expression(
+        "add(div_safe($revenue, $total_assets), ts_mean($money, 5))")
+    with pytest.raises(KeyError, match="cross-endpoint alignment needs"):
+        align_periods_at_terminals(panel, periods, expr)

@@ -718,12 +718,10 @@ def test_atomic_shift_still_moves_a_normal_row(tmp_path):
 # 下游求值若无视或接错了平移面板，IC 在一个"构造成必动"的 fixture 上会纹丝
 # 不动。IC 断言只挂在该 fixture 上：正确实现也可能只改字节不改 IC。
 #
-# **已知边界（codex r11，跨 PR）**：这里的 IC 经 `daily_rank_ic` 本地计算，
-# 而非 canonical 求值器（`evaluate_factor`）——后者要求 `$revenue` 已注册，
-# 而财报终端注册在 #437（与本 PR 并行、均基于 main）。本分支上
-# `Terminal("$revenue")` 构造即抛 GrammarError，"走真求值器"不可实现。
-# 两 PR 合并后由 PR-4 升级为经 `evaluate_factor` 的同一断言（届时本地
-# `daily_rank_ic` 从脚本撤除），与 PRIOR_SUFFIX 一致性守卫同批。
+# 断言经 **canonical 求值器**（`evaluate_factor`，#437 已注册财报终端）：
+# 因子值帧取自 `EvaluationResult.factor_values`，聚合指标直接用
+# `rank_ic_mean` —— 战役裁决走哪条求值路径，这里就断言哪条。原本地
+# `daily_rank_ic` 已按 codex r11 记注从脚本撤除。
 
 _IC_TOLERANCE = 0.5     # fixture 构造成 baseline IC=+1、shifted IC=-1，Δ=2
 
@@ -736,7 +734,6 @@ def ic_fixture(tmp_path):
     平移 2 日后 0505 仍服务 Q4（排序反转，IC=-1）。
     """
     from scripts.research.fundamental_ann_shift_sensitivity import (
-        daily_rank_ic,
         write_shifted_store,
     )
     from src.data.trading_calendar import StaticTradingCalendar
@@ -769,18 +766,38 @@ def ic_fixture(tmp_path):
     shifted_dir = write_shifted_store(
         tmp_path / "store", tmp_path / "shifted", 2, _E2E_DAYS)
     shifted = build(shifted_dir)
-    return base, shifted, fwd, daily_rank_ic
+
+    def canonical_eval(panel):
+        """经真求值器（含 periods 通路）取因子值帧与指标束。"""
+        from src.factor_mining.evaluator import evaluate_factor
+        from src.factor_mining.expression import parse_expression
+
+        values, periods = panel.as_evaluation_mapping()
+        return evaluate_factor(
+            parse_expression("cs_rank($revenue)"), values, fwd,
+            method="rank", periods=periods)
+
+    return base, shifted, fwd, canonical_eval
+
+
+def _daily_rank_ic_of(result, fwd):
+    """canonical 值帧的逐日 Spearman —— 值来自真求值器，相关只是读数。"""
+    return result.factor_values.corrwith(fwd, axis=1, method="spearman")
 
 
 def test_ic_moves_beyond_tolerance_on_the_deterministic_fixture(ic_fixture):
-    base, shifted, fwd, daily_rank_ic = ic_fixture
+    base, shifted, fwd, canonical_eval = ic_fixture
     at = _pd.Timestamp(2022, 5, 5)
-    ic_base = daily_rank_ic(base.panels["$revenue"], fwd)
-    ic_shift = daily_rank_ic(shifted.panels["$revenue"], fwd)
+    res_base = canonical_eval(base)
+    res_shift = canonical_eval(shifted)
+    ic_base = _daily_rank_ic_of(res_base, fwd)
+    ic_shift = _daily_rank_ic_of(res_shift, fwd)
     # 基线 0505 服务 Q1（同向，IC=+1）；平移后仍服务 Q4（反向，IC=-1）
     assert ic_base[at] == 1.0
     assert ic_shift[at] == -1.0
     assert abs(ic_base[at] - ic_shift[at]) > _IC_TOLERANCE
+    # 聚合指标束同样必须动 —— 战役裁决消费的就是这个数。
+    assert abs(res_base.rank_ic_mean - res_shift.rank_ic_mean) > 0.0
 
 
 def test_unmoved_ic_off_the_fixture_is_not_a_failure(ic_fixture):
@@ -788,9 +805,9 @@ def test_unmoved_ic_off_the_fixture_is_not_a_failure(ic_fixture):
 
     0401-0429 两个世界都服务 Q4 —— IC 相同，这是**正确**行为。
     """
-    base, shifted, fwd, daily_rank_ic = ic_fixture
-    ic_base = daily_rank_ic(base.panels["$revenue"], fwd)
-    ic_shift = daily_rank_ic(shifted.panels["$revenue"], fwd)
+    base, shifted, fwd, canonical_eval = ic_fixture
+    ic_base = _daily_rank_ic_of(canonical_eval(base), fwd)
+    ic_shift = _daily_rank_ic_of(canonical_eval(shifted), fwd)
     # 平移的是**公告日**（可用性 = 平移后公告的次一交易日），所以平移世界
     # Q4 于 0505 才可用、Q1 于 0509 才可用。两个世界服务同一期的日期只有
     # 0509（都是 Q1）—— 该日 IC 必须相同，这是"字节变了但指标没变"的合法情形。

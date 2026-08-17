@@ -72,6 +72,22 @@ class DataConfig:
     # hoc parquet must never key it.
     baseline_preds_path: str = ""
     baseline_model: str = ""
+    # --- Fundamental-panel campaign (opt-in; all empty = no fundamental
+    # leg, byte-identical legacy behavior). These are the inputs the
+    # injected panel factory consumes, recorded HERE so promotion can
+    # rebuild the same panel from the run's persisted contract instead of
+    # unrecorded external state. They enter ``data_definition_sha256``
+    # via ``asdict`` like every other field — hash not covering them
+    # would let two different panels count as the same run.
+    fundamental_store_root: str = ""
+    fundamental_calendar_path: str = ""
+    # Charter field names (bare, no ``$``) the factory panels.
+    fundamental_fields: tuple[str, ...] = ()
+    # The SIGNED financial-sector exclusion set (qlib tickers). The view
+    # drops these issuers from the panel, so the universe mask must drop
+    # them from the coverage DENOMINATOR too — recorded here (not
+    # re-derived at mask time) so mining and promotion cannot drift.
+    financial_exclusions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -379,7 +395,55 @@ def pit_binding_fingerprints(data: DataConfig) -> dict[str, str]:
     }
 
 
-def data_definition_sha256(data: DataConfig) -> str:
+def fundamental_binding_fingerprints(data: DataConfig) -> dict[str, str]:
+    """Content fingerprints of the fundamental inputs a run mines on.
+
+    The financial-statement store and the trading calendar can be
+    refreshed IN PLACE — path and config identity unchanged while the
+    panel bytes move — so, exactly like the PIT side
+    (``pit_binding_fingerprints``), the binding is to CONTENT: every
+    byte of every file under the store root, plus the calendar file.
+    Taken before the build and re-taken after mining; promotion takes
+    its own pair around its evaluation window.
+
+    Pure hashlib + pathlib — no qlib, no PIT, no research import (D5).
+    """
+    store_root = Path(data.fundamental_store_root)
+    if not store_root.is_dir():
+        raise ValueError(
+            f"fundamental_store_root {store_root} is not a directory — "
+            "the fundamental leg cannot be content-bound; refusing."
+        )
+    h = hashlib.sha256()
+    files = sorted(
+        p for p in store_root.rglob("*") if p.is_file()
+    )
+    if not files:
+        raise ValueError(
+            f"fundamental_store_root {store_root} contains no files — an "
+            "empty store cannot be what the campaign mines on; refusing."
+        )
+    for p in files:
+        h.update(p.relative_to(store_root).as_posix().encode("utf-8"))
+        h.update(b"\x1f")
+        h.update(p.read_bytes())
+        h.update(b"\x1e")
+    calendar = Path(data.fundamental_calendar_path)
+    if not calendar.is_file():
+        raise ValueError(
+            f"fundamental_calendar_path {calendar} is not a file — the "
+            "fundamental leg cannot be content-bound; refusing."
+        )
+    return {
+        "fundamental_store_sha256": h.hexdigest(),
+        "fundamental_calendar_sha256":
+            hashlib.sha256(calendar.read_bytes()).hexdigest(),
+    }
+
+
+def data_definition_sha256(
+    data: DataConfig, *, restrict_to=None,
+) -> str:
     """Canonical digest of a data definition — ONE implementation.
 
     Written into every run's ``config.yaml`` at mining time and recomputed
@@ -387,8 +451,18 @@ def data_definition_sha256(data: DataConfig) -> str:
     function is what makes the comparison meaningful (a second hand-rolled
     canonicalization is exactly what would drift).
     """
+    payload = asdict(data)
+    if restrict_to is not None:
+        # Schema-migration verification (promote): a snapshot written
+        # under an OLDER DataConfig recorded its digest over the fields
+        # that existed THEN. Recomputing over today's full field set
+        # would refuse every pre-extension run with a misleading
+        # "edited after mining" — restricting to the snapshot's own key
+        # set reproduces the original canonicalization exactly, while
+        # any edit to a recorded VALUE still changes the digest.
+        payload = {k: v for k, v in payload.items() if k in restrict_to}
     return hashlib.sha256(
-        json.dumps(asdict(data), sort_keys=True).encode("utf-8")
+        json.dumps(payload, sort_keys=True).encode("utf-8")
     ).hexdigest()
 
 
@@ -420,6 +494,212 @@ def build_panel(config: MinerConfig):
     return build_panel_for_data(config.data)
 
 
+# ---------------------------------------------------------------------------
+# Fundamental panel seam
+# ---------------------------------------------------------------------------
+#
+# The fundamental bridge lives in ``src/research/`` and this package must
+# not import it (the research-isolation gate refuses any non-research
+# ``src.*`` module importing ``src.research.*``). The panel factory is
+# therefore INJECTED by the campaign scripts under ``scripts/research/``
+# — the one layer that sees both sides. The factory consumes the run's
+# persisted ``DataConfig`` (store root, calendar, fields, exclusions) and
+# the panel geometry the seam owner hands it, and returns the documented
+# flat triple ``(values, evidence, periods)`` whose keys are terminal
+# names (``$revenue``, ``$revenue__prior``, ...). The factory callable is
+# the ONE input the persisted contract cannot carry, so its identity is
+# recorded as a digest of its OUTPUT (see ``panel_digest``) — never as
+# self-reported metadata.
+
+
+def _verify_fundamental_triple(triple, fwd, panel, declared_fields):
+    """Validate the factory's output against the seam contract.
+
+    Returns the verified ``(values, evidence, periods)``. Refuses:
+    anything but a 3-tuple of mappings; key sets that disagree between
+    the three sections; a key set that is not EXACTLY the current+prior
+    terminal pair of every declared charter field; frames whose geometry
+    differs from the run's (trade date × instrument) panel; and keys
+    that collide with the price-volume panel (a factory must never
+    shadow a qlib terminal).
+
+    The declared-fields equality is the binding between the persisted
+    ``DataConfig`` and what actually reaches evaluation: a miswired
+    factory handed to BOTH mining and promotion is self-consistent —
+    its behavioral digest reproduces perfectly — while the GP breeds on
+    a terminal whitelist the run's data definition never declared.
+    Self-consistency proves "same builder", only this check proves
+    "the builder the contract describes".
+    """
+    try:
+        values, evidence, periods = triple
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "fundamental panel factory must return the documented "
+            "(values, evidence, periods) triple; got "
+            f"{type(triple).__name__}."
+        ) from exc
+    sections = {"values": values, "evidence": evidence, "periods": periods}
+    for name, mapping in sections.items():
+        if not hasattr(mapping, "keys"):
+            raise RuntimeError(
+                f"fundamental factory {name} is not a mapping "
+                f"({type(mapping).__name__})."
+            )
+    keysets = {name: set(m.keys()) for name, m in sections.items()}
+    if not (keysets["values"] == keysets["evidence"] == keysets["periods"]):
+        raise RuntimeError(
+            "fundamental factory sections disagree on their key sets — "
+            "every terminal must carry values, evidence AND periods: "
+            f"values={sorted(keysets['values'])}, "
+            f"evidence={sorted(keysets['evidence'])}, "
+            f"periods={sorted(keysets['periods'])}."
+        )
+    from .grammar import FeatureRegistry  # noqa: PLC0415
+
+    expected = set()
+    for field_name in declared_fields:
+        expected.add(f"${field_name}")
+        expected.add(f"${field_name}{FeatureRegistry.PRIOR_SUFFIX}")
+    if keysets["values"] != expected:
+        raise RuntimeError(
+            "fundamental factory keys do not match the run's declared "
+            f"fields: got {sorted(keysets['values'])}, the persisted "
+            f"DataConfig declares {sorted(declared_fields)} (expected "
+            f"terminals {sorted(expected)}) — the panel that reaches "
+            "evaluation must be exactly the one the run's data "
+            "definition describes."
+        )
+    collisions = keysets["values"] & set(panel.keys())
+    if collisions:
+        raise RuntimeError(
+            "fundamental factory keys collide with the price-volume "
+            f"panel: {sorted(collisions)} — a factory must never shadow "
+            "a qlib terminal."
+        )
+    for name, mapping in sections.items():
+        for key, frame in mapping.items():
+            if not frame.index.equals(fwd.index) or not frame.columns.equals(
+                fwd.columns
+            ):
+                raise RuntimeError(
+                    f"fundamental factory {name}[{key!r}] geometry does "
+                    "not match the run panel (trade dates × instruments) "
+                    "— the seam hands the factory the exact geometry and "
+                    "the bridge reindexes onto it; a mismatch means the "
+                    "factory is not the canonical bridge."
+                )
+    return values, evidence, periods
+
+
+def _build_fundamental_leg(data: DataConfig, factory, fwd, panel):
+    """Call the injected factory and verify + digest its output.
+
+    Returns ``(values, evidence, periods, output_sha256)``.
+    """
+    from .panel_digest import fundamental_output_sha256  # noqa: PLC0415
+
+    triple = factory(data, fwd.index, list(fwd.columns))
+    values, evidence, periods = _verify_fundamental_triple(
+        triple, fwd, panel, data.fundamental_fields)
+    digest = fundamental_output_sha256(values, evidence, periods)
+    return values, evidence, periods, digest
+
+
+def fundamental_leg_declared(data: DataConfig) -> bool:
+    """Whether this data definition declares a fundamental leg — strictly.
+
+    Declaration is ANY populated field of the fundamental quartet, not
+    just the store root: ``financial_exclusions`` alone would slip past
+    a store-root-only flag and still cut the coverage denominator in
+    ``build_universe_mask`` while mining a price-volume-only panel — a
+    different experiment silently wearing a legacy config. A PARTIAL
+    quartet is therefore refused here (used by mining AND promotion),
+    never interpreted: the required trio must arrive together;
+    ``financial_exclusions`` alone stays optional WITHIN a declared leg.
+    """
+    populated = {
+        name for name, value in (
+            ("fundamental_store_root", data.fundamental_store_root),
+            ("fundamental_calendar_path", data.fundamental_calendar_path),
+            ("fundamental_fields", data.fundamental_fields),
+            ("financial_exclusions", data.financial_exclusions),
+        ) if value
+    }
+    if not populated:
+        return False
+    required_missing = {
+        "fundamental_store_root", "fundamental_calendar_path",
+        "fundamental_fields",
+    } - populated
+    if required_missing:
+        raise ValueError(
+            "fundamental configuration is PARTIAL: "
+            f"{sorted(populated)} set but {sorted(required_missing)} "
+            "empty — a partial quartet cannot be interpreted (e.g. "
+            "financial_exclusions alone would still cut the coverage "
+            "denominator while mining a price-volume-only panel: a "
+            "different experiment, not a config default). Populate the "
+            "fundamental leg fully or clear it."
+        )
+    return True
+
+
+def _check_fundamental_coherence(data: DataConfig, factory) -> None:
+    """The factory and the fundamental config must arrive together.
+
+    A factory without recorded inputs has nothing promotion could
+    rebuild from; recorded inputs without a factory would mine a panel
+    that silently lacks the leg its config declares. Both directions
+    are wiring failures — refuse before any expensive work.
+    """
+    declared = fundamental_leg_declared(data)
+    if declared and factory is None:
+        raise ValueError(
+            "DataConfig declares a fundamental leg "
+            f"(fundamental_store_root={data.fundamental_store_root!r}) "
+            "but no fundamental_panel_factory was injected — the run "
+            "would mine WITHOUT the leg its config records. Drive the "
+            "run through the campaign script that injects the factory."
+        )
+    if factory is not None and not declared:
+        raise ValueError(
+            "a fundamental_panel_factory was injected but the DataConfig "
+            "records no fundamental inputs (fundamental_store_root is "
+            "empty) — promotion could never rebuild this panel from the "
+            "run's persisted contract; record the inputs in DataConfig."
+        )
+
+
+def _apply_financial_exclusions(mask, exclusions: tuple[str, ...]):
+    """Drop the signed financial exclusions from the universe mask.
+
+    The view removes financial issuers from the fundamental panel, so
+    leaving them in the mask keeps their cells in the coverage
+    DENOMINATOR forever-uncovered — depressing coverage, which feeds
+    candidate admission and fitness. Uses the run's PERSISTED exclusion
+    set so mining and promotion apply exactly the same cut.
+    """
+    if mask is None or not exclusions:
+        return mask
+    present = [t for t in exclusions if t in mask.columns]
+    absent = sorted(set(exclusions) - set(present))
+    if absent:
+        _log.info(
+            "financial_exclusions: %d name(s) not in the universe mask "
+            "(never members in this window): %s",
+            len(absent), absent[:10],
+        )
+    if present:
+        mask = mask.copy()
+        mask.loc[:, present] = False
+        _log.info(
+            "financial_exclusions: %d member column(s) excluded from the "
+            "coverage denominator.", len(present),
+        )
+    return mask
+
+
 def build_universe_mask(config: MinerConfig):
     """Universe-membership mask (date × ticker bool) for the run, or None.
 
@@ -448,7 +728,8 @@ def build_universe_mask(config: MinerConfig):
         end=data.end_date,
         universe_name=data.universe_name,
     )
-    return view.universe_mask()
+    return _apply_financial_exclusions(
+        view.universe_mask(), data.financial_exclusions)
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +762,9 @@ def _truncate_pool_to_top_k(pool: FactorPool, k: int) -> FactorPool:
     return truncated
 
 
-def run_mining(config: MinerConfig) -> RunResult:
+def run_mining(
+    config: MinerConfig, *, fundamental_panel_factory=None,
+) -> RunResult:
     """Execute the full miner pipeline: build panel → run GP → save pool.
 
     When ``config.pool_top_k`` is set, the saved pool is truncated to
@@ -489,7 +772,19 @@ def run_mining(config: MinerConfig) -> RunResult:
     ``RunResult.pool`` reflects the saved (truncated) pool so callers
     inspecting ``result.pool`` see the same entries that downstream
     consumers (handler, walk-forward) will load.
+
+    ``fundamental_panel_factory`` is the injection seam for the
+    fundamental campaign (see the seam section above): a callable
+    ``(data_config, trade_dates, instruments) -> (values, evidence,
+    periods)`` injected by ``scripts/research/``. It must arrive
+    together with the fundamental ``DataConfig`` fields (both-or-
+    neither), its output is verified and content-digested here, and the
+    run records that digest plus the exact geometry it was computed on
+    so promotion can re-derive the factory's identity from BEHAVIOR —
+    never from self-reported metadata. ``None`` (default) is the legacy
+    price-volume path, byte-identical to before.
     """
+    _check_fundamental_coherence(config.data, fundamental_panel_factory)
     # Reserve the run directory FIRST (codex P2 on #418): a duplicate
     # pinned run_id must be refused before the expensive part — panel
     # build, baseline load and the full GP run — not after burning it.
@@ -521,13 +816,33 @@ def run_mining(config: MinerConfig) -> RunResult:
         fingerprints: dict[str, str] | None = None
         if config.data.mode == "pit":
             fingerprints = pit_binding_fingerprints(config.data)
+        # The fundamental inputs get the SAME before/after stability
+        # check as the PIT inputs: taken before anything reads them,
+        # re-taken after mining, mismatch refused before any artifact —
+        # captured only after the build, a store refresh during it would
+        # record the NEW identity for a pool mined on the OLD bytes.
+        fundamental_fingerprints: dict[str, str] | None = None
+        if fundamental_panel_factory is not None:
+            fundamental_fingerprints = fundamental_binding_fingerprints(
+                config.data)
 
         panel, fwd = build_panel(config)
+        fundamental_output_sha: str | None = None
+        periods = None
+        if fundamental_panel_factory is not None:
+            values, _evidence, periods, fundamental_output_sha = (
+                _build_fundamental_leg(
+                    config.data, fundamental_panel_factory, fwd, panel))
+            # Merge AFTER verification: keys are collision-checked and
+            # geometry-checked against the run panel, so from here on the
+            # engine sees one flat mapping and derives its terminal
+            # whitelist from it (the panel IS the contract).
+            panel = {**panel, **values}
         universe_mask = build_universe_mask(config)
         baseline = load_baseline_predictions(config)
         engine = GPEngine(config.gp, config.fitness)
         pool = engine.run(panel, fwd, universe_mask=universe_mask,
-                          baseline=baseline)
+                          baseline=baseline, periods=periods)
 
         if fingerprints is not None and (
             pit_binding_fingerprints(config.data) != fingerprints
@@ -540,6 +855,17 @@ def run_mining(config: MinerConfig) -> RunResult:
                 "or delisted registry was refreshed mid-run, so the mined "
                 "pool no longer corresponds to any on-disk data identity. "
                 "Re-run mining against stable inputs."
+            )
+        if fundamental_fingerprints is not None and (
+            fundamental_binding_fingerprints(config.data)
+            != fundamental_fingerprints
+        ):
+            raise RuntimeError(
+                "fundamental inputs changed while mining was running — "
+                "the financial-statement store or the trading calendar "
+                "was refreshed mid-run, so the mined pool no longer "
+                "corresponds to any on-disk data identity. Re-run mining "
+                "against stable inputs."
             )
     except BaseException:
         # Release the reservation on failure — rmdir only removes an
@@ -587,6 +913,23 @@ def run_mining(config: MinerConfig) -> RunResult:
         # paths (external finding on #415 r4) — promote re-verifies these.
         # These are the PRE-BUILD values, already re-verified above.
         config_dump.update(fingerprints)
+    if fundamental_fingerprints is not None:
+        config_dump.update(fundamental_fingerprints)
+        # The factory's behavioral identity: a content digest over its
+        # full output (values, evidence AND periods), computed by THIS
+        # module — never self-reported. Promotion re-invokes whatever
+        # factory it is handed on the exact recorded geometry and
+        # refuses a digest mismatch, so swapping the callable while
+        # every config value still matches is caught by behavior.
+        config_dump["fundamental_output_sha256"] = fundamental_output_sha
+        (run_dir / "fundamental_binding.json").write_text(
+            json.dumps({
+                "trade_dates": [str(d.date()) for d in fwd.index],
+                "instruments": [str(c) for c in fwd.columns],
+                "output_sha256": fundamental_output_sha,
+            }, indent=2),
+            encoding="utf-8",
+        )
     if baseline is not None:
         # Operator decision A: the baseline keeps the production
         # walk-forward fold geometry, whose first out-of-fold date is

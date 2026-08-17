@@ -170,6 +170,20 @@ def align_periods_at_terminals(
     from .grammar import FeatureRegistry  # noqa: PLC0415
 
     referenced = sorted(feature_terminals(expr))
+    # The same-period question exists only BETWEEN financial-statement
+    # terminals. A merged campaign panel legitimately breeds mixed
+    # expressions — ``div_safe($revenue, $money)`` is an ordinary ratio —
+    # and the price-volume leg is daily data with no report quarter to
+    # disagree about: it neither needs a period frame nor participates in
+    # the mask. Statement-hood comes from the REGISTRY (the same
+    # registry-minus-default criterion the production write refusal
+    # uses), never from "which keys the factory happened to supply" —
+    # otherwise a builder that dropped a period frame would turn a
+    # statement terminal into an exempt one and evaluate it unmasked.
+    non_default = (
+        frozenset(FeatureRegistry.ALL_REGISTERED)
+        - frozenset(FeatureRegistry.V1))
+    referenced = [t for t in referenced if t in non_default]
     if len(referenced) < 2:
         return panel
     missing = [t for t in referenced if t not in periods]

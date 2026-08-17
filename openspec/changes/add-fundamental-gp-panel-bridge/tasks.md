@@ -2,7 +2,7 @@
 
 ## 上游扩展（codex #427 P1：初版误称"零改动"，这两项是桥能跑起来的前置）
 
-- [ ] `src/research/financial_pit_view.py`：`as_of` 增加**公开的 provenance 响应**
+- [x] `src/research/financial_pit_view.py`：`as_of` 增加**公开的 provenance 响应**
       （每个服务字段的 `available_from_trade_date`，与值**同一次调用**返回）。没有它，
       桥只能读私有内部/裸 store 或反推证据 —— 而反推正是"证据"该排除的东西。
       配套测试：值与 provenance 同源；**被服务记录的字段值为 NA 时仍带其可用日**
@@ -11,7 +11,7 @@
       可用日严格晚于公告日，所以公告日当天记录已公告却无物可服务，证据同样必须为
       NA，codex #427 r24 P1）——否则"两期皆 NA"的字段在公告日平移下值与证据都不变，
       平移诊断会误拒正确实现（codex #427 r3 P2）。
-- [ ] `src/factor_mining/grammar.py`：注册**基本面终端组** + 其类型/taint 规则。
+- [x] `src/factor_mining/grammar.py`：注册**基本面终端组** + 其类型/taint 规则。
       现状 `FeatureRegistry.V1` 仅 12 个终端，`_random_leaf` 与 `V1_*` 取交集、
       `Terminal` 拒绝表外名字 —— 只靠参数传面板，GP **长不出**基本面表达式。
       D5 不受影响（只加终端符号与类型，不引入 qlib/PIT import），须有对应闸测试。
@@ -31,13 +31,13 @@
       白名单合法地只含某类型**一个**终端时无从替换：那要**可见地记录并报告**
       "该白名单下无可替换"，与"池搭错了"区分开，不得静默返回原式
       （codex #427 r10 P2）;变异回归用**至少两个**同类型白名单终端来测。
-- [ ] **终端名 ↔ charter 字段名的映射**（codex #427 r4 P1）：注册终端还不够 ——
+- [x] **终端名 ↔ charter 字段名的映射**（codex #427 r4 P1）：注册终端还不够 ——
       `evaluator` 只认 `$` 开头并按字面查面板 key（`evaluator.py:82`），而
       `financial_pit_view.as_of` 把 `$revenue` 判为 unknown charter field
       （`_FIELD_ENDPOINT` 白名单）、只收裸名 `revenue`。须把映射写进契约：桥收 charter
       名、发终端形 key；测试要**端到端**（GP 生成的终端 → 桥 → view 字段值），不是
       注册表和 view 各自能跑；无映射的终端**fail-loud**，不得静默丢字段。
-- [ ] **prior 期做成一等公民**（codex #427 r4 P1）：`__prior` 只挂在面板旁边是**长不出
+- [x] **prior 期做成一等公民**（codex #427 r4 P1）：`__prior` 只挂在面板旁边是**长不出
       表达式**的 —— evaluator 只能消费已注册且在值 mapping 里的 key，AST 根本引用不到
       它，于是起步三因子里的**资产增长与 C3 应计写不出来**（而"跑通链路"任务又要求
       它们跑）。须落成带类型的 prior 期终端或"相邻报告期"算子，进面板 key 与战役
@@ -45,24 +45,24 @@
 
 ## 桥模块（研究侧）
 
-- [ ] `src/research/fundamental_panel.py`：`build_fundamental_panel(view, fields,
+- [x] `src/research/fundamental_panel.py`：`build_fundamental_panel(view, fields,
       trade_dates, instruments, *, group_resolver=None)` → `(panels, evidence,
       periods)`；逐交易日 `view.as_of`（**一次调用同时取值、provenance、报告期**），
       实例内缓存已由 view 提供（只付过滤成本）。
-- [ ] 返回前自检：`available_from <= trade_date`，**键在证据上而非值上**
+- [x] 返回前自检：`available_from <= trade_date`，**键在证据上而非值上**
       （codex #427 r4 P2）—— 每个**非 NA 证据** cell 都要查。若按"非 NA 值"来查，
       r3 引入的"被服务记录值为 NA 仍带可用日"那批 cell 恰好全部逃检，提前公告且
       该字段为 NA 的记录就能带着未来日期的证据活着出厂，与金丝雀①自相矛盾。
       违反即 raise；无法建立证据的字段 → 拒绝返回面板（不返回"无证据面板"）。
-- [ ] **跨期 provenance**：面板携带每个字段的 `report_period`
+- [x] **跨期 provenance**：面板携带每个字段的 `report_period`
       （用 `include_report_periods`）与差分类字段的 `__prior` 及其自身 provenance
       （用 `include_prior_period`）。
-- [ ] **命名空间冻结**（codex #427 r2 P1）：面板 instrument 标签必须与 GP 面板
+- [x] **命名空间冻结**（codex #427 r2 P1）：面板 instrument 标签必须与 GP 面板
       /forward-return **同命名空间**。view 归一化为 store 原生 `ts_code`
       （`600000.SH`），而 factor_mining 面板用 qlib 标签（`SH600000`），两者
       **零交集** —— repo 已有 `test_namespace_mismatch_refuses` 把这种混用记为硬
       错误。桥必须转换并加测试**逐列精确比对** forward-return 的列（不是"有交集"）。
-- [ ] **跨端点同期强制放到 expression-aware 层**（codex #427 r2 P1）：面板层做不到 ——
+- [x] **跨端点同期强制放到 expression-aware 层**（codex #427 r2 P1）：面板层做不到 ——
       桥在表达式产生**之前**运行，`evaluator` 又把每个终端各自解析为值帧，所以桥无从
       知道候选是否跨端点：全局遮蔽会误杀合法的同端点表达式，不遮蔽则混季比率仍可达。
       改为在**求值路径**上做，遮蔽落在**终端层**：按该表达式引用的**端点集合**算联合
@@ -75,12 +75,12 @@
       第一个跨端点节点是 `add`，到那时两个子树各自已把错期历史聚合完了（r5 P1）。
       终端层是唯一不留拓扑口子的位置。两种拓扑都要有回归用例。
       这意味着 `src/factor_mining/evaluator.py` 在 scope 内。
-- [ ] **把 period provenance 接进求值路径**（codex #427 r3 P1）：桥把 `periods` 作为
+- [x] **把 period provenance 接进求值路径**（codex #427 r3 P1）：桥把 `periods` 作为
       第三个返回对象，而现有 GP 调用是 `evaluate_factor(expr, panel, ...)` 只传值面板 ——
       新纳入 scope 的 evaluator **没有途径拿到** report periods。须定义并接线一个带
       provenance 的面板/求值参数（或明确一个 adapter，在求值前把 period 帧打包进
       mapping）；若这条通路需要动 `gp_engine.py` 的传参，则它也进 scope。
-- [ ] **接线要覆盖每一个求值调用点，不止搜索路径**（codex #427 r4 P1）：
+- [x] **接线要覆盖每一个求值调用点，不止搜索路径**（codex #427 r4 P1）：
       `validator.py:157` 的 `_evaluate_segment` 调 `evaluate_factor(expr, seg_panel,
       seg_fwd, ...)`、`validator.py:293` 的 `filter_correlated` 调
       `evaluate_expression(entry.expr, panel)`，两处都不带 provenance。若 provenance
@@ -88,13 +88,13 @@
       混季值**上算指标并据此裁决 —— 两种都让"决定晋升的指标"不是"遮蔽定义的指标"。
       验证的分段切分与两条求值路径一并进 scope，测试同步迁移（AGENTS.md「改契约必须
       迁移调用方与测试」）。
-- [ ] **晋升入口也要接**（codex #427 r5 P1）：`promote.py:376` 的
+- [x] **晋升入口也要接**（codex #427 r5 P1）：`promote.py:376` 的
       `panel, fwd = build_panel_for_data(config.data)` 只造 `(panel, fwd)`，随后
       386 行 `validate_pool` 与 389 行 `filter_correlated` 都拿不到 `periods`。
       这条是**真正做裁决的路径** —— provenance 可选则晋升在未遮蔽值上裁决，必需则
       晋升直接失败。造面板的 adapter（`build_panel_for_data`）与其调用方一并进 scope，
       并有端到端晋升测试。
-- [ ] **注入缝：面板构造器由脚本层传进来，不由 `src/factor_mining/` 导入**
+- [x] **注入缝：面板构造器由脚本层传进来，不由 `src/factor_mining/` 导入**
       （codex #427 r11 P1）：`build_panel_for_data` 在 `src/factor_mining/miner.py:395`，
       挖掘与晋升都直接调它；而桥与 `FinancialPITDataView` 在 `src/research/`，
       `test_no_canonical_src_imports_research` 拒绝 `src/` 内**任何**非 research 模块
@@ -134,13 +134,13 @@
       基线都来自晋升**不曾产出**的地方。**注意扩窗下的输出摘要基线不能来自挖掘**
       （codex #427 r18 P1）：挖掘只可能覆盖原窗，拿它当扩窗基线要么放过新增 OOS
       日期、要么必然不等 —— 扩窗的输出摘要基线**只能**是那份独立可信的预授权基线。
-- [ ] **金融排除要一并进宇宙掩码**（codex #427 r12 P1）：`run_mining` 另行取
+- [x] **金融排除要一并进宇宙掩码**（codex #427 r12 P1）：`run_mining` 另行取
       `build_universe_mask(config)`（`miner.py:423/526`），其底座是 qlib membership
       帧，**照样把金融 issuer 标记为成员**；而 view 已把它们全部剔除。于是这些名字
       的 cell 留在 `evaluator._coverage` 的**分母**里、永远算作未覆盖，压低覆盖率 ——
       而覆盖率喂给候选准入与适应度。必须用 run **持久化的**排除集（而非造掩码时
       重新推导，否则挖掘与晋升会漂移）同样地裁掉，并测覆盖率分母。
-- [ ] **`DataConfig` 要记全重建面板的输入**（codex #427 r6 P1）：`promote_run` 只能把
+- [x] **`DataConfig` 要记全重建面板的输入**（codex #427 r6 P1）：`promote_run` 只能把
       持久化的 `DataConfig` 交给 `build_panel_for_data`，而 `DataConfig`（`miner.py:42`）
       只有 `pit_provider_uri` / `delisted_registry_path` / `universe_name` / 起止日 /
       `fields` —— **没有财报 store 路径、没有日历身份、没有金融排除集、没有基本面
@@ -148,7 +148,7 @@
       未记录的外部/全局依赖去重建面板，"端到端晋升测试"要么用不了真 adapter、要么
       验的是另一份数据。这些输入进 run-bound 数据契约，并进其 load / hash / migration
       范围（hash 不覆盖 = 两份不同面板算同一个 run）。
-- [ ] **内容指纹，不只是配置值**（codex #427 r7 P1）：store / 日历 artifact 被
+- [x] **内容指纹，不只是配置值**（codex #427 r7 P1）：store / 日历 artifact 被
       **就地刷新**时路径与身份都不变，只哈希扩展后的 `DataConfig` 仍会把两份不同面板
       算作同一个 run。照 PIT 侧既有做法办 —— `promote._verify_pit_binding`
       （`promote.py:259`）在挖掘时记内容指纹、晋升时按当前路径重算并拒绝漂移，且拒绝
@@ -165,7 +165,7 @@
       而记录的身份仍然对得上。晋升须在**读面板前**取一次、**求值后且
       `target_dir.mkdir()` 之前**再取一次，不符即拒 —— 拒绝落在碰生产之前
       （与「拒绝早于 mkdir」同一条边界）。
-- [ ] **生产物化边界:机器可执行的拒绝**（codex #427 r6 P1）：
+- [x] **生产物化边界:机器可执行的拒绝**（codex #427 r6 P1）：
       `src/data/mined_factor_handler.py:213` 的 `evaluate_expression(entry.expr,
       resolved_panel)` 只吃 `FactorMiningDataView` 的 qlib 面板、不带 period
       provenance。基本面池若走到这里，要么因财务终端无法解析而炸，要么（若注入面板）
@@ -182,7 +182,7 @@
       （不是"没写出 pool 文件"）。只放在 `mined_factor_handler` 里太晚 —— 那时晋升**已经把基本面池写进
       生产目录了**，拒绝要等到某次物化才响、甚至永远不响。handler 侧的检查可作为
       纵深防御保留，但不能替代写盘方的拒绝。
-- [ ] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
+- [x] `group_resolver` 参数今天恒传 `None`（PIT 行业 artifact 属后续 change）；
       签名与文档写明"绝不以当前快照兜底"。
 - [ ] 性能：先测全历史 × CSI800 的墙钟时间；若逐日 Python 循环过慢，改为按
       `available_from_trade_date` 的 `merge_asof` 向量化 —— **但等价性须由 (i) 的
@@ -190,7 +190,7 @@
 
 ## 四件套防线（与桥同批落地，不可后补）
 
-- [ ] (i) `tests/logic/research/test_fundamental_panel_pit.py`：合成小店属性测试 —
+- [x] (i) `tests/logic/research/test_fundamental_panel_pit.py`：合成小店属性测试 —
       **该期公告前不被服务**（继续服务**胜者** = 该日**已可用**的最新报告期，
       没有任何已可用期时才 NA，而**不是**一律把 cell 置 NA；且可用日之后也只有
       在该期**本身是胜者**时才服务它 —— 更晚的报告期若已可用则继续服务后者，
@@ -203,7 +203,7 @@
       missing-stays-missing（禁的是**填补**缺失值，不是禁止服务真实可用的旧期）；
       抽样 + 边界日（公告日、前一日、后首个交易日）核对
       `panel[T] == view.as_of(T)`。
-- [ ] (ii) `tests/logic/research/test_fundamental_panel_canaries.py` —— **金丝雀已按
+- [x] (ii) `tests/logic/research/test_fundamental_panel_canaries.py` —— **金丝雀已按
       codex #427 P1 重设计**：初版的"未来值金丝雀"是装饰性的（带着看似合法证据的
       未来派生值，可用性断言无法与真值区分；省略证据则只测到"拒绝无证据输入"）。
       改为两个 builder **能自行计算**的不变量：①提前公告（证据 > 交易日）
@@ -212,7 +212,7 @@
       **显式排除**"证据/值不同源"金丝雀（codex #427 r2 P1）：无独立记录身份时
       builder 无法判定该谎言，若唯一路径被绕过则 builder 根本不运行 —— 它是
       **view 的不变量**，由 canonical PIT battery 守，不在面板层重述。
-- [ ] (iii) `scripts/research/fundamental_ann_shift_sensitivity.py`：公告日整体后移
+- [x] (iii) `scripts/research/fundamental_ann_shift_sensitivity.py`：公告日整体后移
       N∈{5,10,21} 交易日重建面板。**先确认相关性再断言**（codex #427 r9 P2）：
       被平移的披露未必触及所请求的字段/端点/instrument —— 只取 revenue 的面板本就
       该无视一份纯资产负债表申报，此时值与证据都不变，无条件规则会**误拒正确实现**。
@@ -268,7 +268,7 @@
 
 ## 验证与边界
 
-- [ ] 确认改动面与提案一致：`grammar.py`（终端注册 + 名字映射 + prior 期终端/算子）、
+- [x] 确认改动面与提案一致：`grammar.py`（终端注册 + 名字映射 + prior 期终端/算子）、
       `evaluator.py`（跨端点同期强制，终端层联合掩码）、`validator.py`（两条求值
       调用点接 provenance）、`promote.py` 与 `build_panel_for_data`（晋升入口带
       provenance）、`financial_pit_view.py`（provenance 响应）**有**改动；
@@ -280,9 +280,9 @@
       `gp_engine.py`（点变异替换池迁移 = **无条件**改动，与 adapter 方案无关；
       provenance 传参通路**仅当**必须经由它时才一并动）；
       `pit_adapter` / `src/data/pit/*` / canonical runtime **无**改动。
-- [ ] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
+- [x] 确认 D5 gate 与 `test_financial_pit_view_isolation.py` 均照原样通过
       （**不改签**）—— 终端注册不引入 qlib/PIT import，桥仍在 `src/research/` 内。
-- [ ] ruff + mypy --strict + 治理全套 + 新增测试全绿。
+- [x] ruff + mypy --strict + 治理全套 + 新增测试全绿。
 - [ ] 用起步三因子（① GP/A、③ 资产增长、② C3 纯 BS 应计 —— CSI800 覆盖率已实测全绿）
       跑通"面板化 → GP → 边际贡献"最小链路，**只为验证链路与防线，不做因子裁决**
       （裁决属后续预注册战役）。
