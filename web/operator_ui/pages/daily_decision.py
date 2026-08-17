@@ -33,6 +33,8 @@ from web.operator_ui.decision_journal import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    CERTIFIED_SLIPPAGE_BPS,
+    COST_REFERENCE_COLUMN,
     VERDICT_ENSEMBLE_SHA_MISSING,
     VERDICT_ENSEMBLE_UNDER_SINGLE,
     VERDICT_INCUMBENT_UNRESOLVED,
@@ -344,6 +346,38 @@ st.caption(
     f"as_of {_payload.get('as_of_date', '—')} → entry {_payload.get('entry_date', '—')} · "
     f"n_scored={_payload.get('n_scored', '—')} · n_masked={_payload.get('n_masked', '—')} · "
     f"n_st_excluded={_payload.get('n_st_excluded', '—')}"
+)
+# runbook 红线(docs/daily-recommend-runbook.md「Which session is the list
+# for?」):entry 按契约是 T+1 交易日,而可交易性筛选(停牌/一字板)需要该日
+# 真实 bar,所以它必在 bundle 内、必是**已收盘**会话——工具永远出不了面向
+# 未开盘会话的单。这里只纠正**时点**上的误读("按明早开盘价买"),不谈
+# 这张单该不该执行:那由 rebalance_day 决定,上方 HOLD 横幅已单独承载
+# (codex #443 r1:笼统否定会让该执行的清单被误当成不该执行)。
+#
+# 缺 entry_date 的工件不得走这条路:那样会渲染出「entry — 是已收盘会话」
+# ——把一份**违约的**数据当成可信引导来背书(codex #443 r2)。
+_entry_date = _payload.get("entry_date")
+if not isinstance(_entry_date, str) or not _entry_date.strip():
+    st.error(
+        "⚠ 工件缺少 `entry_date`(或为空/非字符串)——**工件契约被违反**,"
+        "本页拒绝据此给出任何入场时点结论。请核查产出该工件的那次运行"
+        "(scripts/daily_recommend.py 正常写出该字段)。"
+    )
+else:
+    st.caption(
+        f"⏱ **entry {_entry_date} 是已收盘会话**"
+        "(契约上的 T+1;可交易性校验需要该日真实 bar,故必在 bundle 内)。"
+        "因此**不要读成「明早开盘按市价买入」**——它是该会话收盘口径的"
+        "目标持仓;实际下单如何向它靠拢由操作人的执行约定决定(观察期正在"
+        "记录这段偏离)。**是否构成入场指令**看上方再平衡/HOLD 披露。"
+    )
+# 成本参照列的读法。滑点数值与常量同源派生——写死「20 bps」会在认证
+# profile 挪动时和列名/所减数字对不上(codex #443 r1)。
+st.caption(
+    f"「{COST_REFERENCE_COLUMN}」= 生产认证成本口径的一次完整往返"
+    f"({CERTIFIED_SLIPPAGE_BPS:.0f} bps 单边滑点 + 佣金 + 印花税)。"
+    "评分是**1 日**预测收益而生产周频持有约 5 日,故该列是**保守下界**,"
+    "不是逐日门槛。"
 )
 if _rows:
     st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
