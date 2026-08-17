@@ -206,10 +206,12 @@ class HelpersRuntimeTests(unittest.TestCase):
         except ImportError as exc:  # pragma: no cover - dep-light cell
             # 只在**确认 qlib 缺席**时跳过。本测试是那两个刻意复制的常量
             # 唯一的防漂移机制——宽泛地吞掉任何异常,会让一个 import 期的
-            # NameError/误删模块把它静默摘掉而 CI 报绿(codex #443 r2)。
-            try:
-                import qlib  # noqa: F401
-            except ImportError:
+            # NameError/误删模块把它静默摘掉而 CI 报绿(codex #443 r2);
+            # 而 `import qlib` 探测同样会吞掉 qlib 自己 __init__ 抛的
+            # ImportError,所以用 find_spec 只判存在性、不执行包体(r3)。
+            import importlib.util
+
+            if importlib.util.find_spec("qlib") is None:
                 self.skipTest("qlib absent (dep-light cell)")
             raise AssertionError(
                 f"qlib is present but the canonical modules failed to "

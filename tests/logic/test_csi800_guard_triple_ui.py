@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -16,15 +17,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 只在**确认 qlib 缺席**时跳过。宽泛地吞掉任何异常会让一个 import 期的
-# NameError / 误删的内部模块 / 初始化回归,统统伪装成「依赖不可用」——
-# 整个类六个用例被静默跳过而 CI 报绿(codex #443 r1)。
-try:
-    import qlib  # noqa: F401
-
-    _HAS_QLIB = True
-except ImportError:  # pragma: no cover - dep-light cell
-    _HAS_QLIB = False
+# 只在**确认 qlib 缺席**时跳过。两条演进:
+#   r1 — 宽泛 except 会把 import 期的 NameError/误删模块伪装成「依赖不可用」;
+#   r2/r3 — 改成 `import qlib` 仍不够:它同样会吞掉 qlib **自己**
+#   `__init__.py` 里抛出的 ImportError(内部模块被删就是这个形状)。
+# 用 find_spec 判存在性——它只在 sys.path 上找,不执行包体,所以「装没装」
+# 与「装了但坏了」不再混为一谈(codex #443 r3)。
+_HAS_QLIB = importlib.util.find_spec("qlib") is not None
 
 if _HAS_QLIB:
     # qlib 在场 → 这两个 import 必须成功。失败就让它炸出来。
