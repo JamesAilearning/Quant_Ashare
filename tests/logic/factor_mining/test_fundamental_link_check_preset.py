@@ -31,6 +31,11 @@ _STARTER_FIELDS = frozenset({
 })
 
 _SIGNED_EXCLUSION_COUNT = 120   # 操作人 2026-08-17 签收
+# 整个签收名单的 sha256（排序后换行连接）。只查数量+语法+熟脸抓不住
+# "换掉一个非抽样名字"——那会静默改变面板排除与覆盖率分母而没有重签。
+# 改名单 = 改这个摘要 = 显式重签动作（codex #441 r1 P2）。
+_SIGNED_EXCLUSION_SHA256 = (
+    "38f03bf1133538f49dc022129b4c569188923cc101a53ff9e6612c0e6fef1e41")
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +60,13 @@ def test_the_signed_exclusion_list_is_frozen(config):
     # 熟脸抽查：五大金融不在名单 = 名单被换过。
     for known in ("SZ000001", "SH600036", "SH601318", "SH600030", "SH601398"):
         assert known in exclusions, known
+    # 整名单摘要 —— 任何一只的增删换都在此失败。
+    import hashlib
+    got = hashlib.sha256(
+        "\n".join(sorted(exclusions)).encode("utf-8")).hexdigest()
+    assert got == _SIGNED_EXCLUSION_SHA256, (
+        "签收名单被改动而未重签：摘要不匹配。若这是有意的重签，"
+        "同步更新 _SIGNED_EXCLUSION_SHA256 并在 PR 里注明签收记录。")
 
 
 def test_fields_mirror_the_frozen_starter_formulas(config):

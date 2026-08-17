@@ -54,6 +54,17 @@ def main(argv: list[str] | None = None) -> int:
     basic = basic.drop_duplicates(subset="ts_code", keep="first")
 
     excluded = sorted(financial_issuers_from_industry(basic))
+    if not excluded:
+        # An empty derivation means the snapshots' industry column is
+        # empty, stale or relabeled — NOT that the market has no
+        # financial issuers. Writing a sign-off artifact here would let
+        # incomplete reference data become an approved configuration
+        # that excludes nobody (mirrors the live derivation's refusal).
+        print(
+            "financial exclusion derived EMPTY from the snapshots — "
+            "industry data is missing or relabeled; refusing to export "
+            "a sign-off artifact.", file=sys.stderr)
+        return 1
     with_industry = basic["industry"].notna()
     delisted = frames[1]
     payload = {
