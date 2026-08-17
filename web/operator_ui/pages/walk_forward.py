@@ -131,11 +131,17 @@ _cli_wf, _, _ = list_all_jobs(
 _superseded_runs = 0
 # id → 目录。选择器每个目录只放一条,但跳转要认**所有**已知 id:UI 作业 id
 # 与 CLI 目录 id 常常指向同一个目录(见下),旧的 CLI 运行也可能与新的共用目录。
+# 别名只覆盖**同一次调用**的两个 id(UI 作业 id + 它的 CLI 镜像),不覆盖
+# 被覆盖掉的历史运行——把后者也别名进来,点旧行就会 _requested_found=True
+# 而跳过告警、静默渲染最新那份报告(codex #444 r4)。
 _run_id_to_dir: dict[str, str] = {
     str(j.get("job_id") or ""): str(j.get("run_dir") or "")
     for j in wf_jobs
     if j.get("job_id") and j.get("run_dir")
 }
+#: 已经收过 CLI 记录的目录。每个目录的**第一条**(即最新那条)是本次调用的
+#: 记录——UI 启动时它就是 UI 作业的镜像;之后的都是被覆盖的历史运行。
+_cli_dirs_seen: set[str] = set()
 for _job in _cli_wf:
     if not _job.run_dir:
         continue
@@ -150,12 +156,17 @@ for _job in _cli_wf:
     # UI 作业和一条 CLI 目录记录,指向同一个 output_dir(JobManager 把结果目录
     # 写进 config["output_dir"],引擎再按它编目)——只保留先到的那个 id,会让
     # 另一个 id 的跳转永远匹配不上(codex #444 r3)。
+    if _resolved in _cli_dirs_seen:
+        # 该目录已有更晚的 CLI 记录 → 这条是**被覆盖的历史运行**。既不别名
+        # (否则点它会静默看到别人的报告),也不进选择器,只计数并交给告警路径。
+        _superseded_runs += 1
+        continue
+    _cli_dirs_seen.add(_resolved)
+    # 本次调用的记录:与同目录的 UI 作业 id 互为别名,两个 id 都能跳对。
     _run_id_to_dir.setdefault(_job.run_id, _resolved)
     if _resolved not in run_options:
         # _cli_wf 按 completed_at 倒序,首次出现即最新的那一次。
         run_options[_resolved] = _job.run_id
-    else:
-        _superseded_runs += 1
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -417,27 +428,42 @@ if isinstance(_wf_config, dict) and _wf_config:
         f"{_wf_config.get('slippage_bps', '?')}bps",
     ]
     st.caption("运行身份:" + " · ".join(_identity_bits))
-    # anchor 决定这份报告属于**哪条证据链**,两条链都合法、含义不同
-    # (spec v2-daily-stock-recommendation「两级治理绑定链」;治理钉
-    # tests/governance/test_csi800_n5_production_serving.py 钉死
-    # winner=fold_phase、isoweek 复核=iso_week):
-    #   fold_phase = 认证胜者所用的锚(战役主判据)
-    #   iso_week   = 生产服务锚(经单独门控;复核 run 净超额>0 是晋升门之一)
-    # 起初这里写反了(把 iso_week 说成认证胜者),会让合法的认证证据被
-    # 当成参照运行(codex #444 r1)。
-    if _anchor == "fold_phase":
+    # 治理身份 SHALL NOT 只由 anchor 推断——这正是本 change 的 delta 自己
+    # 写下的禁令,而我起初的文案恰好犯了它:stage7_daily_h5 / csi300 参照运行
+    # 只因为用 fold_phase 就被标成「认证胜者」(codex #444 r4)。
+    # 治理链只管**被治理的那一族**:csi800 conservative 对(两级绑定链第一级
+    # 恰差 {rebalance_anchor, output_dir})。族外的运行只解释 schedule 语义,
+    # 不给任何治理判断。
+    _governed = (
+        str(_wf_config.get("instruments") or "") == "csi800"
+        and str(_wf_config.get("benchmark_code") or "") == "SH000906TR"
+        and _wf_config.get("rebalance_cadence_days") == 5
+        and _wf_config.get("rebalance_phase") == 0
+    )
+    if not _governed:
         st.caption(
-            "ℹ `anchor=fold_phase` = **认证胜者**所用的锚（战役主判据）。"
-            "它与生产**服务**锚 `iso_week` 是两条不同 schedule,不可互相"
-            "顶替;`iso_week` 复核切片经单独门控才成为生产锚。"
+            f"ℹ `anchor={_anchor}` 只说明本次回测的再平衡日怎么排"
+            "（`fold_phase` = 锚在折起点；`iso_week` = 每 ISO 周首个交易日）。"
+            "**本次运行不属于被治理的 csi800 认证族**（宇宙/基准/节奏任一不符），"
+            "所以这里不给任何「认证胜者 / 生产锚」的判断。"
+        )
+    elif _anchor == "fold_phase":
+        st.caption(
+            "ℹ 本次属于 csi800 认证族,且 `anchor=fold_phase` = **认证胜者**"
+            "所用的锚（战役主判据）。它与生产**服务**锚 `iso_week` 是两条"
+            "不同 schedule,不可互相顶替;`iso_week` 复核切片经单独门控才"
+            "成为生产锚。"
         )
     elif _anchor == "iso_week":
         st.caption(
-            "ℹ `anchor=iso_week` = **生产服务锚**（复核切片形态）。认证"
-            "胜者本身跑在 `fold_phase` 上,两者恰差 {rebalance_anchor, "
-            "output_dir} 且被治理测试钉死——按哪条证据链读这份报告,取决于"
-            "本行。"
+            "ℹ 本次属于 csi800 认证族,且 `anchor=iso_week` = **生产服务锚**"
+            "（复核切片形态）。认证胜者本身跑在 `fold_phase` 上,两者恰差 "
+            "{rebalance_anchor, output_dir} 且被治理测试钉死——按哪条证据链"
+            "读这份报告,取决于本行。"
         )
+    else:
+        st.caption(f"ℹ `anchor={_anchor}` 不是本仓已知的两种 schedule 之一。")
+
     _commit = str(wf_report.get("git_commit") or "")
     if _commit:
         _dirty = bool(wf_report.get("git_dirty"))

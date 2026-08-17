@@ -137,17 +137,23 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("count_cli_rows_outside_output_tree", src)
         self.assertIn("未列出", src)
 
+    def test_disclosure_precedes_empty_state_exits(self) -> None:
+        # codex #444 r4: 目录全是越界记录时（正是本改动针对的重污染场景），
+        # 页面会说「暂无作业」然后 st.stop()，反而一个字都不提搁置了多少
+        # —— 最需要披露的场景恰好不披露。披露必须在两处空态之前。
+        src = _PAGE_JOBS.read_text(encoding="utf-8")
+        disclosure_at = src.index("_set_aside = count_cli_rows_outside_output_tree()")
+        first_empty_at = src.index("if total == 0 and not _active:")
+        filtered_empty_at = src.index(chr(10) + "if total == 0:")
+        self.assertLess(disclosure_at, first_empty_at)
+        self.assertLess(disclosure_at, filtered_empty_at)
+
     def test_disclosure_does_not_swallow_the_pagination_controls(self) -> None:
         # codex #444 r1: 最初把披露段插在 pg_indicator 与 pg_next 之间，
         # 缩进把 `with pg_next:` 一起吞进了 `if _set_aside:` —— 没有搁置行
-        # 时「下一页」按钮直接消失。披露必须整体在分页块之后。
+        # 时「下一页」按钮直接消失。披露块内不得含任何分页控件。
         src = _PAGE_JOBS.read_text(encoding="utf-8")
-        next_at = src.index("with pg_next:")
         disclosure_at = src.index("_set_aside = count_cli_rows_outside_output_tree()")
-        self.assertLess(
-            next_at, disclosure_at, "分页控件必须在披露段之前且不受其条件控制"
-        )
-        # 且披露块内不得出现任何分页控件。
         block = src[disclosure_at : disclosure_at + 800]
         self.assertNotIn("pg_next", block)
         self.assertNotIn("pg_prev", block)
@@ -201,6 +207,42 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("SHALL NOT be presented as deciding what is production", spec)
         self.assertIn("certified winner runs on\n`fold_phase`", spec)
         self.assertIn("separately gated re-check", spec)
+
+    def test_governance_captions_only_apply_to_the_governed_family(self) -> None:
+        # codex #444 r4: 只凭 anchor 推治理身份，会把 stage7_daily_h5 /
+        # csi300 参照运行标成「认证胜者」—— 而本 change 的 delta 自己就写着
+        # 「anchor 单独 SHALL NOT 被当作生产判据」。文案必须先确认整族身份。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_governed = (", src)
+        gov_at = src.index("_governed = (")
+        block = src[gov_at : gov_at + 500]
+        for field in ("instruments", "benchmark_code", "rebalance_cadence_days",
+                      "rebalance_phase"):
+            with self.subTest(field=field):
+                self.assertIn(field, block)
+        # 族外必须明说「不给治理判断」，而不是沉默或照旧断言。
+        self.assertIn("不属于被治理的 csi800 认证族", src)
+        # 两条治理文案都必须在 _governed 之后（elif 链），不能独立触发。
+        self.assertIn("if not _governed:", src)
+
+    def test_superseded_ids_are_not_aliased_into_the_newest_report(self) -> None:
+        # codex #444 r4: r3 把**每个**被覆盖的 id 都塞进别名表，于是点旧行
+        # 时 _requested_found=True，绕过告警、静默渲染最新那份报告 ——
+        # 等于把 r2 加的告警又废掉了。别名只覆盖同一次调用的 UI/CLI 两个 id。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_cli_dirs_seen", src)
+        seen_at = src.index("if _resolved in _cli_dirs_seen:")
+        # 精确切到该分支本身（到它的 continue 为止）——窗口放宽会把
+        # continue 之后的正常别名写入也框进来，断言就废了。
+        branch_end = src.index("continue", seen_at) + len("continue")
+        branch = src[seen_at:branch_end]
+        self.assertIn("_superseded_runs += 1", branch)
+        # 被覆盖的分支里**不得**有别名写入。
+        self.assertNotIn("_run_id_to_dir.setdefault", branch)
+        # 而别名写入必须存在于 continue **之后**（本次调用那条才别名）。
+        self.assertIn(
+            "_run_id_to_dir.setdefault", src[branch_end : branch_end + 400]
+        )
 
     def test_anchor_caption_matches_the_governance_pin(self) -> None:
         # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉
