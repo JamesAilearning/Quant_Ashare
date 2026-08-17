@@ -249,3 +249,24 @@ def test_report_carries_the_search_digest(tmp_path):
         raw["search_definition_sha256"]
     for entry in payload["factors"].values():
         assert "fitness" in entry
+
+
+def test_starter_fitness_is_order_independent(tmp_path, monkeypatch):
+    """novelty 项对累积池的依赖曾让报告随 dict 顺序变（codex #441 r9）：
+    每因子独立 engine 后，逆序打分必须给出逐字段相同的 fitness。"""
+    import scripts.research.fundamental_gp_campaign as camp
+
+    store, calendar = _mk_store(tmp_path)
+    result = _mine(tmp_path, store, calendar)
+    out_a = tmp_path / "a.json"
+    assert main(["starter-check", "--run", str(result.output_dir),
+                 "--out", str(out_a)]) == 0
+    reversed_exprs = dict(reversed(list(camp._STARTER_EXPRESSIONS.items())))
+    monkeypatch.setattr(camp, "_STARTER_EXPRESSIONS", reversed_exprs)
+    out_b = tmp_path / "b.json"
+    assert main(["starter-check", "--run", str(result.output_dir),
+                 "--out", str(out_b)]) == 0
+    a = json.loads(out_a.read_text(encoding="utf-8"))["factors"]
+    b = json.loads(out_b.read_text(encoding="utf-8"))["factors"]
+    for name in a:
+        assert a[name]["fitness"] == b[name]["fitness"], name

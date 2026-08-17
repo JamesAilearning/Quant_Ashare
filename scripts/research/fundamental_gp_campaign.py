@@ -292,7 +292,6 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
               "— the snapshot was edited after mining; refusing to "
               "score with criteria the run never used.", file=sys.stderr)
         return 1
-    engine = GPEngine(gp_config, fitness_config)
     miner_config = MinerConfig(
         data=run_data, gp=gp_config, fitness=fitness_config,
         output_dir=run_dir)
@@ -332,6 +331,15 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
 
     report: dict[str, dict[str, float | int | str | None]] = {}
     for name, text in _STARTER_EXPRESSIONS.items():
+        # ONE FRESH ENGINE PER FACTOR: the fitness composition's
+        # novelty/correlation term compares against the engine's
+        # accumulated per-generation pool, so a reused engine makes the
+        # reported number depend on dict ORDER (C1 vs empty pool, C3 vs
+        # both predecessors) — reordering the mapping would change the
+        # audit artifact with no run input changing (codex #441 r9 P1).
+        # Independent scoring = novelty term against an empty pool
+        # (identically zero for every factor), declared in the report.
+        engine = GPEngine(gp_config, fitness_config)
         fitness, result = engine.score_expression(
             parse_expression(text), merged, fwd,
             universe_mask=universe_mask, periods=periods,
@@ -390,8 +398,11 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
                 "search_definition_sha256": recorded_search,
                 "fundamental_output_sha256": got,
                 "adjudication_standing": "none — link verification only",
-                "scoring_path": "GPEngine.score_expression (the search's "
-                                "own fitness composition)",
+                "scoring_path": (
+                    "GPEngine.score_expression, one fresh engine per "
+                    "factor: independent scores, novelty/correlation "
+                    "term against an empty comparison pool (=0 for "
+                    "every factor, order-independent)"),
                 "factors": report,
             }, indent=2, allow_nan=False))
     except FileExistsError:
