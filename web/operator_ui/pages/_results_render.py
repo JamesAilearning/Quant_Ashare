@@ -440,7 +440,12 @@ def _render_kpis(
 
     if strategy_annualized is not None:
         primary_value = strategy_annualized
-        primary_label = "主指标：策略年化收益（按净值复利推算）"
+        # 「绝对毛」不是形容词堆砌,是这个数的两条事实:①不减基准 ②不减
+        # 成本。②尤其反直觉——qlib 的 report_normal["return"] 把成本加回
+        # 了已扣成本的收益(account.py:283 `(now_earning+now_cost)/…`),
+        # 本仓库自己要拿净口径时必须手工再减一次(backtest_runner.py:961
+        # 的 `- report_normal["cost"]`)。不标注,操作人会把毛数当净数读。
+        primary_label = "主指标：策略年化收益（绝对**毛**口径：未减基准、未扣成本）"
     elif excess_annualized is not None:
         # Honest fallback: tell the operator this is excess, not absolute.
         primary_value = excess_annualized
@@ -505,7 +510,9 @@ def _render_kpis(
                 f"扣费后年化超额：{_fmt_percent(excess_annualized, signed=True)}"
             )
         secondary_lines.extend([
-            f"信息比率（IR）：{_fmt_number(information_ratio)}",
+            # IR 与它上方的主指标口径**相反**(IR 是扣费后超额,主指标是
+            # 绝对毛),并排摆着不标注就是在请人误读。
+            f"信息比率（IR，扣费后超额）：{_fmt_number(information_ratio)}",
             f"夏普比率：{_fmt_number(sharpe)}",
             f"基准：{_fmt_text(benchmark_code)}",
         ])
@@ -515,9 +522,14 @@ def _render_kpis(
             _metric_color(primary_value),
             secondary_lines,
             help_text=(
-                "收益卡片：主指标是策略本身按净值复利推算的年化收益，"
-                "扣费后年化超额是策略 - 基准 - 成本后再年化的口径，"
-                "两者不同。短窗口下年化指标参考价值有限。"
+                "收益卡片同时摆着两种口径，别混读：\n"
+                "• 主指标 / 总收益 / 下方净值曲线 / 月度收益 = **绝对毛**"
+                "（不减基准、不扣成本）。qlib 的收益序列把成本加回去了，"
+                "本仓库取净口径时要手工再减一次。\n"
+                "• 扣费后年化超额、信息比率 = **扣费后超额**"
+                "（策略 − 基准 − 成本）。\n"
+                "本项目的核心教训正是两者可以反号：csi800 战役里毛超额 "
+                "+3.68% 而净均为负。短窗口下年化指标参考价值有限。"
             ),
         )
     with cols[1]:
@@ -530,7 +542,19 @@ def _render_kpis(
                 f"指标状态：{_fmt_text(report.get('metric_status'))}",
                 f"官方回测路径：{_fmt_text(report.get('official_backtest_path'))}",
             ],
-            help_text="风险卡片：最大回撤与波动率字段，来源于 metrics / report 产物。",
+            # 本卡的最大回撤与正下方回撤图**不是同一个数**,实测 9 个
+            # 有完整产物的 run 全部不一致(如 −22.51% vs −26.46%)。差在
+            # 三处,且成本是其中最小的一项(该 run 上成本只解释 21bp,
+            # 而两数差 395bp)——所以不能像审计那样把差异说成「扣没扣费」,
+            # 那会让操作人更糊涂。
+            help_text=(
+                "风险卡片：最大回撤取自 metrics 的 risk 段 = **扣费后超额**"
+                "且按**算术累计**（qlib risk_analysis 默认 mode=\"sum\"）。\n"
+                "⚠ 与下方回撤图不是同一个数——图是**绝对毛**且按**几何累计**"
+                "（净值 / 净值峰值 − 1）。三处差异（减不减基准、扣不扣成本、"
+                "算术还是几何累计）里，成本通常是最小的一项。要对比请认口径，"
+                "不要认哪个更深。"
+            ),
         )
     with cols[2]:
         position_days = _first(metrics, [("trading", "positions_days")])
@@ -722,6 +746,8 @@ def _render_trades_tab(trades_frame: Any) -> None:
 
 def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     st.markdown('<div class="qv2-r-section-title">净值曲线</div>', unsafe_allow_html=True)
+    # 与主指标同源(nav 的 strategy_return):绝对毛。
+    st.caption("ℹ **绝对毛**口径（不减基准、不扣成本），与收益卡主指标同源。")
     if nav_frame is None or nav_frame.empty:
         st.markdown(
             '<div class="qv2-r-empty">回测 NAV 产物尚未生成。</div>',
@@ -802,6 +828,12 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     st.plotly_chart(nav_fig, use_container_width=True)
 
     st.markdown('<div class="qv2-r-section-title">回撤</div>', unsafe_allow_html=True)
+    # 与风险卡的最大回撤三处不同(基准/成本/累计方式),实测每个 run 都
+    # 对不上——不写清就会被当成同一个数的两次渲染。
+    st.caption(
+        "ℹ **绝对毛**且**几何累计**（净值 / 净值峰值 − 1）。风险卡的"
+        "「最大回撤」是**扣费后超额**且**算术累计**，两者本就不相等。"
+    )
     dd_fig = go.Figure()
     if "strategy_drawdown" in frame:
         dd_fig.add_trace(go.Scatter(
@@ -836,6 +868,13 @@ def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
 
 
 def _render_monthly_returns(metrics: Mapping[str, Any]) -> None:
+    # 月度值复合的是 nav 的 strategy_return,与主指标/净值曲线同源:
+    # **绝对毛**(不减基准、不扣成本)。与收益卡的 IR / 扣费后超额不是
+    # 一个口径,不标注就会被拿去和它们直接相减。
+    st.caption(
+        "ℹ 下方月度收益为**绝对毛**口径（不减基准、不扣成本），与收益卡的"
+        "「扣费后年化超额 / 信息比率」不可直接相减。"
+    )
     rows = metrics.get("monthly_returns")
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or not rows:
         st.markdown(
