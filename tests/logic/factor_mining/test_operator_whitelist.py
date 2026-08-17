@@ -91,3 +91,20 @@ def test_gp_engine_forwards_the_config_whitelist():
         __import__("src.factor_mining.fitness",
                    fromlist=["FitnessConfig"]).FitnessConfig())
     assert engine_default._allowed_operators is None
+
+
+def test_an_unknown_whitelist_name_is_refused_everywhere():
+    """typo 的白名单静默收窄搜索、config dump 却仍宣称原池 —— 两个入口
+    （生成器与引擎）都必须在生成前拒绝（codex #441 r7 P2）。"""
+    import pytest
+
+    from src.factor_mining.fitness import FitnessConfig
+    from src.factor_mining.grammar import GrammarError
+
+    with pytest.raises(GrammarError, match="unregistered|refusing"):
+        random_expression(
+            ExprType("CSF", "PURE"), 4, 2, Random(1),
+            allowed_operators=frozenset({"cs_rank", "typo_op"}))
+    with pytest.raises(GrammarError, match="unregistered"):
+        GPEngine(GPConfig(allowed_operators=("cs_rank", "typo_op")),
+                 FitnessConfig())

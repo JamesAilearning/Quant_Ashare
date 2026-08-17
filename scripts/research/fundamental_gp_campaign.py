@@ -52,6 +52,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from src.data.trading_calendar import StaticTradingCalendar
 from src.factor_mining.miner import (
@@ -198,10 +199,9 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
     fact. A starter factor with NO evaluable observations is a broken
     leg, not a completed check: refused, nothing written.
     """
-    from src.factor_mining.evaluator import evaluate_factor
     from src.factor_mining.expression import parse_expression
     from src.factor_mining.fitness import FitnessConfig
-    from src.factor_mining.gp_engine import GPConfig
+    from src.factor_mining.gp_engine import GPConfig, GPEngine
     from src.factor_mining.miner import MinerConfig, build_universe_mask
 
     run_dir = Path(args.run)
@@ -256,8 +256,17 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
               "inputs moved since mining. Refusing.", file=sys.stderr)
         return 1
     merged = {**panel, **values}
+    # The run's OWN gp/fitness configuration scores the starter factors:
+    # "panel -> GP -> marginal contribution" means the number the GP
+    # search itself would assign (fitness composition included), not a
+    # bare evaluator metric bundle.
+    raw_snapshot = yaml.safe_load(
+        (run_dir / "config.yaml").read_text(encoding="utf-8"))
+    gp_config = GPConfig(**raw_snapshot.get("gp", {}))
+    fitness_config = FitnessConfig(**raw_snapshot.get("fitness", {}))
+    engine = GPEngine(gp_config, fitness_config)
     universe_mask = build_universe_mask(MinerConfig(
-        data=run_data, gp=GPConfig(), fitness=FitnessConfig(),
+        data=run_data, gp=gp_config, fitness=fitness_config,
         output_dir=run_dir))
 
     def _finite(x: float) -> float | None:
@@ -269,9 +278,14 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
 
     report: dict[str, dict[str, float | int | str | None]] = {}
     for name, text in _STARTER_EXPRESSIONS.items():
-        result = evaluate_factor(
-            parse_expression(text), merged, fwd, method="rank",
+        fitness, result = engine.score_expression(
+            parse_expression(text), merged, fwd,
             universe_mask=universe_mask, periods=periods)
+        if result is None:
+            print(f"starter-check: {name} returned no evaluation "
+                  "bundle (cache hit on a fresh engine is impossible; "
+                  "scoring failed) — refusing.", file=sys.stderr)
+            return 1
         if result.coverage <= 0.0 or result.n_obs_per_day_min < 1:
             # A starter leg with nothing evaluable means a required
             # field is missing/empty or alignment masked everything —
@@ -283,6 +297,7 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
             return 1
         entry: dict[str, float | int | str | None] = {
             "expression": text,
+            "fitness": _finite(fitness),
             "rank_ic_mean": _finite(result.rank_ic_mean),
             "rank_ic_std": _finite(result.rank_ic_std),
             "rank_ir": _finite(result.rank_ir),
@@ -291,9 +306,23 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
             "n_obs_per_day_min": int(result.n_obs_per_day_min),
         }
         report[name] = entry
-        print(f"{name}: rank_ic_mean={entry['rank_ic_mean']} "
+        print(f"{name}: fitness={entry['fitness']} "
+              f"rank_ic_mean={entry['rank_ic_mean']} "
               f"rank_ir={entry['rank_ir']} "
               f"coverage={entry['coverage']:.4f}")
+
+    if run_data.mode == "pit":
+        # Before/after stability, same as mining and promotion: the
+        # entry check cannot see a refresh that starts DURING the panel
+        # rebuild or the scoring window — re-verify after all PIT reads,
+        # before anything is persisted (codex #441 r7 P1).
+        try:
+            _verify_pit_binding(run_dir, run_data)
+        except PromotionError as exc:
+            print(f"starter-check failed after evaluation: {exc} — "
+                  "the PIT inputs moved mid-check; nothing written.",
+                  file=sys.stderr)
+            return 1
 
     out = (Path(args.out) if args.out is not None
            else run_dir / "starter_factor_report.json")
@@ -305,6 +334,8 @@ def _cmd_starter_check(args: argparse.Namespace) -> int:
                 "data_definition_sha256": run_sha,
                 "fundamental_output_sha256": got,
                 "adjudication_standing": "none — link verification only",
+                "scoring_path": "GPEngine.score_expression (the search's "
+                                "own fitness composition)",
                 "factors": report,
             }, indent=2, allow_nan=False))
     except FileExistsError:

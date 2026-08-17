@@ -33,6 +33,7 @@ from .fitness import (
     fitness_uses_novelty,
 )
 from .grammar import (
+    REGISTRY,
     WINDOW_LITERALS,
     ExprType,
     FeatureRegistry,
@@ -211,6 +212,16 @@ class GPEngine:
         # from the panel actually loaded, so the generator and point
         # mutation can only build expressions over admitted inputs.
         self._allowed_terminals: frozenset[str] | None = None
+        if config.allowed_operators:
+            unknown = set(config.allowed_operators) - {
+                op.name for op in REGISTRY.all_operators()}
+            if unknown:
+                raise GrammarError(
+                    f"allowed_operators contains unregistered name(s) "
+                    f"{sorted(unknown)} — a typo would silently narrow "
+                    "the search while the config dump still claims the "
+                    "declared pool; refusing before generation."
+                )
         self._allowed_operators: frozenset[str] | None = (
             frozenset(config.allowed_operators)
             if config.allowed_operators else None)
@@ -285,6 +296,32 @@ class GPEngine:
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
+
+    def score_expression(
+        self,
+        expr: Expression,
+        panel,
+        fwd_ret: pd.DataFrame,
+        *,
+        universe_mask: pd.DataFrame | None = None,
+        periods: dict[str, pd.DataFrame] | None = None,
+        baseline: pd.DataFrame | None = None,
+    ) -> tuple[float, EvaluationResult | None]:
+        """Score ONE externally-supplied expression on the search's own path.
+
+        The deterministic starter check must produce the SAME marginal-
+        contribution number the GP would assign — evaluator metrics
+        alone bypass the fitness composition (IC/IR weights, coverage
+        and turnover terms, the orthogonality penalty). This sets the
+        evaluation context exactly like ``run`` does and routes through
+        ``evaluate_individual``, so an injected frozen AST is scored by
+        the same code that scores every bred candidate.
+        """
+        self._universe_mask = universe_mask
+        self._periods = periods
+        self._baseline = baseline
+        self._baseline_stack = None
+        return self.evaluate_individual(expr, panel, fwd_ret)
 
     def evaluate_individual(
         self,

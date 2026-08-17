@@ -821,6 +821,18 @@ def random_expression(
         raise ValueError(
             f"max_depth ({max_depth}) must be >= min_depth ({min_depth})"
         )
+    if allowed_operators is not None:
+        unknown = set(allowed_operators) - {
+            op.name for op in REGISTRY.all_operators()}
+        if unknown:
+            # Silently dropping a typo'd name would narrow the search
+            # while the resolved config still records the declared pool
+            # — the artifact would misrepresent the experiment.
+            raise GrammarError(
+                f"allowed_operators contains unregistered name(s) "
+                f"{sorted(unknown)}; refusing to sample from a pool "
+                "narrower than the one declared."
+            )
     if rng is None:
         rng = Random()
     return _gen(target_type, max_depth, min_depth, rng, allowed_terminals,
