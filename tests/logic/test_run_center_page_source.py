@@ -141,16 +141,18 @@ class PageSourceTests(unittest.TestCase):
         # 6 小时线时,片段用同一个 now 分类新读到的记录和旧的 _status
         # 对象,两边同时变 stale,元组照样相等,永不 rerun。基线必须在
         # 整页渲染时刻定格并被闭包捕获。
-        self.assertIn("_baseline_signature = _status_signature(_status)", self.src)
+        self.assertIn(
+            "_baseline_signature = _status_signature(_status, _status_class)",
+            self.src,
+        )
         baseline_at = self.src.index("_baseline_signature = _status_signature")
         watch_at = self.src.index("if _watching:")
         self.assertLess(baseline_at, watch_at, "基线必须在片段注册之前算定")
-        # 片段内只算「新读到的那一侧」,另一侧用捕获的基线。
+        # 片段内只算「新读到的那一侧」,另一侧用整页渲染时刻捕获的基线。
         self.assertIn(
-            "if _status_signature(read_update_status(_status_path)) != _baseline_signature:",
+            "_status_signature(_latest, classify_running(_latest))",
             self.src,
         )
-        self.assertNotIn("!= _status_signature(\n            _status\n        )", self.src)
 
     def test_stale_record_does_not_retire_the_launch_marker(self) -> None:
         # codex #442 r2: 恢复性启动(带着一条陈旧 running 记录去补跑)时,
@@ -170,11 +172,23 @@ class PageSourceTests(unittest.TestCase):
         # run crosses the 6h staleness line, so a crashed run kept the gates
         # locked and the stale warning hidden. The classification is part of
         # the signature now.
-        self.assertIn("classify_running(status)", self.src)
         sig_at = self.src.index("def _status_signature")
-        body = self.src[sig_at : sig_at + 1200]
-        self.assertIn("classify_running", body)
+        body = self.src[sig_at : sig_at + 1400]
         self.assertIn("tuple[str, str, str, str]", body)
+        self.assertIn("classification or", body)
+        # codex #442 r4: 分类由调用方传入，函数内部**不得**重算——两侧各自
+        # 重算时，跨线时刻会同时翻面而元组照样相等，闸门永久锁死。
+        self.assertNotIn("classify_running(status)", body)
+
+    def test_render_time_classification_is_computed_once(self) -> None:
+        # codex #442 r4: 闸门 / 展示 / 基线三处必须复用**同一次**分类。
+        # 各调一次的话，记录恰在这几行之间跨过 6 小时线时，闸门说「新鲜」
+        # 而基线已「陈旧」，此后片段读到的也都是陈旧、恒等于基线。
+        self.assertIn("_status_class = classify_running(_status)", self.src)
+        self.assertIn("and _status_class == RUNNING_FRESH", self.src)
+        self.assertIn("_cls = _status_class", self.src)
+        # 主脚本作用域里只允许出现这一次对 _status 的分类调用。
+        self.assertEqual(self.src.count("classify_running(_status)"), 1)
 
     def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
         # The repo logger writes refusals to STDOUT (StreamHandler on

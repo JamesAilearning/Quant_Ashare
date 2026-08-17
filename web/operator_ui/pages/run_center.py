@@ -76,7 +76,9 @@ def await_window_expired(awaiting_since: datetime, now: datetime) -> bool:
     return now - awaiting_since >= _AWAIT_LAUNCH_WINDOW
 
 
-def _status_signature(status: object) -> tuple[str, str, str, str]:
+def _status_signature(
+    status: object, classification: str | None
+) -> tuple[str, str, str, str]:
     """状态里「值得触发整页重绘」的部分。
 
     kind/started_at/finished_at **加上新鲜度分类**:前三项在一次运行
@@ -84,14 +86,15 @@ def _status_signature(status: object) -> tuple[str, str, str, str]:
     崩掉的运行会让闸门一直锁着、陈旧告警一直不出现,直到操作人手动
     整页刷新(codex #442 r1)。
 
-    分类按**调用时刻**计算,所以片段轮询时算出的与整页渲染时算出的
-    在跨线那一刻自然不等——这正是触发条件。
+    分类由**调用方传入**而非在此重算(codex #442 r4):基线那一侧必须用
+    整页渲染时刻算出的那一个值,与闸门判断同源;片段那一侧才用当下时刻
+    重算。两侧都在函数内部重算的话,跨线时刻会同时翻面而元组照样相等。
     """
     return (
         str(getattr(status, "kind", "")),
         str(getattr(status, "started_at", "")),
         str(getattr(status, "finished_at", "")),
-        str(classify_running(status) or ""),  # type: ignore[arg-type]
+        str(classification or ""),
     )
 
 _provider = anchored_to_repo(resolve_default_provider_uri())
@@ -125,10 +128,15 @@ except ValueError as _exc:
     st.stop()
 _status = read_update_status(_status_path)
 _read_at = datetime.now(tz=_CN_TZ)
+# 新鲜度**只在渲染时刻分类一次**,下面三处(闸门 / 展示 / 基线签名)全部复用
+# 同一个值。分别各调一次 classify_running 的话,若记录恰在这几行之间跨过
+# 6 小时线,闸门会认为「新鲜」而基线已是「陈旧」——此后片段每次读到的也
+# 都是陈旧、恒等于基线,永不 rerun,闸门就永久锁死(codex #442 r4)。
+_status_class = classify_running(_status)
 _running_fresh = (
     _status.kind == "running"
     and record_matches_provider(_status, _provider_path)
-    and classify_running(_status) == RUNNING_FRESH
+    and _status_class == RUNNING_FRESH
 )
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
@@ -146,7 +154,7 @@ elif _status.kind == "missing":
 elif _status.kind == "corrupt":
     st.error(f"⚠ 状态记录损坏(绝不用默认值顶替):{_status.error}")
 elif _status.kind == "running":
-    _cls = classify_running(_status)
+    _cls = _status_class  # 同一次分类,勿重算(见上)
     if _cls == RUNNING_FRESH:
         st.info(f"🔄 一次更新正在进行:始于 {_status.started_at}。")
     elif _cls == RUNNING_STALE:
@@ -217,7 +225,7 @@ st.caption(
 # 一次是行不通的:跨过 6 小时线时,片段用同一个 now 去分类新读到的记录
 # 和旧的 `_status` 对象,两边同时变成 stale,元组照样相等、永不 rerun
 # ——闸门继续锁着、陈旧告警仍然不出(codex #442 r2)。
-_baseline_signature = _status_signature(_status)
+_baseline_signature = _status_signature(_status, _status_class)
 
 if _watching:
     @st.fragment(run_every=_POLL_SECONDS)
@@ -229,7 +237,8 @@ if _watching:
         运行),整页 rerun——下方出单按钮的闸门与陈旧告警都依赖主脚本
         作用域的判断,只刷新片段会让两处显示自相矛盾。
         """
-        if _status_signature(read_update_status(_status_path)) != _baseline_signature:
+        _latest = read_update_status(_status_path)
+        if _status_signature(_latest, classify_running(_latest)) != _baseline_signature:
             st.rerun(scope="app")
             return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再

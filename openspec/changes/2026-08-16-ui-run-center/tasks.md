@@ -151,6 +151,22 @@
 - [x] 行为覆盖(codex 明确要求):五个边界用例真跑一遍(启动即刻/临界前一秒/
   恰好到点/远超/窗口有界且短),而不是只钉源码里出现过某个符号
 
+## codex #442 r4（两条 P2 全实修）
+
+- [x] 渲染期跨线的分叉:`_running_fresh` 与基线签名**各自**调一次
+  `classify_running`,记录恰在两行之间跨过 6 小时线时,闸门说「新鲜」而基线
+  已「陈旧」→ 此后片段读到的也都陈旧、恒等于基线,闸门永久锁死。修:渲染
+  时刻只分类一次(`_status_class`),闸门/展示/基线三处复用;签名函数改为
+  **接收**分类而非内部重算,片段侧才用当下时刻重算
+- [x] 「UTF-8 解码成功」不等于「本来就是 UTF-8」:`'抓取'.encode('gbk')`
+  是合法 UTF-8,解出 `'ץȡ'` 且无替换符,而「抓取」正是抓取阶段的高频词。
+  两手都做:①**源头**——调度器 `run_daily_update.bat` 钉死
+  `PYTHONIOENCODING=utf-8`(已实施于部署件,ASCII+CRLF 保持,留备份,并用
+  cmd 实跑验证 `ENC=utf-8`);②读侧对**历史**行加乱码区段判据(西里尔/希腊/
+  希伯来/拉丁扩展等本日志绝不会有的字符 → 改用 GBK 结果)
+- [x] 测试:codex 的反例逐个真跑还原;真 UTF-8 行不得误判;样本按「GBK 恰好
+  合法 UTF-8」动态筛选并断言非空,防用例空转
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

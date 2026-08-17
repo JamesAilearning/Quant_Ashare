@@ -275,24 +275,54 @@ def launch_daily_update(
     return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path)
 
 
+#: 解码后若出现这些区段的字符,基本可以断定是 GBK 被当成 UTF-8 读了:
+#: 本日志的内容只有 ASCII、CJK、中文标点,不会出现西里尔/希腊/亚美尼亚。
+#: 例:``'抓取'.encode('gbk')`` 是合法 UTF-8,解出 ``'ץȡ'``(希伯来+拉丁扩展)。
+_MOJIBAKE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x00C0, 0x024F),  # Latin-1 补充 / 拉丁扩展 A、B
+    (0x0370, 0x03FF),  # 希腊
+    (0x0400, 0x04FF),  # 西里尔
+    (0x0530, 0x058F),  # 亚美尼亚
+    (0x0590, 0x05FF),  # 希伯来
+)
+
+
+def _looks_like_mojibake(text: str) -> bool:
+    """解出来的文本是否明显是「GBK 被当成 UTF-8」的产物。"""
+    return any(
+        any(lo <= ord(ch) <= hi for lo, hi in _MOJIBAKE_RANGES) for ch in text
+    )
+
+
 def _decode_log_line(raw: bytes) -> str:
     """一行日志,按它的写入者实际用的编码解码。
 
-    这条共享日志有两个写入者:本模块启动的运行钉了 UTF-8
-    （``utf8_child_env``），而计划任务的 .bat 没有钉,它的中文行落在
-    控制台代码页（本机 cp936）。整块按单一编码解码会把另一个写入者的
-    行变成一片替换符（操作人看到的乱码）。行永远不跨进程,所以逐行
-    解码对两者都精确。
+    这条共享日志历史上有两个写入者:本模块启动的运行钉了 UTF-8
+    (``utf8_child_env``),而计划任务的 .bat 早先没钉,它的中文行落在
+    控制台代码页(本机 cp936)。行永远不跨进程,所以逐行解码。
 
-    顺序固定 UTF-8 → GBK:UTF-8 是自校验编码,GBK 文本几乎不可能通过
-    UTF-8 解码,反向则会静默出乱码,所以只有这个方向是安全的。
+    **「UTF-8 解码成功」不等于「本来就是 UTF-8」**(codex #442 r4):
+    部分 GBK 字节对恰好是合法 UTF-8——``'抓取'.encode('gbk')`` 解出
+    ``'ץȡ'``,毫无替换符地静默出错,而「抓取」正是抓取阶段日志里的高频词。
+    所以在 UTF-8 解码成功后还要看结果**像不像**乱码:出现西里尔/希腊/
+    希伯来/拉丁扩展这些本日志绝不会有的区段,就改用 GBK 的结果。
+
+    这仍是启发式,只用于**历史**行。根治在源头:调度器 .bat 现已钉死
+    ``PYTHONIOENCODING=utf-8``,此后新写入的行一律 UTF-8。
     """
-    for codec in ("utf-8", "gbk"):
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
         try:
-            return raw.decode(codec)
+            return raw.decode("gbk")
         except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+            return raw.decode("utf-8", errors="replace")
+    if _looks_like_mojibake(text):
+        try:
+            return raw.decode("gbk")
+        except UnicodeDecodeError:
+            return text
+    return text
 
 
 def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
