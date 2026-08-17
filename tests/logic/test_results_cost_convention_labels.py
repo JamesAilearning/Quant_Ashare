@@ -42,9 +42,16 @@ class CostConventionLabelTests(unittest.TestCase):
         self.assertIn("信息比率（IR，扣费后超额）", self.src)
 
     def test_nav_and_monthly_charts_declare_gross(self) -> None:
-        # 净值曲线与月度收益与主指标同源，都是绝对毛。
+        # 净值曲线与月度收益都是绝对毛。
         self.assertGreaterEqual(self.src.count("**绝对毛**"), 3)
-        self.assertIn("与收益卡主指标同源", self.src)
+
+    def test_nav_caption_does_not_link_to_the_primary_metric(self) -> None:
+        # codex #445 r2: 主指标的口径随分支而变（老工件兜底成扣费后超额），
+        # 所以「与收益卡主指标同源」这句在兜底路径下会重新制造矛盾——正是
+        # 条件化 help 刚消除掉的那条。图只描述自己的口径。
+        self.assertNotIn("与收益卡主指标同源", self.src)
+        self.assertIn("源自回测收益序列", self.src)
+        self.assertIn("以其各自标签为准", self.src)
 
     def test_drawdown_mismatch_names_all_three_axes(self) -> None:
         # 关键：不得把差异归因成「扣没扣费」——成本只占约 5%。三处差异

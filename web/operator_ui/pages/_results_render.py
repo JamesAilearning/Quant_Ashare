@@ -761,7 +761,13 @@ def _render_trades_tab(trades_frame: Any) -> None:
 def _render_interactive_charts(nav_frame: Any, run_dir: Path | None) -> None:
     st.markdown('<div class="qv2-r-section-title">净值曲线</div>', unsafe_allow_html=True)
     # 与主指标同源(nav 的 strategy_return):绝对毛。
-    st.caption("ℹ **绝对毛**口径（不减基准、不扣成本），与收益卡主指标同源。")
+    # 只描述本图自身的口径,**不**把它挂钩到「收益卡主指标」——主指标的口径
+    # 随分支而变(老工件会兜底成扣费后超额),挂钩就会在兜底路径下重新制造
+    # 那条已经被条件化 help 消除掉的矛盾(codex #445 r2)。
+    st.caption(
+        "ℹ 本图为**绝对毛**口径（不减基准、不扣成本），源自回测收益序列。"
+        "收益卡上各指标的口径以其各自标签为准。"
+    )
     if nav_frame is None or nav_frame.empty:
         st.markdown(
             '<div class="qv2-r-empty">回测 NAV 产物尚未生成。</div>',
