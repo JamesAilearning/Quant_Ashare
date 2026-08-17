@@ -99,7 +99,10 @@ BANNER_FIELDS: tuple[str, ...] = (
 # Assembly mirrors ``src/core/backtest_runner.py``'s exchange kwargs:
 #   open  = commission + slippage
 #   close = commission + stamp tax + slippage
-_CERTIFIED_SLIPPAGE_BPS = float(EVAL_PROFILES["csi800_n5"]["slippage_bps"])
+#: 认证口径的单边滑点。公开导出——页面文案要引用同一个数,写死
+#: 「20 bps」会在 profile 挪动时和列名/被减数对不上(codex #443 r1)。
+CERTIFIED_SLIPPAGE_BPS = float(EVAL_PROFILES["csi800_n5"]["slippage_bps"])
+_CERTIFIED_SLIPPAGE_BPS = CERTIFIED_SLIPPAGE_BPS  # 既有内部引用
 _COMMISSION_RATE = 0.0005
 _STAMP_TAX_BPS = 5.0
 

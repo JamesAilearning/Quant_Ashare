@@ -27,6 +27,22 @@
 - [x] 成本三钉：值 55bps / move-the-source 联动 / 复制常量对齐 canonical
 - [x] 列名派生钉（旧字面量表头不得残留）
 
+## codex #443 r1（1×P1 + 2×P2 全实修）
+
+- [x] **P1 文案与工件契约相反**:spec 明写 rebalance_day=true 时「本列表是
+  可执行的 T+1 入场清单」,而我那句笼统的「不是明早买入」会让该执行的清单
+  被当成不该执行(codex 原话:can cause an intended list to be ignored)。
+  修:只纠正**时点**误读(「明早开盘按市价买入」,与 runbook 措辞对齐),
+  可执行性交回 rebalance_day/HOLD 横幅,并显式指向它
+- [x] P2 文案里写死「20 bps」而常量与列名都随 profile 走 → 导出
+  `CERTIFIED_SLIPPAGE_BPS`,文案由它派生
+- [x] P2 守卫测试的宽泛 except 会把 import 期 NameError/误删模块统统
+  伪装成「依赖不可用」,六个用例静默跳过而 CI 报绿 → 改为只在**确认
+  qlib 缺席**时跳过,其余 import 失败一律炸出来
+- [x] 顺带修自身测试污染:move-the-source 用例的 `finally: reload` 原在
+  patch 上下文**内**,重载把 33.0 固化进模块常量泄漏给后续用例(批量跑
+  失败、单独跑通过)。恢复移到 patch 退出之后,并加恢复断言
+
 ## 验证
 
 - [x] 定向：`test_csi800_guard_triple_ui` + `test_operator_ui_config_run_source`

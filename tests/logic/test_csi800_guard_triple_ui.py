@@ -16,13 +16,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-try:  # qlib-bound import — the guard delegates to the canonical validator
+# 只在**确认 qlib 缺席**时跳过。宽泛地吞掉任何异常会让一个 import 期的
+# NameError / 误删的内部模块 / 初始化回归,统统伪装成「依赖不可用」——
+# 整个类六个用例被静默跳过而 CI 报绿(codex #443 r1)。
+try:
+    import qlib  # noqa: F401
+
+    _HAS_QLIB = True
+except ImportError:  # pragma: no cover - dep-light cell
+    _HAS_QLIB = False
+
+if _HAS_QLIB:
+    # qlib 在场 → 这两个 import 必须成功。失败就让它炸出来。
     from src.core.pipeline import PipelineConfig
     from web.operator_ui.training_guards import validate_csi800_guard_triple
 
-    _HAS_BACKEND = True
-except Exception:  # pragma: no cover - environment-dependent
-    _HAS_BACKEND = False
+_HAS_BACKEND = _HAS_QLIB
 
 _PROVIDER = "D:/qlib_data/my_cn_data_pit"
 

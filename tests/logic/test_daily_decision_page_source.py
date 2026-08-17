@@ -165,19 +165,28 @@ class HelpersRuntimeTests(unittest.TestCase):
         moved = {**EVAL_PROFILES, "csi800_n5": {
             **EVAL_PROFILES["csi800_n5"], "slippage_bps": 33.0,
         }}
-        with mock.patch.dict(
-            "scripts.eval_profiles.EVAL_PROFILES", moved, clear=True
-        ):
-            import importlib
-            reloaded = importlib.reload(helpers)
-            try:
+        import importlib
+
+        try:
+            with mock.patch.dict(
+                "scripts.eval_profiles.EVAL_PROFILES", moved, clear=True
+            ):
+                reloaded = importlib.reload(helpers)
                 self.assertAlmostEqual(reloaded._CERTIFIED_SLIPPAGE_BPS, 33.0)
                 # open + close each carry one slippage leg.
                 self.assertAlmostEqual(
                     reloaded.ROUND_TRIP_COST, 0.0005 * 2 + 0.0005 + 0.0033 * 2
                 )
-            finally:
-                importlib.reload(helpers)
+        finally:
+            # 恢复必须在 patch **退出之后**——在 patch 内重载会把 33.0 固化
+            # 进模块常量并泄漏给后续用例（本文件里就有一个断言 20.0 的用例
+            # 因此在批量运行时失败、单独运行时通过）。
+            importlib.reload(helpers)
+        self.assertAlmostEqual(
+            helpers._CERTIFIED_SLIPPAGE_BPS,
+            float(EVAL_PROFILES["csi800_n5"]["slippage_bps"]),
+            "reload must restore the real profile value",
+        )
 
     def test_duplicated_cost_constants_match_their_canonical_sources(self) -> None:
         # commission / stamp are duplicated here on purpose (the contract
@@ -213,6 +222,36 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(
             _STAMP_TAX_BPS, float(CN_STAMP_TAX_SCHEDULE_DEFAULT[-1].bps),
             "stamp tax drifted from the canonical CN schedule",
+        )
+
+    def test_entry_caption_does_not_negate_the_artifact_contract(self) -> None:
+        # codex #443 r1: spec 明写 rebalance_day=true 时「本列表是可执行的
+        # T+1 入场清单」。页面纠正的应当只是**时点**误读（按明早开盘价
+        # 买入），不能笼统否定可执行性——那会让该执行的清单被当成不该
+        # 执行。可执行性由 rebalance_day / HOLD 横幅单独承载。
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("是已收盘会话", src)
+        self.assertIn("明早开盘按市价买入", src)
+        self.assertIn("是否构成入场指令", src)
+        # 旧的笼统措辞不得残留。
+        self.assertNotIn("不是\n    「明早买入」", src)
+        self.assertNotIn("」——每次必读这一行", src)
+
+    def test_slippage_in_caption_is_derived_not_restated(self) -> None:
+        # codex #443 r1: 常量与列名都随 profile 走，而文案里写死的
+        # 「20 bps」不会——profile 一挪就三处对不上，正是本 PR 要消灭的
+        # 那种 drift 又长回来。
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("CERTIFIED_SLIPPAGE_BPS", src)
+        self.assertNotIn("(20 bps 单边滑点", src)
+        from scripts.eval_profiles import EVAL_PROFILES
+        from web.operator_ui.pages._daily_decision_helpers import (
+            CERTIFIED_SLIPPAGE_BPS,
+        )
+
+        self.assertAlmostEqual(
+            CERTIFIED_SLIPPAGE_BPS,
+            float(EVAL_PROFILES["csi800_n5"]["slippage_bps"]),
         )
 
     def test_cost_column_header_is_derived_from_the_constant(self) -> None:
