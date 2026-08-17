@@ -286,4 +286,12 @@
 - [ ] 用起步三因子（① GP/A、③ 资产增长、② C3 纯 BS 应计 —— CSI800 覆盖率已实测全绿）
       跑通"面板化 → GP → 边际贡献"最小链路，**只为验证链路与防线，不做因子裁决**
       （裁决属后续预注册战役）。
-- [ ] Spec delta 归档时并入 `openspec/specs/v2-fundamental-gp-panel`。
+- [x] **`v2-factor-mining-foundations` 算子条款修订 delta**（codex #441 r12 P1）：
+      冻结 C3 的 coalesce-then-difference 需要 `coalesce` 算子，而主 spec 写死
+      "注册表恰 28" —— 注册即违反基础契约，改测试计数只是掩盖漂移。本 change
+      新增 MODIFIED delta：基线 28 + 显式修订的扩展（首个 = coalesce，含语义
+      红线：双 NA 不发明值、同 taint、非交换）；**默认采样池 = 基线 28 逐字**
+      （注册扩展不得改变无白名单 preset 能育出的东西）；未注册白名单名拒绝。
+      归档时并入主 spec。
+- [ ] Spec delta 归档时并入 `openspec/specs/v2-fundamental-gp-panel` 与
+      `openspec/specs/v2-factor-mining-foundations`。
