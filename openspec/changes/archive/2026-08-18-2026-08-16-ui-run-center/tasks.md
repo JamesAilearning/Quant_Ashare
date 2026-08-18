@@ -259,4 +259,4 @@
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`
 - [x] mypy 用 CI 精确命令全量（ubuntu-3.11 leg 同款）
 - [x] `openspec validate --strict`
-- [ ] codex CLEAN + CI 绿 → STOP 等 merge
+- [x] codex CLEAN + CI 绿 → STOP 等 merge
