@@ -22,9 +22,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from web.operator_ui.job_io import (  # noqa: E402
     JobSummary,
     _normalise_cli_entry,
+    anchored_run_dir,
     fold_catalog_by_dir,
     list_all_jobs,
     run_dir_is_inspectable,
+)
+from web.operator_ui.pages._walk_forward_helpers import (  # noqa: E402
+    _GOVERNED_FAMILY,
+    _knob_matches,
 )
 
 _PAGE_JOBS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "jobs.py"
@@ -190,6 +195,36 @@ class CatalogFoldBehaviorTests(unittest.TestCase):
         self.assertNotIn("blank", folded.dir_of_run)
         self.assertNotIn("blank", folded.superseded_dir_of_run)
 
+    def test_parent_segments_collapse_so_equivalent_paths_fold(self) -> None:
+        # codex #444 r6: output/runs/a 与 output/x/../runs/a 指向同一份产物、
+        # 两者都判可达；折叠键若保留字面 ``..`` 就会被当成两次不同的运行，
+        # 被覆盖的历史行于是静默渲染出当前那份报告。
+        self.assertEqual(
+            anchored_run_dir("output/runs/a"),
+            anchored_run_dir("output/x/../runs/a"),
+        )
+        self.assertTrue(run_dir_is_inspectable("output/x/../runs/a"))
+        folded = fold_catalog_by_dir([
+            self._row("newest", "output/runs/a"),
+            self._row("lexical", "output/x/../runs/a"),
+        ])
+        self.assertEqual([r.run_id for r in folded.newest], ["newest"])
+        self.assertEqual(folded.superseded_count, 1)
+        self.assertEqual(
+            folded.superseded_dir_of_run["lexical"], folded.dir_of_run["newest"]
+        )
+
+    def test_the_inspectability_verdict_uses_the_shared_anchor(self) -> None:
+        # 「共用同一段代码」这句话得是真的：判据自己再抄一份锚定，正是 r1
+        # 那个 bug 会回来的方式。
+        src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
+            encoding="utf-8"
+        )
+        verdict_at = src.index("def run_dir_is_inspectable")
+        body = src[verdict_at : src.index("def anchored_run_dir")]
+        self.assertIn("anchored_run_dir(", body)
+        self.assertNotIn("PROJECT_ROOT / candidate", body)
+
     def test_empty_input_is_an_empty_fold(self) -> None:
         folded = fold_catalog_by_dir([])
         self.assertEqual(folded.newest, ())
@@ -304,7 +339,7 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("_run_id_to_dir", src)
         self.assertIn("_run_id_to_dir.setdefault(_job.run_id, _resolved)", src)
         self.assertIn("_target_dir = _run_id_to_dir.get(_requested_run_id)", src)
-        self.assertIn("if key == _target_dir or run_options[key]", src)
+        self.assertIn("if key == _locate or run_options[key]", src)
         # 索引必须**同时**收 UI 作业与 CLI 记录，只收一边等于没修。
         idx_at = src.index("_run_id_to_dir: dict[str, str] = {")
         seed = src[idx_at : idx_at + 400]
@@ -325,16 +360,23 @@ class PageSourcePinsTests(unittest.TestCase):
         # codex #444 r4: 只凭 anchor 推治理身份，会把 stage7_daily_h5 /
         # csi300 参照运行标成「认证胜者」—— 而本 change 的 delta 自己就写着
         # 「anchor 单独 SHALL NOT 被当作生产判据」。文案必须先确认整族身份。
+        # r6 起判据不再写在页面里（那样它会和晋升族语义各自漂），而是取自
+        # _GOVERNED_FAMILY —— 字段清单本身由 GovernedFamilyPredicateTests
+        # 对着 EVAL_PROFILES 真跑核对。这里只钉「页面确实消费它」。
         src = _PAGE_WF.read_text(encoding="utf-8")
-        self.assertIn("_governed = (", src)
-        gov_at = src.index("_governed = (")
-        block = src[gov_at : gov_at + 500]
+        self.assertIn("_GOVERNED_FAMILY.items()", src)
+        self.assertIn("_governed = not _mismatched", src)
+        # 页面里不得再硬写一份字段清单。
+        gov_at = src.index("_mismatched = [")
+        block = src[gov_at : gov_at + 400]
         for field in ("instruments", "benchmark_code", "rebalance_cadence_days",
-                      "rebalance_phase"):
+                      "rebalance_phase", "slippage_bps"):
             with self.subTest(field=field):
-                self.assertIn(field, block)
+                self.assertNotIn(f'"{field}"', block)
         # 族外必须明说「不给治理判断」，而不是沉默或照旧断言。
         self.assertIn("不属于被治理的 csi800 认证族", src)
+        # 而且要说清是**哪一项**不符 —— 只说「不属于」等于让人自己猜。
+        self.assertIn("不符项", src)
         # 两条治理文案都必须在 _governed 之后（elif 链），不能独立触发。
         self.assertIn("if not _governed:", src)
 
@@ -384,6 +426,106 @@ class PageSourcePinsTests(unittest.TestCase):
         sup_at = src.index("for _run_id, _dir in _folded.superseded_dir_of_run.items():")
         self.assertLess(newest_at, sup_at)
 
+    def test_superseded_ids_route_to_their_directory_owner(self) -> None:
+        # codex #444 r6: 被覆盖的 id 故意不进 _run_id_to_dir（那是静默别名
+        # 的路），但也不能就这么丢了 —— _target_dir 为空、_default_index 落到
+        # 0，页面渲染的是**全局第一条**（很可能是另一个目录的运行），告警还
+        # 说不出是谁覆盖了它。要定位到它自己那个目录，同时保留告警。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_superseded_dir", src)
+        self.assertIn("_overwritten_at = _superseded_dir.get(_requested_run_id)", src)
+        self.assertIn("_locate = _target_dir or _overwritten_at", src)
+        # 定位成功也**不算**找到 —— 否则退回成 r2 修掉的「静默换人」。
+        self.assertIn("_requested_found = _target_dir is not None", src)
+        # 告警必须指名现在住在那个目录里的是谁。
+        self.assertIn("_occupant = run_options.get(_overwritten_at", src)
+        # 且被覆盖的 id 依然不得进入静默别名表。
+        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id, _resolved)")
+        sup_at = src.index("_superseded_dir: dict[str, str] = {")
+        self.assertLess(alias_at, sup_at)
+        self.assertNotIn("_run_id_to_dir.setdefault", src[sup_at : sup_at + 400])
+
+
+class GovernedFamilyPredicateTests(unittest.TestCase):
+    """治理族判据的**行为**覆盖（codex #444 r4/r6）。
+
+    判据住在 streamlit-free 的 ``_walk_forward_helpers``，所以能直接真跑 ——
+    为了一个纯谓词去导入页面（连带 streamlit）正是 #442 r6 抓到的错法。
+    """
+
+    @staticmethod
+    def _preset(name: str) -> dict[str, object]:
+        import yaml
+
+        path = PROJECT_ROOT / "config" / "presets" / f"{name}.yaml"
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _governed(self, cfg: dict[str, object]) -> bool:
+        return all(
+            _knob_matches(cfg.get(key), want)
+            for key, want in _GOVERNED_FAMILY.items()
+        )
+
+    def test_predicate_is_derived_from_the_promotion_profile(self) -> None:
+        # 不复述字面量：晋升族语义钉在 EVAL_PROFILES，抄一份到 UI 只会各自漂。
+        from scripts.eval_profiles import EVAL_PROFILES
+
+        profile = EVAL_PROFILES["csi800_n5"]
+        for key, want in _GOVERNED_FAMILY.items():
+            with self.subTest(key=key):
+                self.assertEqual(want, profile[key])
+
+    def test_cost_convention_is_part_of_the_identity(self) -> None:
+        # codex #444 r6: 少了 slippage_bps，csi800_cadence5_base（5 bps 灵敏度
+        # 臂）四个旧谓词全中，会被标成「认证胜者」。
+        self.assertIn("slippage_bps", _GOVERNED_FAMILY)
+        self.assertNotIn("rebalance_anchor", _GOVERNED_FAMILY)  # 族跨两个锚
+
+    def test_the_certified_pair_is_governed_and_the_base_arm_is_not(self) -> None:
+        self.assertTrue(self._governed(self._preset("csi800_cadence5_conservative")))
+        self.assertTrue(
+            self._governed(self._preset("csi800_cadence5_conservative_isoweek"))
+        )
+        base = self._preset("csi800_cadence5_base")
+        self.assertFalse(self._governed(base))
+        # 且它落选的原因就是成本口径，不是别的巧合。
+        self.assertEqual(base["slippage_bps"], 5.0)
+        self.assertEqual(base["instruments"], "csi800")
+        self.assertEqual(base["rebalance_cadence_days"], 5)
+
+    def test_exactly_the_certified_pair_passes_across_all_presets(self) -> None:
+        # 全预设扫一遍：任何新预设若意外入族，这里会响。
+        import yaml
+
+        governed = []
+        for path in sorted((PROJECT_ROOT / "config" / "presets").glob("*.yaml")):
+            try:
+                cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except yaml.YAMLError:
+                continue
+            if isinstance(cfg, dict) and self._governed(cfg):
+                governed.append(path.stem)
+        self.assertEqual(
+            sorted(governed),
+            [
+                "csi800_cadence5_conservative",
+                "csi800_cadence5_conservative_isoweek",
+            ],
+        )
+
+    def test_numeric_knobs_compare_across_int_and_float_spellings(self) -> None:
+        # YAML 里 5 与 5.0 都出现过；按字符串比会把等价配置判成不符。
+        self.assertTrue(_knob_matches(5, 5.0))
+        self.assertTrue(_knob_matches(20.0, 20))
+        self.assertFalse(_knob_matches(5.0, 20.0))
+        self.assertFalse(_knob_matches(None, 5))
+        self.assertFalse(_knob_matches("abc", 5))
+        self.assertTrue(_knob_matches("csi800", "csi800"))
+        self.assertFalse(_knob_matches(None, "csi800"))
+
+
+class GovernanceCaptionTests(unittest.TestCase):
     def test_anchor_caption_matches_the_governance_pin(self) -> None:
         # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉
         # 明写 winner=fold_phase / isoweek 复核=iso_week；页面若反过来说，

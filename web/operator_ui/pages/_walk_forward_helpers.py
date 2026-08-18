@@ -18,9 +18,44 @@ from typing import Any
 
 import pandas as pd
 
+from scripts.eval_profiles import EVAL_PROFILES
+
 # ---------------------------------------------------------------------------
 # Display sentinels + Plotly color constants
 # ---------------------------------------------------------------------------
+
+#: 被治理的 csi800 认证族的**入族条件**,取自晋升族语义本身而非抄一份字面量。
+#: 去掉 `rebalance_anchor` —— 族跨两个锚(认证胜者 `fold_phase` / 生产服务
+#: `iso_week`),它是族**内**的区分维度。
+#: `slippage_bps` 必须在里面:`csi800_cadence5_base` 的四个旧谓词全中,却是
+#: **5 bps 灵敏度臂**,不是 20 bps 的认证胜者——少这一条它就会被标成认证胜者
+#: (codex #444 r6)。base 与 conservative 恰差 {output_dir, slippage_bps}。
+_GOVERNED_FAMILY: dict[str, Any] = {
+    _k: _v
+    for _k, _v in EVAL_PROFILES["csi800_n5"].items()
+    if _k
+    in {
+        "instruments",
+        "benchmark_code",
+        "rebalance_cadence_days",
+        "rebalance_phase",
+        "slippage_bps",
+    }
+}
+
+
+def _knob_matches(actual: object, want: object) -> bool:
+    """配置里的一个旋钮是否等于晋升族要求的值。
+
+    数值按 float 比(YAML 里 ``5`` 与 ``5.0`` 都出现过),其余按字符串比。
+    """
+    if isinstance(want, (int, float)) and not isinstance(want, bool):
+        try:
+            return float(actual) == float(want)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+    return str(actual or "") == str(want)
+
 MISSING = "—"
 
 # Plotly does not resolve CSS custom properties (``var(--…)``) — passing

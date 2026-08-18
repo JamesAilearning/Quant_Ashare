@@ -106,6 +106,30 @@
   (锚定 / 首条即最新 / 被覆盖者两表不相交 / 大小写折叠 / 空目录行 / 空输入 /
   真目录不变式),另加结果页四条钉
 
+## codex #444 r6（两条 P1 + 一条 P2 全实修）
+
+- [x] **灵敏度臂被标成认证胜者**:`csi800_cadence5_base` 四个旧谓词全中
+  (csi800 / SH000906TR / N=5 / phase=0),却是 **5 bps** 灵敏度臂而非 20 bps 的
+  认证胜者——base 与 conservative 恰差 `{output_dir, slippage_bps}`。修:入族
+  条件补上成本口径,且**取自 `EVAL_PROFILES["csi800_n5"]` 本身**而不是抄字面量
+  (晋升族语义钉在那里,治理测试也钉着它);去掉 `rebalance_anchor`——族**跨**
+  两个锚,那是族内的区分维度。全 36 个预设扫一遍:**恰好 2 个入族**,就是认证对
+- [x] **被覆盖的 id 被扔到全局第一条**:它们故意不进 `_run_id_to_dir`(那是静默
+  别名的路),但也不能就这么丢——`_target_dir` 为空 → `_default_index` 落到 0 →
+  渲染的是**另一个目录**的运行,告警还说不出是谁覆盖了它。修:用
+  `_folded.superseded_dir_of_run` 定位到它**自己那个目录**,告警指名现在住在
+  里面的是谁;定位成功**不算**「找到」,告警照发(否则退回 r2 修掉的静默换人)
+- [x] **折叠键没折平 `..`**:`output/runs/a` 与 `output/x/../runs/a` 都判可达、
+  指向同一份产物,却被当成两次运行,被覆盖的历史行于是静默渲染当前报告。修:
+  `anchored_run_dir` 用 `os.path.normpath` 折平(纯词法、无 I/O);并让
+  `run_dir_is_inspectable` **调用**它——此前我在注释里写「共用同一段代码」,
+  其实是两份拷贝,那句话当时是假的
+- [x] 判据迁到 streamlit-free 的 `pages/_walk_forward_helpers.py`:为了一个纯
+  谓词让测试导入页面(连带 streamlit),正是 #442 r6 抓到的错法
+- [x] 测试:新增 `GovernedFamilyPredicateTests`(判据源自 profile / 含成本口径 /
+  认证对入族而 base 不入 / 全预设恰好两个 / int-float 拼写等价)与 `..` 折平、
+  判据共用锚定、被覆盖 id 路由四组;两条失效的源码钉重新对准新实现
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

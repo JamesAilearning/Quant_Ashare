@@ -33,6 +33,24 @@ working directory.
 - **WHEN** the operator clicks through from the jobs list
 - **THEN** the results page renders that run rather than "run not found"
 
+#### Scenario: an overwritten row lands on the directory that overwrote it
+
+- **GIVEN** a catalog run id whose artifacts were overwritten
+- **WHEN** the operator opens it
+- **THEN** the page selects the run **now occupying that same directory**
+  and names it, rather than defaulting to the first run in the list —
+  which may sit in an unrelated directory
+- **AND** the overwrite warning is still shown; locating the directory
+  SHALL NOT be treated as having found the requested run
+
+#### Scenario: lexically equivalent directories are one run, not two
+
+- **GIVEN** two catalog rows spelling the same directory as
+  `output/runs/a` and `output/x/../runs/a`
+- **WHEN** the fold runs
+- **THEN** they collapse to a single run, because both resolve to the
+  same artifacts under the page's path guard
+
 #### Scenario: the two detail pages agree on which run a row means
 
 - **GIVEN** a run whose artifacts were overwritten by a later run writing
@@ -87,6 +105,17 @@ serving-parameter binding. Two runs can be byte-identical in every other
 field, so without the anchor the page cannot tell those chains apart.
 The anchor alone SHALL NOT be presented as deciding what is production.
 
+Before any governance wording is shown, the page SHALL establish that
+the run belongs to the governed family, and SHALL derive that
+membership test from the promotion profile itself rather than
+restating its values. The test SHALL include the **cost convention**:
+a run matching the universe, benchmark, cadence and phase but priced
+at a different slippage is a sensitivity arm, not the certified
+winner, and labelling it as the winner misattributes the evidence.
+Membership SHALL exclude `rebalance_anchor`, which varies *within* the
+family. For a run outside the family the page SHALL say which knobs
+disagree, rather than only that it is outside.
+
 The page SHALL render the engine's `metric_status` stamp. A MISSING
 stamp SHALL be labelled as missing and explicitly NOT treated as
 `official` — runs predating the stamp are the common case, and
@@ -98,11 +127,20 @@ can only worsen the verdict, never improve it).
 
 #### Scenario: certified and reference runs are distinguishable
 
-- **GIVEN** two runs identical except `rebalance_anchor`
+- **GIVEN** two runs **inside the governed family** and identical
+  except `rebalance_anchor`
 - **WHEN** each is opened
 - **THEN** the page names the anchor of each, identifying `fold_phase`
   as the certified winner's anchor and `iso_week` as the separately
   gated production-serving anchor
+
+#### Scenario: a sensitivity arm is not labelled the certified winner
+
+- **GIVEN** a run on the certified universe, benchmark, cadence and
+  phase but at a different slippage than the promotion profile
+- **WHEN** it is opened
+- **THEN** the page withholds every governance label and states that
+  the cost convention is what places it outside the family
 
 #### Scenario: a missing metric stamp is never read as official
 

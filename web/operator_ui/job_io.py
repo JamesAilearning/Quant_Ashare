@@ -338,13 +338,10 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
     text = str(run_dir or "").strip()
     if not text:
         return False
-    candidate = Path(text)
-    if not candidate.is_absolute():
-        # Relative rows were written relative to the repo root (the CWD
-        # of a real run), NOT to whatever directory the UI was started
-        # from — resolving against the process CWD would answer about a
-        # different place on every launcher.
-        candidate = PROJECT_ROOT / candidate
+    # 锚定走 ``anchored_run_dir`` —— 就是那**一段**代码,不是各写一份。
+    # 判据与页面折叠若各锚各的,在仓库根之外启动 UI 时「判定可达」的运行
+    # 会反被路径守卫拒绝(codex #444 r1)。
+    candidate = anchored_run_dir(text)
     try:
         resolved = candidate.resolve()
     except OSError:
@@ -359,15 +356,23 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
 
 
 def anchored_run_dir(run_dir: str) -> Path:
-    """把目录记录里的 ``output_dir`` 锚在**仓库根**,而不是进程 CWD。
+    """把目录记录里的 ``output_dir`` 锚在**仓库根**,并折平 ``..``。
 
-    与 :func:`run_dir_is_inspectable` 共用同一个锚点,而且是同一段代码——
-    两处各写一份不等式正是它们会分叉的方式:判据锚在仓库根、页面锚在
-    CWD 时,在仓库根之外启动 UI,「判定可达」的运行会反被路径守卫拒绝
-    (codex #444 r1)。
+    :func:`run_dir_is_inspectable` 与 :func:`fold_catalog_by_dir` 都调它——
+    是同一段代码,不是各写一份。两处各写一份不等式正是它们会分叉的方式:
+    判据锚在仓库根、页面锚在 CWD 时,在仓库根之外启动 UI,「判定可达」的
+    运行会反被路径守卫拒绝(codex #444 r1)。
+
+    ``..`` 必须在这里折平:``output/runs/a`` 与 ``output/x/../runs/a`` 指向
+    同一份产物、两者都判可达,若折叠键保留字面的 ``..`` 就会被当成两次不同
+    的运行——被覆盖的历史行于是静默渲染出当前那份报告(codex #444 r6)。
+    折平用 ``os.path.normpath``:纯词法、无文件系统 I/O,与「判据不做逐行
+    I/O」的约束一致(``resolve()`` 会走符号链接,那是判据自己那一步的事)。
     """
     candidate = Path(str(run_dir or "").strip())
-    return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return Path(os.path.normpath(str(candidate)))
 
 
 @dataclass(frozen=True)

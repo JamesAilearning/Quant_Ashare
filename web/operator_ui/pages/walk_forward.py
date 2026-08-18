@@ -50,6 +50,7 @@ from web.operator_ui.page_header import render_page_header
 # are exposed for callers, not consumed in this module body — only their
 # values are referenced below.
 from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
+    _GOVERNED_FAMILY,
     _LOG_NAMES,
     _STABILITY_LABEL_HIGH,
     _STABILITY_LABEL_LOW,
@@ -69,6 +70,7 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     _finite_float,
     _first_metric,
     _get_metrics,
+    _knob_matches,
     _mean,
     _ratio_fraction,
     _read_log_files,
@@ -150,6 +152,13 @@ for _job in _folded.newest:
     if _resolved not in run_options:
         # _cli_wf 按 completed_at 倒序,首次出现即最新的那一次。
         run_options[_resolved] = _job.run_id
+#: 被覆盖的 id → 它那个目录(现在住着覆盖它的那次运行)。**不进** _run_id_to_dir:
+#: 那张表是「静默跳过去」的路,被覆盖的 id 走这条,要带着告警。但也不能就这么
+#: 丢了——丢了的话 _target_dir 为空、_default_index 落到 0,页面渲染的是**全局
+#: 第一条**(很可能是另一个目录的运行),告警还说不出是谁覆盖了它(codex #444 r6)。
+_superseded_dir: dict[str, str] = {
+    _rid: str(_dir) for _rid, _dir in _folded.superseded_dir_of_run.items()
+}
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -185,26 +194,42 @@ else:
     ) or str(st.session_state.get("wf_selected_run", "") or "")
     _default_index = 0
     _requested_found = False
+    #: 请求的 id 是「被覆盖的历史运行」时,覆盖它的那次运行的目录。
+    _overwritten_at: str | None = None
     if _requested_run_id:
         _keys = list(run_options.keys())
         # 先按 id→目录索引定位(覆盖 UI id 与 CLI id 两套命名),再退回
         # 「选择器上恰好展示的那个 id」。只比后者会漏掉同目录的另一个 id。
         _target_dir = _run_id_to_dir.get(_requested_run_id)
+        if _target_dir is None:
+            # 被覆盖的 id:定位到**它自己那个目录**,而不是把人扔到全局第一条。
+            _overwritten_at = _superseded_dir.get(_requested_run_id)
+        _locate = _target_dir or _overwritten_at
         for idx, key in enumerate(_keys):
-            if key == _target_dir or run_options[key] == _requested_run_id:
+            if key == _locate or run_options[key] == _requested_run_id:
                 _default_index = idx
-                _requested_found = True
+                # 被覆盖的 id 即使定位成功也**不算**找到:告警照发,
+                # 否则就退回成「静默换人」(codex #444 r2 修的正是这个)。
+                _requested_found = _target_dir is not None
                 break
     if _requested_run_id and not _requested_found:
         # 静默落到 index 0 会让操作人以为看的是自己点的那次运行,实际是
         # 另一次(本机 92 条目录条目折叠成 20 个目录,8 个目录被反复覆盖)。
         # 说清楚:请求的那次产物已被同目录的更晚运行覆盖(codex #444 r2)。
-        st.warning(
-            f"⚠ 请求的运行 `{_requested_run_id}` 不在可打开清单中——"
-            "同一个 preset 反复跑会把报告写回**同一个** output_dir,"
-            "旧运行的产物已被更晚的那次覆盖,盘上只剩最新一份。"
-            "下方默认选中的**不是**你点的那次,请按目录核对。"
-        )
+        if _overwritten_at is not None:
+            _occupant = run_options.get(_overwritten_at, "?")
+            st.warning(
+                f"⚠ 请求的运行 `{_requested_run_id}` 的产物**已被覆盖**——"
+                "同一个 preset 反复跑会把报告写回**同一个** output_dir,"
+                "盘上只剩最新一份。下方已定位到该目录,现在住在里面的是 "
+                f"`{_occupant}`(`{_overwritten_at}`),**不是**你点的那次。"
+            )
+        else:
+            st.warning(
+                f"⚠ 请求的运行 `{_requested_run_id}` 不在可打开清单中——"
+                "它可能已被删除、产物落在读边界之外,或链接有误。"
+                "下方默认选中的**不是**你点的那次,请按目录核对。"
+            )
     if _superseded_runs:
         st.caption(
             f"目录条目中有 **{_superseded_runs}** 条因产物被同目录的更晚"
@@ -414,21 +439,23 @@ if isinstance(_wf_config, dict) and _wf_config:
     # 治理身份 SHALL NOT 只由 anchor 推断——这正是本 change 的 delta 自己
     # 写下的禁令,而我起初的文案恰好犯了它:stage7_daily_h5 / csi300 参照运行
     # 只因为用 fold_phase 就被标成「认证胜者」(codex #444 r4)。
-    # 治理链只管**被治理的那一族**:csi800 conservative 对(两级绑定链第一级
-    # 恰差 {rebalance_anchor, output_dir})。族外的运行只解释 schedule 语义,
-    # 不给任何治理判断。
-    _governed = (
-        str(_wf_config.get("instruments") or "") == "csi800"
-        and str(_wf_config.get("benchmark_code") or "") == "SH000906TR"
-        and _wf_config.get("rebalance_cadence_days") == 5
-        and _wf_config.get("rebalance_phase") == 0
-    )
+    # 判据取自 `EVAL_PROFILES["csi800_n5"]` 本身,**不复述字面量**——晋升族的
+    # 语义钉在那里,治理测试也钉着它,抄一份到 UI 只会各自漂。
+    # 去掉 `rebalance_anchor`:族**跨**两个锚(认证胜者跑 fold_phase、生产服务
+    # 跑 iso_week),它是族内的区分维度,不是入族条件。
+    _mismatched = [
+        _key
+        for _key, _want in _GOVERNED_FAMILY.items()
+        if not _knob_matches(_wf_config.get(_key), _want)
+    ]
+    _governed = not _mismatched
     if not _governed:
         st.caption(
             f"ℹ `anchor={_anchor}` 只说明本次回测的再平衡日怎么排"
             "（`fold_phase` = 锚在折起点；`iso_week` = 每 ISO 周首个交易日）。"
-            "**本次运行不属于被治理的 csi800 认证族**（宇宙/基准/节奏任一不符），"
-            "所以这里不给任何「认证胜者 / 生产锚」的判断。"
+            "**本次运行不属于被治理的 csi800 认证族**（不符项："
+            + "、".join(f"`{_k}`" for _k in _mismatched)
+            + "），所以这里不给任何「认证胜者 / 生产锚」的判断。"
         )
     elif _anchor == "fold_phase":
         st.caption(
