@@ -106,6 +106,154 @@
   「launch attempt」+ 失败路径追加「launch FAILED」标记;两处日志
   状态回归测试
 
+## 后续修复（#440 并后操作人实测反馈，2026-08-17）
+
+- [x] 刷新按钮"像坏的":它本就可用(无 disabled,点击即重跑重读),但状态
+  未变时整页重绘与未点击不可区分 → 加「上次读取 HH:MM:SS」+ 点击 toast
+- [x] 更新进行中自动轮询(`st.fragment(run_every=30)`),状态跃迁时
+  `st.rerun(scope="app")` 整页重绘——只刷片段会让出单闸门(依赖主脚本
+  作用域)与状态展示自相矛盾
+- [x] 日志尾部乱码:共享日志双写入者,当时计划任务侧未钉编码(中文落 cp936)
+  → 逐行解码(行不跨进程);真日志实测 `INFO ��` → `INFO —`
+  ——**解码策略在 r5/r6 被改过两次,当前形态见下面两节**
+- [x] 源头修:调度器补 `PYTHONIOENCODING=utf-8`。部署件
+  `D:\qlib_data\run_daily_update.bat` 已补(等当晚运行结束后才动——cmd 边执行
+  边读取批处理文件,改运行中的 .bat 会破坏执行;留了备份、ASCII+CRLF 保持、
+  cmd 实跑验证 `ENC=utf-8`);**tracked 模板**
+  `docs/runbook_daily_update_scheduling.md` 于 r6 一并补上——只修部署件等于
+  只修我这一台机器
+
+## codex #442 r1（两条 P2 全实修）
+
+- [x] 启动后不轮询:`_running_fresh` 在子进程写 running 记录**之前**算出,
+  从空闲页启动时守望者不注册 → 启动加**有界**等待标记(5 分钟)+ 立即
+  `st.rerun()` 让标记当场生效;结果暂存后重绘展示
+- [x] 陈旧跃迁不触发:kind/started_at/finished_at 在跨过 6 小时线时逐字
+  不变,崩掉的运行会一直锁着闸门、不出陈旧告警 → 签名纳入
+  `classify_running` 分类
+- [x] 两条源码钉(有界标记 + 分类入签名)
+
+## codex #442 r2（两条 P2 全实修——r1 的修法被证伪）
+
+- [x] **r1 的签名修法实际无效**:片段内对两侧各算一次分类,跨 6 小时线时
+  两边同时变 stale、元组照样相等 → 基线签名改在**整页渲染时刻**算定并
+  闭包捕获,片段只算新读到的那一侧
+- [x] 陈旧记录不得让等待标记退休:恢复性启动(带一条陈旧 running 记录去
+  补跑)时按 kind==running 清标记,会让 _watching 落回 False,新运行直到
+  手动刷新才被看见 → 退休条件收紧为 `_running_fresh`(新运行的 started_at
+  就是刚才,分类必为 fresh)
+- [x] 两条源码钉(基线定格位置 + 退休条件不得只看 kind)
+
+## codex #442 r3（1 条 P2 实修）
+
+- [x] 「有界」等待窗形同虚设:片段计时**只重跑片段**,主脚本不再执行,所以
+  主脚本里算出的窗口判断在片段注册后永远不会被重新求值。子进程若在写出
+  running 记录前就死掉(如撞单飞锁秒退 exit 17),签名永不变化 → 无限轮询。
+  修:判据抽成纯函数 `await_window_expired`(注入 now),主脚本与**片段内**
+  共用同一判据,片段到期即整页 rerun
+- [x] 行为覆盖(codex 明确要求):五个边界用例真跑一遍(启动即刻/临界前一秒/
+  恰好到点/远超/窗口有界且短),而不是只钉源码里出现过某个符号
+
+## codex #442 r4（两条 P2 全实修）
+
+- [x] 渲染期跨线的分叉:`_running_fresh` 与基线签名**各自**调一次
+  `classify_running`,记录恰在两行之间跨过 6 小时线时,闸门说「新鲜」而基线
+  已「陈旧」→ 此后片段读到的也都陈旧、恒等于基线,闸门永久锁死。修:渲染
+  时刻只分类一次(`_status_class`),闸门/展示/基线三处复用;签名函数改为
+  **接收**分类而非内部重算,片段侧才用当下时刻重算
+- [x] 「UTF-8 解码成功」不等于「本来就是 UTF-8」:`'抓取'.encode('gbk')`
+  是合法 UTF-8,解出 `'ץȡ'` 且无替换符,而「抓取」正是抓取阶段的高频词。
+  两手都做:①**源头**——调度器 `run_daily_update.bat` 钉死
+  `PYTHONIOENCODING=utf-8`(已实施于部署件,ASCII+CRLF 保持,留备份,并用
+  cmd 实跑验证 `ENC=utf-8`);②读侧对**历史**行加乱码区段判据——**②已于 r5
+  撤回**,见下节
+- [x] 测试:codex 的反例逐个真跑还原;真 UTF-8 行不得误判;样本按「GBK 恰好
+  合法 UTF-8」动态筛选并断言非空,防用例空转
+
+## codex #442 r5（撤回 r4 的②，只留源头修）
+
+- [x] r4 的区段判据会**损坏合法新行**:provider 路径落在 Windows 用户
+  `José` 下时,`José` 被改写成 `Jos茅`;`München 数据` 变 `M眉nchen 鏁版嵁`
+  (本地逐字节复现)。源头既已钉死 UTF-8,读侧再猜是净损失
+- [x] 规则收紧为「UTF-8 解码成功即采信,只在解码失败时回退 GBK」,删除
+  `_MOJIBAKE_RANGES` / `_looks_like_mojibake`
+- [x] 残留代价明示:GBK 字节恰好也是合法 UTF-8 的那类**历史**行(如
+  `'抓取'.encode('gbk')` → `'ץȡ'`)读侧无法还原——日志面板加说明，写清
+  「编码钉之前的少数历史行可能仍显示为乱码」
+- [x] 测试改锚:①合法 UTF-8 行(含 `José`/`München`/`Ω`)**永不被改动**;
+  ②解码失败类的历史 GBK 行仍能被回退救回(样本动态筛选并断言非空)
+
+## codex #442 r6（三条 P2 全实修）
+
+- [x] **tracked 调度器模板没钉编码**:我只补了部署件(D:\qlib_data 下那个
+  `.bat`),而 `docs/runbook_daily_update_scheduling.md` 里的模板仍无
+  `PYTHONIOENCODING` —— 照它新建的调度器会继续写 cp936,于是「新行一律
+  UTF-8」这句话只对我这台机器成立。修:模板里补上 `set "PYTHONIOENCODING=utf-8"`
+  并写清为什么不能删;`docs/run-center-runbook.md` 的故障表改述为「先确认
+  调度器 .bat 里有这行,**旧部署可能没有,要手工补**」
+- [x] **spec 场景比实现更宽**:场景要求 UTF-8 与 GBK 行「各自正确显示」,而
+  撤回启发式之后,字节恰好也是合法 UTF-8 的 GBK 行**故意**救不回来。规格
+  比实现宽 = 归档后会长期骗人。修:拆成两个场景——①UTF-8 行原样(含扩展
+  字符)+ 解码失败的 GBK 行回退;②无法还原的那类如实披露,并显式写下
+  「**不得**按字符区段猜」及其代价(`José` → `Jos茅`)
+- [x] **纯函数测试依赖 ui extra**:`AwaitWindowBehaviorTests` 从**页面**导入,
+  没装可选 `ui` extra 的 logic 套件会整类 `ModuleNotFoundError: streamlit`
+  (codex 实测五个失败)。修:纯函数迁到 `pages/_run_center_helpers.py`
+  (仓库既有惯例:`_*_helpers.py` 纯 + 薄渲染页),页面改为复用而非重定义
+- [x] 新测试**反证过非空转**:同一段屏蔽脚本指向 helper 时 rc=0,指向页面时
+  rc=1 且 stderr 正是 `ModuleNotFoundError: streamlit`
+
+## codex #442 r7（一条 P2）+ 并行自审扫描（六条）
+
+- [x] **规格正文没跟着场景一起收窄**(codex):正文仍说计划任务包装脚本
+  「未钉」编码,而本 PR 自己刚把编码钉写进了 tracked 模板。规格与仓库自带的
+  部署指引互相打架,还把混编码说成持续现象。改为区分「照新模板建/已补过的」
+  与「旧部署」,并显式写下页面文案 MUST NOT 把编码钉说成无条件已生效
+- [x] `grep` 读回时抓到更糟的一条:tasks.md 里那条**未勾选**的「源头修
+  ……待运行结束后另行处置」,实际已在本 PR 做掉(部署件 r4 / tracked 模板 r6)。
+  未勾选项会被读成「这事还没做」
+- [x] **同一句过宽断言在页面文案与源码注释里漏改**(自审扫描,两条):
+  `run_center.py` 日志面板说「两个写入者如今都钉了 UTF-8」,
+  `update_runner.py` 说这条 GBK 回退「只服务编码钉之前写下的行」。旧部署
+  **今晚仍在**写 GBK 新行——操作人被这句话劝退、不去查自己的 `.bat`,那一行
+  永远补不上;维护者则可能据此删掉回退。两处均改为有条件表述,页面并指出
+  补救动作(核对 `.bat` 里那一行);另加四条钉防回潮
+- [x] 测试注释的时态同改(自审扫描):`test_mixed_encoding_lines_each_decode_
+  correctly` 说调度器「does not」钉编码,现在说清是「r4/r6 之前,以及未打补丁
+  的旧部署」
+- [x] **规格漏写等待窗**(自审扫描):r1/r2/r3 三轮做出来的「启动等待窗 / 有界 /
+  片段自判到期 / 只有新鲜记录才退休」在规格里一句没有。归档后有人把它简化掉,
+  读规格看不出违反了任何 SHALL,r1 与 r3 的 bug 会原样回归。已补进正文 + 一条
+  场景;`_POLL_SECONDS` 上方那条说「仅 running 期间轮询」的注释同步改正
+  (它和 20 行外的实现自相矛盾)
+- [x] **调度 runbook 三处失真**(自审扫描):①「Each morning」的出单命令没带
+  `--ensemble-manifest`——照抄会**静默**拿到 legacy 单模型 csi300 日频清单,
+  exit 0、文件名与生产一致、无任何拒绝;②「`setup_logging()` also writes
+  per-run detail」——它只挂 stdout StreamHandler,不写独立文件,排查者会去找
+  一份不存在的明细;③前置条件写「five operational env vars」,而 daily_update
+  一个 `QUANT_*` 都不读,真正必需的 `TUSHARE_TOKEN` 反而没点名
+- [x] **run-center runbook 两处失真**(自审扫描):①「超时/失败**绝不**撕裂已
+  发布工件」过强——`recommend_runner` 有「回滚不完整」分支,那才是撕裂态,
+  故障表补了对应症状行;②「启动器模板从 HKCU 回读,与 `run_daily_update.bat`
+  同款」——tracked 的调度模板**没有**这段回读,调度任务靠以登录用户身份运行
+  继承;`update_runner` 的 no_token 报错文案同改
+
+## codex #442 r8（一条 P1：叙述与 diff 不符）
+
+- [x] **PR 描述里整整一节「源头修复为何不在本 PR」已过期**:源头修就在这个
+  diff 里(部署件 r4、tracked 模板 r6),同一条提交还在 tasks.md 里把它勾掉了。
+  本仓 squash 正文取 `COMMIT_MESSAGES`,而 `9209c87` 的正文也写着「调度器 .bat
+  的源头编码修复待今晚运行结束」——两处都会让维护者以为照本版建的部署**没有**
+  被规范化。修:PR 描述整体重写(那一节改成显式撤回 + 说明源头修在本 PR 的哪两
+  处落地),标题同步;顺带清掉描述里另外两处早已被 r4/r5 推翻的说法(「GBK 文本
+  几乎不可能通过 UTF-8 解码」、「历史日志一并救回」)
+- [x] **不改写历史**:force-push 会抹掉「r5 撤回 r4 的②」这条证据链,也会让已
+  发生的八轮审查锚点全部失效。改为在描述里写明「提交是审查循环的时间序,后面
+  的会显式撤回前面的,squash 正文请读到最后一条」,并由本条提交正文作废那两句
+- [x] 作废声明(供 squash 正文): `9209c87` 的「源头编码修复待今晚运行结束」与
+  `aea892f` 的「②读侧对历史行加乱码区段判据」**均已失效**——前者已于 r4/r6
+  完成(部署件 + tracked 模板),后者已于 r5 撤回并删除实现
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

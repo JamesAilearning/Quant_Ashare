@@ -11,8 +11,10 @@ because this page legitimately renders buttons).
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -101,12 +103,239 @@ class PageSourceTests(unittest.TestCase):
         # updater's provider lock, and its refusal must be rendered.
         self.assertIn("blocked_by_update", self.src)
 
+    def test_polling_survives_a_freshly_launched_update(self) -> None:
+        # codex #442 r1: _running_fresh is computed BEFORE the child writes
+        # its running record, so a launch from an idle page registered no
+        # watcher — the page sat on the pre-launch status until a manual
+        # refresh. The launch now stamps a bounded await marker and reruns
+        # so the watcher registers in the same interaction.
+        self.assertIn("_AWAIT_LAUNCH_KEY", self.src)
+        self.assertIn("_AWAIT_LAUNCH_WINDOW", self.src)
+        self.assertIn("_watching = _running_fresh or _awaiting_launch", self.src)
+        self.assertIn("if _watching:", self.src)
+        # The marker must be bounded, or a failed launch polls forever.
+        # (r3 起判据抽成纯函数 await_window_expired,主脚本与片段共用同一
+        # 个判据——两处各写一份不等式正是它们会分叉的方式。)
+        self.assertIn("await_window_expired(", self.src)
+        self.assertIn(
+            "not await_window_expired(\n        _awaiting_since, _read_at\n    )",
+            self.src,
+        )
+        # The rerun is what makes the marker take effect this interaction.
+        self.assertIn("st.rerun()", self.src)
+
+    def test_await_deadline_is_enforced_inside_the_fragment(self) -> None:
+        # codex #442 r3: 片段计时**只重跑片段**,主脚本不再执行——主脚本里
+        # 算出的窗口判断在片段注册之后永远不会被重新求值。子进程若在写出
+        # running 记录前就死掉(如撞单飞锁秒退 exit 17),签名永不变化,五分钟
+        # 的「有界」窗口形同虚设,会一直轮询下去。
+        self.assertIn("_await_deadline", self.src)
+        fragment_at = self.src.index("def _watch_update_completion()")
+        body = self.src[fragment_at : fragment_at + 1400]
+        self.assertIn("await_window_expired", body)
+        self.assertIn("st.rerun(scope=\"app\")", body)
+        # 签名分支必须 return,否则到期判断会在同一次 tick 里重复触发。
+        self.assertIn("return", body)
+
+    def test_baseline_signature_is_captured_at_full_render(self) -> None:
+        # codex #442 r2: 在片段里对两侧各算一次分类是**无效**的——跨过
+        # 6 小时线时,片段用同一个 now 分类新读到的记录和旧的 _status
+        # 对象,两边同时变 stale,元组照样相等,永不 rerun。基线必须在
+        # 整页渲染时刻定格并被闭包捕获。
+        self.assertIn(
+            "_baseline_signature = _status_signature(_status, _status_class)",
+            self.src,
+        )
+        baseline_at = self.src.index("_baseline_signature = _status_signature")
+        watch_at = self.src.index("if _watching:")
+        self.assertLess(baseline_at, watch_at, "基线必须在片段注册之前算定")
+        # 片段内只算「新读到的那一侧」,另一侧用整页渲染时刻捕获的基线。
+        self.assertIn(
+            "_status_signature(_latest, classify_running(_latest))",
+            self.src,
+        )
+
+    def test_stale_record_does_not_retire_the_launch_marker(self) -> None:
+        # codex #442 r2: 恢复性启动(带着一条陈旧 running 记录去补跑)时,
+        # 若把这条旧记录当成「新运行已出现」而清掉等待标记,_watching 会
+        # 落回 False,新运行直到手动刷新才被看见。只有**新鲜**记录才算数。
+        self.assertIn("if _running_fresh:", self.src)
+        retire_at = self.src.index("if _running_fresh:")
+        block = self.src[retire_at : retire_at + 700]
+        self.assertIn("_AWAIT_LAUNCH_KEY", block)
+        # 退休条件不得只看 kind == running（那正是 r2 指出的缺陷）。
+        self.assertNotIn(
+            'if _status.kind == "running" and record_matches_provider(', self.src
+        )
+
+    def test_freshness_transition_is_part_of_the_watch_signature(self) -> None:
+        # codex #442 r1: kind/started_at/finished_at are byte-identical as a
+        # run crosses the 6h staleness line, so a crashed run kept the gates
+        # locked and the stale warning hidden. The classification is part of
+        # the signature now.
+        sig_at = self.src.index("def _status_signature")
+        body = self.src[sig_at : sig_at + 1400]
+        self.assertIn("tuple[str, str, str, str]", body)
+        self.assertIn("classification or", body)
+        # codex #442 r4: 分类由调用方传入，函数内部**不得**重算——两侧各自
+        # 重算时，跨线时刻会同时翻面而元组照样相等，闸门永久锁死。
+        self.assertNotIn("classify_running(status)", body)
+
+    def test_render_time_classification_is_computed_once(self) -> None:
+        # codex #442 r4: 闸门 / 展示 / 基线三处必须复用**同一次**分类。
+        # 各调一次的话，记录恰在这几行之间跨过 6 小时线时，闸门说「新鲜」
+        # 而基线已「陈旧」，此后片段读到的也都是陈旧、恒等于基线。
+        self.assertIn("_status_class = classify_running(_status)", self.src)
+        self.assertIn("and _status_class == RUNNING_FRESH", self.src)
+        self.assertIn("_cls = _status_class", self.src)
+        # 主脚本作用域里只允许出现这一次对 _status 的分类调用。
+        self.assertEqual(self.src.count("classify_running(_status)"), 1)
+
     def test_failure_output_prefers_stdout_where_the_reason_lives(self) -> None:
         # The repo logger writes refusals to STDOUT (StreamHandler on
         # sys.stdout, propagate=False); stderr mostly carries import-time
         # environment noise. A page that prefers stderr would show the
         # noise instead of the reason — pin the preference order.
         self.assertIn("_result.stdout_tail or _result.stderr_tail", self.src)
+
+
+class AwaitWindowBehaviorTests(unittest.TestCase):
+    """启动等待窗的**行为**覆盖(codex #442 r3 要求)。
+
+    判据抽成纯函数并注入 ``now``,所以「状态一直不变时窗口会到期」这件事
+    可以被真正执行一遍,而不是只钉源码里出现过某个符号。
+    """
+
+    def setUp(self) -> None:
+        # codex #442 r6: 从**页面**导入会连带 import streamlit;logic 套件在
+        # 没装可选 ui extra 的环境里跑,那样这个类会整体 ModuleNotFoundError。
+        # 纯函数住在 _run_center_helpers(不 import streamlit)。
+        from web.operator_ui.pages._run_center_helpers import (
+            AWAIT_LAUNCH_WINDOW,
+            await_window_expired,
+        )
+
+        self.window = AWAIT_LAUNCH_WINDOW
+        self.expired = await_window_expired
+        self.t0 = datetime(2026, 8, 18, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    def test_not_expired_at_launch(self) -> None:
+        self.assertFalse(self.expired(self.t0, self.t0))
+
+    def test_not_expired_just_before_the_deadline(self) -> None:
+        self.assertFalse(
+            self.expired(self.t0, self.t0 + self.window - timedelta(seconds=1))
+        )
+
+    def test_expired_exactly_at_the_deadline(self) -> None:
+        # 边界取 >=:恰好到点就该停,否则「五分钟」在实现上是开区间。
+        self.assertTrue(self.expired(self.t0, self.t0 + self.window))
+
+    def test_expired_well_past_the_deadline(self) -> None:
+        self.assertTrue(self.expired(self.t0, self.t0 + self.window * 3))
+
+    def test_window_is_bounded_and_short(self) -> None:
+        # 窗口是给「子进程还没来得及写记录」留的余量,不是一个长轮询开关。
+        self.assertLessEqual(self.window, timedelta(minutes=15))
+        self.assertGreater(self.window, timedelta(0))
+
+
+#: 在子进程里把 streamlit 屏蔽成 ModuleNotFoundError,再导入 helper 并真调
+#: 一次。断言「源码里没有 streamlit 这个词」是不够的——传递依赖同样会炸。
+_STREAMLIT_FREE_PROBE = '''
+import sys
+from datetime import datetime
+
+
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name == "streamlit" or name.startswith("streamlit."):
+            raise ModuleNotFoundError(name)
+        return None
+
+
+sys.modules.pop("streamlit", None)
+sys.meta_path.insert(0, _Block())
+sys.path.insert(0, {root})
+
+from web.operator_ui.pages._run_center_helpers import (
+    AWAIT_LAUNCH_WINDOW,
+    await_window_expired,
+)
+
+t = datetime(2026, 8, 18, 10, 0)
+assert await_window_expired(t, t + AWAIT_LAUNCH_WINDOW)
+assert not await_window_expired(t, t)
+print("OK")
+'''
+
+
+class HelpersStayStreamlitFreeTests(unittest.TestCase):
+    """纯 helper 模块必须能在没有 ui extra 的环境里导入(codex #442 r6)。"""
+
+    def test_helper_module_imports_with_streamlit_unavailable(self) -> None:
+        # 真跑一遍 codex 描述的那个环境:子进程里把 streamlit 屏蔽成
+        # ModuleNotFoundError,再导入 helper 并调用它。断言「源码里没有
+        # streamlit 这个词」是不够的——传递依赖同样会炸。
+        script = _STREAMLIT_FREE_PROBE.format(root=repr(str(PROJECT_ROOT)))
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            "helper 必须能在没有 streamlit 的环境里导入: " + proc.stderr,
+        )
+        self.assertIn("OK", proc.stdout)
+
+    def test_page_reuses_the_helper_rather_than_redefining_it(self) -> None:
+        # 两份实现会分叉:页面一份、helper 一份,窗口长度改一处就不一致了。
+        page = (
+            PROJECT_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_run_center_helpers import", page)
+        self.assertNotIn("def await_window_expired", page)
+        self.assertIn("_AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW", page)
+
+
+class EncodingClaimStaysConditionalTests(unittest.TestCase):
+    """编码钉是**有条件**的,页面不得把它说成无条件事实。
+
+    r6 只把过宽断言从 docs 与 spec 正文里赶了出去,页面文案与源码注释漏改
+    (自审扫描抓到)。旧部署照 r6 之前的 runbook 建的调度任务今天仍在写
+    cp936 新行;页面若说「两个写入者如今都钉了 UTF-8」,操作人就不会去查
+    自己的 .bat,那一行永远补不上。
+    """
+
+    def test_page_does_not_claim_the_scheduler_is_already_pinned(self) -> None:
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertNotIn("都钉了 UTF-8", src)
+        self.assertNotIn("两个写入者(本页启动的运行、调度器 .bat)如今", src)
+
+    def test_page_points_the_operator_at_the_bat_file(self) -> None:
+        # 光说「可能没钉」不够 —— 得给出可执行的下一步动作。
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("run_daily_update.bat", src)
+        self.assertIn("PYTHONIOENCODING", src)
+
+    def test_runner_comment_does_not_call_the_fallback_pure_legacy(self) -> None:
+        # 把 GBK 回退定性成纯历史包袱,会给「源头已钉,读侧无需回退」式的
+        # 删除背书 —— 未打补丁的部署上那正是回退唯一救得回来的那类行。
+        runner = (
+            PROJECT_ROOT / "web" / "operator_ui" / "update_runner.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("这条只服务编码钉之前写下的行", runner)
+        self.assertIn("不得删除", runner)
+
+    def test_tracked_scheduler_template_carries_the_pin(self) -> None:
+        # 只补部署件 = 只修我这一台机器（codex #442 r6）。
+        doc = (
+            PROJECT_ROOT / "docs" / "runbook_daily_update_scheduling.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn('set "PYTHONIOENCODING=utf-8"', doc)
 
 
 class RegistrationTests(unittest.TestCase):

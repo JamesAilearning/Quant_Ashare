@@ -399,6 +399,63 @@ class LogTailTests(unittest.TestCase):
     def test_missing_log_is_an_empty_state_not_an_error(self) -> None:
         self.assertEqual(log_tail(Path("/no/such/dir/x.log")), "")
 
+    def test_mixed_encoding_lines_each_decode_correctly(self) -> None:
+        # The shared log has TWO writers. Runs launched here always
+        # pinned UTF-8; the Task Scheduler wrapper did NOT until codex
+        # #442 r4/r6 added ``PYTHONIOENCODING=utf-8`` to the deployment
+        # file and then to the tracked template — so a wrapper built
+        # from the old template (or never patched) still writes cp936.
+        # Either way the one rolling log ends up holding both, and
+        # decoding the whole tail with one codec turns the other
+        # writer's lines into replacement chars.
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "daily_update.log"
+            with open(log, "wb") as fh:
+                # 刻意两种编码写同一文件——编码钉之前的历史行,与未打补丁的
+                # 旧调度器今天仍在写的行,都是这个形态。
+                fh.write("UI 启动的行:数据更新\n".encode())
+                fh.write("调度器的行:抓取完成\n".encode("gbk"))
+            tail = log_tail(log)
+            self.assertIn("UI 启动的行:数据更新", tail)
+            self.assertIn("调度器的行:抓取完成", tail)
+            self.assertNotIn("�", tail)
+
+    def test_utf8_lines_with_extended_characters_are_never_damaged(self) -> None:
+        # codex #442 r5: 曾按字符区段猜「像不像乱码」,结果**损坏合法新行**
+        # —— provider 路径里一个 José 被改写成 Jos茅。源头已钉 UTF-8,读侧
+        # 再猜是净损失,所以规则收紧为「解码成功即采信」。
+        from web.operator_ui.update_runner import _decode_log_line
+
+        for line in (
+            "provider: C:/Users/José/qlib_data",
+            "München 数据更新完成",
+            "Ω 阈值 0.05",
+            "[run_center] 2026-08-18T00:30:00+08:00 launch attempt",
+            "progress: 2400/5883 tickers (written=3263)",
+        ):
+            with self.subTest(line=line[:24]):
+                self.assertEqual(_decode_log_line(line.encode("utf-8")), line)
+
+    def test_legacy_gbk_lines_are_recovered_when_utf8_fails(self) -> None:
+        # 绝大多数历史 GBK 行的字节不是合法 UTF-8，回退能救回。
+        from web.operator_ui.update_runner import _decode_log_line
+
+        recovered = 0
+        for word in ("数据更新完成", "一二三", "日线", "进度", "换库分区"):
+            gbk = word.encode("gbk")
+            try:
+                gbk.decode("utf-8")
+            except UnicodeDecodeError:
+                self.assertEqual(_decode_log_line(gbk), word)
+                recovered += 1
+        self.assertGreater(recovered, 0, "样本里没有可被回退救回的历史行")
+
+    def test_undecodable_bytes_degrade_instead_of_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "daily_update.log"
+            log.write_bytes(b"\xff\xfe\x00 broken\n")
+            self.assertIn("broken", log_tail(log))
+
     def test_tail_returns_the_end_of_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "daily_update.log"

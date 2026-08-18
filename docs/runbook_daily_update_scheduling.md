@@ -34,7 +34,11 @@ not an auto-applied change.
 
 ## Prerequisites
 
-- The five operational env vars are set (see [docs/operations-env-vars.md](operations-env-vars.md)).
+- `TUSHARE_TOKEN` is set as a **user-level** environment variable, so a task running as
+  that logged-in user inherits it. This is the one variable this chain actually needs —
+  `daily_update` reads no `QUANT_*` path variable (those serve the recommend side and
+  the UI; see [docs/operations-env-vars.md](operations-env-vars.md)). Missing token =
+  exit 11 in the fetch stage.
 - A live bundle already exists at `--provider-dir` (the first build is supervised, not
   scheduled — see the 阶段1 runbook history).
 - The repo's Python environment is on `PATH` (or use the venv's `python.exe` absolute
@@ -51,6 +55,12 @@ The full `daily_update` invocation is too long and too quote-fragile for `schtas
 
    ```bat
    @echo off
+   rem Pin the child's stdout/stderr encoder. Without this the child uses the
+   rem console codepage (cp936 on a zh-CN box) and its Chinese log lines land
+   rem in the shared log as GBK — the run-center's log panel reads that log as
+   rem UTF-8 and cannot always recover them (a GBK byte pair that also forms
+   rem valid UTF-8 decodes silently into the wrong characters). Keep this line.
+   set "PYTHONIOENCODING=utf-8"
    if not exist "D:\qlib_data\logs" mkdir "D:\qlib_data\logs"
    "C:\path\to\python.exe" "D:\stock\Claude\qlib_trading_system_v2\scripts\daily_update.py" ^
      --tushare-dir D:\qlib_data\tushare_raw ^
@@ -67,8 +77,10 @@ The full `daily_update` invocation is too long and too quote-fragile for `schtas
    schtasks /Create /TN "QuantAshare\DailyDataUpdate" /TR "D:\qlib_data\run_daily_update.bat" /SC DAILY /ST 20:30 /RL HIGHEST /F
    ```
 
-The `.bat` appends to a single rolling log; the app's own `setup_logging()` also writes
-per-run detail. (Avoid `%date%` in the filename — it is locale-dependent and often yields
+The `.bat` appends the child's stdout/stderr to a single rolling log. The app's own
+`setup_logging()` only attaches a stdout StreamHandler — it writes **no separate
+file** — so that shared log IS the per-run detail (the machine-readable verdict for
+each run lives in `<provider>.daily_update_status.json`). (Avoid `%date%` in the filename — it is locale-dependent and often yields
 an invalid name.)
 
 **Schedule time — after the data is published.** A-share EOD data lands a few hours after
@@ -101,7 +113,10 @@ After confirming the overnight update succeeded (exit 0 + a recent bundle), prod
 list **by hand**:
 
 ```sh
-python scripts/daily_recommend.py        # no overrides; clean-fetch bundle
+python scripts/daily_recommend.py --ensemble-manifest $QUANT_ENSEMBLE_MANIFEST
+# Production is the csi800 N5 3-member ensemble. WITHOUT --ensemble-manifest this
+# silently produces the LEGACY single-model csi300 daily list — exit 0, same filenames,
+# no refusal. See docs/csi800-n5-production-runbook.md.
 # -> output/daily_recommend/daily_recommendation_<as-of>.{csv,json}
 ```
 
