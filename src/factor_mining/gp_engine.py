@@ -937,7 +937,16 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._fitness_key = run_fitness_key
-        if self.population and self._allowed_terminals is not None:
+        if self.population:
+            # ``None`` is the V1 sentinel, not "no constraint": gating
+            # this guard on ``is not None`` skipped it entirely for a run
+            # on the exact V1 panel, so a hand-filled population carrying
+            # an opt-in terminal reached evaluation — and with
+            # n_generations=0 the run even returned normally, while a
+            # positive count failed later as a confusing missing-feature
+            # KeyError instead of refusing here (codex #448 r3 P2; the
+            # same sentinel mistake score_expression already fixed).
+            #
             # A population that predates this run (a resumed checkpoint,
             # a hand-filled list) may have been bred under a WIDER pool.
             # Evaluating it would score expressions this run's search
@@ -947,7 +956,9 @@ class GPEngine:
                 t
                 for expr in self.population
                 for t in feature_terminals(expr)
-            } - self._allowed_terminals
+            } - (self._allowed_terminals
+                 if self._allowed_terminals is not None
+                 else frozenset(FeatureRegistry.V1))
             if stale:
                 raise GrammarError(
                     f"pre-existing population references terminal(s) "

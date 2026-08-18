@@ -282,3 +282,29 @@ def test_a_checkpoint_without_the_recorded_pool_is_refused(tmp_path):
     ckpt.write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(RuntimeError, match="predates terminal-pool recording"):
         GPEngine.load_checkpoint(ckpt, fitness_config=FitnessConfig())
+
+
+def test_a_v1_run_still_guards_a_prefilled_population():
+    """V1 面板下 `_allowed_terminals` 是 None 哨兵，种群守卫**不得**因此
+    被跳过：手工填入 opt-in 终端的种群会一路走到求值，n_generations=0
+    时甚至正常返回（codex #448 r3 P2 —— 与 score_expression 已修的是
+    同一个哨兵误读）。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import FeatureRegistry, GrammarError
+
+    panel = _tiny_panel(list(FeatureRegistry.V1) + ["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    v1_only = _tiny_panel(list(FeatureRegistry.V1))
+    engine = _engine()
+    engine.population = [parse_expression("cs_rank($revenue)")]
+    with pytest.raises(GrammarError, match="outside this run's pool"):
+        engine.run(v1_only, fwd, n_generations=0)
+    # 非空性：V1 内的种群照常放行。
+    ok = _engine()
+    ok.population = [parse_expression("cs_rank($volume)")]
+    ok.run(v1_only, fwd, n_generations=0)
+    assert ok._has_run
