@@ -16,6 +16,10 @@ from pathlib import Path
 import streamlit as st
 
 from web.operator_ui.bundle_health import resolve_default_provider_uri
+from web.operator_ui.daily_signal_navigation import (
+    DAILY_DECISION_REQUESTED_DATE_KEY,
+    published_recommendation_date,
+)
 from web.operator_ui.incumbent import (
     anchored_to_repo,
     resolve_incumbent,
@@ -393,11 +397,18 @@ elif st.button(
     if _result.kind == "ok":
         st.success(
             f"出单完成(exit 0,{_result.elapsed_s:.0f}s)。清单与 HOLD 披露"
-            "到「今日推荐」页查看;**每次必读打印的 entry_date**——它是"
+            "到「日度信号与人工决策」页查看;**每次必读打印的 entry_date**——它是"
             "已收盘会话,不是「明早买入指令」。"
         )
         if _result.published:
             st.caption("已发布工件:" + "、".join(_result.published))
+        _published_date = published_recommendation_date(_result.published)
+        if _published_date is not None and st.button(
+            "查看本次日度信号",
+            key="run_center::view_published_daily_signal",
+        ):
+            st.session_state[DAILY_DECISION_REQUESTED_DATE_KEY] = _published_date
+            st.switch_page("pages/daily_decision.py")
         if _result.stdout_tail:
             st.code(_result.stdout_tail)
     elif _result.kind == "blocked_by_update":
@@ -426,5 +437,5 @@ st.subheader("③ 看板")
 st.markdown(
     "- **生产运维**:五问一屏(现任 / 授权门 / 年检 / 重训窗 / 数据新鲜度)\n"
     "- **数据检视**:bundle 健康 + 上次数据更新 + PIT 校验\n"
-    "- **今日推荐**:最新出单工件与 HOLD 披露(非再平衡日拦下单表单)"
+    "- **日度信号与人工决策**:最新出单工件与 HOLD 披露(非再平衡日拦下单表单)"
 )

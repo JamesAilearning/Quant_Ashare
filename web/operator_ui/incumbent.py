@@ -2,7 +2,7 @@
 
 Lives at package level (beside ``bundle_health``/``anchor_health``) rather
 than inside one page's helpers because MORE THAN ONE page asks the question.
-Two copies of this logic could disagree — 今日推荐 naming one model while
+Two copies of this logic could disagree — 日度信号与人工决策 naming one model while
 生产运维 names another — and a page whose entire purpose is telling the
 operator "whose advice is this" cannot be the thing that disagrees with
 itself.

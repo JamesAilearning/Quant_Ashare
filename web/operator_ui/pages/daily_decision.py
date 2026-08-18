@@ -1,4 +1,4 @@
-"""今日推荐 — 每日决策页(工件检视 + 人工决策日志)。
+"""日度信号与人工决策 — 工件检视 + 人工决策日志。
 
 Renders PERSISTED artifacts only(dated ``daily_recommendation_*.json`` + the
 production model's meta sidecars)and appends operator decisions to the
@@ -23,6 +23,7 @@ import streamlit as st
 
 from web.operator_ui.artifact_reader import read_json_artifact
 from web.operator_ui.components import render_empty_state
+from web.operator_ui.daily_signal_navigation import prepare_daily_decision_selection
 from web.operator_ui.decision_journal import (
     ACTIONS,
     DecisionJournalError,
@@ -63,9 +64,9 @@ from web.operator_ui.pages._daily_decision_helpers import (
 _ACTION_LABELS = {"adopt": "采纳", "reject": "拒绝", "watch": "观望"}
 
 render_page_header(
-    "今日推荐",
-    "只读检视每日荐股工件 + 记录人工决策(采纳/拒绝/观望)。"
-    "本页不重跑推断、不触发任何作业;推荐由 scripts/daily_recommend.py 晨间产出。",
+    "日度信号与人工决策",
+    "只读检视日度信号工件 + 记录人工决策(采纳/拒绝/观望)。"
+    "本页不重跑推断、不触发任何作业;工件由 scripts/daily_recommend.py 晨间产出。",
 )
 
 # ---------------------------------------------------------------------------
@@ -177,14 +178,15 @@ _artifacts = list_recommendation_artifacts()
 if not _artifacts:
     render_empty_state(
         "\U0001f4c4",
-        "暂无每日推荐工件",
+        "暂无日度信号工件",
         "output/daily_recommend/ 下没有 daily_recommendation_*.json。"
         "请先运行 scripts/daily_recommend.py(本页只渲染落盘工件,不代跑)。",
     )
     st.stop()
 
 _date_options = [item[0] for item in _artifacts]
-_selected_date = st.selectbox("交易日(as_of)", _date_options, index=0, key="dd_date")
+prepare_daily_decision_selection(st.session_state, _date_options)
+_selected_date = st.selectbox("交易日(as_of)", _date_options, key="dd_date")
 _selected_path = dict(_artifacts)[_selected_date]
 
 _read = read_json_artifact(_selected_path, artifact_name="daily_recommendation")

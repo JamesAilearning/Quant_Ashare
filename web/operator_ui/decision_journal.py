@@ -1,6 +1,6 @@
 """Append-only operator decision journal — web-layer owned (每日决策页).
 
-The 今日推荐 page records adopt / reject / watch decisions (one line of JSON
+The 日度信号与人工决策 page records adopt / reject / watch decisions (one line of JSON
 per decision) so the operator's reasoning is reviewable later. Contract
 (openspec ``add-daily-decision-page``, spec ``v2-daily-decision-page``):
 

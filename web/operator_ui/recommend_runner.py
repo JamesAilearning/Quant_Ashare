@@ -39,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RECOMMEND_SCRIPT = PROJECT_ROOT / "scripts" / "daily_recommend.py"
 
 # Where a terminal run's artifacts land (RecommendationConfig.out_dir is
-# CWD-relative; both this runner and the 今日推荐 page anchor it to the
+# CWD-relative; both this runner and the 日度信号与人工决策 page anchor it to the
 # repo root). The CLI is pointed at a per-run STAGING dir under it and
 # the finished files are published per-file via atomic os.replace — a
 # timeout kill mid-``write_outputs`` must never leave a torn file where
