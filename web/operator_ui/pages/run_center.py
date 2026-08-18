@@ -35,7 +35,7 @@ from web.operator_ui.pages._run_center_helpers import (
     await_window_expired,
 )
 from web.operator_ui.recommend_runner import run_daily_recommend
-from web.operator_ui.update_progress import last_fetch_progress
+from web.operator_ui.update_progress import FetchProgress, progress_for_run
 from web.operator_ui.update_runner import (
     START_DATE,
     default_log_path,
@@ -72,6 +72,21 @@ _CN_TZ = timezone(timedelta(hours=8))
 _AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
 _AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW
 _LAST_LAUNCH_KEY = "run_center::last_launch"
+
+
+def _read_progress() -> FetchProgress | None:
+    """本次运行的最后一条 fetch 进度。整页与片段**共用这一个读取器**。
+
+    两处各写一份正是它们会分叉的方式(#442 r1/r3/r4 在这一页上连栽三次)。
+    """
+    log_path = default_log_path(_provider_path)
+    try:
+        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=_CN_TZ)
+    except OSError:
+        mtime = None
+    return progress_for_run(
+        log_tail(log_path), log_mtime=mtime, started_at=_status.started_at
+    )
 
 
 def _status_signature(
@@ -173,7 +188,7 @@ elif _status.kind == "running":
     # 仍留在文件尾。在非 running 时显示它,等于把**上一次**运行的进度当成
     # 当前进度——那是撒谎。陈旧/不可核实的 running 反而最该显示:昨晚那次
     # 断在 fetch 2400/5883,这一行正是唯一能说清「断在哪」的东西。
-    _progress = last_fetch_progress(log_tail(default_log_path(_provider_path)))
+    _progress = _read_progress()
     if _progress is not None:
         st.caption(
             f"⏳ 最后进度(fetch 阶段):{_progress.describe()} —— 分母是**该"
@@ -181,7 +196,10 @@ elif _status.kind == "running":
             "时间戳见下方日志尾部。"
         )
     else:
-        st.caption("⏳ 日志尾部还没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
+        st.caption(
+            "⏳ 还没有**本次运行**的 fetch 进度行(可能尚未进入 fetch 阶段,"
+            "或日志尾部那条属于上一次运行——归属不了就不显示,绝不拿旧的顶)。"
+        )
 elif _status.ok:
     st.success(
         f"🟢 上次更新成功(exit 0):run_date={_status.run_date},"
@@ -240,6 +258,11 @@ st.caption(
 # 和旧的 `_status` 对象,两边同时变成 stale,元组照样相等、永不 rerun
 # ——闸门继续锁着、陈旧告警仍然不出(codex #442 r2)。
 _baseline_signature = _status_signature(_status, _status_class)
+# 进度也要进重跑判据:片段计时只重跑片段,而追加的 fetch 行**不改变**状态
+# 签名(kind/started_at/分类都不动)。只比签名的话,页面会一直冻在「还没有
+# 进度行」直到运行结束(codex #450 r1)。基线同样在整页渲染时刻定格——
+# 两侧都在片段里重算,正是 #442 r2 证伪过的那个错法。
+_baseline_progress = _read_progress()
 
 if _watching:
     @st.fragment(run_every=_POLL_SECONDS)
@@ -253,6 +276,10 @@ if _watching:
         """
         _latest = read_update_status(_status_path)
         if _status_signature(_latest, classify_running(_latest)) != _baseline_signature:
+            st.rerun(scope="app")
+            return
+        if _read_progress() != _baseline_progress:
+            # fetch 又推进了一格 —— 整页重绘,让上面那句进度跟上。
             st.rerun(scope="app")
             return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
