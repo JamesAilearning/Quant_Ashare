@@ -303,6 +303,20 @@
 - [x] spec delta 补两条:环境模板键 SHALL 按**值的形状**排除(不得手挑清单);
   治理标签 SHALL 渲染在族门**内部**,同级分支不算门
 
+## codex #444 r14（一条 P1）
+
+- [x] **r13 的「整条踢出」踢过头了**:`delisted_registry_path` 留空是合法配置,
+  它会关掉 PIT provider、退回 legacy WARN 掩码路径(`walk_forward/engine.py`
+  里 `if str(config.delisted_registry_path or "").strip():` 那一支),那是**另一
+  套掩码/归因语义**。整条踢出身份 = 一份其余全同、但把它清空的运行零不符项,
+  照样顶「认证胜者」。修:这些键**留在**身份里,只是不比路径**字面量**(随机器
+  变),改比**「配没配」**——与引擎同一条判据(非空且去空白后非空)
+- [x] 实测:`""` 与 `"   "` 都被踢出(不符=`['delisted_registry_path']`);换成
+  **另一条已配置的路径**不算不符(那只是机器差异);跨环境重载后认证运行的
+  `(不符项, 未记录项)` 仍完全不变
+- [x] spec delta 改述:环境模板键的**字面量**不比、但 SHALL 以「配置 vs 缺失」
+  参与身份,并写明空 registry = 关闭 PIT = 另一套语义这个理由
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

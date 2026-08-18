@@ -171,9 +171,13 @@ def _is_environment_dependent(value: Any) -> bool:
     的环境再展开一次,同一份报告会因为 UI 起在别的机器/别的环境变量下而突然
     「换族」、丢掉治理标签(codex #444 r13)。
 
-    判据是**可推导**的:权威值本身长成 `${...}` 模板 = 它是环境参数,不是实验
-    身份。不是手挑键名——手挑正是这条规则存在的原因。这些键从身份里剔除,
-    因此也不会出现在「未记录」披露里。
+    判据是**可推导**的:权威值本身长成 `${...}` 模板 = 那是一个**位置**,
+    不是实验语义。不是手挑键名——手挑正是这条规则存在的原因。
+
+    但这类键**不能整条踢出身份**(codex #444 r14):`delisted_registry_path`
+    留空是合法配置,它会关掉 PIT provider、退回 legacy WARN 掩码路径
+    (`walk_forward/engine.py`),那是**另一套掩码/归因语义**。所以路径的
+    字面量不比,**「配没配」照比**。
     """
     return isinstance(value, str) and "${" in value
 
@@ -220,9 +224,7 @@ def _load_governed_family() -> dict[str, Any]:
     identity = {
         key: value
         for key, value in resolved.items()
-        if key not in _FAMILY_INTERNAL_KEYS
-        and key not in _NON_IDENTITY_KEYS
-        and not _is_environment_dependent(value)
+        if key not in _FAMILY_INTERNAL_KEYS and key not in _NON_IDENTITY_KEYS
     }
     if not identity:
         raise GovernedFamilyUnavailableError("认证族身份为空——权威工件异常")
@@ -254,6 +256,15 @@ def _knob_matches(actual: object, want: object) -> bool:
     return str(actual or "") == str(want)
 
 
+#: 这些键只比「配没配」,不比路径字面量(见 ``_is_environment_dependent``)。
+_PRESENCE_ONLY_KEYS: frozenset[str] = _environment_dependent_keys()
+
+
+def _is_configured(value: Any) -> bool:
+    """引擎判「这个路径配了没」的同一条判据:非空、去掉空白之后仍非空。"""
+    return bool(str(value or "").strip())
+
+
 def governed_family_coverage(
     config: Mapping[str, Any],
 ) -> tuple[list[str], list[str]]:
@@ -272,6 +283,13 @@ def governed_family_coverage(
     for key, want in _GOVERNED_FAMILY.items():
         if key not in config:
             unrecorded.append(key)
+            continue
+        if key in _PRESENCE_ONLY_KEYS:
+            # 路径本身随机器变(权威侧是 ${VAR:-...} 模板),但**留空**是另一套
+            # 语义:空的 delisted_registry_path 关掉 PIT provider、退回 legacy
+            # WARN 掩码。所以比的是「配没配」,不是配成了哪条路径。
+            if _is_configured(config[key]) != _is_configured(want):
+                mismatched.append(key)
             continue
         if not _knob_matches(config[key], want):
             mismatched.append(key)

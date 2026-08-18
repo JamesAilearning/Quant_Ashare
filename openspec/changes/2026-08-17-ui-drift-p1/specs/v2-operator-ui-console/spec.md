@@ -149,12 +149,17 @@ run time, so judging only YAML-present keys leaves knobs like
 different experiment wearing the certified label.
 
 Keys whose pinned value is itself an environment template
-(`${VAR:-default}`) SHALL be excluded from the identity. Those are data
-locations, not experiment semantics, and re-expanding them under the
+(`${VAR:-default}`) name a data **location**, not experiment semantics.
+Their literal path SHALL NOT be compared — re-expanding it under the
 **viewer's** process environment would make one unchanged report gain or
-lose its governance label depending on where the UI happens to run. The
-exclusion SHALL be derived from the value's shape, not from a hand-kept
-key list.
+lose its governance label depending on where the UI happens to run — but
+they SHALL remain in the identity, compared as **configured versus
+absent**. Leaving `delisted_registry_path` empty is a valid config that
+disables the PIT provider and falls back to the legacy WARN masking
+path: different masking and attribution semantics, therefore a different
+experiment. Dropping such keys wholesale would let that run wear the
+certified label. Which keys these are SHALL be derived from the value's
+shape, not from a hand-kept list.
 
 Every governance label SHALL be rendered **inside** the family gate, not
 merely after it. A sibling branch is not a gate: a fully-recorded run

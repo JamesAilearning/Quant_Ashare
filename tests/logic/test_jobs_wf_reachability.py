@@ -773,9 +773,12 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
 
         env_keys = H._environment_dependent_keys()
         self.assertTrue(env_keys, "环境相关键判定失效了")
+        # codex #444 r14: 这些键**留在**身份里，只是改比「配没配」—— 整条踢出
+        # 会放过 delisted_registry_path=""（那会关掉 PIT provider、退回 legacy
+        # WARN 掩码，是另一套语义）。
         for key in env_keys:
             with self.subTest(key=key):
-                self.assertNotIn(key, _GOVERNED_FAMILY)
+                self.assertIn(key, H._PRESENCE_ONLY_KEYS)
 
         report = (
             PROJECT_ROOT / "output" / "walk_forward"
@@ -801,6 +804,37 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         finally:
             # 还原模块状态,免得污染后续用例（本文件曾被这类 reload 咬过）。
             importlib.reload(H)
+
+    def test_empty_pit_registry_is_not_the_certified_family(self) -> None:
+        # codex #444 r14: 空 delisted_registry_path 是合法配置，但它关掉 PIT
+        # provider、退回 legacy WARN 掩码 —— 掩码/归因语义不同，不能顶着认证
+        # 胜者的文案。路径**字面量**不比（随机器变），「配没配」必须比。
+        import json
+
+        from web.operator_ui.pages import _walk_forward_helpers as H
+
+        report = (
+            PROJECT_ROOT / "output" / "walk_forward"
+            / "csi800_cadence5_conservative" / "walk_forward_report.json"
+        )
+        if not report.is_file():
+            self.skipTest("本机没有认证运行的报告")
+        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
+            "config"
+        ) or {}
+        self.assertEqual(H.governed_family_coverage(cfg)[0], [])
+        for blank in ("", "   "):
+            with self.subTest(value=repr(blank)):
+                broken = dict(cfg)
+                broken["delisted_registry_path"] = blank
+                self.assertIn(
+                    "delisted_registry_path",
+                    H.governed_family_coverage(broken)[0],
+                )
+        # 但换成**另一条**已配置的路径不算不符 —— 那只是机器差异。
+        moved = dict(cfg)
+        moved["delisted_registry_path"] = "E:/elsewhere/registry.parquet"
+        self.assertEqual(H.governed_family_coverage(moved)[0], [])
 
     def test_environment_dependence_is_derived_not_hand_listed(self) -> None:
         # 判据是「权威值本身长成 ${...} 模板」—— 手挑键名正是这条规则存在的
