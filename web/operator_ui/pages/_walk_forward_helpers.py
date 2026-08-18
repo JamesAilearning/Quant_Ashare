@@ -12,6 +12,7 @@ accidentally drift the metric math.
 
 from __future__ import annotations
 
+import ast
 import math
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,43 +21,130 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from src.core._yaml_loader import _expand_env_vars_in_tree
+
 # ---------------------------------------------------------------------------
 # Display sentinels + Plotly color constants
 # ---------------------------------------------------------------------------
 
-#: 生产服务参数——两级绑定链的第二级,治理测试钉死它与 iso_week 复核 preset
-#: **逐值相等**。这就是「被治理的那一族」的权威身份。
-_SERVING_PARAMS_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "config"
-    / "serving"
-    / "csi800_n5_production.yaml"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: 认证胜者的 preset,以及它 `extends` 的基座。两者合起来是仓库**实际钉住**
+#: 的那次实验的全部旋钮——不只是服务语义,还有 `ensemble_window` 这类决定
+#: 「这是哪个实验」的键(codex #444 r11)。
+_CERTIFIED_PRESET_PATH = (
+    _REPO_ROOT / "config" / "presets" / "csi800_cadence5_conservative.yaml"
 )
 
-#: 族**内**的区分维度,不是入族条件:族跨两个锚(认证胜者 `fold_phase` /
-#: 生产服务 `iso_week`)。
-_FAMILY_INTERNAL_KEYS = frozenset({"rebalance_anchor"})
+#: 生产服务参数——两级绑定链的第二级,治理测试钉死它与 iso_week 复核 preset
+#: **逐值相等**。与 preset 链取并集,两边都不漏。
+_SERVING_PARAMS_PATH = (
+    _REPO_ROOT / "config" / "serving" / "csi800_n5_production.yaml"
+)
 
-#: 服务侧独有、不参与身份比对的字段(治理测试的同名白名单)。
-_SERVING_ONLY_KEYS = frozenset({"out_dir"})
+#: 族**内**的区分维度与产物落点,不是入族条件:认证对两份报告的 config
+#: **恰好只差这两个键**(本机 20 份报告实测),族跨两个锚。
+_FAMILY_INTERNAL_KEYS = frozenset({"rebalance_anchor", "output_dir"})
+
+#: 结构性字段与服务侧独有字段,不参与身份比对。
+_NON_IDENTITY_KEYS = frozenset({"extends", "out_dir"})
+
+
+class GovernedFamilyUnavailableError(RuntimeError):
+    """认证族身份读不出来。
+
+    **绝不**退化成空要求:空要求会让 ``governed_family_mismatches`` 对**任何**
+    配置都返回「无不符项」,于是权威恰恰读不到的时候,页面反而给每个运行都打上
+    认证族文案(codex #444 r11)。宁可整页报错,也不能 fail-open 成乱发标签。
+    """
+
+
+def _load_mapping(path: Path) -> dict[str, Any]:
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:  # pragma: no cover - 环境损坏
+        raise GovernedFamilyUnavailableError(f"{path} 读不出来:{exc}") from exc
+    if not isinstance(loaded, dict) or not loaded:
+        raise GovernedFamilyUnavailableError(
+            f"{path} 不是非空映射(实际 {type(loaded).__name__})——"
+            "认证族身份无从建立"
+        )
+    return loaded
+
+
+#: 报告 config 的契约:引擎写的是 ``asdict(WalkForwardConfig)``
+#: (``src/core/walk_forward/engine.py``)。
+_WF_CONFIG_SOURCE = (
+    _REPO_ROOT / "src" / "core" / "walk_forward" / "config.py"
+)
+
+
+def _reported_config_fields() -> frozenset[str]:
+    """报告 config 里**会出现**的字段名。
+
+    只留这些键参与身份比对:`provider_uri` / `region` 这类运行环境参数根本
+    不在报告里,不做这道交集,认证运行自己都会因「缺这两个键」被判出族,
+    标签全灭(本机实测)。
+
+    用 ``ast`` 读源码而**不是** import 那个 dataclass:导进来会连带
+    ``src.core`` 的整条链——实测把 **qlib 与 gym** 拉进这个号称
+    「纯、无 streamlit」的 helper,1.19 秒、2042 个模块。UI 侧不该为了
+    一份字段名付这个代价,logic 套件更不该。契约变了这里照样自动跟上。
+    """
+    try:
+        tree = ast.parse(_WF_CONFIG_SOURCE.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError) as exc:  # pragma: no cover - 仓库损坏
+        raise GovernedFamilyUnavailableError(
+            f"读不出报告配置契约({_WF_CONFIG_SOURCE}):{exc}"
+        ) from exc
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "WalkForwardConfig":
+            names = {
+                stmt.target.id
+                for stmt in node.body
+                if isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+            }
+            if names:
+                return frozenset(names)
+    raise GovernedFamilyUnavailableError(
+        f"{_WF_CONFIG_SOURCE} 里找不到 WalkForwardConfig 的字段"
+    )
 
 
 def _load_governed_family() -> dict[str, Any]:
-    """入族条件 = 生产服务参数的**全部**语义字段，减去族内区分维度。
+    """入族条件 = 认证 preset 链 ∪ 生产服务参数,减去族内维度。
 
-    刻意**不**在这里手挑键名。手挑漏过三次,每次都让一个跑偏的运行顶着
+    刻意**不**在这里手挑键名。手挑漏过四次,每次都让一个跑偏的运行顶着
     「认证胜者」被读:`slippage_bps`(r6,5 bps 灵敏度臂冒充 20 bps 胜者)、
     `risk_constraint_scope` 与约束开关(r7)、`topk` 与
-    `attribution_sleeve_grouping`(r10)。列表从权威工件推导之后,治理钉里
-    新增语义字段会自动进入判据;测试另钉「两边键集必须一致」,漏了就红。
+    `attribution_sleeve_grouping`(r10)、`ensemble_window` 这类实验语义(r11)。
+    两个权威工件都整份取用之后,任一边新增字段都会自动进入判据。
+
+    边界说清楚:引擎默认级的旋钮(如 `label_horizon_days`)两个工件都没钉,
+    因此不在判据内——页面据此**只**报「按 N 个已钉旋钮判定」,不宣称做过
+    全量比对。
     """
-    loaded = yaml.safe_load(_SERVING_PARAMS_PATH.read_text(encoding="utf-8"))
-    params = loaded if isinstance(loaded, dict) else {}
-    return {
-        key: value
-        for key, value in params.items()
-        if key not in _FAMILY_INTERNAL_KEYS and key not in _SERVING_ONLY_KEYS
+    preset = _load_mapping(_CERTIFIED_PRESET_PATH)
+    base_rel = str(preset.get("extends") or "")
+    merged: dict[str, Any] = {}
+    if base_rel:
+        merged.update(_load_mapping(_CERTIFIED_PRESET_PATH.parent / base_rel))
+    merged.update(preset)
+    merged.update(_load_mapping(_SERVING_PARAMS_PATH))
+    reported = _reported_config_fields()
+    identity = {
+        key: _expand_env_vars_in_tree(value, source_path=_CERTIFIED_PRESET_PATH)
+        if isinstance(value, str)
+        else value
+        for key, value in merged.items()
+        if key in reported
+        and key not in _FAMILY_INTERNAL_KEYS
+        and key not in _NON_IDENTITY_KEYS
     }
+    if not identity:
+        raise GovernedFamilyUnavailableError("认证族身份为空——权威工件异常")
+    return identity
 
 
 _GOVERNED_FAMILY: dict[str, Any] = _load_governed_family()

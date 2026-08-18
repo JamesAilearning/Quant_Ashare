@@ -226,6 +226,37 @@
 - [x] 三条源码钉改为钉**语义**而非值表达式的拼写(`_run_id_to_dir.setdefault(
   _job.run_id,` 前缀):随改名而碎的钉子容易被随手放宽
 
+## codex #444 r11（两条 P1 + 两条 P2）
+
+- [x] **实验语义不在判据里**:改 `ensemble_window=1` / 换模型 / 换训练窗,零不符
+  项,一个**实质不同的实验**仍顶着认证胜者文案。服务清单只钉服务语义,钉不住
+  「这是哪个实验」。修:身份 = **认证 preset 链**(conservative + 它 extends 的
+  基座)∪ **生产服务参数**,两份权威工件整取;实测 `ensemble_window` / `model_type`
+  / `train_months` / `topk` / `attribution_sleeve_grouping` 各自能单独踢出
+- [x] 身份**收窄到报告契约会记录的字段**:报告 config 是
+  `asdict(WalkForwardConfig)`,不含 `provider_uri` / `region`。不做这道交集,
+  认证运行自己都会因「缺这两个键」被判出族,标签全灭(实测)。字段名用 `ast`
+  从 `walk_forward/config.py` 源码读——**不 import**:导进来会把 **qlib 与 gym**
+  拉进这个号称「纯」的 helper(实测 1.19s / 2042 模块;改 ast 后 0.29s / 635,
+  qlib 与 gym 均不加载)
+- [x] 判据在真实报告上双向核验:20 个 wf 目录 → **恰好 2 个入族**(认证对),
+  18 个出族;pv_* 灵敏度臂按 `overall_start/overall_end/slippage_bps/
+  rebalance_cadence_days` 出族
+- [x] **权威读不出来时不得 fail-open**:此前 `yaml.safe_load` 返回非映射就退化
+  成 `{}`,而空要求让 `governed_family_mismatches` 对**任何**配置都返回「无不符
+  项」——权威恰恰读不到的时候,页面给每个运行都打认证族标签。修:新增
+  `GovernedFamilyUnavailableError`,空/列表/标量一律抛;三种坏载荷各有测试
+- [x] **结果页的 owner 表少了 mode 维度**:UI 的滚动验证作业与 CLI 的流水线记录
+  可能落在同一个 output_dir,只按目录合并会把流水线 id 别名到那条滚动验证作业
+  上,点开渲染的是**另一种模式**的报告。改为按 `(mode, 规范键)` 编排
+- [x] **spec delta 与实现不符**:delta 仍写「从晋升 profile 推导」,而实现已改。
+  归档会把一条实现不遵守的契约写进 specs/。已改述为两份权威工件的并集、收窄到
+  报告契约字段、只排除 `{rebalance_anchor, output_dir}`,并显式写下「读不出来
+  必须 fail-loud,MUST NOT 退化成空要求」
+- [x] 测试助手补环境变量展开:报告 config 里的路径是展开后的,测试不展开会让
+  认证预设自己判不符——那是测试失真不是实现问题;引用未设默认值环境变量的
+  战役预设跳过而非崩掉
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

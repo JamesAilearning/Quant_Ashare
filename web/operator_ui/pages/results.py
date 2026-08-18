@@ -148,8 +148,11 @@ viewable_jobs = [
 _cli_pipeline, _, _ = list_all_jobs(
     type_filter="pipeline", source_filter="cli", page=1, page_size=100_000,
 )
-#: 目录(normcase 绝对路径)→ 选择器里代表该目录的 job_id。
-_dir_owner: dict[str, str] = {}
+#: (mode, 目录规范键) → 选择器里代表它的 job_id。**必须带 mode**:UI 的滚动
+#: 验证作业与 CLI 的流水线记录可能落在同一个 output_dir,只按目录合并会让
+#: 流水线 id 被别名到那条滚动验证作业上,点开渲染的是另一种模式的报告
+#: (codex #444 r11)。
+_dir_owner: dict[tuple[str, str], str] = {}
 #: 已知 id → 选择器里的 job_id。UI 启动的流水线会**同时**留下一条 UI 作业和
 #: 一条目录记录,指向同一个 output_dir(JobManager 把结果目录写进
 #: config["output_dir"],引擎再按它编目)——本机实测 13 条目录记录里有 4 条
@@ -174,7 +177,10 @@ def _dir_key(run_dir: str | Path) -> str:
 for _job in viewable_jobs:
     _rd = str(_job.get("run_dir") or "")
     if _rd:
-        _dir_owner.setdefault(_dir_key(_rd), str(_job.get("job_id") or ""))
+        _dir_owner.setdefault(
+            (str(_job.get("mode") or ""), _dir_key(_rd)),
+            str(_job.get("job_id") or ""),
+        )
 
 # 折叠(锚定 / 首条即最新 / 被覆盖者只计数不别名)只有一份实现,与
 # walk_forward.py 共用——这三条各自都被审查抓到过一次(#444 r1/r2/r4),
@@ -182,7 +188,7 @@ for _job in viewable_jobs:
 _folded = fold_catalog_by_dir(_cli_pipeline)
 for _row in _folded.newest:
     _resolved = _folded.dir_of_run[_row.run_id]
-    _key = _dir_key(_resolved)
+    _key = ("pipeline", _dir_key(_resolved))
     _owner = _dir_owner.get(_key)
     if _owner is None:
         # 纯 CLI 运行:自己进选择器。config_path 指向运行目录里的 config.yaml
@@ -208,7 +214,7 @@ for _row in _folded.newest:
 # 被覆盖的 id 单列一张表,**在** newest 建完之后填——纯 CLI 目录的占位者正是
 # 上面那轮才写进 _dir_owner 的,先填就会把它们漏成「运行未找到」。
 for _run_id, _dir in _folded.superseded_dir_of_run.items():
-    _replaced_by = _dir_owner.get(_dir_key(_dir))
+    _replaced_by = _dir_owner.get(("pipeline", _dir_key(_dir)))
     if _replaced_by:
         _superseded_owner.setdefault(_run_id, _replaced_by)
 

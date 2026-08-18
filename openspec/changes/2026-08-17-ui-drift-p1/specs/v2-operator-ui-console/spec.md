@@ -127,14 +127,34 @@ The anchor alone SHALL NOT be presented as deciding what is production.
 
 Before any governance wording is shown, the page SHALL establish that
 the run belongs to the governed family, and SHALL derive that
-membership test from the promotion profile itself rather than
-restating its values. The test SHALL include the **cost convention**:
-a run matching the universe, benchmark, cadence and phase but priced
-at a different slippage is a sensitivity arm, not the certified
-winner, and labelling it as the winner misattributes the evidence.
-Membership SHALL exclude `rebalance_anchor`, which varies *within* the
-family. For a run outside the family the page SHALL say which knobs
-disagree, rather than only that it is outside.
+membership test from the repository's own pinned artifacts rather than
+restating their values in the UI. The authority is the union of
+
+1. the certified winner's preset chain
+   (`config/presets/csi800_cadence5_conservative.yaml` plus the base it
+   `extends`), which pins the **experiment** semantics — cost
+   convention, cadence, ensemble window, model and window sizes; and
+2. the production serving parameters
+   (`config/serving/csi800_n5_production.yaml`), the second level of the
+   binding chain, which governance tests pin value-for-value against the
+   `iso_week` re-check preset.
+
+Membership SHALL be judged over every key those artifacts pin, narrowed
+to the fields the walk-forward report's `config` actually records, and
+excluding only `rebalance_anchor` and `output_dir` — the two keys by
+which the certified pair itself differs. Hand-picking a key list is
+what this requirement exists to forbid: four review rounds each found
+one more missing knob (`slippage_bps`, the constraint switches, `topk`
+and `attribution_sleeve_grouping`, `ensemble_window`), and each gap let
+a materially different experiment wear the certified-winner label.
+
+If an authority artifact cannot be read, or does not parse as a
+non-empty mapping, the page SHALL fail loudly. It MUST NOT fall back to
+an empty requirement set — that inverts the guard, marking **every**
+run as governed exactly when the authority is unavailable.
+
+For a run outside the family the page SHALL say which knobs disagree,
+rather than only that it is outside.
 
 The page SHALL render the engine's `metric_status` stamp. A MISSING
 stamp SHALL be labelled as missing and explicitly NOT treated as

@@ -506,7 +506,19 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
                 if isinstance(base, dict):
                     merged.update(base)
         merged.update(preset)
-        return merged
+        # 报告 config 里的路径是**展开后**的（引擎写盘前已解析
+        # `${VAR:-default}`）。测试不展开的话，namechange_path 之类会以字面量
+        # 形式去比，认证预设自己都判不符 —— 那是测试的失真，不是实现的。
+        from src.core._yaml_loader import _expand_env_vars_in_tree
+
+        return {
+            key: (
+                _expand_env_vars_in_tree(value, source_path=path)
+                if isinstance(value, str)
+                else value
+            )
+            for key, value in merged.items()
+        }
 
     def _governed(self, cfg: dict[str, object]) -> bool:
         return not governed_family_mismatches(cfg)
@@ -533,20 +545,71 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         block = re.search(r"SEMANTIC_KEYS = \((.*?)\)", governance, re.S)
         assert block is not None, "治理钉里找不到 SEMANTIC_KEYS"
         semantic = set(re.findall(r'"([a-z_]+)"', block.group(1)))
-        self.assertEqual(set(_GOVERNED_FAMILY), semantic - {"rebalance_anchor"})
+        # 身份是「认证 preset 链 ∪ 服务参数」的并集，比治理语义键更宽；
+        # 但治理钉的每一个语义键（除族内维度）都必须在里面。
+        self.assertTrue(
+            (semantic - {"rebalance_anchor"}) <= set(_GOVERNED_FAMILY),
+            f"治理语义键有遗漏: "
+            f"{sorted((semantic - {'rebalance_anchor'}) - set(_GOVERNED_FAMILY))}",
+        )
 
-    def test_serving_params_are_the_source_of_the_values(self) -> None:
-        # 值也不抄：生产服务参数是两级绑定链的第二级，治理钉死它与 iso_week
-        # 复核 preset 逐值相等。
+    def test_serving_params_are_the_source_of_their_values(self) -> None:
+        # 值也不抄：服务参数里出现的键，身份必须与它逐值相等。
         import yaml
 
         serving = yaml.safe_load(
             (PROJECT_ROOT / "config" / "serving"
              / "csi800_n5_production.yaml").read_text(encoding="utf-8")
         )
-        for key, want in _GOVERNED_FAMILY.items():
+        for key, want in serving.items():
+            if key in _GOVERNED_FAMILY:
+                with self.subTest(key=key):
+                    self.assertEqual(_GOVERNED_FAMILY[key], want)
+
+    def test_experiment_semantics_are_gated_too(self) -> None:
+        # codex #444 r11: 只比服务语义时，把 ensemble_window 从 3 改成 1、或换
+        # 个模型、换训练窗，仍然零不符项 —— 一个实质不同的实验顶着认证胜者
+        # 的文案被读。这些键钉在 preset 链里，必须一并进判据。
+        for key, want in (("ensemble_window", 3), ("model_type", "LGBModel"),
+                          ("train_months", 24)):
             with self.subTest(key=key):
-                self.assertEqual(want, serving[key])
+                self.assertIn(key, _GOVERNED_FAMILY)
+                self.assertEqual(_GOVERNED_FAMILY[key], want)
+
+    def test_identity_stays_within_the_report_config_contract(self) -> None:
+        # 身份只能包含报告 config 真的会记录的字段：provider_uri / region 是
+        # 运行环境参数，报告里没有 —— 把它们算进去，认证运行自己都会因
+        # 「缺这两个键」被判出族，标签全灭（本机实测）。
+        from web.operator_ui.pages._walk_forward_helpers import (
+            _reported_config_fields,
+        )
+
+        reported = _reported_config_fields()
+        self.assertTrue(set(_GOVERNED_FAMILY) <= set(reported))
+        self.assertNotIn("provider_uri", _GOVERNED_FAMILY)
+        self.assertNotIn("region", _GOVERNED_FAMILY)
+        # 契约字段用 ast 从源码读，不 import —— import 会把 qlib/gym 拖进这个
+        # 号称「纯」的 helper（实测 1.19s / 2042 模块）。
+        src = (
+            PROJECT_ROOT / "web" / "operator_ui" / "pages"
+            / "_walk_forward_helpers.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ast.parse", src)
+        self.assertNotIn("from src.core.walk_forward.config import", src)
+
+    def test_unreadable_authority_fails_loud_not_open(self) -> None:
+        # 退化成空要求会让**每个**运行都被判入族 —— 恰恰在权威读不到的时候
+        # 乱发认证族标签。方向必须相反：宁可整页报错。
+        from unittest import mock
+
+        from web.operator_ui.pages import _walk_forward_helpers as H
+
+        for bad in ("", "- a" + chr(10) + "- b" + chr(10), "42" + chr(10)):
+            with self.subTest(payload=bad[:6]):
+                with mock.patch.object(
+                    Path, "read_text", return_value=bad
+                ), self.assertRaises(H.GovernedFamilyUnavailableError):
+                    H._load_governed_family()
 
     def test_topk_and_sleeve_grouping_gate_the_labels(self) -> None:
         # codex #444 r10: 换掉 topk 就是另一个组合，换掉 sleeve 归组就是另一套
@@ -584,7 +647,14 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
                 continue
             if not isinstance(loaded, dict):
                 continue
-            if not self._governed(self._preset(path.stem)):
+            try:
+                resolved = self._preset(path.stem)
+            except Exception:
+                # 有的战役预设引用了未设默认值的环境变量（如
+                # ${PV_PROMO_POOL_DIR}），本机解析不出来 —— 解析不出来的
+                # 配置本就无从判定入族，跳过而不是让扫描崩掉。
+                continue
+            if not self._governed(resolved):
                 continue
             governed.append(path.stem)
         self.assertEqual(
