@@ -201,6 +201,31 @@
   的 docstring(相邻那段正好在讲「为什么不能 resolve」,断言因此误红)。改为按
   下一个顶层 `def` 精确切片
 
+## codex #444 r10（一条 P1 + 一条 P2）——判据改从权威工件推导
+
+- [x] **`topk` 不在入族条件里**(codex):换掉 topk 就是另一个组合,却仍被标成
+  认证胜者。顺着查**还漏了 `attribution_sleeve_grouping`**——手挑键名这已经是
+  第三次漏(r6 `slippage_bps`、r7 约束三件、r10 这两个)。**修在层次上**:入族
+  条件不再手挑,改为 `config/serving/csi800_n5_production.yaml`(两级绑定链第二
+  级,治理钉死它与 iso_week 复核 preset 逐值相等)的**全部语义字段**减去族内
+  区分维度 `rebalance_anchor`;另加一条测试直接对着治理钉的 `SEMANTIC_KEYS`
+  断言键集相等——将来那边加字段,这里会红
+- [x] 真实报告实证:盘上 csi800 报告逐个跑判据,认证对(fold_phase 与 iso_week
+  各若干)全部入族,pv_* 灵敏度臂被 `slippage_bps/rebalance_cadence_days/
+  risk_constraint_scope` 踢出;改 `topk=30` 或 `attribution_sleeve_grouping=False`
+  各自被单独踢出
+- [x] 预设扫描测试改用**解析后**配置:`topk` 只写在 `config_walk.yaml` 基座里,
+  只读原始 preset 会把每个预设都判成不符(raw 扫描从「恰好两个」变成「零个」)
+- [x] **两页的合并键仍是各自的词法键**(codex P2):r9 只统一了折叠,页面把 UI
+  作业与目录记录合并时还在按原始串比。符号链接根下 UI 作业记一种拼写、目录
+  镜像记另一种时会漏配,同一份产物多出一个选择器条目。两页的合并、别名表、
+  被覆盖表**全部**改走 `canonical_dir_key`
+- [x] 规范键**只用于比对**:选择器键变成规范键后,`Path(selected)` 就不能直接
+  拿它去读盘——normcase 在 Windows 上把路径压成小写,在大小写敏感的文件系统上
+  直接读不到。新增 `_dir_display` 保存真实路径,读产物与告警文案都用它
+- [x] 三条源码钉改为钉**语义**而非值表达式的拼写(`_run_id_to_dir.setdefault(
+  _job.run_id,` 前缀):随改名而碎的钉子容易被随手放宽
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

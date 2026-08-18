@@ -18,41 +18,48 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from scripts.eval_profiles import EVAL_PROFILES
+import yaml
 
 # ---------------------------------------------------------------------------
 # Display sentinels + Plotly color constants
 # ---------------------------------------------------------------------------
 
-#: 晋升族语义里**在报告 config 中同名**的那些键。取自 profile 本身而非抄
-#: 一份字面量。去掉 `rebalance_anchor` —— 族跨两个锚(认证胜者 `fold_phase` /
-#: 生产服务 `iso_week`),它是族**内**的区分维度。
-#: `slippage_bps` 必须在里面:`csi800_cadence5_base` 的四个旧谓词全中,却是
-#: **5 bps 灵敏度臂**,不是 20 bps 的认证胜者(codex #444 r6)。
-#: `risk_constraint_scope` 同理:canonical 默认 `all_days`,而晋升族预注册的是
-#: `rebalance_days`——换了作用域就是另一个门(codex #444 r7)。
-_GOVERNED_FAMILY: dict[str, Any] = {
-    _k: _v
-    for _k, _v in EVAL_PROFILES["csi800_n5"].items()
-    if _k
-    in {
-        "instruments",
-        "benchmark_code",
-        "rebalance_cadence_days",
-        "rebalance_phase",
-        "slippage_bps",
-        "risk_constraint_scope",
-    }
-}
+#: 生产服务参数——两级绑定链的第二级,治理测试钉死它与 iso_week 复核 preset
+#: **逐值相等**。这就是「被治理的那一族」的权威身份。
+_SERVING_PARAMS_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "config"
+    / "serving"
+    / "csi800_n5_production.yaml"
+)
 
-#: profile 的 `campaign_constraints` 是个**语义开关**,在报告 config 里没有同名
-#: 键——它对应这两把钥匙(见 csi800 扩池守卫三件套)。关掉约束、或换成别的标定,
-#: 跑的就不是晋升族那个门,不能算认证族证据(codex #444 r7)。
-_CAMPAIGN_CONSTRAINT_FIELDS: dict[str, Any] = {
-    "risk_constraints_enabled": True,
-    "risk_constraints_calibration": "campaign_v1",
-}
+#: 族**内**的区分维度,不是入族条件:族跨两个锚(认证胜者 `fold_phase` /
+#: 生产服务 `iso_week`)。
+_FAMILY_INTERNAL_KEYS = frozenset({"rebalance_anchor"})
+
+#: 服务侧独有、不参与身份比对的字段(治理测试的同名白名单)。
+_SERVING_ONLY_KEYS = frozenset({"out_dir"})
+
+
+def _load_governed_family() -> dict[str, Any]:
+    """入族条件 = 生产服务参数的**全部**语义字段，减去族内区分维度。
+
+    刻意**不**在这里手挑键名。手挑漏过三次,每次都让一个跑偏的运行顶着
+    「认证胜者」被读:`slippage_bps`(r6,5 bps 灵敏度臂冒充 20 bps 胜者)、
+    `risk_constraint_scope` 与约束开关(r7)、`topk` 与
+    `attribution_sleeve_grouping`(r10)。列表从权威工件推导之后,治理钉里
+    新增语义字段会自动进入判据;测试另钉「两边键集必须一致」,漏了就红。
+    """
+    loaded = yaml.safe_load(_SERVING_PARAMS_PATH.read_text(encoding="utf-8"))
+    params = loaded if isinstance(loaded, dict) else {}
+    return {
+        key: value
+        for key, value in params.items()
+        if key not in _FAMILY_INTERNAL_KEYS and key not in _SERVING_ONLY_KEYS
+    }
+
+
+_GOVERNED_FAMILY: dict[str, Any] = _load_governed_family()
 
 
 def _knob_matches(actual: object, want: object) -> bool:
@@ -78,18 +85,11 @@ def governed_family_mismatches(config: Mapping[str, Any]) -> list[str]:
     比的是整族语义,不是某一两个旋钮:少比一个,那个维度上跑偏的运行就会
     顶着「认证胜者」的文案被读——证据归属写错比不给判断更糟。
     """
-    bad = [
+    return [
         key
         for key, want in _GOVERNED_FAMILY.items()
         if not _knob_matches(config.get(key), want)
     ]
-    if EVAL_PROFILES["csi800_n5"].get("campaign_constraints"):
-        bad.extend(
-            key
-            for key, want in _CAMPAIGN_CONSTRAINT_FIELDS.items()
-            if not _knob_matches(config.get(key), want)
-        )
-    return bad
 
 MISSING = "—"
 

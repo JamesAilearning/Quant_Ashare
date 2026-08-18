@@ -29,7 +29,6 @@ from web.operator_ui.job_io import (  # noqa: E402
     run_dir_is_inspectable,
 )
 from web.operator_ui.pages._walk_forward_helpers import (  # noqa: E402
-    _CAMPAIGN_CONSTRAINT_FIELDS,
     _GOVERNED_FAMILY,
     _knob_matches,
     governed_family_mismatches,
@@ -369,7 +368,7 @@ class PageSourcePinsTests(unittest.TestCase):
         # 若只比「选择器上恰好展示的那个 id」，另一个 id 的跳转永远匹配不上。
         src = _PAGE_WF.read_text(encoding="utf-8")
         self.assertIn("_run_id_to_dir", src)
-        self.assertIn("_run_id_to_dir.setdefault(_job.run_id, _resolved)", src)
+        self.assertIn("_run_id_to_dir.setdefault(_job.run_id,", src)
         self.assertIn("_target_dir = _run_id_to_dir.get(_requested_run_id)", src)
         self.assertIn("if key == _locate or run_options[key]", src)
         # 索引必须**同时**收 UI 作业与 CLI 记录，只收一边等于没修。
@@ -420,7 +419,7 @@ class PageSourcePinsTests(unittest.TestCase):
         # 别名表」；折叠本身的行为由 CatalogFoldBehaviorTests 真跑一遍。
         src = _PAGE_WF.read_text(encoding="utf-8")
         self.assertIn("_superseded_runs = _folded.superseded_count", src)
-        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id, _resolved)")
+        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id,")
         # 别名只在遍历 newest 的循环体内写入 —— newest 里不含被覆盖的行。
         loop_at = src.index("for _job in _folded.newest:")
         self.assertLess(loop_at, alias_at)
@@ -472,7 +471,7 @@ class PageSourcePinsTests(unittest.TestCase):
         # 告警必须指名现在住在那个目录里的是谁。
         self.assertIn("_occupant = run_options.get(_overwritten_at", src)
         # 且被覆盖的 id 依然不得进入静默别名表。
-        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id, _resolved)")
+        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id,")
         sup_at = src.index("_superseded_dir: dict[str, str] = {")
         self.assertLess(alias_at, sup_at)
         self.assertNotIn("_run_id_to_dir.setdefault", src[sup_at : sup_at + 400])
@@ -487,29 +486,78 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
 
     @staticmethod
     def _preset(name: str) -> dict[str, object]:
+        """预设的**解析后**配置（含它 extends 的基座）。
+
+        判据比的是报告 config，那是解析后的形态：`topk` 只写在 config_walk
+        基座里，只读原始 preset 会把每个预设都判成不符（codex #444 r10 加入
+        topk 之后，raw 扫描从「恰好两个」变成「零个」）。
+        """
         import yaml
 
         path = PROJECT_ROOT / "config" / "presets" / f"{name}.yaml"
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return loaded if isinstance(loaded, dict) else {}
+        preset = loaded if isinstance(loaded, dict) else {}
+        base_rel = str(preset.get("extends") or "")
+        merged: dict[str, object] = {}
+        if base_rel:
+            base_path = (path.parent / base_rel).resolve()
+            if base_path.is_file():
+                base = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+                if isinstance(base, dict):
+                    merged.update(base)
+        merged.update(preset)
+        return merged
 
     def _governed(self, cfg: dict[str, object]) -> bool:
         return not governed_family_mismatches(cfg)
-
-    def test_predicate_is_derived_from_the_promotion_profile(self) -> None:
-        # 不复述字面量：晋升族语义钉在 EVAL_PROFILES，抄一份到 UI 只会各自漂。
-        from scripts.eval_profiles import EVAL_PROFILES
-
-        profile = EVAL_PROFILES["csi800_n5"]
-        for key, want in _GOVERNED_FAMILY.items():
-            with self.subTest(key=key):
-                self.assertEqual(want, profile[key])
 
     def test_cost_convention_is_part_of_the_identity(self) -> None:
         # codex #444 r6: 少了 slippage_bps，csi800_cadence5_base（5 bps 灵敏度
         # 臂）四个旧谓词全中，会被标成「认证胜者」。
         self.assertIn("slippage_bps", _GOVERNED_FAMILY)
         self.assertNotIn("rebalance_anchor", _GOVERNED_FAMILY)  # 族跨两个锚
+
+    def test_identity_matches_the_governance_semantic_keys(self) -> None:
+        """入族键集 == 治理钉的 SEMANTIC_KEYS 减去族内区分维度。
+
+        手挑键名漏过三次（r6 slippage / r7 约束 / r10 topk +
+        attribution_sleeve_grouping），每次都放一个跑偏的运行顶着「认证胜者」
+        被读。所以这里直接对着治理钉断言：将来那边加一个语义字段，这里会红。
+        """
+        import re
+
+        governance = (
+            PROJECT_ROOT / "tests" / "governance"
+            / "test_csi800_n5_production_serving.py"
+        ).read_text(encoding="utf-8")
+        block = re.search(r"SEMANTIC_KEYS = \((.*?)\)", governance, re.S)
+        assert block is not None, "治理钉里找不到 SEMANTIC_KEYS"
+        semantic = set(re.findall(r'"([a-z_]+)"', block.group(1)))
+        self.assertEqual(set(_GOVERNED_FAMILY), semantic - {"rebalance_anchor"})
+
+    def test_serving_params_are_the_source_of_the_values(self) -> None:
+        # 值也不抄：生产服务参数是两级绑定链的第二级，治理钉死它与 iso_week
+        # 复核 preset 逐值相等。
+        import yaml
+
+        serving = yaml.safe_load(
+            (PROJECT_ROOT / "config" / "serving"
+             / "csi800_n5_production.yaml").read_text(encoding="utf-8")
+        )
+        for key, want in _GOVERNED_FAMILY.items():
+            with self.subTest(key=key):
+                self.assertEqual(want, serving[key])
+
+    def test_topk_and_sleeve_grouping_gate_the_labels(self) -> None:
+        # codex #444 r10: 换掉 topk 就是另一个组合，换掉 sleeve 归组就是另一套
+        # 归因口径 —— 两者都不该继续顶着认证族文案。
+        cfg = self._preset("csi800_cadence5_conservative")
+        self.assertEqual(governed_family_mismatches(cfg), [])
+        for key, bad in (("topk", 30), ("attribution_sleeve_grouping", False)):
+            with self.subTest(key=key):
+                broken = dict(cfg)
+                broken[key] = bad
+                self.assertEqual(governed_family_mismatches(broken), [key])
 
     def test_the_certified_pair_is_governed_and_the_base_arm_is_not(self) -> None:
         self.assertTrue(self._governed(self._preset("csi800_cadence5_conservative")))
@@ -524,17 +572,21 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         self.assertEqual(base["rebalance_cadence_days"], 5)
 
     def test_exactly_the_certified_pair_passes_across_all_presets(self) -> None:
-        # 全预设扫一遍：任何新预设若意外入族，这里会响。
+        # 全预设扫一遍（各自与其 extends 基座合并后）：任何新预设若意外入族，
+        # 这里会响。
         import yaml
 
         governed = []
         for path in sorted((PROJECT_ROOT / "config" / "presets").glob("*.yaml")):
             try:
-                cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
             except yaml.YAMLError:
                 continue
-            if isinstance(cfg, dict) and self._governed(cfg):
-                governed.append(path.stem)
+            if not isinstance(loaded, dict):
+                continue
+            if not self._governed(self._preset(path.stem)):
+                continue
+            governed.append(path.stem)
         self.assertEqual(
             sorted(governed),
             [
@@ -559,22 +611,14 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
                 broken[key] = bad
                 self.assertEqual(governed_family_mismatches(broken), [key])
 
-    def test_campaign_switch_maps_onto_the_report_config_keys(self) -> None:
-        # profile 里 campaign_constraints 是个语义开关，报告 config 里没有同名
-        # 键 —— 映射写错等于这一维根本没比。
-        from scripts.eval_profiles import EVAL_PROFILES
-
-        self.assertTrue(EVAL_PROFILES["csi800_n5"]["campaign_constraints"])
+    def test_constraint_switches_are_compared_by_value(self) -> None:
+        # r7 起这两把钥匙直接来自生产服务参数（不再由 EVAL_PROFILES 的
+        # campaign_constraints 语义开关手工映射）—— 少了任一把，一个关掉风控
+        # 约束的运行就会顶着认证族文案被读。
+        self.assertEqual(_GOVERNED_FAMILY["risk_constraints_enabled"], True)
         self.assertEqual(
-            _CAMPAIGN_CONSTRAINT_FIELDS,
-            {"risk_constraints_enabled": True,
-             "risk_constraints_calibration": "campaign_v1"},
+            _GOVERNED_FAMILY["risk_constraints_calibration"], "campaign_v1"
         )
-        # 而这两把钥匙确实是认证预设里写着的值。
-        cfg = self._preset("csi800_cadence5_conservative")
-        for key, want in _CAMPAIGN_CONSTRAINT_FIELDS.items():
-            with self.subTest(key=key):
-                self.assertEqual(cfg[key], want)
 
     def test_booleans_do_not_collapse_into_numbers(self) -> None:
         # bool 是 int 的子类：不特判的话 True 会等于 1.0，

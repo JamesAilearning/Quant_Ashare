@@ -21,6 +21,7 @@ concrete need surfaces.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,12 @@ from web.operator_ui.formatting import (
     format_number,
     format_percent,
 )
-from web.operator_ui.job_io import fold_catalog_by_dir, list_all_jobs
+from web.operator_ui.job_io import (
+    anchored_run_dir,
+    canonical_dir_key,
+    fold_catalog_by_dir,
+    list_all_jobs,
+)
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
 
@@ -118,7 +124,18 @@ render_page_header("滚动验证详情", "单折结果、稳定性分析以及�
 # ---------------------------------------------------------------------------
 jobs = JobManager.list_jobs()
 wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
-run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run_dir")}
+# 选择器按目录的**规范键**编排:UI 作业与它的目录镜像可能用符号链接根的
+# 两种拼写记同一个 output_dir,按原始串比会漏配、同一份产物多出一条
+# (codex #444 r10)。展示仍用真实路径,键只用于比对。
+run_options: dict[str, str] = {}
+_dir_display: dict[str, str] = {}
+for _j in wf_jobs:
+    _rd = str(_j.get("run_dir") or "")
+    if not _rd:
+        continue
+    _k = canonical_dir_key(_rd) or os.path.normcase(str(anchored_run_dir(_rd)))
+    run_options.setdefault(_k, str(_j.get("job_id", "?")))
+    _dir_display.setdefault(_k, _rd)
 # CLI 跑出来的滚动验证也要能打开。作业页把它们列出来并路由到本页,而本页
 # 此前只认 UI 作业目录——于是占列表绝大多数的 CLI 行点「查看详情」反而
 # 得到「暂无滚动验证记录」(UI drift 审计)。只收产物在 output 树内的行,
@@ -142,26 +159,32 @@ _superseded_runs = _folded.superseded_count
 # 引擎再按它编目),只保留先到的那个 id 会让另一个 id 的跳转永远匹配不上
 # (codex #444 r3)。
 _run_id_to_dir: dict[str, str] = {
-    str(j.get("job_id") or ""): str(j.get("run_dir") or "")
+    str(j.get("job_id") or ""): (
+        canonical_dir_key(str(j.get("run_dir") or ""))
+        or os.path.normcase(str(anchored_run_dir(str(j.get("run_dir") or ""))))
+    )
     for j in wf_jobs
     if j.get("job_id") and j.get("run_dir")
 }
 for _job in _folded.newest:
     _resolved = str(_folded.dir_of_run[_job.run_id])
+    _key = canonical_dir_key(_resolved) or os.path.normcase(_resolved)
+    _dir_display.setdefault(_key, _resolved)
     # 本次调用的记录:与同目录的 UI 作业 id 互为别名,两个 id 都能跳对。
-    _run_id_to_dir.setdefault(_job.run_id, _resolved)
-    if _resolved not in run_options:
+    _run_id_to_dir.setdefault(_job.run_id, _key)
+    if _key not in run_options:
         # 去重已由 fold_catalog_by_dir 做完(newest 每目录至多一条),这个 if
         # 不是去重——它是**不让 CLI 目录记录的 run_id 顶掉同目录上 UI 作业
         # 已占的标签**。删掉它,从作业页点着某个 job_id 过来的操作人会在
         # 选择器上找不到那个 id,只能靠目录路径反推。
-        run_options[_resolved] = _job.run_id
+        run_options[_key] = _job.run_id
 #: 被覆盖的 id → 它那个目录(现在住着覆盖它的那次运行)。**不进** _run_id_to_dir:
 #: 那张表是「静默跳过去」的路,被覆盖的 id 走这条,要带着告警。但也不能就这么
 #: 丢了——丢了的话 _target_dir 为空、_default_index 落到 0,页面渲染的是**全局
 #: 第一条**(很可能是另一个目录的运行),告警还说不出是谁覆盖了它(codex #444 r6)。
 _superseded_dir: dict[str, str] = {
-    _rid: str(_dir) for _rid, _dir in _folded.superseded_dir_of_run.items()
+    _rid: (canonical_dir_key(str(_dir)) or os.path.normcase(str(_dir)))
+    for _rid, _dir in _folded.superseded_dir_of_run.items()
 }
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
@@ -226,7 +249,9 @@ else:
                 f"⚠ 请求的运行 `{_requested_run_id}` 的产物**已被覆盖**——"
                 "同一个 preset 反复跑会把报告写回**同一个** output_dir,"
                 "盘上只剩最新一份。下方已定位到该目录,现在住在里面的是 "
-                f"`{_occupant}`(`{_overwritten_at}`),**不是**你点的那次。"
+                # 展示真实路径,不是比较用的规范键(后者已被 normcase 压成小写)。
+                f"`{_occupant}`(`{_dir_display.get(_overwritten_at, _overwritten_at)}`),"
+                "**不是**你点的那次。"
             )
         else:
             st.warning(
@@ -252,7 +277,12 @@ else:
 # In bare-Python (no Streamlit context), st.selectbox returns None
 # which causes Path() to fail.  Always coerce to string first so the
 # module is importable outside `streamlit run`.
-run_dir = Path(str(selected))
+#
+# ``selected`` 是目录的**规范键**(比较用,已 normcase),不是给文件系统的路径。
+# 读产物必须用登记的**真实**路径:normcase 在 Windows 上会把整条路径压成小写,
+# 拿它去读虽然能撞对(FS 大小写不敏感),但展示与日志里全是小写路径,而在
+# 大小写敏感的文件系统上会直接读不到(codex #444 r10 引入规范键后的必要一步)。
+run_dir = Path(_dir_display.get(str(selected), str(selected)))
 
 # ---------------------------------------------------------------------------
 # Read report (guarded for bare-Python import where selected may be None)

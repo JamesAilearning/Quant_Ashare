@@ -28,6 +28,7 @@ from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.components import render_empty_state
 from web.operator_ui.job_io import (
     anchored_run_dir,
+    canonical_dir_key,
     fold_catalog_by_dir,
     list_all_jobs,
 )
@@ -160,9 +161,14 @@ _superseded_owner: dict[str, str] = {}
 
 
 def _dir_key(run_dir: str | Path) -> str:
-    """目录的比较键。Windows 上大小写不敏感,同一个目录写成两种大小写会被
-    当成两个目录;但**展示**用的路径保留原样(normcase 会压成小写)。"""
-    return os.path.normcase(str(anchored_run_dir(str(run_dir))))
+    """目录的比较键——与折叠**同一套规范化**。
+
+    自己 normcase 一遍不够:符号链接/联接根的两种拼写指向同一份产物,UI 作业
+    记 `output_link/...` 而它的目录镜像记解析形时,合并会漏配、同一份产物多出
+    一个选择器条目(codex #444 r10)。边界外的路径没有别名问题,退回纯词法键。
+    """
+    text = str(run_dir)
+    return canonical_dir_key(text) or os.path.normcase(str(anchored_run_dir(text)))
 
 
 for _job in viewable_jobs:
