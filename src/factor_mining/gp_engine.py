@@ -1143,11 +1143,28 @@ class GPEngine:
         # Legacy checkpoints predate the fundamental campaign and were
         # necessarily written WITHOUT period provenance.
         engine._periods_key = state.get("periods_key") or "no_periods"
-        # Restore the established pool; legacy checkpoints predate both
-        # fields and are treated as fresh engines (the conservative
-        # direction — their own run() re-derives and re-validates).
-        engine._has_run = bool(state.get("has_run", False))
-        restored = state.get("allowed_terminals")
+        # A checkpoint that cannot prove WHICH terminal pool it bred
+        # under is not resumable. Defaulting it to "fresh engine" is the
+        # PERMISSIVE direction, not the conservative one: the restored
+        # population and caches demonstrably came from a run, so the
+        # pool-mismatch guard would be skipped and a resume on a wider
+        # panel would keep the narrow population while later generations
+        # breed from the wider pool — two search spaces in one
+        # experiment. Narrow pools are reachable today (the merged
+        # fundamental panel), so this is not hypothetical.
+        #
+        # Same disposition as the PIT content binding, and for the same
+        # reason: re-mining is cheap, unverifiable provenance is not.
+        if "has_run" not in state or "allowed_terminals" not in state:
+            raise RuntimeError(
+                f"checkpoint {p} predates terminal-pool recording — it "
+                "cannot prove which search space its population was bred "
+                "under, so resuming (or scoring against) it could mix two "
+                "search spaces in one experiment. Re-mine rather than "
+                "resume; mining is cheap, unverifiable provenance is not."
+            )
+        engine._has_run = bool(state["has_run"])
+        restored = state["allowed_terminals"]
         engine._allowed_terminals = (
             frozenset(restored) if restored is not None else None)
 

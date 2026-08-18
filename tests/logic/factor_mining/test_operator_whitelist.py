@@ -251,3 +251,34 @@ def test_checkpoint_round_trip_preserves_the_established_pool():
     with pytest.raises(GrammarError, match="outside this engine's sampling pool"):
         loaded.score_expression(parse_expression("cs_rank($volume)"),
                                 wider, fwd)
+
+
+def test_a_checkpoint_without_the_recorded_pool_is_refused(tmp_path):
+    """老 checkpoint 缺池记录 → 拒绝，而不是当作全新引擎。
+
+    "当作全新"是**宽松**方向：恢复的种群与缓存明摆着来自一次 run，
+    池不匹配守卫却被跳过，宽面板 resume 会保留窄种群而后续世代从宽池
+    育种 —— 一个实验横跨两个搜索空间（codex #448 r1 P1）。窄池今天就
+    可达（合并后的基本面面板），不是假想。
+    """
+    import json
+
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.fitness import FitnessConfig
+
+    panel = _tiny_panel(["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    engine = _engine()
+    engine.run(panel, fwd, n_generations=0)
+    ckpt = tmp_path / "legacy.json"
+    engine.save_checkpoint(ckpt)
+    state = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert state["allowed_terminals"] == ["$revenue"]     # 新格式确有记录
+    state.pop("has_run")
+    state.pop("allowed_terminals")                        # 退化成老格式
+    ckpt.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="predates terminal-pool recording"):
+        GPEngine.load_checkpoint(ckpt, fitness_config=FitnessConfig())
