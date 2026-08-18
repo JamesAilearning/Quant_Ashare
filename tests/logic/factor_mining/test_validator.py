@@ -693,8 +693,17 @@ for e in (a, b):
 kept = [r.expr_str for r in filter_correlated(
     results, panel, ValidationCriteria(is_oos_split_date="2024-01-20"), pool)
     if r.passes]
-order = "A_FIRST" if hash(a) < hash(b) else "B_FIRST"
-print(order + "|" + ",".join(sorted(kept)))
+print(",".join(sorted(kept)))
+"""
+
+# 便宜探针：只比 salted hash 的先后，不碰 pandas —— 用来在运行时**发现**
+# 一对确实能鉴别的种子。硬编码种子对是版本/平台相关的（同一条回归已经
+# 因环境依赖翻车三次），所以不再假设任何固定值可用。
+_HASH_ORDER_PROBE = """
+from src.factor_mining.expression import parse_expression
+a = parse_expression("cs_rank($volume)")
+b = parse_expression("cs_rank($money)")
+print("A_FIRST" if hash(a) < hash(b) else "B_FIRST")
 """
 
 
@@ -702,12 +711,14 @@ def test_survivor_pool_is_identical_across_hash_seeds():
     """真正打在缺陷上的回归：在两个 PYTHONHASHSEED 下**实跑
     filter_correlated**，比对留下来的幸存者。
 
-    上一版只测 canonical_expr_digest 这个原语 —— 若有人把扫描顺序改回
-    salted 的 expr_hash，那条回归照样绿（codex #448 r8 P2）。这里构造
-    两个 fitness 相同、相关性为 1 的因子，于是 tie-break 直接决定谁入池。
+    只测 canonical_expr_digest 这个原语是不够的 —— 若有人把扫描顺序改回
+    salted 的 expr_hash，那种回归照样绿（codex #448 r8 P2）。这里构造两个
+    fitness 相同、相关性为 1 的因子，于是 tie-break 直接决定谁入池。
 
-    非空性由第二个断言保证：两个种子下 salted hash 的先后必须**翻转** ——
-    否则场景无鉴别力，这条回归就是空的。
+    **鉴别种子在运行时发现，不硬编码**：固定种子对是否翻转 hash 先后
+    取决于解释器版本与平台，写死会让这条回归在某些 CI 腿上变成必红或
+    永真（codex #448 r9 P1）。先用便宜探针搜出一对确实翻转的种子，再
+    用它们跑真正的过滤 —— 场景的鉴别力因此是**被证明的**，不是被假设的。
     """
     import os
     import subprocess
@@ -715,22 +726,31 @@ def test_survivor_pool_is_identical_across_hash_seeds():
     from pathlib import Path as _Path
 
     root = _Path(__file__).resolve().parents[3]
-    seen = {}
-    for seed in ("12345", "54321"):
+
+    def _run(script: str, seed: str) -> str:
         env = dict(os.environ)
         env["PYTHONHASHSEED"] = seed
         out = subprocess.run(
-            [sys.executable, "-c", _SURVIVOR_PROBE],
+            [sys.executable, "-c", script],
             capture_output=True, text=True, check=True,
             env=env, cwd=str(root),
         )
-        order, kept = out.stdout.strip().splitlines()[-1].split("|")
-        seen[seed] = (order, kept)
+        return out.stdout.strip().splitlines()[-1]
 
-    orders = {v[0] for v in seen.values()}
-    assert len(orders) == 2, (
-        f"两个种子下 salted hash 的先后未翻转 ({orders}) —— 本场景无法"
-        "鉴别 expr_hash 排序，回归形同虚设，请另择种子/表达式")
-    survivors = {v[1] for v in seen.values()}
-    assert len(survivors) == 1, (
-        f"幸存者随 hash 种子改变: {seen} —— 池的构成不可复现")
+    # 1) 发现一对让 salted hash 先后翻转的种子。
+    seed_for: dict[str, str] = {}
+    for candidate in (str(n) for n in range(1, 33)):
+        seed_for.setdefault(_run(_HASH_ORDER_PROBE, candidate), candidate)
+        if len(seed_for) == 2:
+            break
+    assert len(seed_for) == 2, (
+        f"32 个种子里找不到能让 salted hash 先后翻转的一对（得到 "
+        f"{set(seed_for)}）—— 本场景无法鉴别 expr_hash 排序，这条回归会"
+        "形同虚设；请另择表达式或扩大搜索。")
+
+    # 2) 用这对种子实跑过滤，幸存者必须一致。
+    survivors = {
+        seed: _run(_SURVIVOR_PROBE, seed) for seed in seed_for.values()
+    }
+    assert len(set(survivors.values())) == 1, (
+        f"幸存者随 hash 种子改变: {survivors} —— 池的构成不可复现")
