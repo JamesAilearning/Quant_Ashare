@@ -85,14 +85,24 @@ def max_abs_corr_with_skips(
     skipped = 0
     for other_stack in other_stacks:
         joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
-        if len(joined) < min_overlap:
+        # ``dropna`` keeps ±inf (``pd.notna(inf)`` is True), and one such
+        # cell makes ``corr`` non-finite for the WHOLE pair. Counting that
+        # as "could not be compared" would refuse a promotion pool whose
+        # finite observations are plentiful and perfectly computable
+        # (codex #448 r5 P2). Drop the degenerate cells first, THEN judge
+        # sufficiency — so ``skipped`` means what it claims: genuinely
+        # too little overlap, or a genuinely degenerate correlation.
+        finite = joined[
+            np.isfinite(joined["new"]) & np.isfinite(joined["old"])
+        ]
+        if len(finite) < min_overlap:
             skipped += 1
             continue
-        corr = joined["new"].corr(joined["old"])
+        corr = finite["new"].corr(finite["old"])
         if np.isfinite(corr):
             max_abs = max(max_abs, abs(float(corr)))
         else:
-            skipped += 1          # 退化对同样不可比
+            skipped += 1          # 零方差等退化对，确实不可比
     return max_abs, skipped
 
 

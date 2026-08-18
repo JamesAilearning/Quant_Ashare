@@ -605,3 +605,32 @@ def test_insufficient_pairwise_overlap_refuses_instead_of_keeping():
     corr2, skipped2 = max_abs_corr_with_skips(dense, [dense])
     assert skipped2 == 0 and corr2 > 0.99
     assert ValidationError is not None
+
+
+def test_a_single_inf_cell_does_not_make_a_pair_incomparable():
+    """dropna 会留下 ±inf（pd.notna(inf) 为 True），一个这样的 cell 让整
+    对的 corr 变 NaN —— 若据此判"不可比"，会拒掉有充足有限观测、完全
+    可算的池（codex #448 r5 P2）。先按 isfinite 过滤再判重叠。"""
+    import numpy as np
+    import pandas as pd
+
+    from src.factor_mining.evaluator import max_abs_corr_with_skips
+
+    idx = pd.MultiIndex.from_product(
+        [pd.date_range("2024-01-01", periods=6), ["A"]])
+    a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, np.inf], index=idx)
+    b = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 1.0], index=idx)
+    corr, skipped = max_abs_corr_with_skips(a, [b])
+    assert skipped == 0, "有 5 个有限配对，不该判为不可比"
+    assert corr > 0.99
+
+    # 真正不足：只剩 2 个有限配对（< min_overlap=3）
+    sparse = pd.Series(
+        [1.0, 2.0, np.inf, np.inf, np.inf, np.inf], index=idx)
+    _c2, s2 = max_abs_corr_with_skips(sparse, [b])
+    assert s2 == 1
+
+    # 退化：有限观测充足但零方差 → corr 非有限 → 仍判不可比
+    flat = pd.Series([7.0] * 6, index=idx)
+    _c3, s3 = max_abs_corr_with_skips(flat, [b])
+    assert s3 == 1

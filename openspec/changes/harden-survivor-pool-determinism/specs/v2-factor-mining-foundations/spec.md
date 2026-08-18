@@ -42,6 +42,13 @@ contributes 0.0, which is indistinguishable from genuine independence).
 - **THEN** filtering refuses with an error naming the expression
 - **AND** the factor is NOT carried into the survivor pool
 
+#### Scenario: a pair carries a degenerate cell but ample finite overlap
+- **WHEN** a pair contains a non-finite cell yet still has at least the
+  minimum jointly-finite observations
+- **THEN** the correlation is computed on the finite subset and the pair
+  is NOT refused
+- **AND** a single degenerate cell never reads as "uncorrelated"
+
 #### Scenario: a pair has insufficient jointly-finite overlap
 - **WHEN** a survivor shares fewer than the minimum jointly-finite cells
   with any already-kept factor
