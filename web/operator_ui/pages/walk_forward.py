@@ -21,12 +21,14 @@ concrete need surfaces.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import (
@@ -38,6 +40,12 @@ from web.operator_ui.formatting import (
     format_number,
     format_percent,
 )
+from web.operator_ui.job_io import (
+    anchored_run_dir,
+    canonical_dir_key,
+    fold_catalog_by_dir,
+    load_all_jobs,
+)
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
 
@@ -48,6 +56,7 @@ from web.operator_ui.page_header import render_page_header
 # are exposed for callers, not consumed in this module body — only their
 # values are referenced below.
 from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
+    _GOVERNED_FAMILY,
     _LOG_NAMES,
     _STABILITY_LABEL_HIGH,
     _STABILITY_LABEL_LOW,
@@ -67,12 +76,14 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     _finite_float,
     _first_metric,
     _get_metrics,
+    _knob_matches,
     _mean,
     _ratio_fraction,
     _read_log_files,
     _stability_color,
     _stability_label,
     _synthesised_stitched_nav,
+    governed_family_coverage,
 )
 from web.operator_ui.report_reader import (
     read_fold_reports,
@@ -113,7 +124,66 @@ render_page_header("滚动验证详情", "单折结果、稳定性分析以及�
 # ---------------------------------------------------------------------------
 jobs = JobManager.list_jobs()
 wf_jobs = [j for j in jobs if j.get("mode") == "walk_forward" and j.get("run_dir")]
-run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run_dir")}
+# 选择器按目录的**规范键**编排:UI 作业与它的目录镜像可能用符号链接根的
+# 两种拼写记同一个 output_dir,按原始串比会漏配、同一份产物多出一条
+# (codex #444 r10)。展示仍用真实路径,键只用于比对。
+run_options: dict[str, str] = {}
+_dir_display: dict[str, str] = {}
+for _j in wf_jobs:
+    _rd = str(_j.get("run_dir") or "")
+    if not _rd:
+        continue
+    _k = canonical_dir_key(_rd) or os.path.normcase(str(anchored_run_dir(_rd)))
+    run_options.setdefault(_k, str(_j.get("job_id", "?")))
+    _dir_display.setdefault(_k, _rd)
+# CLI 跑出来的滚动验证也要能打开。作业页把它们列出来并路由到本页,而本页
+# 此前只认 UI 作业目录——于是占列表绝大多数的 CLI 行点「查看详情」反而
+# 得到「暂无滚动验证记录」(UI drift 审计)。只收产物在 output 树内的行,
+# 这与本页的读边界一致(spec v2-operator-ui-console:105)。
+_cli_wf = load_all_jobs(type_filter="walk_forward", source_filter="cli")
+# 折叠(锚定 / 首条即最新 / 被覆盖者只计数不别名)只有一份实现,与
+# results.py 共用 —— 这三条各自都被审查抓到过一次(#444 r1/r2/r4),
+# 两页各写一份必然分叉。锚定与可检视判据同源(``anchored_run_dir``):
+# 判据把相对 output_dir 锚在仓库根,而下面 `Path(selected)` →
+# `guard_output_path` 走的是进程 CWD,两处不同锚会让「判定可达」的运行
+# 反被守卫拒绝(codex #444 r1)。
+_folded = fold_catalog_by_dir(_cli_wf)
+# 被覆盖的历史运行:既不别名(否则点它会静默看到别人的报告),也不进选择器,
+# 只计数并交给告警路径(codex #444 r2/r4)。
+_superseded_runs = _folded.superseded_count
+# id → 目录。选择器每个目录只放一条,但跳转要认**所有**已知 id:UI 作业 id
+# 与 CLI 目录 id 常常指向同一个目录——UI 启动的滚动验证会**同时**留下一条
+# UI 作业和一条 CLI 目录记录(JobManager 把结果目录写进 config["output_dir"],
+# 引擎再按它编目),只保留先到的那个 id 会让另一个 id 的跳转永远匹配不上
+# (codex #444 r3)。
+_run_id_to_dir: dict[str, str] = {
+    str(j.get("job_id") or ""): (
+        canonical_dir_key(str(j.get("run_dir") or ""))
+        or os.path.normcase(str(anchored_run_dir(str(j.get("run_dir") or ""))))
+    )
+    for j in wf_jobs
+    if j.get("job_id") and j.get("run_dir")
+}
+for _job in _folded.newest:
+    _resolved = str(_folded.dir_of_run[_job.run_id])
+    _key = canonical_dir_key(_resolved) or os.path.normcase(_resolved)
+    _dir_display.setdefault(_key, _resolved)
+    # 本次调用的记录:与同目录的 UI 作业 id 互为别名,两个 id 都能跳对。
+    _run_id_to_dir.setdefault(_job.run_id, _key)
+    if _key not in run_options:
+        # 去重已由 fold_catalog_by_dir 做完(newest 每目录至多一条),这个 if
+        # 不是去重——它是**不让 CLI 目录记录的 run_id 顶掉同目录上 UI 作业
+        # 已占的标签**。删掉它,从作业页点着某个 job_id 过来的操作人会在
+        # 选择器上找不到那个 id,只能靠目录路径反推。
+        run_options[_key] = _job.run_id
+#: 被覆盖的 id → 它那个目录(现在住着覆盖它的那次运行)。**不进** _run_id_to_dir:
+#: 那张表是「静默跳过去」的路,被覆盖的 id 走这条,要带着告警。但也不能就这么
+#: 丢了——丢了的话 _target_dir 为空、_default_index 落到 0,页面渲染的是**全局
+#: 第一条**(很可能是另一个目录的运行),告警还说不出是谁覆盖了它(codex #444 r6)。
+_superseded_dir: dict[str, str] = {
+    _rid: (canonical_dir_key(str(_dir)) or os.path.normcase(str(_dir)))
+    for _rid, _dir in _folded.superseded_dir_of_run.items()
+}
 
 # Pre-seed ``selected`` so bare-mode imports (no Streamlit script
 # context — ``st.stop()`` becomes a no-op) have a defined value for
@@ -148,12 +218,51 @@ else:
         "run_id", st.query_params.get("run_id", ""), default="",
     ) or str(st.session_state.get("wf_selected_run", "") or "")
     _default_index = 0
+    _requested_found = False
+    #: 请求的 id 是「被覆盖的历史运行」时,覆盖它的那次运行的目录。
+    _overwritten_at: str | None = None
     if _requested_run_id:
         _keys = list(run_options.keys())
+        # 先按 id→目录索引定位(覆盖 UI id 与 CLI id 两套命名),再退回
+        # 「选择器上恰好展示的那个 id」。只比后者会漏掉同目录的另一个 id。
+        _target_dir = _run_id_to_dir.get(_requested_run_id)
+        if _target_dir is None:
+            # 被覆盖的 id:定位到**它自己那个目录**,而不是把人扔到全局第一条。
+            _overwritten_at = _superseded_dir.get(_requested_run_id)
+        _locate = _target_dir or _overwritten_at
         for idx, key in enumerate(_keys):
-            if run_options[key] == _requested_run_id:
+            if key == _locate or run_options[key] == _requested_run_id:
                 _default_index = idx
+                # 被覆盖的 id 即使定位成功也**不算**找到:告警照发,
+                # 否则就退回成「静默换人」(codex #444 r2 修的正是这个)。
+                _requested_found = _target_dir is not None
                 break
+    if _requested_run_id and not _requested_found:
+        # 静默落到 index 0 会让操作人以为看的是自己点的那次运行,实际是
+        # 另一次(本机 92 条目录条目折叠成 20 个目录,8 个目录被反复覆盖)。
+        # 说清楚:请求的那次产物已被同目录的更晚运行覆盖(codex #444 r2)。
+        if _overwritten_at is not None:
+            _occupant = run_options.get(_overwritten_at, "?")
+            st.warning(
+                f"⚠ 请求的运行 `{_requested_run_id}` 的产物**已被覆盖**——"
+                "同一个 preset 反复跑会把报告写回**同一个** output_dir,"
+                "盘上只剩最新一份。下方已定位到该目录,现在住在里面的是 "
+                # 展示真实路径,不是比较用的规范键(后者已被 normcase 压成小写)。
+                f"`{_occupant}`(`{_dir_display.get(_overwritten_at, _overwritten_at)}`),"
+                "**不是**你点的那次。"
+            )
+        else:
+            st.warning(
+                f"⚠ 请求的运行 `{_requested_run_id}` 不在可打开清单中——"
+                "它可能已被删除、产物落在读边界之外,或链接有误。"
+                "下方默认选中的**不是**你点的那次,请按目录核对。"
+            )
+    if _superseded_runs:
+        st.caption(
+            f"目录条目中有 **{_superseded_runs}** 条因产物被同目录的更晚"
+            "运行覆盖而未单独列出——每个目录只保留最新一次(旧条目若也列出,"
+            "只会渲染出同一份最新报告)。"
+        )
     selected = st.selectbox(
         "运行",
         options=list(run_options.keys()),
@@ -166,7 +275,12 @@ else:
 # In bare-Python (no Streamlit context), st.selectbox returns None
 # which causes Path() to fail.  Always coerce to string first so the
 # module is importable outside `streamlit run`.
-run_dir = Path(str(selected))
+#
+# ``selected`` 是目录的**规范键**(比较用,已 normcase),不是给文件系统的路径。
+# 读产物必须用登记的**真实**路径:normcase 在 Windows 上会把整条路径压成小写,
+# 拿它去读虽然能撞对(FS 大小写不敏感),但展示与日志里全是小写路径,而在
+# 大小写敏感的文件系统上会直接读不到(codex #444 r10 引入规范键后的必要一步)。
+run_dir = Path(_dir_display.get(str(selected), str(selected)))
 
 # ---------------------------------------------------------------------------
 # Read report (guarded for bare-Python import where selected may be None)
@@ -334,6 +448,147 @@ if score >= 0:
 # return. Say so up front (mirrors the pipeline KPI card's honest labels) so
 # the cards / table are not misread as absolute, especially now the canonical
 # benchmark is the total-return index SH000300TR.
+# --- 运行身份 ---
+# 这批数字来自哪个宇宙/基准/节奏,页面此前一个字都不说。实测:
+# csi800_cadence5_conservative(**认证胜者**,anchor=fold_phase)与
+# …_isoweek(**生产服务锚**的复核切片,anchor=iso_week)除 rebalance_anchor
+# 外字段全同、同为 23 折——anchor 决定这份报告属于**哪条证据链**,而两者
+# 在页面上曾完全无法区分(UI drift 审计)。
+_wf_config = wf_report.get("config") or {}
+if isinstance(_wf_config, dict) and _wf_config:
+    _anchor = str(_wf_config.get("rebalance_anchor") or "?")
+    _identity_bits = [
+        str(_wf_config.get("instruments") or "?"),
+        str(_wf_config.get("benchmark_code") or "?"),
+        f"topk {_wf_config.get('topk', '?')}",
+        f"N={_wf_config.get('rebalance_cadence_days', '?')}",
+        f"anchor={_anchor}",
+        f"ensemble {_wf_config.get('ensemble_window', '?')}",
+        f"label {_wf_config.get('label_horizon_days', '?')}d",
+        f"{_wf_config.get('slippage_bps', '?')}bps",
+    ]
+    st.caption("运行身份:" + " · ".join(_identity_bits))
+    # 治理身份 SHALL NOT 只由 anchor 推断——这正是本 change 的 delta 自己
+    # 写下的禁令,而我起初的文案恰好犯了它:stage7_daily_h5 / csi300 参照运行
+    # 只因为用 fold_phase 就被标成「认证胜者」(codex #444 r4)。
+    # 判据取自 `EVAL_PROFILES["csi800_n5"]` 本身,**不复述字面量**——晋升族的
+    # 语义钉在那里,治理测试也钉着它,抄一份到 UI 只会各自漂。
+    # 去掉 `rebalance_anchor`:族**跨**两个锚(认证胜者跑 fold_phase、生产服务
+    # 跑 iso_week),它是族内的区分维度,不是入族条件。
+    _mismatched, _unrecorded = governed_family_coverage(_wf_config)
+    _governed = not _mismatched
+    # 治理文案**整段**嵌在族门里面。r12 我把「未记录键」的披露写成了同级的
+    # 第二个 `if`,于是后面的 anchor `elif` 挂到了它身上——一份完整记录、只是
+    # 不入族的报告(`_unrecorded` 为空)会直接落进 `elif _anchor ==` 而拿到
+    # 「认证胜者」文案,紧跟在「不属于认证族」那句后面自相矛盾
+    # (codex #444 r13)。嵌套是结构性的:标签不可能再脱离族门。
+    if not _governed:
+        st.caption(
+            f"ℹ `anchor={_anchor}` 只说明本次回测的再平衡日怎么排"
+            "（`fold_phase` = 锚在折起点；`iso_week` = 每 ISO 周首个交易日）。"
+            "**本次运行不属于被治理的 csi800 认证族**（不符项："
+            + "、".join(f"`{_k}`" for _k in _mismatched)
+            + "），所以这里不给任何「认证胜者 / 生产锚」的判断。"
+        )
+    else:
+        if _anchor == "fold_phase":
+            st.caption(
+                "ℹ 本次属于 csi800 认证族,且 `anchor=fold_phase` = **认证胜者**"
+                "所用的锚（战役主判据）。它与生产**服务**锚 `iso_week` 是两条"
+                "不同 schedule,不可互相顶替;`iso_week` 复核切片经单独门控才"
+                "成为生产锚。"
+            )
+        elif _anchor == "iso_week":
+            st.caption(
+                "ℹ 本次属于 csi800 认证族,且 `anchor=iso_week` = **生产服务锚**"
+                "（复核切片形态）。认证胜者本身跑在 `fold_phase` 上,两者恰差 "
+                "{rebalance_anchor, output_dir} 且被治理测试钉死——按哪条证据链"
+                "读这份报告,取决于本行。"
+            )
+        else:
+            st.caption(
+                f"ℹ 本次入族,但 `anchor={_anchor}` 不是本仓已知的两种 schedule"
+                "之一——不给证据链判断。"
+            )
+    if _unrecorded:
+        # 判定基于 N 个身份键,其中若干本报告根本没记(该字段落地之前的运行)。
+        # 不说出来的话,「入族」会被读成「逐项比对全过」——它不是。
+        st.caption(
+            f"⚙ 身份判定覆盖 **{len(_GOVERNED_FAMILY)}** 个旋钮,其中 "
+            f"**{len(_unrecorded)}** 个本报告未记录（该字段落地之前的运行），"
+            "按契约默认值采信：" + "、".join(f"`{_k}`" for _k in _unrecorded)
+        )
+
+    # 代码身份**永远要说一句**。此前只在有 commit 时才渲染,于是两种「说不出
+    # 来源」的情况反而**静默**:引擎在续跑折混合来源时会显式把 git_commit 置
+    # null,早于该字段的旧报告则整键缺失。缺失被当成没问题,页面照样打着认证族
+    # 文案——而恰恰是这种报告最不能当可复现证据(codex #444 r7)。
+    _commit_raw = wf_report.get("git_commit")
+    _commit = str(_commit_raw or "")
+    if _commit:
+        _dirty = bool(wf_report.get("git_dirty"))
+        st.caption(
+            f"代码身份:`{_commit[:8]}`"
+            + ("(**脏树运行**——产物不可溯源到某个提交)" if _dirty else "")
+        )
+    elif "git_commit" in wf_report:
+        st.warning(
+            "⚠ 代码身份:**无法归属到单个提交**——报告显式写了 `git_commit: "
+            "null`,引擎在**续跑**且各折来源不一致时就是这么标的。这份数字"
+            "产自哪份代码不可考,不可作为可复现证据。"
+        )
+    else:
+        st.warning(
+            "⚠ 代码身份:**未记录**——报告里没有 `git_commit` 键(该字段落地"
+            "之前的运行)。缺失**不等于**干净:产自哪份代码同样不可考。"
+        )
+
+# --- 指标口径判定 ---
+# 引擎自 codex #406 起给报告盖 metric_status 戳,专为防止把 RAISE 拒绝过的
+# 数字当正式结果发布。方向别搞反:指标算在 **未裁剪**、已经违反风控约束的
+# 持仓上(`positions` 绑定 qlib 的实际执行),clip 只是事后动作、落到旁路字段
+# `positions_clipped`,不进指标。所以这类数字可能系统性**偏高**,不是偏保守。
+# 页面此前对它零引用,于是
+# predictions_only / unverified 的运行与认证运行长得一模一样。
+# **缺失是主路径不是边角**:本机 21 个真实运行里 16 个没有这个键(含全部
+# csi800 战役运行,它们早于 #406)——缺失一律显式标注,绝不落进 official。
+_metric_status = wf_report.get("metric_status")
+_metrics_purpose = wf_report.get("metrics_purpose")
+# 「声明只能让判定更差」必须**在渲染之前**生效。此前是先照 metric_status
+# 打勾、再补一句中性说明,于是 status=official 而 purpose=predictions_only 的
+# 报告顶着 ✓ 出现——正好把这条规则反着执行了(codex #444 r9)。
+_effective_status = _metric_status
+if (
+    _metrics_purpose is not None
+    and _metric_status == OFFICIAL_METRIC_STATUS
+    and _metrics_purpose != OFFICIAL_METRIC_STATUS
+):
+    _effective_status = _metrics_purpose
+if _metric_status is None:
+    st.info(
+        "ℹ 指标状态:**未标注**——该运行产出于 metric_status 落地(#406)之前。"
+        "缺失**不等于** official。"
+    )
+elif _effective_status == OFFICIAL_METRIC_STATUS:
+    st.caption(f"✓ 指标状态:{_metric_status}(全部折过 canonical 边界)")
+else:
+    st.warning(
+        f"⚠ 指标状态:**{_effective_status}**——这批数字未通过 canonical 校验,"
+        "**不可用于晋升裁决**。"
+    )
+if _metrics_purpose is not None and _metrics_purpose != _metric_status:
+    if _effective_status != _metric_status:
+        st.caption(
+            f"(实测判定 metric_status={_metric_status},但声明用途 "
+            f"metrics_purpose={_metrics_purpose} **更弱**——按更弱的那个采信:"
+            "声明只能让判定更差,不能更好)"
+        )
+    else:
+        st.caption(
+            f"(声明用途 metrics_purpose={_metrics_purpose},实测判定 "
+            f"metric_status={_metric_status}——声明只能让判定更差,不能更好)"
+        )
+
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"
 )

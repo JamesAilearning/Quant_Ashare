@@ -6,12 +6,13 @@ import contextlib
 import json
 import os
 import sys
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from web.operator_ui._path_guard import PROJECT_ROOT, allowed_output_roots
 from web.operator_ui.formatting import to_cn_date
 
 # Platform-conditional locking primitives. ``sys.platform`` (not
@@ -105,6 +106,10 @@ class JobSummary:
     type: str  # pipeline / walk_forward
     status: str
     source: str = "ui"  # "ui" or "cli"
+    #: 该运行的产物目录。UI 作业取 job.json 的 run_dir，CLI 运行取索引
+    #: 的 output_dir —— 详情页据此打开 CLI 运行（此前只认 UI 作业目录，
+    #: 于是列表里占绝大多数的 CLI 滚动验证行点进去是「暂无记录」）。
+    run_dir: str = ""
     created_at: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -120,6 +125,7 @@ class JobSummary:
             "type": self.type,
             "status": self.status,
             "source": self.source,
+            "run_dir": self.run_dir,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -172,6 +178,10 @@ def _load_cli_entries() -> list[dict[str, Any]]:
                 continue
     return sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True)
 
+
+#: ``load_all_jobs`` 每次取多少行。只是步长,不是上限——它会一直翻到
+#: ``total`` 为止。
+_PAGE_STRIDE = 1000
 
 _STDERR_TAIL_BYTES = 8 * 1024  # 8 KiB is plenty for a Python traceback summary.
 _FAILURE_HINT_TOKENS: tuple[str, ...] = (
@@ -301,6 +311,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
         type=mode,
         status=status,
         source="ui",
+        run_dir=str(raw.get("run_dir") or ""),
         created_at=created,
         started_at=started,
         finished_at=finished,
@@ -312,12 +323,223 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     )
 
 
+#: ``(_ALLOWED_ROOTS 当时那个对象, 算好的比较键)``。缓存**按身份**失效:
+#: 测试用 ``patch`` 换上另一个元组对象时身份就变了,于是重算——宁可多算,
+#: 绝不返回过期的边界(那会让判据放行本该拒绝的路径)。
+_ROOT_KEYS_CACHE: tuple[object, tuple[tuple[str, str], ...]] | None = None
+
+
+def _allowed_root_keys() -> tuple[tuple[str, str], ...]:
+    """读边界的比较键。
+
+    ``allowed_output_roots()`` 每次调用都对两个根 ``resolve()``(碰盘)。
+    根不随行变化,逐行调用就是把 2×N 次 resolve 摊到整轮过滤上——本机
+    3527 行实测 771 ms,把行侧改成词法后仍剩 409 ms,余量全在这里。
+    """
+    global _ROOT_KEYS_CACHE
+    from web.operator_ui import _path_guard
+
+    marker = _path_guard._ALLOWED_ROOTS
+    cached = _ROOT_KEYS_CACHE
+    if cached is not None and cached[0] is marker:
+        return cached[1]
+    # 词法 **与** 解析两种拼写都收。候选侧是纯词法(逐行不碰盘),而根若是
+    # 符号链接/联接,``resolve()`` 会把它换成挂载目标——只留解析形,词法候选
+    # 一条都对不上,整份目录记录被判不可检视(codex #444 r8);只留词法形,
+    # 已经写成解析路径的那些行又会落空。
+    #
+    # 每种拼写都带上它的**规范键**(取解析形):两种拼写指的是同一个物理目录,
+    # 折叠时必须折成一条。否则 ``output_link/runs/a`` 与 ``real/runs/a`` 会被
+    # 当成两次运行,被覆盖的历史行又能静默渲染当前报告——正是 r8 放宽准入
+    # 之后新开的口子(codex #444 r9)。
+    #
+    # 按键长倒序:根是嵌套的(``output`` 与 ``output/operator_ui``),先匹配更
+    # 具体的那个,映射才确定。
+    pairs: dict[str, str] = {}
+    lexical = allowed_output_roots(resolve=False)
+    resolved = allowed_output_roots(resolve=True)
+    for lex_root, res_root in zip(lexical, resolved, strict=False):
+        canonical = os.path.normcase(os.path.normpath(str(res_root)))
+        pairs.setdefault(canonical, canonical)
+        pairs.setdefault(
+            os.path.normcase(os.path.normpath(str(lex_root))), canonical
+        )
+    ordered = tuple(sorted(pairs.items(), key=lambda kv: -len(kv[0])))
+    _ROOT_KEYS_CACHE = (marker, ordered)
+    return ordered
+
+
+def canonical_dir_key(run_dir: str) -> str | None:
+    """产物目录的**规范**比较键;不在读边界内则 ``None``。
+
+    规范化是必需的,不只是好看:符号链接/联接根的两种拼写指向同一份产物,
+    键不统一的话同一次运行会在选择器里出现两条,而「被覆盖」的判定也随之
+    失效(codex #444 r9)。逐行只做字符串前缀匹配与替换,不碰盘。
+    """
+    text = str(run_dir or "").strip()
+    if not text:
+        return None
+    candidate = os.path.normcase(str(anchored_run_dir(text)))
+    for root, canonical in _allowed_root_keys():
+        if candidate == root:
+            return canonical
+        if candidate.startswith(root + os.sep):
+            return canonical + candidate[len(root) :]
+    return None
+
+
+def run_dir_is_inspectable(run_dir: str) -> bool:
+    """True iff a run's artifacts could be opened from the detail pages.
+
+    Pure path arithmetic — **no per-row filesystem I/O**. That claim used
+    to be false: the containment check ran ``Path.resolve()`` per row,
+    which walks symlinks and therefore hits the disk. Measured on this
+    box, 3527 catalog rows cost **771 ms every render** (219 µs/row), and
+    ``resolve()`` is ~320x slower than ``normpath`` (codex #444 r6 sweep).
+    Now the row side is lexical only (``anchored_run_dir`` normpaths, then
+    ``normcase``) and the two roots are resolved once per pass.
+
+    The lexical rule sees through exactly two spellings of a linked root:
+    the root's own spelling and its resolved target (both are root keys).
+    A **third** spelling that resolves into the boundary — another
+    junction, an 8.3 short name, a second symlink — is set aside and
+    counted. That is a false negative, the safe direction, and the page
+    reports how many rows it set aside. The opposite error (admitting a
+    row that is actually outside) is the one that must not happen.
+    (This is what turned a CI run red: the GitHub Windows runner sets
+    TEMP to an 8.3 short path, so a test fixture built two spellings in
+    different namespaces — see the pins in
+    ``tests/logic/test_jobs_wf_reachability.py``.)
+
+    Dropping ``resolve()`` gives up symlink-escape detection **here**;
+    that is deliberate. This predicate answers "is this row worth
+    listing", and every actual read still goes through
+    ``guard_output_path`` (which resolves) before touching a file — the
+    security check stays where the file access is. Lexical ``..`` escapes,
+    the case this filter is really about, are still caught because
+    ``anchored_run_dir`` collapses them first.
+
+    The predicate is exactly the console spec's read boundary (file
+    access confined to ``output/`` and ``output/operator_ui/``): a run
+    whose artifacts live anywhere else can never be rendered, whatever
+    its status says.
+
+    This matters because the catalog's default path is CWD-relative, so
+    test runs executed from the repo root append their records to the
+    OPERATOR's catalog while writing artifacts to a temp dir that is
+    then deleted (this box: 3404 such rows against 105 real ones). They
+    are not runs the operator can inspect; the page discloses how many
+    it set aside rather than silently truncating.
+    """
+    # 判据与折叠键**同一段代码**:各写一份正是它们会分叉的方式(codex #444
+    # r1 是锚点分叉,r9 是规范化分叉——同一类,修两次了)。
+    return canonical_dir_key(run_dir) is not None
+
+
+def anchored_run_dir(run_dir: str) -> Path:
+    """把目录记录里的 ``output_dir`` 锚在**仓库根**,并折平 ``..``。
+
+    :func:`run_dir_is_inspectable` 与 :func:`fold_catalog_by_dir` 都调它——
+    是同一段代码,不是各写一份。两处各写一份不等式正是它们会分叉的方式:
+    判据锚在仓库根、页面锚在 CWD 时,在仓库根之外启动 UI,「判定可达」的
+    运行会反被路径守卫拒绝(codex #444 r1)。
+
+    ``..`` 必须在这里折平:``output/runs/a`` 与 ``output/x/../runs/a`` 指向
+    同一份产物、两者都判可达,若折叠键保留字面的 ``..`` 就会被当成两次不同
+    的运行——被覆盖的历史行于是静默渲染出当前那份报告(codex #444 r6)。
+    折平用 ``os.path.normpath``:纯词法、无文件系统 I/O,与「判据不做逐行
+    I/O」的约束一致(``resolve()`` 会走符号链接,那是判据自己那一步的事)。
+    """
+    candidate = Path(str(run_dir or "").strip())
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return Path(os.path.normpath(str(candidate)))
+
+
+@dataclass(frozen=True)
+class CatalogFold:
+    """CLI 目录记录按**产物目录**折叠后的结果。
+
+    同一个 preset 反复跑会追加新的目录条目,却把报告写回**同一个**
+    ``output_dir``——旧运行的产物已被覆盖,盘上只剩最新一份。所以每个目录
+    只有最新那条能当选择器条目;更早的那些既不能列出(会渲染出别人的报告),
+    也不能静默别名过去(点它就会以为看的是自己点的那次)。
+    """
+
+    #: 每个目录最新的那条记录,按输入顺序(``list_all_jobs`` 已按完成时间倒序)。
+    newest: tuple[JobSummary, ...]
+    #: ``newest`` 里每条的 run_id → 锚定后的绝对目录。
+    dir_of_run: Mapping[str, Path]
+    #: 产物被同目录更晚运行覆盖的 run_id → 那个目录(绝对)。走告警路径,不别名。
+    superseded_dir_of_run: Mapping[str, Path]
+
+    @property
+    def superseded_count(self) -> int:
+        return len(self.superseded_dir_of_run)
+
+
+def fold_catalog_by_dir(rows: Iterable[JobSummary]) -> CatalogFold:
+    """把目录记录折叠成「每个产物目录一条」。
+
+    详情页(``results.py`` / ``walk_forward.py``)都要做这件事,而且必须做得
+    **一模一样**:锚定、首条即最新、被覆盖者只计数不别名——这三条各自都被
+    审查抓到过一次(#444 r1/r2/r4)。所以它只有这一份实现。
+
+    比较键走 ``os.path.normcase``:Windows 上路径大小写不敏感,同一个目录写成
+    两种大小写会被当成两个目录,折叠就漏了。展示用的路径保留原样。
+    """
+    newest: list[JobSummary] = []
+    dir_of_run: dict[str, Path] = {}
+    superseded: dict[str, Path] = {}
+    seen: dict[str, Path] = {}
+    for row in rows:
+        if not row.run_dir:
+            continue
+        resolved = anchored_run_dir(row.run_dir)
+        # 边界外的行没有别名问题(也进不了列表),退回纯词法键。
+        key = canonical_dir_key(row.run_dir) or os.path.normcase(str(resolved))
+        if key in seen:
+            superseded[row.run_id] = seen[key]
+            continue
+        seen[key] = resolved
+        newest.append(row)
+        dir_of_run[row.run_id] = resolved
+    return CatalogFold(
+        newest=tuple(newest),
+        dir_of_run=dir_of_run,
+        superseded_dir_of_run=superseded,
+    )
+
+
+def count_cli_rows_outside_output_tree() -> int:
+    """How many catalog rows ``list_all_jobs`` set aside as unopenable.
+
+    A separate read rather than a side channel out of ``list_all_jobs``:
+    the page needs ONE number for a disclosure line, and threading it
+    through a pinned return signature (or a module global) would couple
+    two unrelated concerns. The catalog read is a single small file.
+    """
+    return sum(
+        1
+        for raw in _load_cli_entries()
+        if not run_dir_is_inspectable(str(raw.get("output_dir") or ""))
+    )
+
+
 def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
     # See `_normalise_ui_job` — keep the full run id; display layer truncates.
     run_id = str(raw.get("run_id") or "")
     engine = str(raw.get("engine") or "")
     etype = engine if engine else "unknown"
     status = str(raw.get("status") or "completed")
+    # CLI 侧词汇归一到 UI 词汇。运行目录写的是 ok / partial(见
+    # src/core/pipeline.py 与 walk_forward/engine.py),而本页的筛选下拉、
+    # 标签与图标都说 completed/partial —— 不归一的话,列表把一千多条
+    # ok 行标成「已完成」,筛选「已完成」却一条都选不出来(UI drift 审计)。
+    # 与上面 _normalise_ui_job 的 success→completed 同源;partial 原样
+    # 保留:它已经是下拉选项、有标签、有图标、在 _param_guard 白名单里。
+    if status == "ok":
+        status = "completed"
     created = str(raw.get("completed_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
 
@@ -332,6 +554,7 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         type=etype,
         status=status,
         source="cli",
+        run_dir=str(raw.get("output_dir") or ""),
         created_at=created,
         finished_at=created,
         duration_seconds=dur,
@@ -398,6 +621,33 @@ def jobs_eligible_for_cleanup(
         if job_date < cutoff:
             eligible.append(job.run_id)
     return eligible
+
+
+def load_all_jobs(**filters: Any) -> list[JobSummary]:
+    """筛选后的**全部**行,不分页。
+
+    详情页的路由需要看到目录里的每一行:作业页能翻到第 N 页,详情页却只装了
+    前若干条,那些行点进去就是「运行未找到」——正是本 change 要消灭的死链
+    (codex #444 r18)。
+
+    调用方此前各自传 ``page_size=100_000``:那是**猜**一个足够大的数字,猜错了
+    没有任何提示——超出上限的行静默消失。这里改为翻页翻到 ``total`` 为止,
+    并在拿不齐时 fail-loud,绝不静默截断。
+    """
+    collected: list[JobSummary] = []
+    page = 1
+    while True:
+        rows, total, _ = list_all_jobs(page=page, page_size=_PAGE_STRIDE, **filters)
+        collected.extend(rows)
+        if len(collected) >= total or not rows:
+            break
+        page += 1
+    if len(collected) < total:
+        raise RuntimeError(
+            f"目录只取到 {len(collected)}/{total} 行——分页未取尽,"
+            "详情页会把取不到的行渲染成「运行未找到」"
+        )
+    return collected
 
 
 def list_all_jobs(
@@ -474,8 +724,15 @@ def list_all_jobs(
     all_items: list[JobSummary] = []
     for raw in ui_raw:
         all_items.append(_normalise_ui_job(raw))
+    # CLI rows whose artifacts sit outside the readable output tree can
+    # never be opened from a detail page (see run_dir_is_inspectable).
+    # They are set aside rather than listed — but COUNTED, so the page
+    # can disclose the number instead of silently truncating.
     for raw in cli_raw:
-        all_items.append(_normalise_cli_entry(raw))
+        summary = _normalise_cli_entry(raw)
+        if not run_dir_is_inspectable(summary.run_dir):
+            continue
+        all_items.append(summary)
 
     # Filter
     filtered = _apply_filters(

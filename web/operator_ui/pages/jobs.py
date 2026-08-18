@@ -36,8 +36,10 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
+    count_cli_rows_outside_output_tree,
     jobs_eligible_for_cleanup,
     list_all_jobs,
+    load_all_jobs,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
 from web.operator_ui.page_header import render_page_header
@@ -440,6 +442,24 @@ if total > 0:
         + (f" · {running_count} 个运行中" if running_count else "")
     )
 
+# 搁置的行必须被**报数**,不能静默截断:CLI 运行目录索引的默认路径按当前
+# 工作目录解析,测试从仓库根跑时会把记录写进操作人的真实索引,而产物落在
+# 随后被删掉的临时目录里(本机 3404 条 vs 105 条真实运行)。它们既打不开、
+# 也在本页读边界之外。
+#
+# 位置必须在下面两处空态 `st.stop()` **之前**:目录全是越界记录时(正是本
+# 改动针对的重污染场景),页面会说「暂无作业」然后停住,反而一个字都不提
+# 被搁置了多少——最需要披露的场景恰好不披露(codex #444 r4)。
+# 也不能塞进分页块中间:那样缩进会把「下一页」按钮一起吞进条件里(r1)。
+_set_aside = count_cli_rows_outside_output_tree()
+if _set_aside:
+    st.caption(
+        f"另有 **{_set_aside}** 条 CLI 记录未列出:其产物目录在 `output/` 树"
+        "之外(多为测试运行写到临时目录,现已不存在),本页读不到也打不开。"
+        "根因是运行目录索引的默认路径按当前工作目录解析——测试与真实运行"
+        "共用了同一份索引。"
+    )
+
 # ---------------------------------------------------------------------------
 # Empty states
 # ---------------------------------------------------------------------------
@@ -579,11 +599,26 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
         else:
             act_open, act_copy = st.columns(2)
         with act_open:
+            # 只有 pipeline / walk_forward 有详情视图(数据源作业的检视视图在
+            # U3 已下线)。按钮照旧渲染却路由过去,得到的是「运行未找到,可能
+            # 已被删除」——那是**假消息**:记录在、产物也在,只是没有视图。
+            # 本机 117 行里有 7 行是这种(codex #444 r6 后自审扫出)。禁用并
+            # 说明,好过把人送去一句错话(spec:「a listed run SHALL be
+            # reachable」——够不着就得当场说清,不能路由到否认它存在的页面)。
+            _has_detail_view = selected.type in {"pipeline", "walk_forward"}
             if st.button(
                 "▶ 查看详情",
                 key=f"jobs_open_{selected.run_id}",
                 type="primary",
                 use_container_width=True,
+                disabled=not _has_detail_view,
+                help=(
+                    None
+                    if _has_detail_view
+                    else f"`{selected.type}` 类型没有详情视图（U3 已下线数据源"
+                    "作业的检视页）。记录与日志仍在，可用上面的运行 ID 直接"
+                    "查看运行目录。"
+                ),
             ):
                 # results.py reads ``st.query_params["run_id"]`` via
                 # ``_query_run_id`` and walk_forward.py picks up the same
@@ -671,6 +706,7 @@ if _total_pages > 1 or total > _page_size:
             "</div>",
             unsafe_allow_html=True,
         )
+
     with pg_next:
         if st.button(
             "下一页 →",
@@ -725,9 +761,10 @@ with st.expander(
     "🧹 清理旧作业", expanded="jobs_cleanup_result" in st.session_state
 ):
     # Eligibility is global (not limited to the current page / filters),
-    # so re-query all UI jobs. The large page_size pulls everything;
-    # the third tuple element (running count) is unused here.
-    _all_ui_jobs, _, _ = list_all_jobs(source_filter="ui", page=1, page_size=100_000)
+    # so re-query all UI jobs. ``load_all_jobs`` 翻页翻到 total 为止 ——
+    # 此前写死一个「够大的」页大小 —— 那是**猜**,猜错了没有任何提示,
+    # 超出的行静默消失（codex #444 r18）。
+    _all_ui_jobs = load_all_jobs(source_filter="ui")
     cleanup_days = st.number_input(
         "删除多少天前的已完成作业",
         min_value=1,
