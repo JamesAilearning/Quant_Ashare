@@ -273,16 +273,32 @@ def governed_family_coverage(
     比的是整族语义,不是某一两个旋钮:少比一个,那个维度上跑偏的运行就会
     顶着「认证胜者」的文案被读——证据归属写错比不给判断更糟。
 
-    **报告没记的键不算不符**:该字段落地之前产出的报告根本没有它,那次运行
-    当时就跑在契约默认值上。把「缺失」判成「不符」会让**每一份历史报告**
-    出族(本机 20 个目录全灭),等于把功能删掉。但也不静默——缺了几个键、
-    是哪几个,交给调用方如实说出来。
+    报告没记的键**按契约默认值比对**(codex #444 r15):那次运行当时就跑在
+    默认值上,所以默认值与认证值相同就不算不符(这让历史报告不会因为「后加
+    的字段」被整批踢出),不同则是**真正的**不符——例如早于
+    `delisted_registry_path` 的报告缺这个键,意味着它按默认 `''` 跑,PIT
+    provider 关闭、legacy WARN 掩码,与认证运行语义不同。
+
+    两张表因此可以相交:一个键可以既「未记录」又「不符」。未记录清单仍要
+    如实报出来——「入族」不该被读成「逐项比对全过」。
     """
+    defaults = _reported_config_defaults()
     mismatched: list[str] = []
     unrecorded: list[str] = []
     for key, want in _GOVERNED_FAMILY.items():
         if key not in config:
+            # 报告没记 ≠ 那次运行没有这个旋钮:它当时跑在**契约默认值**上。
+            # 只记一句「未记录」就放行是漏洞(codex #444 r15):早于
+            # `delisted_registry_path` 的报告缺这个键,意味着它按默认值 `''`
+            # 跑——PIT provider 关闭、legacy WARN 掩码,与认证运行(已配置)
+            # **语义不同**,那是真正的不符,不是无从判断。
             unrecorded.append(key)
+            fallback = defaults.get(key)
+            if key in _PRESENCE_ONLY_KEYS:
+                if _is_configured(fallback) != _is_configured(want):
+                    mismatched.append(key)
+            elif not _knob_matches(fallback, want):
+                mismatched.append(key)
             continue
         if key in _PRESENCE_ONLY_KEYS:
             # 路径本身随机器变(权威侧是 ${VAR:-...} 模板),但**留空**是另一套

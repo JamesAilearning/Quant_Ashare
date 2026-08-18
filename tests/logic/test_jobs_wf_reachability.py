@@ -748,6 +748,8 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         )
 
         cfg = self._preset("csi800_cadence5_conservative")
+        # topk 的契约默认值与认证值相同 → 缺键不算不符（历史报告不因「后加的
+        # 字段」被整批踢出），但仍要出现在未记录清单里。
         trimmed = {k: v for k, v in cfg.items() if k != "topk"}
         bad, unrecorded = governed_family_coverage(trimmed)
         self.assertNotIn("topk", bad)
@@ -835,6 +837,41 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         moved = dict(cfg)
         moved["delisted_registry_path"] = "E:/elsewhere/registry.parquet"
         self.assertEqual(H.governed_family_coverage(moved)[0], [])
+
+    def test_absent_keys_are_judged_by_their_runtime_default(self) -> None:
+        # codex #444 r15: 缺键不等于「无从判断」—— 那次运行当时就跑在契约默认
+        # 值上。早于 delisted_registry_path 的报告缺这个键，意味着它按默认 ''
+        # 跑：PIT provider 关闭、legacy WARN 掩码，与认证运行语义不同，是真正
+        # 的不符，不能只记一句「未记录」就放行。
+        import json
+
+        from web.operator_ui.pages import _walk_forward_helpers as H
+
+        report = (
+            PROJECT_ROOT / "output" / "walk_forward"
+            / "csi800_cadence5_conservative" / "walk_forward_report.json"
+        )
+        if not report.is_file():
+            self.skipTest("本机没有认证运行的报告")
+        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
+            "config"
+        ) or {}
+        defaults = H._reported_config_defaults()
+        # 默认值与认证值**不同**的键：缺了就是不符。
+        for key in ("delisted_registry_path", "namechange_path"):
+            with self.subTest(key=key, kind="differs"):
+                self.assertFalse(H._is_configured(defaults.get(key)))
+                trimmed = {k: v for k, v in cfg.items() if k != key}
+                bad, unrecorded = H.governed_family_coverage(trimmed)
+                self.assertIn(key, bad)
+                self.assertIn(key, unrecorded)
+        # 默认值与认证值**相同**的键：缺了不算不符，只披露。
+        for key in ("risk_constraints_mode", "metrics_purpose"):
+            with self.subTest(key=key, kind="same"):
+                trimmed = {k: v for k, v in cfg.items() if k != key}
+                bad, unrecorded = H.governed_family_coverage(trimmed)
+                self.assertNotIn(key, bad)
+                self.assertIn(key, unrecorded)
 
     def test_environment_dependence_is_derived_not_hand_listed(self) -> None:
         # 判据是「权威值本身长成 ${...} 模板」—— 手挑键名正是这条规则存在的

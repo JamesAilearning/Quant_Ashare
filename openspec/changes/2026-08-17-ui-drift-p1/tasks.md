@@ -317,6 +317,21 @@
 - [x] spec delta 改述:环境模板键的**字面量**不比、但 SHALL 以「配置 vs 缺失」
   参与身份,并写明空 registry = 关闭 PIT = 另一套语义这个理由
 
+## codex #444 r15（一条 P1）
+
+- [x] **缺键绕开了 r14 刚加的「配没配」比较**:早于 `delisted_registry_path`
+  的报告没有这个键,意味着它按契约默认值 `''` 跑——PIT provider 关闭、legacy
+  WARN 掩码,与认证运行(已配置)**语义不同**。而我只把它记成「未记录」就放行,
+  `_governed` 仍为真。修:缺键一律**按 dataclass 默认值比对**——默认值与认证值
+  相同则不算不符(历史报告不因「后加的字段」被整批踢出),不同则是**真正的**
+  不符。两张表因此可以相交:一个键可以既「未记录」又「不符」
+- [x] 实测:删掉 `delisted_registry_path` / `namechange_path` → 不符(默认值
+  为空/None,与已配置的认证值语义不同);删掉 `risk_constraints_mode` /
+  `metrics_purpose` / `topk` → 不算不符(默认值与认证值相同),仍进未记录清单;
+  20 个真实目录仍恰好 2 个入族
+- [x] spec delta 改述:未记录键 SHALL 按契约默认值判定,并写明「缺 registry =
+  按空默认跑 = 关闭 PIT = 语义不同,不是无从判断」
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

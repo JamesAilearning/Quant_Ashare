@@ -167,12 +167,16 @@ that fails membership can fall through into the anchor branch and be
 labelled the certified winner immediately after being told it is outside
 the family.
 
-A key the candidate report does **not** record SHALL NOT count as a
-mismatch — a run predating that field genuinely ran on the contract
-default, and treating absence as disagreement would eject every historic
-report. The page SHALL instead disclose how many identity knobs were
-judged and which ones the report did not record, so "in the family" is
-never read as "compared item by item". Hand-picking a key list is
+A key the candidate report does **not** record SHALL be judged against
+its **contract default** — that run did not lack the knob, it ran on the
+default. Where the default equals the certified value, absence is not a
+disagreement (so historic reports are not ejected merely for predating a
+field). Where it differs, absence IS a mismatch: a report predating
+`delisted_registry_path` ran with the empty default, meaning no PIT
+provider and legacy WARN masking — different semantics, not an unknown.
+The page SHALL still disclose how many identity knobs were judged and
+which ones the report did not record, so "in the family" is never read
+as "compared item by item". Hand-picking a key list is
 what this requirement exists to forbid: four review rounds each found
 one more missing knob (`slippage_bps`, the constraint switches, `topk`
 and `attribution_sleeve_grouping`, `ensemble_window`), and each gap let
