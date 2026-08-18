@@ -400,15 +400,19 @@ class LogTailTests(unittest.TestCase):
         self.assertEqual(log_tail(Path("/no/such/dir/x.log")), "")
 
     def test_mixed_encoding_lines_each_decode_correctly(self) -> None:
-        # The shared log has TWO writers: runs launched here pin UTF-8,
-        # the Task Scheduler wrapper does not (its Chinese lands in the
-        # console codepage, cp936 on a CN box). Decoding the whole tail
-        # with one codec turns the other writer's lines into replacement
-        # chars — the mojibake an operator sees in the log panel.
+        # The shared log has TWO writers. Runs launched here always
+        # pinned UTF-8; the Task Scheduler wrapper did NOT until codex
+        # #442 r4/r6 added ``PYTHONIOENCODING=utf-8`` to the deployment
+        # file and then to the tracked template — so a wrapper built
+        # from the old template (or never patched) still writes cp936.
+        # Either way the one rolling log ends up holding both, and
+        # decoding the whole tail with one codec turns the other
+        # writer's lines into replacement chars.
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "daily_update.log"
             with open(log, "wb") as fh:
-                # 刻意两种编码写同一文件——正是生产里的真实形态。
+                # 刻意两种编码写同一文件——编码钉之前的历史行,与未打补丁的
+                # 旧调度器今天仍在写的行,都是这个形态。
                 fh.write("UI 启动的行:数据更新\n".encode())
                 fh.write("调度器的行:抓取完成\n".encode("gbk"))
             tail = log_tail(log)

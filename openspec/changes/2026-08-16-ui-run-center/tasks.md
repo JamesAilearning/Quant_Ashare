@@ -113,12 +113,15 @@
 - [x] 更新进行中自动轮询(`st.fragment(run_every=30)`),状态跃迁时
   `st.rerun(scope="app")` 整页重绘——只刷片段会让出单闸门(依赖主脚本
   作用域)与状态展示自相矛盾
-- [x] 日志尾部乱码:共享日志双写入者(本页钉 UTF-8 / 计划任务未钉,中文落
-  cp936) → 逐行解码 UTF-8→GBK→replace;真日志实测 `INFO ��` → `INFO —`;
-  两个新测试(混编码各自还原 / 不可解码字节不抛异常)
-- [ ] 源头修:调度器 `run_daily_update.bat` 补 `PYTHONIOENCODING=utf-8`
-  ——**今晚运行中不可动**(cmd 边执行边读取批处理文件,改动会破坏执行),
-  且与 tracked 模板对齐任务有交集,待运行结束后另行处置
+- [x] 日志尾部乱码:共享日志双写入者,当时计划任务侧未钉编码(中文落 cp936)
+  → 逐行解码(行不跨进程);真日志实测 `INFO ��` → `INFO —`
+  ——**解码策略在 r5/r6 被改过两次,当前形态见下面两节**
+- [x] 源头修:调度器补 `PYTHONIOENCODING=utf-8`。部署件
+  `D:\qlib_data\run_daily_update.bat` 已补(等当晚运行结束后才动——cmd 边执行
+  边读取批处理文件,改运行中的 .bat 会破坏执行;留了备份、ASCII+CRLF 保持、
+  cmd 实跑验证 `ENC=utf-8`);**tracked 模板**
+  `docs/runbook_daily_update_scheduling.md` 于 r6 一并补上——只修部署件等于
+  只修我这一台机器
 
 ## codex #442 r1（两条 P2 全实修）
 
@@ -199,6 +202,41 @@
   (仓库既有惯例:`_*_helpers.py` 纯 + 薄渲染页),页面改为复用而非重定义
 - [x] 新测试**反证过非空转**:同一段屏蔽脚本指向 helper 时 rc=0,指向页面时
   rc=1 且 stderr 正是 `ModuleNotFoundError: streamlit`
+
+## codex #442 r7（一条 P2）+ 并行自审扫描（六条）
+
+- [x] **规格正文没跟着场景一起收窄**(codex):正文仍说计划任务包装脚本
+  「未钉」编码,而本 PR 自己刚把编码钉写进了 tracked 模板。规格与仓库自带的
+  部署指引互相打架,还把混编码说成持续现象。改为区分「照新模板建/已补过的」
+  与「旧部署」,并显式写下页面文案 MUST NOT 把编码钉说成无条件已生效
+- [x] `grep` 读回时抓到更糟的一条:tasks.md 里那条**未勾选**的「源头修
+  ……待运行结束后另行处置」,实际已在本 PR 做掉(部署件 r4 / tracked 模板 r6)。
+  未勾选项会被读成「这事还没做」
+- [x] **同一句过宽断言在页面文案与源码注释里漏改**(自审扫描,两条):
+  `run_center.py` 日志面板说「两个写入者如今都钉了 UTF-8」,
+  `update_runner.py` 说这条 GBK 回退「只服务编码钉之前写下的行」。旧部署
+  **今晚仍在**写 GBK 新行——操作人被这句话劝退、不去查自己的 `.bat`,那一行
+  永远补不上;维护者则可能据此删掉回退。两处均改为有条件表述,页面并指出
+  补救动作(核对 `.bat` 里那一行);另加四条钉防回潮
+- [x] 测试注释的时态同改(自审扫描):`test_mixed_encoding_lines_each_decode_
+  correctly` 说调度器「does not」钉编码,现在说清是「r4/r6 之前,以及未打补丁
+  的旧部署」
+- [x] **规格漏写等待窗**(自审扫描):r1/r2/r3 三轮做出来的「启动等待窗 / 有界 /
+  片段自判到期 / 只有新鲜记录才退休」在规格里一句没有。归档后有人把它简化掉,
+  读规格看不出违反了任何 SHALL,r1 与 r3 的 bug 会原样回归。已补进正文 + 一条
+  场景;`_POLL_SECONDS` 上方那条说「仅 running 期间轮询」的注释同步改正
+  (它和 20 行外的实现自相矛盾)
+- [x] **调度 runbook 三处失真**(自审扫描):①「Each morning」的出单命令没带
+  `--ensemble-manifest`——照抄会**静默**拿到 legacy 单模型 csi300 日频清单,
+  exit 0、文件名与生产一致、无任何拒绝;②「`setup_logging()` also writes
+  per-run detail」——它只挂 stdout StreamHandler,不写独立文件,排查者会去找
+  一份不存在的明细;③前置条件写「five operational env vars」,而 daily_update
+  一个 `QUANT_*` 都不读,真正必需的 `TUSHARE_TOKEN` 反而没点名
+- [x] **run-center runbook 两处失真**(自审扫描):①「超时/失败**绝不**撕裂已
+  发布工件」过强——`recommend_runner` 有「回滚不完整」分支,那才是撕裂态,
+  故障表补了对应症状行;②「启动器模板从 HKCU 回读,与 `run_daily_update.bat`
+  同款」——tracked 的调度模板**没有**这段回读,调度任务靠以登录用户身份运行
+  继承;`update_runner` 的 no_token 报错文案同改
 
 ## 验证
 

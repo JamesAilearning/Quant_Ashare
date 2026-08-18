@@ -57,8 +57,11 @@ render_page_header(
     "本页只触发既有 CLI 的子进程,绝不改写任何数据。",
 )
 
-# 运行中的更新每这么久自动重读一次状态工件(仅 running 期间轮询;
-# 非运行态没有会变的东西)。读一个小 JSON,成本可忽略。
+# 守望期间每这么久自动重读一次状态工件。守望 = running 记录新鲜,**或**
+# 刚点过启动、子进程尚未写出记录的那段有界等待窗(见 _AWAIT_LAUNCH_KEY)。
+# 别把它收窄回「仅 running」——那正是 codex #442 r1 修掉的 bug:点完启动
+# 后页面永远停在启动前的状态,直到手点刷新,操作人会以为没启动成功。
+# 两者都不满足时没有会变的东西。读一个小 JSON,成本可忽略。
 _POLL_SECONDS = 30
 _CN_TZ = timezone(timedelta(hours=8))
 
@@ -310,10 +313,12 @@ if isinstance(_last_launch, dict):
 
 with st.expander("日志尾部(只读)"):
     st.caption(
-        "两个写入者(本页启动的运行、调度器 .bat)如今都钉了 UTF-8。"
-        "**编码钉之前**写下的少数历史行可能仍显示为乱码——那种行的字节"
-        "恰好既是合法 GBK 又是合法 UTF-8,读侧无法还原,只能从日志文件本身"
-        "追溯。"
+        "本页启动的运行已钉 UTF-8;调度器 `.bat` 只有**打过** "
+        "`set \"PYTHONIOENCODING=utf-8\"` 补丁之后写的行才是 UTF-8。"
+        "**见到乱码请先核对自己的 `run_daily_update.bat` 有没有这行**——"
+        "按旧模板建的调度任务没有,要手工补(见调度 runbook);补上后新写入的"
+        "行一律 UTF-8。此前的历史行里,字节恰好既是合法 GBK 又是合法 UTF-8 "
+        "的那类读侧无法还原,只能从日志文件本身追溯。"
     )
     _log_text = log_tail(default_log_path(_provider_path))
     if _log_text:

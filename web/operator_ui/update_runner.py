@@ -189,8 +189,9 @@ def launch_daily_update(
             kind="no_token",
             error=(
                 f"环境变量 {TOKEN_ENV_VAR} 缺失或为空——fetch 阶段会立刻"
-                "失败。请在启动 UI 前设置(调度器的 .bat 从 HKCU 注册表"
-                "回读,UI 启动器模板同款,见 docs/run-center-runbook.md)。"
+                "失败。请在启动 UI 前设置(UI 启动器模板自带 HKCU 注册表"
+                "回读;调度任务则靠以登录用户身份运行来继承它,"
+                "见 docs/run-center-runbook.md)。"
             ),
         )
     try:
@@ -275,9 +276,11 @@ def launch_daily_update(
     return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path)
 
 
-#: 历史行里可能残留的旧编码。两个写入者如今都钉了 UTF-8(本模块经
-#: ``utf8_child_env``,调度器 .bat 经 ``PYTHONIOENCODING``),这条只服务
-#: 编码钉之前写下的行。
+#: 可能不是 UTF-8 的那些行所用的旧编码。**别把它当纯历史包袱**:本模块经
+#: ``utf8_child_env`` 已钉死 UTF-8,但调度器 .bat 只有在它自己补过
+#: ``PYTHONIOENCODING=utf-8`` 之后才钉住——按旧模板部署的计划任务**今晚仍会**
+#: 写出 GBK 行。所以这条回退既服务历史行,也服务未打补丁部署的新行;在确认
+#: 所有部署都打过补丁之前不得删除(codex #442 r6 自审扫描)。
 _LEGACY_LOG_ENCODING = "gbk"
 
 
@@ -287,11 +290,15 @@ def _decode_log_line(raw: bytes) -> str:
     规则刻意保守:UTF-8 解码成功就采信,不再猜「它看起来像不像乱码」。
     曾经试过按字符区段猜(出现西里尔/拉丁扩展就改判 GBK),但那会**损坏
     合法的新行**——provider 路径里一个 ``José`` 就被改写成 ``Jos茅``
-    (codex #442 r5 实测)。源头既然已经钉死,读侧再猜是净损失。
+    (codex #442 r5 实测)。源头钉死的地方,读侧再猜就是净损失。
 
-    代价说清楚:少数**历史**行——GBK 字节恰好也是合法 UTF-8 的那种,例如
-    ``'抓取'.encode('gbk')`` 解出 ``'ץȡ'``——无法靠读侧还原,页面对此明示。
-    解码失败的历史行(占绝大多数)仍能被回退救回。
+    但源头**并非处处**钉死:本模块经 ``utf8_child_env`` 钉住了,调度器 .bat
+    只有补过 ``PYTHONIOENCODING=utf-8`` 才钉住,按旧模板部署的计划任务今晚
+    仍会写 GBK 行。所以这条回退不只服务历史行。
+
+    代价说清楚:GBK 字节恰好也是合法 UTF-8 的那种行,例如
+    ``'抓取'.encode('gbk')`` 解出 ``'ץȡ'``——无法靠读侧还原;页面对此明示,
+    并指示先核对调度器 .bat 里那一行。解码失败的行(占绝大多数)仍能救回。
     """
     try:
         return raw.decode("utf-8")

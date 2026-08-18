@@ -301,6 +301,43 @@ class HelpersStayStreamlitFreeTests(unittest.TestCase):
         self.assertIn("_AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW", page)
 
 
+class EncodingClaimStaysConditionalTests(unittest.TestCase):
+    """编码钉是**有条件**的,页面不得把它说成无条件事实。
+
+    r6 只把过宽断言从 docs 与 spec 正文里赶了出去,页面文案与源码注释漏改
+    (自审扫描抓到)。旧部署照 r6 之前的 runbook 建的调度任务今天仍在写
+    cp936 新行;页面若说「两个写入者如今都钉了 UTF-8」,操作人就不会去查
+    自己的 .bat,那一行永远补不上。
+    """
+
+    def test_page_does_not_claim_the_scheduler_is_already_pinned(self) -> None:
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertNotIn("都钉了 UTF-8", src)
+        self.assertNotIn("两个写入者(本页启动的运行、调度器 .bat)如今", src)
+
+    def test_page_points_the_operator_at_the_bat_file(self) -> None:
+        # 光说「可能没钉」不够 —— 得给出可执行的下一步动作。
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("run_daily_update.bat", src)
+        self.assertIn("PYTHONIOENCODING", src)
+
+    def test_runner_comment_does_not_call_the_fallback_pure_legacy(self) -> None:
+        # 把 GBK 回退定性成纯历史包袱,会给「源头已钉,读侧无需回退」式的
+        # 删除背书 —— 未打补丁的部署上那正是回退唯一救得回来的那类行。
+        runner = (
+            PROJECT_ROOT / "web" / "operator_ui" / "update_runner.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("这条只服务编码钉之前写下的行", runner)
+        self.assertIn("不得删除", runner)
+
+    def test_tracked_scheduler_template_carries_the_pin(self) -> None:
+        # 只补部署件 = 只修我这一台机器（codex #442 r6）。
+        doc = (
+            PROJECT_ROOT / "docs" / "runbook_daily_update_scheduling.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn('set "PYTHONIOENCODING=utf-8"', doc)
+
+
 class RegistrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = _APP.read_text(encoding="utf-8")
