@@ -322,10 +322,10 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
 #: ``(_ALLOWED_ROOTS 当时那个对象, 算好的比较键)``。缓存**按身份**失效:
 #: 测试用 ``patch`` 换上另一个元组对象时身份就变了,于是重算——宁可多算,
 #: 绝不返回过期的边界(那会让判据放行本该拒绝的路径)。
-_ROOT_KEYS_CACHE: tuple[object, tuple[str, ...]] | None = None
+_ROOT_KEYS_CACHE: tuple[object, tuple[tuple[str, str], ...]] | None = None
 
 
-def _allowed_root_keys() -> tuple[str, ...]:
+def _allowed_root_keys() -> tuple[tuple[str, str], ...]:
     """读边界的比较键。
 
     ``allowed_output_roots()`` 每次调用都对两个根 ``resolve()``(碰盘)。
@@ -342,15 +342,46 @@ def _allowed_root_keys() -> tuple[str, ...]:
     # 词法 **与** 解析两种拼写都收。候选侧是纯词法(逐行不碰盘),而根若是
     # 符号链接/联接,``resolve()`` 会把它换成挂载目标——只留解析形,词法候选
     # 一条都对不上,整份目录记录被判不可检视(codex #444 r8);只留词法形,
-    # 已经写成解析路径的那些行又会落空。根只有两个,两种形都存下也是常数。
-    keys = {
-        os.path.normcase(os.path.normpath(str(root)))
-        for resolve in (False, True)
-        for root in allowed_output_roots(resolve=resolve)
-    }
-    ordered = tuple(sorted(keys))
+    # 已经写成解析路径的那些行又会落空。
+    #
+    # 每种拼写都带上它的**规范键**(取解析形):两种拼写指的是同一个物理目录,
+    # 折叠时必须折成一条。否则 ``output_link/runs/a`` 与 ``real/runs/a`` 会被
+    # 当成两次运行,被覆盖的历史行又能静默渲染当前报告——正是 r8 放宽准入
+    # 之后新开的口子(codex #444 r9)。
+    #
+    # 按键长倒序:根是嵌套的(``output`` 与 ``output/operator_ui``),先匹配更
+    # 具体的那个,映射才确定。
+    pairs: dict[str, str] = {}
+    lexical = allowed_output_roots(resolve=False)
+    resolved = allowed_output_roots(resolve=True)
+    for lex_root, res_root in zip(lexical, resolved, strict=False):
+        canonical = os.path.normcase(os.path.normpath(str(res_root)))
+        pairs.setdefault(canonical, canonical)
+        pairs.setdefault(
+            os.path.normcase(os.path.normpath(str(lex_root))), canonical
+        )
+    ordered = tuple(sorted(pairs.items(), key=lambda kv: -len(kv[0])))
     _ROOT_KEYS_CACHE = (marker, ordered)
     return ordered
+
+
+def canonical_dir_key(run_dir: str) -> str | None:
+    """产物目录的**规范**比较键;不在读边界内则 ``None``。
+
+    规范化是必需的,不只是好看:符号链接/联接根的两种拼写指向同一份产物,
+    键不统一的话同一次运行会在选择器里出现两条,而「被覆盖」的判定也随之
+    失效(codex #444 r9)。逐行只做字符串前缀匹配与替换,不碰盘。
+    """
+    text = str(run_dir or "").strip()
+    if not text:
+        return None
+    candidate = os.path.normcase(str(anchored_run_dir(text)))
+    for root, canonical in _allowed_root_keys():
+        if candidate == root:
+            return canonical
+        if candidate.startswith(root + os.sep):
+            return canonical + candidate[len(root) :]
+    return None
 
 
 def run_dir_is_inspectable(run_dir: str) -> bool:
@@ -384,17 +415,9 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
     are not runs the operator can inspect; the page discloses how many
     it set aside rather than silently truncating.
     """
-    text = str(run_dir or "").strip()
-    if not text:
-        return False
-    # 锚定走 ``anchored_run_dir`` —— 就是那**一段**代码,不是各写一份。
-    # 判据与页面折叠若各锚各的,在仓库根之外启动 UI 时「判定可达」的运行
-    # 会反被路径守卫拒绝(codex #444 r1)。
-    candidate = os.path.normcase(str(anchored_run_dir(text)))
-    for root in _allowed_root_keys():
-        if candidate == root or candidate.startswith(root + os.sep):
-            return True
-    return False
+    # 判据与折叠键**同一段代码**:各写一份正是它们会分叉的方式(codex #444
+    # r1 是锚点分叉,r9 是规范化分叉——同一类,修两次了)。
+    return canonical_dir_key(run_dir) is not None
 
 
 def anchored_run_dir(run_dir: str) -> Path:
@@ -457,7 +480,8 @@ def fold_catalog_by_dir(rows: Iterable[JobSummary]) -> CatalogFold:
         if not row.run_dir:
             continue
         resolved = anchored_run_dir(row.run_dir)
-        key = os.path.normcase(str(resolved))
+        # 边界外的行没有别名问题(也进不了列表),退回纯词法键。
+        key = canonical_dir_key(row.run_dir) or os.path.normcase(str(resolved))
         if key in seen:
             superseded[row.run_id] = seen[key]
             continue

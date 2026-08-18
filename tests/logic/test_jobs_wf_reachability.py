@@ -35,6 +35,18 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: E402
     governed_family_mismatches,
 )
 
+
+def _func_body(source: str, name: str) -> str:
+    """源码里某个顶层函数的**本体**（到下一个顶层 def 为止）。
+
+    固定字节窗口会渗进下一个函数的 docstring —— 那正是本文件里一条断言
+    误红的原因（相邻函数的注释里正好讲着「为什么不能 resolve」）。
+    """
+    start = source.index(f"def {name}(")
+    nxt = source.find(chr(10) + "def ", start + 1)
+    return source[start : nxt if nxt != -1 else len(source)]
+
+
 _PAGE_JOBS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "jobs.py"
 _PAGE_WF = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "walk_forward.py"
 _PAGE_RESULTS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "results.py"
@@ -223,10 +235,13 @@ class CatalogFoldBehaviorTests(unittest.TestCase):
         src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
             encoding="utf-8"
         )
+        # 判据自己不再走一遍锚定/前缀匹配，而是委托 canonical_dir_key，
+        # 后者是折叠键用的同一段代码 —— 一处锚定、一处规范化。
         verdict_at = src.index("def run_dir_is_inspectable")
         body = src[verdict_at : src.index("def anchored_run_dir")]
-        self.assertIn("anchored_run_dir(", body)
+        self.assertIn("canonical_dir_key(", body)
         self.assertNotIn("PROJECT_ROOT / candidate", body)
+        self.assertIn("anchored_run_dir(", _func_body(src, "canonical_dir_key"))
 
     def test_empty_input_is_an_empty_fold(self) -> None:
         folded = fold_catalog_by_dir([])
@@ -278,8 +293,22 @@ class PageSourcePinsTests(unittest.TestCase):
         # 判定分支必须先处理缺失，再谈 official —— 顺序反了就会把 None
         # 归进 else 的告警或 official 的放行。
         none_at = src.index("_metric_status is None")
-        official_at = src.index("elif _metric_status == OFFICIAL_METRIC_STATUS")
+        official_at = src.index("elif _effective_status == OFFICIAL_METRIC_STATUS")
         self.assertLess(none_at, official_at)
+
+    def test_declared_purpose_can_only_worsen_the_displayed_status(self) -> None:
+        # codex #444 r9: status=official 而 purpose=predictions_only 时，此前
+        # 先照 status 打 ✓、再补一句中性说明 —— 正好把「声明只能让判定更差」
+        # 这条规则反着执行了，非 canonical 的数字被呈现为可用于晋升。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_effective_status", src)
+        # 降级必须在**渲染之前**算出。
+        compute_at = src.index("_effective_status = _metric_status")
+        render_at = src.index("elif _effective_status == OFFICIAL_METRIC_STATUS")
+        self.assertLess(compute_at, render_at)
+        # 告警展示的是**生效后**的状态，不是原始 status。
+        self.assertIn("⚠ 指标状态:**{_effective_status}**", src)
+        self.assertIn("更弱", src)
 
     def test_jobs_page_discloses_rows_it_set_aside(self) -> None:
         src = _PAGE_JOBS.read_text(encoding="utf-8")
@@ -582,7 +611,10 @@ class InspectabilityIsPureTests(unittest.TestCase):
         code = whole[whole.index('"""', whole.index('"""') + 3) + 3 :]
         # 逐行 resolve() 会走符号链接、真碰盘：本机 3527 行每次渲染 771 ms。
         self.assertNotIn(".resolve()", code)
-        self.assertIn("_allowed_root_keys()", code)
+        # 根键只在 canonical_dir_key 里取一次（判据委托给它）。
+        canon = _func_body(src, "canonical_dir_key")
+        self.assertIn("_allowed_root_keys()", canon)
+        self.assertNotIn(".resolve()", canon)
 
     def test_root_keys_are_not_recomputed_per_row(self) -> None:
         # 根只有两个且不随行变化；逐行调用 allowed_output_roots() 等于把
@@ -666,6 +698,29 @@ class InspectabilityIsPureTests(unittest.TestCase):
                     self.assertFalse(
                         job_io.run_dir_is_inspectable(str(base / "elsewhere"))
                     )
+                    # codex #444 r9: 准入放宽之后，折叠键若仍是纯词法，两种
+                    # 拼写就成了两条运行 —— 同一份产物出现两个选择器条目，
+                    # 被覆盖的历史行又能静默渲染当前报告。必须折成一条。
+                    self.assertEqual(
+                        job_io.canonical_dir_key(str(link / "runs" / "a")),
+                        job_io.canonical_dir_key(str(real / "runs" / "a")),
+                    )
+                    folded = job_io.fold_catalog_by_dir([
+                        JobSummary(
+                            run_id="newest", type="walk_forward",
+                            status="completed", source="cli",
+                            run_dir=str(link / "runs" / "a"),
+                        ),
+                        JobSummary(
+                            run_id="older", type="walk_forward",
+                            status="completed", source="cli",
+                            run_dir=str(real / "runs" / "a"),
+                        ),
+                    ])
+                    self.assertEqual(
+                        [r.run_id for r in folded.newest], ["newest"]
+                    )
+                    self.assertIn("older", folded.superseded_dir_of_run)
             finally:
                 job_io._ROOT_KEYS_CACHE = None
 
@@ -675,8 +730,23 @@ class InspectabilityIsPureTests(unittest.TestCase):
         src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("allowed_output_roots(resolve=resolve)", src)
+        self.assertIn("allowed_output_roots(resolve=", src)
         self.assertNotIn('PROJECT_ROOT / "output"', src)
+
+    def test_verdict_and_fold_key_share_one_implementation(self) -> None:
+        # r1 是锚点分叉、r9 是规范化分叉 —— 同一类修了两次。判据现在直接
+        # 复用 canonical_dir_key，不再自己走一遍前缀匹配。
+        src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
+            encoding="utf-8"
+        )
+        whole = src[
+            src.index("def run_dir_is_inspectable") : src.index(
+                "def anchored_run_dir"
+            )
+        ]
+        code = whole[whole.index('"""', whole.index('"""') + 3) + 3 :]
+        self.assertIn("canonical_dir_key(run_dir) is not None", code)
+        self.assertNotIn("startswith(root", code)
 
     def test_containment_is_not_a_bare_prefix_match(self) -> None:
         # output_extra 以 output 开头，但不在读边界内。

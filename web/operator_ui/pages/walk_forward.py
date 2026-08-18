@@ -509,23 +509,40 @@ if isinstance(_wf_config, dict) and _wf_config:
 # csi800 战役运行,它们早于 #406)——缺失一律显式标注,绝不落进 official。
 _metric_status = wf_report.get("metric_status")
 _metrics_purpose = wf_report.get("metrics_purpose")
+# 「声明只能让判定更差」必须**在渲染之前**生效。此前是先照 metric_status
+# 打勾、再补一句中性说明,于是 status=official 而 purpose=predictions_only 的
+# 报告顶着 ✓ 出现——正好把这条规则反着执行了(codex #444 r9)。
+_effective_status = _metric_status
+if (
+    _metrics_purpose is not None
+    and _metric_status == OFFICIAL_METRIC_STATUS
+    and _metrics_purpose != OFFICIAL_METRIC_STATUS
+):
+    _effective_status = _metrics_purpose
 if _metric_status is None:
     st.info(
         "ℹ 指标状态:**未标注**——该运行产出于 metric_status 落地(#406)之前。"
         "缺失**不等于** official。"
     )
-elif _metric_status == OFFICIAL_METRIC_STATUS:
+elif _effective_status == OFFICIAL_METRIC_STATUS:
     st.caption(f"✓ 指标状态:{_metric_status}(全部折过 canonical 边界)")
 else:
     st.warning(
-        f"⚠ 指标状态:**{_metric_status}**——这批数字未通过 canonical 校验,"
+        f"⚠ 指标状态:**{_effective_status}**——这批数字未通过 canonical 校验,"
         "**不可用于晋升裁决**。"
     )
 if _metrics_purpose is not None and _metrics_purpose != _metric_status:
-    st.caption(
-        f"(声明用途 metrics_purpose={_metrics_purpose},实测判定 "
-        f"metric_status={_metric_status}——声明只能让判定更差,不能更好)"
-    )
+    if _effective_status != _metric_status:
+        st.caption(
+            f"(实测判定 metric_status={_metric_status},但声明用途 "
+            f"metrics_purpose={_metrics_purpose} **更弱**——按更弱的那个采信:"
+            "声明只能让判定更差,不能更好)"
+        )
+    else:
+        st.caption(
+            f"(声明用途 metrics_purpose={_metrics_purpose},实测判定 "
+            f"metric_status={_metric_status}——声明只能让判定更差,不能更好)"
+        )
 
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"
