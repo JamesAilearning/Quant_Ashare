@@ -58,7 +58,7 @@ cd /d "%REPO%"
 | 启动被拒 `no_token` | UI 进程没继承到 `TUSHARE_TOKEN` | 用上面的 `.bat` 启动，或先在环境里设好 |
 | 启动被拒 `already_running` | 状态工件显示一次更新正在进行且新鲜 | 等它结束；若确认已死，等记录按 reader 语义变陈旧（>6h）后再试 |
 | 日志见 exit 17 | 与另一次运行撞了单飞锁 | 无损；让先跑的那次跑完 |
-| 日志出现乱码 | 该行早于调度器编码钉（`run_daily_update.bat` 现已 `set "PYTHONIOENCODING=utf-8"`）；UI 逐行启发式回退只能救**历史**行 | 新写入的行一律 UTF-8，无需处理 |
+| 日志出现乱码 | 该行的写入者没钉编码，落在了控制台代码页（zh-CN 机器上是 cp936）。读侧只在 UTF-8 解码失败时回退 GBK——**不猜**，所以「字节恰好也是合法 UTF-8」的那类历史行救不回来 | 先确认调度器 `.bat` 里有 `set "PYTHONIOENCODING=utf-8"`（见 [调度 runbook](runbook_daily_update_scheduling.md) 的模板；**旧部署可能没有，要手工补**）。补上之后新写入的行一律 UTF-8；此前的历史行只能从日志文件本身追溯 |
 | 出单 exit≠0 | CLI 的 fail-loud 拒绝 | 读页面转述的输出尾部（拒绝原因在 stdout），修好数据再跑 |
 | 启动被拒 `unusable_path` | 某个路径为空/相对/异约定拼写 | 修 `config.yaml` 或对应 `QUANT_*` 环境变量 |
 | 出单被拒 `blocked_by_update` | 更新器的 provider 单飞锁正被持有（权威判定；状态展示只是参考） | 等更新结束（锁随对方进程退出自动释放）再跑 |

@@ -11,6 +11,7 @@ because this page legitimately renders buttons).
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -206,12 +207,15 @@ class AwaitWindowBehaviorTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from web.operator_ui.pages.run_center import (
-            _AWAIT_LAUNCH_WINDOW,
+        # codex #442 r6: 从**页面**导入会连带 import streamlit;logic 套件在
+        # 没装可选 ui extra 的环境里跑,那样这个类会整体 ModuleNotFoundError。
+        # 纯函数住在 _run_center_helpers(不 import streamlit)。
+        from web.operator_ui.pages._run_center_helpers import (
+            AWAIT_LAUNCH_WINDOW,
             await_window_expired,
         )
 
-        self.window = _AWAIT_LAUNCH_WINDOW
+        self.window = AWAIT_LAUNCH_WINDOW
         self.expired = await_window_expired
         self.t0 = datetime(2026, 8, 18, 10, 0, tzinfo=timezone(timedelta(hours=8)))
 
@@ -234,6 +238,67 @@ class AwaitWindowBehaviorTests(unittest.TestCase):
         # 窗口是给「子进程还没来得及写记录」留的余量,不是一个长轮询开关。
         self.assertLessEqual(self.window, timedelta(minutes=15))
         self.assertGreater(self.window, timedelta(0))
+
+
+#: 在子进程里把 streamlit 屏蔽成 ModuleNotFoundError,再导入 helper 并真调
+#: 一次。断言「源码里没有 streamlit 这个词」是不够的——传递依赖同样会炸。
+_STREAMLIT_FREE_PROBE = '''
+import sys
+from datetime import datetime
+
+
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name == "streamlit" or name.startswith("streamlit."):
+            raise ModuleNotFoundError(name)
+        return None
+
+
+sys.modules.pop("streamlit", None)
+sys.meta_path.insert(0, _Block())
+sys.path.insert(0, {root})
+
+from web.operator_ui.pages._run_center_helpers import (
+    AWAIT_LAUNCH_WINDOW,
+    await_window_expired,
+)
+
+t = datetime(2026, 8, 18, 10, 0)
+assert await_window_expired(t, t + AWAIT_LAUNCH_WINDOW)
+assert not await_window_expired(t, t)
+print("OK")
+'''
+
+
+class HelpersStayStreamlitFreeTests(unittest.TestCase):
+    """纯 helper 模块必须能在没有 ui extra 的环境里导入(codex #442 r6)。"""
+
+    def test_helper_module_imports_with_streamlit_unavailable(self) -> None:
+        # 真跑一遍 codex 描述的那个环境:子进程里把 streamlit 屏蔽成
+        # ModuleNotFoundError,再导入 helper 并调用它。断言「源码里没有
+        # streamlit 这个词」是不够的——传递依赖同样会炸。
+        script = _STREAMLIT_FREE_PROBE.format(root=repr(str(PROJECT_ROOT)))
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            "helper 必须能在没有 streamlit 的环境里导入: " + proc.stderr,
+        )
+        self.assertIn("OK", proc.stdout)
+
+    def test_page_reuses_the_helper_rather_than_redefining_it(self) -> None:
+        # 两份实现会分叉:页面一份、helper 一份,窗口长度改一处就不一致了。
+        page = (
+            PROJECT_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_run_center_helpers import", page)
+        self.assertNotIn("def await_window_expired", page)
+        self.assertIn("_AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW", page)
 
 
 class RegistrationTests(unittest.TestCase):

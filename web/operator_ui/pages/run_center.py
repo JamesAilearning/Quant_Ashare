@@ -30,6 +30,10 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     resolve_name_source,
     serving_bundle_max_age_days,
 )
+from web.operator_ui.pages._run_center_helpers import (
+    AWAIT_LAUNCH_WINDOW,
+    await_window_expired,
+)
 from web.operator_ui.recommend_runner import run_daily_recommend
 from web.operator_ui.update_runner import (
     START_DATE,
@@ -58,22 +62,12 @@ render_page_header(
 _POLL_SECONDS = 30
 _CN_TZ = timezone(timedelta(hours=8))
 
-#: 刚点过启动、但子进程还没来得及写 running 记录的那段窗口。期间照常
-#: 轮询,否则启动后的页面会一直停在「尚无记录」直到操作人手点刷新
-#: (codex #442 r1)。有界:超时即停,免得启动失败时无限轮询。
+#: 等待窗的键。窗口长度与过期判据是**纯函数**,住在
+#: ``_run_center_helpers``——那边不 import streamlit,所以没装 ui extra 的
+#: logic 套件也能对它做行为测试(codex #442 r6)。
 _AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
-_AWAIT_LAUNCH_WINDOW = timedelta(minutes=5)
+_AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW
 _LAST_LAUNCH_KEY = "run_center::last_launch"
-
-
-def await_window_expired(awaiting_since: datetime, now: datetime) -> bool:
-    """启动等待窗是否已过期(纯函数,注入 ``now`` 便于行为测试)。
-
-    主脚本与片段**两处**都用它:片段计时只重跑片段,主脚本算出的窗口判断
-    在片段注册后不会被重新求值,所以片段必须自己判过期并把整页拉起来,
-    否则「有界」窗口形同虚设(codex #442 r3)。
-    """
-    return now - awaiting_since >= _AWAIT_LAUNCH_WINDOW
 
 
 def _status_signature(

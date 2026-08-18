@@ -180,6 +180,26 @@
 - [x] 测试改锚:①合法 UTF-8 行(含 `José`/`München`/`Ω`)**永不被改动**;
   ②解码失败类的历史 GBK 行仍能被回退救回(样本动态筛选并断言非空)
 
+## codex #442 r6（三条 P2 全实修）
+
+- [x] **tracked 调度器模板没钉编码**:我只补了部署件(D:\qlib_data 下那个
+  `.bat`),而 `docs/runbook_daily_update_scheduling.md` 里的模板仍无
+  `PYTHONIOENCODING` —— 照它新建的调度器会继续写 cp936,于是「新行一律
+  UTF-8」这句话只对我这台机器成立。修:模板里补上 `set "PYTHONIOENCODING=utf-8"`
+  并写清为什么不能删;`docs/run-center-runbook.md` 的故障表改述为「先确认
+  调度器 .bat 里有这行,**旧部署可能没有,要手工补**」
+- [x] **spec 场景比实现更宽**:场景要求 UTF-8 与 GBK 行「各自正确显示」,而
+  撤回启发式之后,字节恰好也是合法 UTF-8 的 GBK 行**故意**救不回来。规格
+  比实现宽 = 归档后会长期骗人。修:拆成两个场景——①UTF-8 行原样(含扩展
+  字符)+ 解码失败的 GBK 行回退;②无法还原的那类如实披露,并显式写下
+  「**不得**按字符区段猜」及其代价(`José` → `Jos茅`)
+- [x] **纯函数测试依赖 ui extra**:`AwaitWindowBehaviorTests` 从**页面**导入,
+  没装可选 `ui` extra 的 logic 套件会整类 `ModuleNotFoundError: streamlit`
+  (codex 实测五个失败)。修:纯函数迁到 `pages/_run_center_helpers.py`
+  (仓库既有惯例:`_*_helpers.py` 纯 + 薄渲染页),页面改为复用而非重定义
+- [x] 新测试**反证过非空转**:同一段屏蔽脚本指向 helper 时 rc=0,指向页面时
+  rc=1 且 stderr 正是 `ModuleNotFoundError: streamlit`
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`

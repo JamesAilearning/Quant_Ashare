@@ -51,6 +51,12 @@ The full `daily_update` invocation is too long and too quote-fragile for `schtas
 
    ```bat
    @echo off
+   rem Pin the child's stdout/stderr encoder. Without this the child uses the
+   rem console codepage (cp936 on a zh-CN box) and its Chinese log lines land
+   rem in the shared log as GBK — the run-center's log panel reads that log as
+   rem UTF-8 and cannot always recover them (a GBK byte pair that also forms
+   rem valid UTF-8 decodes silently into the wrong characters). Keep this line.
+   set "PYTHONIOENCODING=utf-8"
    if not exist "D:\qlib_data\logs" mkdir "D:\qlib_data\logs"
    "C:\path\to\python.exe" "D:\stock\Claude\qlib_trading_system_v2\scripts\daily_update.py" ^
      --tushare-dir D:\qlib_data\tushare_raw ^
