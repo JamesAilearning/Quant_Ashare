@@ -926,3 +926,23 @@ def test_dry_run_also_invokes_the_fundamental_refusal(tmp_path, monkeypatch):
     assert calls, "dry-run 没有调用生产边界拒绝 —— 预览与真跑政策不一致"
     assert report.output_dir is None
     assert not (cfg.production_dir / "v1").exists()
+
+
+def test_a_validation_refusal_becomes_a_controlled_promotion_failure(
+        tmp_path, monkeypatch):
+    """validator 的拒绝必须在晋升边界翻译成 PromotionError：CLI 的契约是
+    受控的 "Promotion failed: ..." + 非零返回码，不是裸 traceback
+    （codex #448 r4 P2）。"""
+    import src.factor_mining.promote as promote_mod
+    from src.factor_mining.validator import ValidationError
+
+    run_dir = _seed_run_dir(tmp_path)
+    config = _promotion_config(tmp_path, run_dir, "v1")
+
+    def refusing(*_a, **_k):
+        raise ValidationError("survivor pool cannot be constructed")
+
+    monkeypatch.setattr(promote_mod, "filter_correlated", refusing)
+    with pytest.raises(PromotionError, match="validation refused"):
+        promote_mod.promote_run(config)
+    assert not (tmp_path / "production" / "v1").exists()

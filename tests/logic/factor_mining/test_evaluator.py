@@ -402,13 +402,24 @@ def test_max_abs_corr_zero_variance_corr_is_nan_skipped():
 
 
 def test_max_abs_corr_never_returns_non_finite_with_inf_input():
-    # T2-3 guard fix: np.isfinite (not pd.notna) admits the correlation, so a
-    # degenerate / non-finite pairing can never poison the maximum. Even with an
-    # inf-valued partner the result is a finite 0.0, never inf/NaN.
+    # T2-3 的保证原样成立：np.isfinite（而非 pd.notna）把关，退化/非有限
+    # 的配对永远不能污染最大值 —— 返回值恒为有限。
+    #
+    # 被改变的是**具体取值**（codex #448 r5 P2）：此前 dropna 会留下 ±inf，
+    # 整对的 corr 因此变 NaN、贡献 0.0 —— 一个 inf cell 就把一段真实的强
+    # 相关抹成"零相关"。对三个消费者这都是错的方向：GP novelty penalty 会
+    # 把冗余因子当新颖而**少罚**，池过滤会少剔，correlation_with 会低报。
+    # 现在先按 isfinite 过滤再相关，剩余有限观测足量时照常计算。
     base = _stack({"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0})
     inf_partner = _stack({"a": 1.0, "b": 2.0, "c": np.inf, "d": 4.0})
     out = max_abs_corr(base, [inf_partner])
-    assert np.isfinite(out) and out == 0.0
+    assert np.isfinite(out)
+    assert out > 0.99, "去掉 inf 后 a/b/d 完全共线，应算出接近 1 的相关"
+
+    # 有限观测不足 min_overlap 时仍退回 0.0（且仍是有限值）。
+    mostly_inf = _stack({"a": 1.0, "b": np.inf, "c": np.inf, "d": np.inf})
+    out2 = max_abs_corr(base, [mostly_inf])
+    assert np.isfinite(out2) and out2 == 0.0
 
 
 # ---------------------------------------------------------------------------

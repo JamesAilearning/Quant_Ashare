@@ -108,3 +108,203 @@ def test_an_unknown_whitelist_name_is_refused_everywhere():
     with pytest.raises(GrammarError, match="unregistered"):
         GPEngine(GPConfig(allowed_operators=("cs_rank", "typo_op")),
                  FitnessConfig())
+
+
+# --- 已建立终端池的守卫（共享打分/恢复语义）--------------------------------
+#
+# 这些用例只依赖**面板推导**的池（run 记录的那一个），不涉及冻结白名单
+# —— 白名单机制属预注册协议 PR，与本 PR 分开。
+
+def _tiny_panel(keys):
+    import pandas as pd
+    idx = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=6, freq="D"))
+    cols = ["SZ000001", "SZ000002", "SZ000003"]
+    return {k: pd.DataFrame(1.0, index=idx, columns=cols) for k in keys}
+
+
+def _engine(**gp_kw):
+    from src.factor_mining.fitness import FitnessConfig
+
+    return GPEngine(GPConfig(population_size=4, n_generations=1, max_depth=3,
+                             seed=5, **gp_kw), FitnessConfig())
+
+
+def test_score_expression_without_a_whitelist_uses_panel_keys():
+    """全新引擎：池 = 面板键。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import GrammarError
+
+    panel = _tiny_panel(["$close", "$volume"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    engine = _engine()
+    engine.score_expression(parse_expression("cs_rank($volume)"), panel, fwd)
+    with pytest.raises(GrammarError, match="outside this engine's sampling pool"):
+        engine.score_expression(parse_expression("cs_rank($revenue)"),
+                                panel, fwd)
+
+
+def test_scoring_after_a_run_keeps_that_run_s_terminal_pool():
+    """跑过的引擎带着那次 run 的池；之后用更宽的面板打分不得放宽它。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import GrammarError
+
+    narrow = _tiny_panel(["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(narrow.values())[0].index,
+                       columns=list(narrow.values())[0].columns)
+    engine = _engine()
+    engine.run(narrow, fwd, n_generations=0)
+    assert engine._allowed_terminals == frozenset({"$revenue"})
+    wider = _tiny_panel(["$revenue", "$volume"])
+    with pytest.raises(GrammarError, match="outside this engine's sampling pool"):
+        engine.score_expression(parse_expression("cs_rank($volume)"),
+                                wider, fwd)
+
+
+def test_a_v1_run_keeps_the_v1_pool_when_scoring_later():
+    """跑过之后 `_allowed_terminals is None` 是"V1 池"的哨兵，不是"未知"。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import FeatureRegistry, GrammarError
+
+    v1_panel = _tiny_panel(list(FeatureRegistry.V1))
+    fwd = pd.DataFrame(0.0, index=list(v1_panel.values())[0].index,
+                       columns=list(v1_panel.values())[0].columns)
+    engine = _engine()
+    engine.run(v1_panel, fwd, n_generations=0)
+    assert engine._allowed_terminals is None and engine._has_run
+    wider = _tiny_panel(list(FeatureRegistry.V1) + ["$revenue"])
+    engine.score_expression(parse_expression("cs_rank($volume)"), wider, fwd)
+    with pytest.raises(GrammarError, match="outside this engine's sampling pool"):
+        engine.score_expression(parse_expression("cs_rank($revenue)"),
+                                wider, fwd)
+
+
+def test_a_resumed_run_may_not_change_the_terminal_pool():
+    """同一个实验不得横跨两个搜索空间：已跑过的引擎换面板 resume 即拒。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.grammar import GrammarError
+
+    narrow = _tiny_panel(["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(narrow.values())[0].index,
+                       columns=list(narrow.values())[0].columns)
+    engine = _engine()
+    engine.run(narrow, fwd, n_generations=0)
+    engine.run(narrow, fwd, n_generations=0)          # 同面板 resume：放行
+    wider = _tiny_panel(["$revenue", "$volume"])
+    with pytest.raises(GrammarError, match="one experiment cannot span"):
+        engine.run(wider, fwd, n_generations=0)
+
+
+def test_a_population_bred_under_a_wider_pool_is_refused():
+    """预填种群（checkpoint 恢复 / 手工填）引用池外终端即拒。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import GrammarError
+
+    panel = _tiny_panel(["$volume", "$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    engine = _engine()
+    engine.population = [parse_expression("cs_rank($volume)")]
+    narrow = _tiny_panel(["$revenue"])
+    with pytest.raises(GrammarError, match="outside this run's pool"):
+        engine.run(narrow, fwd, n_generations=0)
+
+
+def test_checkpoint_round_trip_preserves_the_established_pool():
+    """checkpoint 恢复的引擎必须带回那次 run 的池。"""
+    import tempfile
+    from pathlib import Path as _P
+
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.fitness import FitnessConfig
+    from src.factor_mining.grammar import GrammarError
+
+    panel = _tiny_panel(["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    engine = _engine()
+    engine.run(panel, fwd, n_generations=0)
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = _P(tmp) / "ck.json"
+        engine.save_checkpoint(ckpt)
+        loaded = GPEngine.load_checkpoint(ckpt, fitness_config=FitnessConfig())
+    assert loaded._has_run
+    assert loaded._allowed_terminals == frozenset({"$revenue"})
+    wider = _tiny_panel(["$revenue", "$volume"])
+    with pytest.raises(GrammarError, match="outside this engine's sampling pool"):
+        loaded.score_expression(parse_expression("cs_rank($volume)"),
+                                wider, fwd)
+
+
+def test_a_checkpoint_without_the_recorded_pool_is_refused(tmp_path):
+    """老 checkpoint 缺池记录 → 拒绝，而不是当作全新引擎。
+
+    "当作全新"是**宽松**方向：恢复的种群与缓存明摆着来自一次 run，
+    池不匹配守卫却被跳过，宽面板 resume 会保留窄种群而后续世代从宽池
+    育种 —— 一个实验横跨两个搜索空间（codex #448 r1 P1）。窄池今天就
+    可达（合并后的基本面面板），不是假想。
+    """
+    import json
+
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.fitness import FitnessConfig
+
+    panel = _tiny_panel(["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    engine = _engine()
+    engine.run(panel, fwd, n_generations=0)
+    ckpt = tmp_path / "legacy.json"
+    engine.save_checkpoint(ckpt)
+    state = json.loads(ckpt.read_text(encoding="utf-8"))
+    assert state["allowed_terminals"] == ["$revenue"]     # 新格式确有记录
+    state.pop("has_run")
+    state.pop("allowed_terminals")                        # 退化成老格式
+    ckpt.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="predates terminal-pool recording"):
+        GPEngine.load_checkpoint(ckpt, fitness_config=FitnessConfig())
+
+
+def test_a_v1_run_still_guards_a_prefilled_population():
+    """V1 面板下 `_allowed_terminals` 是 None 哨兵，种群守卫**不得**因此
+    被跳过：手工填入 opt-in 终端的种群会一路走到求值，n_generations=0
+    时甚至正常返回（codex #448 r3 P2 —— 与 score_expression 已修的是
+    同一个哨兵误读）。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.grammar import FeatureRegistry, GrammarError
+
+    panel = _tiny_panel(list(FeatureRegistry.V1) + ["$revenue"])
+    fwd = pd.DataFrame(0.0, index=list(panel.values())[0].index,
+                       columns=list(panel.values())[0].columns)
+    v1_only = _tiny_panel(list(FeatureRegistry.V1))
+    engine = _engine()
+    engine.population = [parse_expression("cs_rank($revenue)")]
+    with pytest.raises(GrammarError, match="outside this run's pool"):
+        engine.run(v1_only, fwd, n_generations=0)
+    # 非空性：V1 内的种群照常放行。
+    ok = _engine()
+    ok.population = [parse_expression("cs_rank($volume)")]
+    ok.run(v1_only, fwd, n_generations=0)
+    assert ok._has_run
