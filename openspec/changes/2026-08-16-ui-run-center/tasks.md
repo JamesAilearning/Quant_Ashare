@@ -238,6 +238,22 @@
   同款」——tracked 的调度模板**没有**这段回读,调度任务靠以登录用户身份运行
   继承;`update_runner` 的 no_token 报错文案同改
 
+## codex #442 r8（一条 P1：叙述与 diff 不符）
+
+- [x] **PR 描述里整整一节「源头修复为何不在本 PR」已过期**:源头修就在这个
+  diff 里(部署件 r4、tracked 模板 r6),同一条提交还在 tasks.md 里把它勾掉了。
+  本仓 squash 正文取 `COMMIT_MESSAGES`,而 `9209c87` 的正文也写着「调度器 .bat
+  的源头编码修复待今晚运行结束」——两处都会让维护者以为照本版建的部署**没有**
+  被规范化。修:PR 描述整体重写(那一节改成显式撤回 + 说明源头修在本 PR 的哪两
+  处落地),标题同步;顺带清掉描述里另外两处早已被 r4/r5 推翻的说法(「GBK 文本
+  几乎不可能通过 UTF-8 解码」、「历史日志一并救回」)
+- [x] **不改写历史**:force-push 会抹掉「r5 撤回 r4 的②」这条证据链,也会让已
+  发生的八轮审查锚点全部失效。改为在描述里写明「提交是审查循环的时间序,后面
+  的会显式撤回前面的,squash 正文请读到最后一条」,并由本条提交正文作废那两句
+- [x] 作废声明(供 squash 正文): `9209c87` 的「源头编码修复待今晚运行结束」与
+  `aea892f` 的「②读侧对历史行加乱码区段判据」**均已失效**——前者已于 r4/r6
+  完成(部署件 + tracked 模板),后者已于 r5 撤回并删除实现
+
 ## 验证
 
 - [x] `pytest tests/logic/test_update_runner.py tests/logic/test_recommend_runner.py tests/logic/test_run_center_page_source.py tests/logic/test_operator_ui_page_header.py tests/logic/test_operator_ui_theme.py tests/governance/ -x`
