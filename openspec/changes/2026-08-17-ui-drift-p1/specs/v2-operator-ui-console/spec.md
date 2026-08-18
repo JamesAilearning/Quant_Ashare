@@ -10,6 +10,12 @@ stated reason**. A row SHALL NEVER route to a page that answers "run
 not found" — the record exists, so that answer is false, and it reads
 as "the history is gone".
 
+Detail pages SHALL load the **whole** filtered catalog, not a page of
+it. A guessed ceiling (`page_size=<big number>`) silently drops rows the
+jobs list can still paginate to, recreating the dead end this
+requirement exists to remove; the loader SHALL page until it has the
+filtered total and SHALL fail loudly if it cannot.
+
 Detail pages SHALL therefore accept runs from BOTH launch sources —
 the UI job directory and the CLI run catalog — because the jobs list
 already merges them; a detail page that only knows one source turns

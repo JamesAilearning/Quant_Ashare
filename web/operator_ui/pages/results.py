@@ -30,7 +30,7 @@ from web.operator_ui.job_io import (
     anchored_run_dir,
     canonical_dir_key,
     fold_catalog_by_dir,
-    list_all_jobs,
+    load_all_jobs,
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
@@ -145,9 +145,7 @@ viewable_jobs = [
 # 此前只认 UI 作业目录,于是那些行点「查看详情」得到「运行未找到」——这正是
 # 本 change 的 delta 所禁止的死链(codex #444 r5)。做法与 walk_forward.py
 # 对称:只收产物在 output 树内的行(判据同一套,见 job_io.run_dir_is_inspectable)。
-_cli_pipeline, _, _ = list_all_jobs(
-    type_filter="pipeline", source_filter="cli", page=1, page_size=100_000,
-)
+_cli_pipeline = load_all_jobs(type_filter="pipeline", source_filter="cli")
 #: (mode, 目录规范键) → 选择器里代表它的 job_id。**必须带 mode**:UI 的滚动
 #: 验证作业与 CLI 的流水线记录可能落在同一个 output_dir,只按目录合并会让
 #: 流水线 id 被别名到那条滚动验证作业上,点开渲染的是另一种模式的报告

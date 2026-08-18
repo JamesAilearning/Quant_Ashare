@@ -179,6 +179,10 @@ def _load_cli_entries() -> list[dict[str, Any]]:
     return sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True)
 
 
+#: ``load_all_jobs`` 每次取多少行。只是步长,不是上限——它会一直翻到
+#: ``total`` 为止。
+_PAGE_STRIDE = 1000
+
 _STDERR_TAIL_BYTES = 8 * 1024  # 8 KiB is plenty for a Python traceback summary.
 _FAILURE_HINT_TOKENS: tuple[str, ...] = (
     "Error",
@@ -617,6 +621,33 @@ def jobs_eligible_for_cleanup(
         if job_date < cutoff:
             eligible.append(job.run_id)
     return eligible
+
+
+def load_all_jobs(**filters: Any) -> list[JobSummary]:
+    """筛选后的**全部**行,不分页。
+
+    详情页的路由需要看到目录里的每一行:作业页能翻到第 N 页,详情页却只装了
+    前若干条,那些行点进去就是「运行未找到」——正是本 change 要消灭的死链
+    (codex #444 r18)。
+
+    调用方此前各自传 ``page_size=100_000``:那是**猜**一个足够大的数字,猜错了
+    没有任何提示——超出上限的行静默消失。这里改为翻页翻到 ``total`` 为止,
+    并在拿不齐时 fail-loud,绝不静默截断。
+    """
+    collected: list[JobSummary] = []
+    page = 1
+    while True:
+        rows, total, _ = list_all_jobs(page=page, page_size=_PAGE_STRIDE, **filters)
+        collected.extend(rows)
+        if len(collected) >= total or not rows:
+            break
+        page += 1
+    if len(collected) < total:
+        raise RuntimeError(
+            f"目录只取到 {len(collected)}/{total} 行——分页未取尽,"
+            "详情页会把取不到的行渲染成「运行未找到」"
+        )
+    return collected
 
 
 def list_all_jobs(

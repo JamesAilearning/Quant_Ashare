@@ -271,7 +271,8 @@ class PageSourcePinsTests(unittest.TestCase):
     def test_walk_forward_page_accepts_cli_runs(self) -> None:
         src = _PAGE_WF.read_text(encoding="utf-8")
         # 详情页必须也从统一清单取 CLI 行，否则作业页的跳转还是死路。
-        self.assertIn("list_all_jobs", src)
+        # r18 起走 load_all_jobs（翻页翻到 total 为止），不再猜一个大 page_size。
+        self.assertIn("load_all_jobs(", src)
         self.assertIn('source_filter="cli"', src)
         self.assertIn('type_filter="walk_forward"', src)
 
@@ -1109,6 +1110,70 @@ class InspectabilityIsPureTests(unittest.TestCase):
         # output_extra 以 output 开头，但不在读边界内。
         self.assertFalse(run_dir_is_inspectable("output_extra/runs/a"))
         self.assertTrue(run_dir_is_inspectable("output"))
+
+
+class LoadAllJobsTests(unittest.TestCase):
+    """详情页必须看到目录的**每一行**（codex #444 r18）。
+
+    此前三处调用各自写死 `page_size=100_000` —— 那是**猜**一个够大的数字，
+    猜错了没有任何提示：超出的行静默消失，而作业页能翻到它们，于是点进去
+    是「运行未找到」，正是本 change 要消灭的死链。
+    """
+
+    def test_matches_the_filtered_total(self) -> None:
+        from web.operator_ui.job_io import load_all_jobs
+
+        for kind in ("walk_forward", "pipeline"):
+            with self.subTest(kind=kind):
+                rows = load_all_jobs(type_filter=kind, source_filter="cli")
+                _, total, _ = list_all_jobs(
+                    type_filter=kind, source_filter="cli", page=1, page_size=1,
+                )
+                self.assertEqual(len(rows), total)
+
+    def test_really_walks_past_the_first_page(self) -> None:
+        # 本机目录只有一百多行，一页就装下了 —— 不把步长压到 1，这条用例
+        # 根本走不到翻页分支，等于空转。
+        from web.operator_ui import job_io
+
+        _, total, _ = list_all_jobs(page=1, page_size=1)
+        if total < 3:
+            self.skipTest("本机目录行数太少，翻页分支无从触发")
+        calls: list[int] = []
+        real = job_io.list_all_jobs
+
+        def counting(**kw: object) -> tuple[list[JobSummary], int, int]:
+            calls.append(int(kw.get("page", 1)))  # type: ignore[arg-type]
+            return real(**kw)  # type: ignore[arg-type]
+
+        with mock.patch.object(job_io, "_PAGE_STRIDE", 1), mock.patch.object(
+            job_io, "list_all_jobs", counting
+        ):
+            rows = job_io.load_all_jobs()
+        self.assertEqual(len(rows), total)
+        self.assertGreater(len(calls), 1, "没有真的翻页")
+        self.assertEqual(calls, list(range(1, len(calls) + 1)))
+
+    def test_short_read_fails_loud_instead_of_truncating(self) -> None:
+        # 拿不齐就抛 —— 静默截断正是 100_000 那个写法的病根。
+        from web.operator_ui import job_io
+
+        def truncating(**kw: object) -> tuple[list[JobSummary], int, int]:
+            return ([], 5, 0)
+
+        with mock.patch.object(job_io, "list_all_jobs", truncating):
+            with self.assertRaises(RuntimeError) as caught:
+                job_io.load_all_jobs()
+        self.assertIn("0/5", str(caught.exception))
+
+    def test_no_page_reaches_for_a_guessed_ceiling(self) -> None:
+        # 钉的是**调用形式**，不是字面量的任何出现 —— 注释里讲这段历史是
+        # 允许的，钉太宽会逼着后来人把解释删掉。
+        for page in (_PAGE_JOBS, _PAGE_WF, _PAGE_RESULTS):
+            with self.subTest(page=page.name):
+                src = page.read_text(encoding="utf-8")
+                self.assertNotIn("page_size=100_000", src)
+                self.assertIn("load_all_jobs(", src)
 
 
 class DeadEndRowsTests(unittest.TestCase):

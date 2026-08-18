@@ -44,7 +44,7 @@ from web.operator_ui.job_io import (
     anchored_run_dir,
     canonical_dir_key,
     fold_catalog_by_dir,
-    list_all_jobs,
+    load_all_jobs,
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
@@ -140,9 +140,7 @@ for _j in wf_jobs:
 # 此前只认 UI 作业目录——于是占列表绝大多数的 CLI 行点「查看详情」反而
 # 得到「暂无滚动验证记录」(UI drift 审计)。只收产物在 output 树内的行,
 # 这与本页的读边界一致(spec v2-operator-ui-console:105)。
-_cli_wf, _, _ = list_all_jobs(
-    type_filter="walk_forward", source_filter="cli", page=1, page_size=100_000,
-)
+_cli_wf = load_all_jobs(type_filter="walk_forward", source_filter="cli")
 # 折叠(锚定 / 首条即最新 / 被覆盖者只计数不别名)只有一份实现,与
 # results.py 共用 —— 这三条各自都被审查抓到过一次(#444 r1/r2/r4),
 # 两页各写一份必然分叉。锚定与可检视判据同源(``anchored_run_dir``):

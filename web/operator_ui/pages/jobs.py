@@ -39,6 +39,7 @@ from web.operator_ui.job_io import (
     count_cli_rows_outside_output_tree,
     jobs_eligible_for_cleanup,
     list_all_jobs,
+    load_all_jobs,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
 from web.operator_ui.page_header import render_page_header
@@ -760,9 +761,10 @@ with st.expander(
     "🧹 清理旧作业", expanded="jobs_cleanup_result" in st.session_state
 ):
     # Eligibility is global (not limited to the current page / filters),
-    # so re-query all UI jobs. The large page_size pulls everything;
-    # the third tuple element (running count) is unused here.
-    _all_ui_jobs, _, _ = list_all_jobs(source_filter="ui", page=1, page_size=100_000)
+    # so re-query all UI jobs. ``load_all_jobs`` 翻页翻到 total 为止 ——
+    # 此前写死一个「够大的」页大小 —— 那是**猜**,猜错了没有任何提示,
+    # 超出的行静默消失（codex #444 r18）。
+    _all_ui_jobs = load_all_jobs(source_filter="ui")
     cleanup_days = st.number_input(
         "删除多少天前的已完成作业",
         min_value=1,

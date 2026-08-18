@@ -379,6 +379,23 @@
 - [x] 顺带确认 `pytest-randomly` **未安装**,`-p no:randomly` 一直是空操作,
   CI 与本机都是顺序执行——排除测试间污染这一层
 
+## codex #444 r18（一条 P2）
+
+- [x] **详情页只装了目录的一页**:三处(results / walk_forward / jobs)各自写死
+  `page_size=100_000`——那是**猜**一个够大的数字,猜错了没有任何提示,超出的行
+  静默消失,而作业页能翻到它们,于是点进去是「运行未找到」,正是本 change 要
+  消灭的死链
+- [x] 修在共享层:新增 `job_io.load_all_jobs(**filters)`,以 1000 为**步长**翻页
+  直到取满 `total`;取不齐则 `RuntimeError` fail-loud,绝不静默截断。三处调用
+  全部改走它(含 jobs.py 那处——它此前不在 codex 的指认里,是我顺着查出来的)
+- [x] 等价性实测:walk_forward 92 / pipeline 13 / 全部 117,`load_all_jobs`
+  与旧写法及 `total` 三者一致
+- [x] 测试**不空转**:本机目录才一百多行,一页就装下,所以专门把步长 patch 成 1
+  才能真的走到翻页分支——断言翻了多页且页码连续;另有 fail-loud 分支与
+  「页面不得再传猜来的上限」两条
+- [x] 钉的措辞收敛:钉**调用形式** `page_size=100_000` 而非字面量的任何出现——
+  钉太宽会逼后来人把注释里的历史解释删掉(我自己先踩了一次)
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed
