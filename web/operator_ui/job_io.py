@@ -339,12 +339,18 @@ def _allowed_root_keys() -> tuple[str, ...]:
     cached = _ROOT_KEYS_CACHE
     if cached is not None and cached[0] is marker:
         return cached[1]
-    keys = tuple(
+    # 词法 **与** 解析两种拼写都收。候选侧是纯词法(逐行不碰盘),而根若是
+    # 符号链接/联接,``resolve()`` 会把它换成挂载目标——只留解析形,词法候选
+    # 一条都对不上,整份目录记录被判不可检视(codex #444 r8);只留词法形,
+    # 已经写成解析路径的那些行又会落空。根只有两个,两种形都存下也是常数。
+    keys = {
         os.path.normcase(os.path.normpath(str(root)))
-        for root in allowed_output_roots()
-    )
-    _ROOT_KEYS_CACHE = (marker, keys)
-    return keys
+        for resolve in (False, True)
+        for root in allowed_output_roots(resolve=resolve)
+    }
+    ordered = tuple(sorted(keys))
+    _ROOT_KEYS_CACHE = (marker, ordered)
+    return ordered
 
 
 def run_dir_is_inspectable(run_dir: str) -> bool:

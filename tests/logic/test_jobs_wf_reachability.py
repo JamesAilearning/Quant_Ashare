@@ -592,16 +592,17 @@ class InspectabilityIsPureTests(unittest.TestCase):
         calls = 0
         real = job_io.allowed_output_roots
 
-        def counting() -> tuple[Path, ...]:
+        def counting(*, resolve: bool = True) -> tuple[Path, ...]:
             nonlocal calls
             calls += 1
-            return real()
+            return real(resolve=resolve)
 
         job_io._ROOT_KEYS_CACHE = None
         with mock.patch.object(job_io, "allowed_output_roots", counting):
             for _ in range(50):
                 job_io.run_dir_is_inspectable("output/runs/x")
-        self.assertLessEqual(calls, 1)
+        # 一轮里取词法+解析两种拼写 = 2 次；关键是**与行数无关**。
+        self.assertLessEqual(calls, 2)
 
     def test_cache_follows_a_patched_boundary(self) -> None:
         # 缓存过期会让判据放行本该拒绝的路径 —— 比慢严重得多。
@@ -618,6 +619,64 @@ class InspectabilityIsPureTests(unittest.TestCase):
                 self.assertFalse(job_io.run_dir_is_inspectable("output/runs/x"))
                 self.assertTrue(job_io.run_dir_is_inspectable(str(root / "a")))
         self.assertTrue(run_dir_is_inspectable("output/runs/x"))
+
+    def test_a_symlinked_root_does_not_discard_every_row(self) -> None:
+        # codex #444 r8: 候选侧是纯词法，而 allowed_output_roots() 会
+        # resolve() 根 —— 若 output 本身是符号链接/联接，解析后的根变成挂载
+        # 目标，词法候选一条都对不上，整份目录记录被判不可检视，而产物守卫
+        # 却接受同一条路径。本机用 mklink /J 复现过（symlink 需特权，
+        # junction 不需要）。
+        import subprocess
+        import tempfile
+
+        from web.operator_ui import job_io
+        from web.operator_ui._path_guard import guard_output_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            real = base / "real_volume"
+            (real / "runs").mkdir(parents=True)
+            link = base / "output_link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                if sys.platform != "win32":
+                    self.skipTest("本机无法建立符号链接")
+                made = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                    capture_output=True, text=True,
+                )
+                if made.returncode != 0 or not link.exists():
+                    self.skipTest("本机无法建立目录联接")
+            if link.resolve() == Path(os.path.normpath(str(link))):
+                self.skipTest("该文件系统上根的解析形与词法形相同")
+            job_io._ROOT_KEYS_CACHE = None
+            try:
+                with mock.patch(
+                    "web.operator_ui._path_guard._ALLOWED_ROOTS", (link,)
+                ):
+                    # 两种拼写都必须与产物守卫给出同一个答案。
+                    for candidate in (link / "runs" / "a", real / "runs" / "a"):
+                        with self.subTest(candidate=candidate.name):
+                            guard_output_path(candidate)  # 守卫接受 → 不抛
+                            self.assertTrue(
+                                job_io.run_dir_is_inspectable(str(candidate))
+                            )
+                    # 边界之外仍然拒绝。
+                    self.assertFalse(
+                        job_io.run_dir_is_inspectable(str(base / "elsewhere"))
+                    )
+            finally:
+                job_io._ROOT_KEYS_CACHE = None
+
+    def test_root_definition_lives_in_one_place(self) -> None:
+        # 词法根若在 job_io 里另抄一份，两处会分叉 —— 这正是本 PR 反复
+        # 修的那一类。定义只留在 _path_guard，用 resolve=False 取词法形。
+        src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("allowed_output_roots(resolve=resolve)", src)
+        self.assertNotIn('PROJECT_ROOT / "output"', src)
 
     def test_containment_is_not_a_bare_prefix_match(self) -> None:
         # output_extra 以 output 开头，但不在读边界内。

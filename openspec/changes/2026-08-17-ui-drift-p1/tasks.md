@@ -164,6 +164,21 @@
   高**而非偏保守;`run_options` 那条说自己在去重,其实去重早由
   `fold_catalog_by_dir` 接管,它真正的职责是不让 CLI id 顶掉 UI 作业的标签
 
+## codex #444 r8（一条 P2）
+
+- [x] **两侧不在同一个命名空间**:候选侧改成纯词法之后,根侧仍走
+  `allowed_output_roots()` 的 `resolve()`。若 `output` 本身是符号链接/联接,
+  解析后的根变成挂载目标,**词法候选一条都对不上**——整份目录记录被判不可
+  检视,而产物守卫却接受同一条路径。本机用 `mklink /J` 复现(symlink 需特权,
+  junction 不需要):判据 False / 守卫 True
+- [x] 修:根键**同时收词法与解析两种拼写**。只留解析形会丢掉相对行,只留词法
+  形又会丢掉已写成解析路径的行;根只有两个,两种形都存也是常数,且仍不产生
+  逐行 I/O(实测仍 22.7 ms)
+- [x] 词法根不在 job_io 里另抄一份:`allowed_output_roots` 加 `resolve=False`
+  参数,根的定义仍只留在 `_path_guard` 一处(抄一份正是本 PR 反复在修的那类)
+- [x] 回归测试:junction 场景下两种拼写都必须与产物守卫给出同一答案,边界外
+  仍拒绝;无法建联接/该文件系统上两形相同时 skip 而不是假过
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed
