@@ -35,6 +35,7 @@ __all__ = [
     "evaluate_expression",
     "evaluate_factor",
     "max_abs_corr",
+    "max_abs_corr_with_skips",
 ]
 
 PanelLike = Mapping[str, pd.DataFrame]
@@ -60,15 +61,39 @@ def max_abs_corr(
     never poison the maximum, so this NEVER returns a non-finite float. Returns
     0.0 when no eligible pair correlates. Pure pandas/numpy — no qlib / PIT (D5).
     """
+    max_abs, _skipped = max_abs_corr_with_skips(
+        new_stack, other_stacks, min_overlap=min_overlap)
+    return max_abs
+
+
+def max_abs_corr_with_skips(
+    new_stack: pd.Series,
+    other_stacks: Iterable[pd.Series],
+    *,
+    min_overlap: int = 3,
+) -> tuple[float, int]:
+    """``max_abs_corr`` plus the count of pairs that could NOT be compared.
+
+    A caller that must not treat "could not compute" as "low correlation"
+    needs to tell the two apart: with fewer than ``min_overlap`` jointly
+    finite cells the pair is skipped, and a skipped pair contributes 0.0
+    to the maximum — indistinguishable from a genuinely uncorrelated
+    pair. Sparse fundamental factors hit this readily, and the survivor
+    pool's frozen policy is REFUSE, not keep (codex #446 r10 P1).
+    """
     max_abs = 0.0
+    skipped = 0
     for other_stack in other_stacks:
         joined = pd.concat({"new": new_stack, "old": other_stack}, axis=1).dropna()
         if len(joined) < min_overlap:
+            skipped += 1
             continue
         corr = joined["new"].corr(joined["old"])
         if np.isfinite(corr):
             max_abs = max(max_abs, abs(float(corr)))
-    return max_abs
+        else:
+            skipped += 1          # 退化对同样不可比
+    return max_abs, skipped
 
 
 def _canonical_period_token(token: object) -> str | None:

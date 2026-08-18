@@ -526,3 +526,82 @@ def test_validator_does_not_import_qlib_or_pit():
     assert "qlib.init" not in src
     assert "from src.pit" not in src
     assert "import src.pit" not in src
+# --- 池构成的确定性（codex #446 r9 P1）-------------------------------------
+
+def test_tie_break_digest_is_stable_across_processes():
+    """规范摘要必须只依赖表达式串 —— tie-break 决定"谁先入池"，用
+    Python 加盐 hash 会让同一批工件在两次执行里保留不同幸存者。"""
+    import hashlib
+    import subprocess
+    import sys
+
+    from src.factor_mining.validator import canonical_expr_digest
+
+    expr = "cs_rank(div_safe($revenue, $total_assets))"
+    local = canonical_expr_digest(expr)
+    assert local == hashlib.sha256(expr.encode("utf-8")).hexdigest()
+    # 另起一个 PYTHONHASHSEED 不同的解释器，摘要必须逐字相同。
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "from src.factor_mining.validator import canonical_expr_digest as d;"
+         f"print(d({expr!r}))"],
+        capture_output=True, text=True, check=True,
+        env={"PYTHONHASHSEED": "12345", "PATH": "", "SYSTEMROOT": ""},
+    )
+    assert out.stdout.strip() == local
+
+
+def test_correlation_evaluation_failure_refuses_instead_of_keeping():
+    """相关性求值失败 = 无法确定性构造池 → 拒绝。旧实现把它当"保留该
+    因子"，方向是宽松的，且会静默改变签署池。"""
+    import pandas as pd
+    import pytest
+
+    from src.factor_mining.expression import parse_expression
+    from src.factor_mining.factor_pool import FactorPool, PoolEntry
+    from src.factor_mining.validator import (
+        FactorValidationResult,
+        ValidationCriteria,
+        ValidationError,
+        filter_correlated,
+    )
+
+    expr = parse_expression("cs_rank($volume)")
+    pool = FactorPool()
+    pool.add(PoolEntry(
+        expr=expr, fitness=1.0, ic_mean=0.0, ic_std=0.1, ir=0.0,
+        rank_ic_mean=0.0, rank_ic_std=0.1, rank_ir=0.0, turnover_daily=0.1,
+        coverage=0.9, n_obs_per_day_min=1, expr_size=2,
+        expr_hash=hash(expr), method="rank",
+    ))
+    results = [FactorValidationResult(
+        expr_hash=hash(expr), expr_str=expr.to_qlib_string(), fitness=1.0,
+        passes=True, reasons=(), is_ir=0.0, is_rank_ic_mean=0.0, is_n_obs=10,
+        oos_ir=0.0, oos_rank_ic_mean=0.0, oos_n_obs=10,
+    )]
+    # 面板缺该终端以外的东西：制造非 KeyError 的求值失败（值不是帧）。
+    bad_panel = {"$volume": pd.Series([1.0, 2.0])}
+    with pytest.raises(ValidationError, match="refusing"):
+        filter_correlated(results, bad_panel,
+                          ValidationCriteria(is_oos_split_date="2024-01-01"),
+                          pool)
+
+
+def test_insufficient_pairwise_overlap_refuses_instead_of_keeping():
+    """重叠不足的配对贡献 0.0，与"真正不相关"无法区分 —— 稀疏财报因子
+    很容易触发，而池的冻结策略是 refuse（codex #446 r10 P1）。"""
+    import numpy as np
+    import pandas as pd
+
+    from src.factor_mining.evaluator import max_abs_corr_with_skips
+    from src.factor_mining.validator import ValidationError
+
+    idx = pd.MultiIndex.from_product(
+        [pd.date_range("2024-01-01", periods=4), ["A"]])
+    dense = pd.Series([1.0, 2.0, 3.0, 4.0], index=idx)
+    sparse = pd.Series([np.nan, np.nan, np.nan, 4.0], index=idx)
+    corr, skipped = max_abs_corr_with_skips(dense, [sparse])
+    assert skipped == 1 and corr == 0.0     # 0.0 掩盖了"没算成"
+    corr2, skipped2 = max_abs_corr_with_skips(dense, [dense])
+    assert skipped2 == 0 and corr2 > 0.99
+    assert ValidationError is not None

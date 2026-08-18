@@ -21,7 +21,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .evaluator import evaluate_factor, joint_obs_mask, max_abs_corr
+from .evaluator import (
+    evaluate_factor,
+    joint_obs_mask,
+    max_abs_corr_with_skips,
+)
 from .expression import Expression
 from .factor_pool import LEGACY_METHOD_TAG, FactorPool
 
@@ -302,6 +306,26 @@ def validate_run(
 # ---------------------------------------------------------------------------
 
 
+class ValidationError(RuntimeError):
+    """Raised when validation cannot be performed HONESTLY.
+
+    Always a refusal, never a silently-kept factor: the survivor pool is
+    the promotion gate's treatment arm, so "could not filter" must not
+    read as "passed the filter".
+    """
+
+
+def canonical_expr_digest(expr_str: str) -> str:
+    """Stable sha256 over an expression's canonical string.
+
+    Deterministic across processes and machines, unlike ``hash()``.
+    Used wherever an ORDER decides which factor is kept.
+    """
+    import hashlib
+
+    return hashlib.sha256(expr_str.encode("utf-8")).hexdigest()
+
+
 def filter_correlated(
     results: list[FactorValidationResult],
     panel: Mapping[str, pd.DataFrame],
@@ -324,9 +348,16 @@ def filter_correlated(
     # the FULL panel (not just OOS) for cross-correlation purposes.
     entries_by_hash = {e.expr_hash: e for e in pool.all_entries()}
 
-    # Build sort order by fitness desc, expr_hash asc
+    # Scan order: fitness desc, then a STABLE canonical digest — never
+    # ``expr_hash``. That field comes from Python's salted ``hash()`` and
+    # changes across interpreter processes / PYTHONHASHSEED (factor_pool
+    # documents this), so tie-broken order — and therefore WHICH of two
+    # equally-fit correlated survivors enters the pool — would differ
+    # between runs on identical artifacts. The pool is the promotion
+    # gate's treatment arm, so that is a real reproducibility hole
+    # (codex #446 r9 P1).
     sorted_results = sorted(
-        results, key=lambda r: (-r.fitness, r.expr_hash),
+        results, key=lambda r: (-r.fitness, canonical_expr_digest(r.expr_str)),
     )
 
     kept_values: list[tuple[FactorValidationResult, pd.Series]] = []
@@ -354,17 +385,43 @@ def filter_correlated(
             # filtering entirely and change the survivor set — silently, and
             # in the permissive direction. Let it escape.
             raise
-        except Exception:  # noqa: BLE001
-            new_results_by_hash[res.expr_hash] = res
-            continue
+        except Exception as exc:  # noqa: BLE001
+            # NOT best-effort: this function is the deterministic
+            # constructor of the promotion gate's treatment arm, so a
+            # runtime failure that "keeps" the factor changes the signed
+            # pool in the PERMISSIVE direction — silently (codex #446 r9
+            # P1). Correlation filtering that cannot be performed is a
+            # refusal, not a pass.
+            raise ValidationError(
+                f"correlation evaluation failed for {res.expr_str!r} "
+                f"({type(exc).__name__}: {exc}) — the survivor pool "
+                "cannot be constructed deterministically; refusing "
+                "rather than keeping the factor unfiltered."
+            ) from exc
         if not isinstance(factor_values, pd.DataFrame):
-            new_results_by_hash[res.expr_hash] = res
-            continue
+            raise ValidationError(
+                f"correlation evaluation for {res.expr_str!r} returned "
+                f"{type(factor_values).__name__}, not a DataFrame — the "
+                "survivor pool cannot be constructed deterministically; "
+                "refusing."
+            )
         stacked = factor_values.stack(future_stack=True)
         # Shared inner pairwise loop (np.isfinite guard — was pd.notna here).
-        max_corr = max_abs_corr(
-            stacked, (kept_stack for _kept_res, kept_stack in kept_values),
+        max_corr, n_skipped = max_abs_corr_with_skips(
+            stacked, [kept_stack for _kept_res, kept_stack in kept_values],
         )
+        if n_skipped:
+            # "无法比较"绝不能读作"相关性低"：重叠不足的配对贡献 0.0，
+            # 与真正不相关无法区分，而稀疏的财报因子很容易触发
+            # （codex #446 r10 P1）。与 evaluation_failure_policy: refuse
+            # 同一条策略。
+            raise ValidationError(
+                f"{res.expr_str!r} has {n_skipped} pool pair(s) with "
+                "insufficient jointly-finite overlap — their correlation "
+                "could not be computed, and an uncomputed pair must not "
+                "pass as an uncorrelated one; refusing to construct the "
+                "survivor pool."
+            )
         if max_corr > criteria.max_pool_correlation:
             new_results_by_hash[res.expr_hash] = FactorValidationResult(
                 expr_hash=res.expr_hash,

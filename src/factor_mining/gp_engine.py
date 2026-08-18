@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from .evaluator import EvaluationResult, evaluate_factor, max_abs_corr
-from .expression import Expression, OperatorCall, Terminal
+from .expression import Expression, OperatorCall, Terminal, feature_terminals
 from .factor_pool import LEGACY_METHOD_TAG, FactorPool, PoolEntry
 from .fitness import (
     FitnessConfig,
@@ -196,6 +196,11 @@ class GPEngine:
         # Report-period provenance of a FUNDAMENTAL panel (terminal-level
         # alignment masking); None = the legacy price-volume path.
         self._periods: dict[str, pd.DataFrame] | None = None
+        # Whether ``run`` has executed on this engine. Distinguishes a
+        # fresh engine from one whose terminal pool is the V1 sentinel:
+        # ``_allowed_terminals is None`` AFTER a run means "the V1
+        # default pool", not "unknown".
+        self._has_run: bool = False
         # Coverage-cache key under which the scores in fitness_cache /
         # _all_evaluated were produced: "all_cells" or "members:<mask
         # fingerprint>". Set on ``run`` and persisted in checkpoints so a
@@ -318,6 +323,35 @@ class GPEngine:
         ``evaluate_individual``, so an injected frozen AST is scored by
         the same code that scores every bred candidate.
         """
+        # Terminals get the same guard the operators already have: an
+        # injected AST must live inside the pool this engine's search
+        # could actually breed from. Without it an audit/link report can
+        # score an expression over a registered terminal the panel
+        # happens to carry but the run could never construct — a number
+        # presented as "this run's marginal contribution" that the run
+        # could not have produced.
+        panel_fields = frozenset(
+            k for k in (panel.keys() if hasattr(panel, "keys") else [])
+            if isinstance(k, str) and k.startswith("$")
+        )
+        if self._has_run:
+            # Established pool wins over whatever panel THIS call passes:
+            # re-deriving would widen it (a run on {$revenue} then scored
+            # against a wider panel would accept $volume). ``None`` here
+            # is the V1 sentinel, not "unknown".
+            term_pool = (self._allowed_terminals
+                         if self._allowed_terminals is not None
+                         else frozenset(FeatureRegistry.V1))
+        else:
+            term_pool = panel_fields
+        outside_terms = set(feature_terminals(expr)) - term_pool
+        if outside_terms:
+            raise GrammarError(
+                f"expression uses terminal(s) {sorted(outside_terms)} "
+                "outside this engine's sampling pool — a score under a "
+                "configuration that cannot breed the expression is not a "
+                "marginal contribution of this run."
+            )
         allowed = (self._allowed_operators
                    if self._allowed_operators is not None
                    else V1_OPERATORS)
@@ -769,11 +803,29 @@ class GPEngine:
             k for k in (panel.keys() if hasattr(panel, "keys") else [])
             if isinstance(k, str) and k.startswith("$")
         )
-        self._allowed_terminals = (
+        derived = (
             panel_fields
             if panel_fields and panel_fields != frozenset(FeatureRegistry.V1)
             else None
         )
+        if self._has_run and derived != self._allowed_terminals:
+            # A RESUMED engine (loaded checkpoint / re-run) already bred
+            # under a pool. Silently adopting a pool derived from this
+            # call's panel would let ONE experiment span two search
+            # spaces: the existing population is kept, and subsequent
+            # generation/mutation would reach terminals the earlier
+            # generations could never touch. Resuming on the SAME panel
+            # derives the same pool and does not trip this.
+            def _show(pool: frozenset[str] | None) -> str:
+                return "V1(default)" if pool is None else str(sorted(pool))
+
+            raise GrammarError(
+                "resumed run would change the terminal pool from "
+                f"{_show(self._allowed_terminals)} to {_show(derived)} — "
+                "one experiment cannot span two search spaces. Resume on "
+                "the panel the run was bred with, or start a fresh engine."
+            )
+        self._allowed_terminals = derived
         # Guard a resume/reuse against an incomparable cache: scores cached
         # under a different coverage key — all-cells vs members, OR a
         # different member mask (different universe / date range) — are not
@@ -885,6 +937,25 @@ class GPEngine:
             self.fitness_cache = {}
             self._all_evaluated = {}
         self._fitness_key = run_fitness_key
+        if self.population and self._allowed_terminals is not None:
+            # A population that predates this run (a resumed checkpoint,
+            # a hand-filled list) may have been bred under a WIDER pool.
+            # Evaluating it would score expressions this run's search
+            # cannot construct — the same contract score_expression
+            # enforces for injected ASTs.
+            stale = {
+                t
+                for expr in self.population
+                for t in feature_terminals(expr)
+            } - self._allowed_terminals
+            if stale:
+                raise GrammarError(
+                    f"pre-existing population references terminal(s) "
+                    f"{sorted(stale)} outside this run's pool — it was "
+                    "bred under a different one; discard the population "
+                    "(or the checkpoint) before running."
+                )
+        self._has_run = True
         if not self.population:
             self.initialize_population()
         n_gens = (
@@ -993,6 +1064,15 @@ class GPEngine:
                 if self._fitness_key is not None
                 else _fitness_key_for(self.fitness_config)
             ),
+            # The pool the run bred under, so a loaded engine cannot
+            # widen it by scoring against a different panel. ``None``
+            # here means the V1 sentinel, exactly as in-memory;
+            # ``has_run`` distinguishes it from a fresh engine.
+            "has_run": self._has_run,
+            "allowed_terminals": (
+                sorted(self._allowed_terminals)
+                if self._allowed_terminals is not None else None
+            ),
             "current_gen": self.current_gen,
             "rng_state": _serialise_rng_state(self.rng.getstate()),
             "fitness_cache": {
@@ -1063,6 +1143,13 @@ class GPEngine:
         # Legacy checkpoints predate the fundamental campaign and were
         # necessarily written WITHOUT period provenance.
         engine._periods_key = state.get("periods_key") or "no_periods"
+        # Restore the established pool; legacy checkpoints predate both
+        # fields and are treated as fresh engines (the conservative
+        # direction — their own run() re-derives and re-validates).
+        engine._has_run = bool(state.get("has_run", False))
+        restored = state.get("allowed_terminals")
+        engine._allowed_terminals = (
+            frozenset(restored) if restored is not None else None)
 
         stored_method = state.get("evaluator_method")
         if stored_method != FITNESS_EVALUATOR_METHOD:
