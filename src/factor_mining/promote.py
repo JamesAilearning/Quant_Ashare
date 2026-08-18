@@ -39,6 +39,7 @@ from .miner import (
 from .validator import (
     FactorValidationResult,
     ValidationCriteria,
+    ValidationError,
     filter_correlated,
     validate_pool,
 )
@@ -716,12 +717,24 @@ def promote_run(
             config.criteria.is_oos_split_date, run_data.forward_horizon,
         )
 
-    results = validate_pool(pool, panel, fwd, config.criteria,
-                            periods=periods)
-    n_passed_individual = sum(1 for r in results if r.passes)
+    try:
+        # A validation refusal is a promotion-boundary failure like any
+        # other: the CLI's contract is a controlled "Promotion failed:
+        # ..." with a non-zero return code, not a traceback. Both calls
+        # can raise it — validate_pool via its own evaluation, and
+        # filter_correlated when the survivor pool cannot be constructed
+        # deterministically (codex #448 r4 P2).
+        results = validate_pool(pool, panel, fwd, config.criteria,
+                                periods=periods)
+        n_passed_individual = sum(1 for r in results if r.passes)
 
-    filtered = filter_correlated(results, panel, config.criteria, pool,
-                                 periods=periods)
+        filtered = filter_correlated(results, panel, config.criteria, pool,
+                                     periods=periods)
+    except ValidationError as exc:
+        raise PromotionError(
+            f"validation refused: {exc} — nothing was written and the "
+            "version label is untouched."
+        ) from exc
     survivors = [r for r in filtered if r.passes]
     n_kept = len(survivors)
 
