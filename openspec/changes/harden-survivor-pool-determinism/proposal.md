@@ -35,9 +35,11 @@
   失败、非 DataFrame 返回、以及**任何不可比配对**一律 `ValidationError`
   拒绝，不再保留因子。
 - **`evaluator`**：新增 `max_abs_corr_with_skips`，同时返回不可比对数
-  （重叠不足与退化相关都计入）。`max_abs_corr` 签名与返回**逐字不变**，
-  内部委托 —— 既有三处调用方（GP novelty penalty、`FactorPool.correlation_with`、
-  以及本次改造前的 validator）行为不变。
+  （重叠不足与退化相关都计入）。`max_abs_corr` 的**签名与返回类型**不变、
+  内部委托，但**取值会变** —— 相关性现在先按 `np.isfinite` 过滤再判重叠
+  与计算，故三处调用方（GP novelty penalty、`FactorPool.correlation_with`、
+  validator 池过滤）在存在 `inf` 的场景下拿到不同的数（见下方
+  「共享路径的取值变更」）。
 - **`gp_engine`**：新增 `_has_run` 标记并随 checkpoint 持久化 `has_run` /
   `allowed_terminals`；`score_expression` 对注入 AST 校验终端池（与既有的
   算子池校验对称）；`run()` 拒绝会改变已建立池的 resume，以及引用池外终端
