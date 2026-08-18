@@ -346,6 +346,17 @@
 - [x] 教训记一笔:**测试夹具落在 gitignore 的目录里 = 该测试在 CI 不存在**。
   本轮之所以没早发现,是因为我一直只看本机跑绿
 
+## codex #444 r17（一条 P2）
+
+- [x] **r16 的 tracked 夹具仍随环境变**:`_preset()` 按 `os.environ` 展开
+  `${QUANT_*:-default}`,若开发机/CI 把 `QUANT_DELISTED_REGISTRY` 导成**空串**,
+  展开结果就是空——这个本该当「认证基线」的夹具**自己先出族**,基于它的每条断言
+  都在测错的东西。实测 `QUANT_DELISTED_REGISTRY=""` 让**五处**断言失败
+- [x] 修:展开前把该 YAML 引用到的所有 `${VAR}` 从环境里摘掉,让它落到 tracked
+  默认值上;变量名从 YAML 本身扫出来(正则),不是手写清单
+- [x] 三种环境实测均 67 passed:干净环境 / `QUANT_DELISTED_REGISTRY=""` /
+  `QUANT_NAMECHANGE_PATH="" QUANT_PROVIDER_URI=E:/weird`
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

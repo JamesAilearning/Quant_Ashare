@@ -519,16 +519,35 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # 报告 config 里的路径是**展开后**的（引擎写盘前已解析
         # `${VAR:-default}`）。测试不展开的话，namechange_path 之类会以字面量
         # 形式去比，认证预设自己都判不符 —— 那是测试的失真，不是实现的。
+        #
+        # 但展开必须**与环境无关**（codex #444 r17）：开发机或 CI 若把
+        # QUANT_DELISTED_REGISTRY 导成**空串**，展开结果就是空 —— 这个本该
+        # 「认证基线」的夹具自己先出了族，用它做的每条断言都在测错的东西。
+        # 实测一个空的 QUANT_DELISTED_REGISTRY 会让五处断言失败。
+        # 所以把该 YAML 引用到的所有 ${VAR} 从环境里摘掉，让它落到 tracked
+        # 的默认值上 —— 变量名从 YAML 本身扫出来，不是手写清单。
+        import os
+        import re
+        from unittest import mock
+
         from src.core._yaml_loader import _expand_env_vars_in_tree
 
-        expanded = {
-            key: (
-                _expand_env_vars_in_tree(value, source_path=path)
-                if isinstance(value, str)
-                else value
-            )
-            for key, value in merged.items()
+        referenced = {
+            name
+            for value in merged.values()
+            if isinstance(value, str)
+            for name in re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", value)
         }
+        pinned = {k: v for k, v in os.environ.items() if k not in referenced}
+        with mock.patch.dict(os.environ, pinned, clear=True):
+            expanded = {
+                key: (
+                    _expand_env_vars_in_tree(value, source_path=path)
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in merged.items()
+            }
         # 再用 dataclass 默认值打底 —— 报告 config 是**完整**的（引擎 dump 整个
         # dataclass），而裸 preset 只有它显式写的那几个键。不打底的话，预设没写
         # 的键全部落进「未记录」而被跳过，于是像 `csi800` 这种只写两三个键的
