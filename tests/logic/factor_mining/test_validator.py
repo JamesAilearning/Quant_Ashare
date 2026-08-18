@@ -653,3 +653,84 @@ def test_a_single_inf_cell_does_not_make_a_pair_incomparable():
     flat = pd.Series([7.0] * 6, index=idx)
     _c3, s3 = max_abs_corr_with_skips(flat, [b])
     assert s3 == 1
+
+
+# 子进程脚本：在给定 PYTHONHASHSEED 下真跑 filter_correlated，打印
+# 「谁活下来」以及「salted hash 的先后」—— 后者用于证明本场景确实有
+# 鉴别力（两个种子下 hash 序必须翻转，否则这条回归是空的）。
+_SURVIVOR_PROBE = """
+import numpy as np
+import pandas as pd
+
+from src.factor_mining.expression import parse_expression
+from src.factor_mining.factor_pool import FactorPool, PoolEntry
+from src.factor_mining.validator import (
+    FactorValidationResult, ValidationCriteria, filter_correlated,
+)
+
+idx = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=40, freq="D"))
+cols = ["SZ000001", "SZ000002", "SZ000003", "SZ000004", "SZ000005"]
+rng = np.random.default_rng(0)
+base = pd.DataFrame(rng.normal(size=(40, 5)), index=idx, columns=cols)
+# money 是 volume 的单调变换 -> cs_rank 完全相同 -> 相关性 1.0
+panel = {"$volume": base, "$money": base * 2.0 + 1.0}
+
+a = parse_expression("cs_rank($volume)")
+b = parse_expression("cs_rank($money)")
+pool = FactorPool()
+results = []
+for e in (a, b):
+    pool.add(PoolEntry(
+        expr=e, fitness=1.0, ic_mean=0.0, ic_std=0.1, ir=0.0,
+        rank_ic_mean=0.0, rank_ic_std=0.1, rank_ir=0.0, turnover_daily=0.1,
+        coverage=0.9, n_obs_per_day_min=5, expr_size=2, expr_hash=hash(e),
+        method="rank"))
+    results.append(FactorValidationResult(
+        expr_hash=hash(e), expr_str=e.to_qlib_string(), fitness=1.0,
+        passes=True, reasons=(), is_ir=0.0, is_rank_ic_mean=0.0, is_n_obs=20,
+        oos_ir=0.0, oos_rank_ic_mean=0.0, oos_n_obs=20))
+
+kept = [r.expr_str for r in filter_correlated(
+    results, panel, ValidationCriteria(is_oos_split_date="2024-01-20"), pool)
+    if r.passes]
+order = "A_FIRST" if hash(a) < hash(b) else "B_FIRST"
+print(order + "|" + ",".join(sorted(kept)))
+"""
+
+
+def test_survivor_pool_is_identical_across_hash_seeds():
+    """真正打在缺陷上的回归：在两个 PYTHONHASHSEED 下**实跑
+    filter_correlated**，比对留下来的幸存者。
+
+    上一版只测 canonical_expr_digest 这个原语 —— 若有人把扫描顺序改回
+    salted 的 expr_hash，那条回归照样绿（codex #448 r8 P2）。这里构造
+    两个 fitness 相同、相关性为 1 的因子，于是 tie-break 直接决定谁入池。
+
+    非空性由第二个断言保证：两个种子下 salted hash 的先后必须**翻转** ——
+    否则场景无鉴别力，这条回归就是空的。
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[3]
+    seen = {}
+    for seed in ("12345", "54321"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        out = subprocess.run(
+            [sys.executable, "-c", _SURVIVOR_PROBE],
+            capture_output=True, text=True, check=True,
+            env=env, cwd=str(root),
+        )
+        order, kept = out.stdout.strip().splitlines()[-1].split("|")
+        seen[seed] = (order, kept)
+
+    orders = {v[0] for v in seen.values()}
+    assert len(orders) == 2, (
+        f"两个种子下 salted hash 的先后未翻转 ({orders}) —— 本场景无法"
+        "鉴别 expr_hash 排序，回归形同虚设，请另择种子/表达式")
+    survivors = {v[1] for v in seen.values()}
+    assert len(survivors) == 1, (
+        f"幸存者随 hash 种子改变: {seen} —— 池的构成不可复现")
