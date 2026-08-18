@@ -479,6 +479,11 @@ if isinstance(_wf_config, dict) and _wf_config:
     # 跑 iso_week),它是族内的区分维度,不是入族条件。
     _mismatched, _unrecorded = governed_family_coverage(_wf_config)
     _governed = not _mismatched
+    # 治理文案**整段**嵌在族门里面。r12 我把「未记录键」的披露写成了同级的
+    # 第二个 `if`,于是后面的 anchor `elif` 挂到了它身上——一份完整记录、只是
+    # 不入族的报告(`_unrecorded` 为空)会直接落进 `elif _anchor ==` 而拿到
+    # 「认证胜者」文案,紧跟在「不属于认证族」那句后面自相矛盾
+    # (codex #444 r13)。嵌套是结构性的:标签不可能再脱离族门。
     if not _governed:
         st.caption(
             f"ℹ `anchor={_anchor}` 只说明本次回测的再平衡日怎么排"
@@ -487,6 +492,26 @@ if isinstance(_wf_config, dict) and _wf_config:
             + "、".join(f"`{_k}`" for _k in _mismatched)
             + "），所以这里不给任何「认证胜者 / 生产锚」的判断。"
         )
+    else:
+        if _anchor == "fold_phase":
+            st.caption(
+                "ℹ 本次属于 csi800 认证族,且 `anchor=fold_phase` = **认证胜者**"
+                "所用的锚（战役主判据）。它与生产**服务**锚 `iso_week` 是两条"
+                "不同 schedule,不可互相顶替;`iso_week` 复核切片经单独门控才"
+                "成为生产锚。"
+            )
+        elif _anchor == "iso_week":
+            st.caption(
+                "ℹ 本次属于 csi800 认证族,且 `anchor=iso_week` = **生产服务锚**"
+                "（复核切片形态）。认证胜者本身跑在 `fold_phase` 上,两者恰差 "
+                "{rebalance_anchor, output_dir} 且被治理测试钉死——按哪条证据链"
+                "读这份报告,取决于本行。"
+            )
+        else:
+            st.caption(
+                f"ℹ 本次入族,但 `anchor={_anchor}` 不是本仓已知的两种 schedule"
+                "之一——不给证据链判断。"
+            )
     if _unrecorded:
         # 判定基于 N 个身份键,其中若干本报告根本没记(该字段落地之前的运行)。
         # 不说出来的话,「入族」会被读成「逐项比对全过」——它不是。
@@ -495,22 +520,6 @@ if isinstance(_wf_config, dict) and _wf_config:
             f"**{len(_unrecorded)}** 个本报告未记录（该字段落地之前的运行），"
             "按契约默认值采信：" + "、".join(f"`{_k}`" for _k in _unrecorded)
         )
-    elif _anchor == "fold_phase":
-        st.caption(
-            "ℹ 本次属于 csi800 认证族,且 `anchor=fold_phase` = **认证胜者**"
-            "所用的锚（战役主判据）。它与生产**服务**锚 `iso_week` 是两条"
-            "不同 schedule,不可互相顶替;`iso_week` 复核切片经单独门控才"
-            "成为生产锚。"
-        )
-    elif _anchor == "iso_week":
-        st.caption(
-            "ℹ 本次属于 csi800 认证族,且 `anchor=iso_week` = **生产服务锚**"
-            "（复核切片形态）。认证胜者本身跑在 `fold_phase` 上,两者恰差 "
-            "{rebalance_anchor, output_dir} 且被治理测试钉死——按哪条证据链"
-            "读这份报告,取决于本行。"
-        )
-    else:
-        st.caption(f"ℹ `anchor={_anchor}` 不是本仓已知的两种 schedule 之一。")
 
     # 代码身份**永远要说一句**。此前只在有 commit 时才渲染,于是两种「说不出
     # 来源」的情况反而**静默**:引擎在续跑折混合来源时会显式把 git_commit 置

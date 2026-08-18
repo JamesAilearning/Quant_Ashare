@@ -408,8 +408,18 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("不属于被治理的 csi800 认证族", src)
         # 而且要说清是**哪一项**不符 —— 只说「不属于」等于让人自己猜。
         self.assertIn("不符项", src)
-        # 两条治理文案都必须在 _governed 之后（elif 链），不能独立触发。
+        # 两条治理文案必须**嵌在** _governed 的 else 分支里。r12 我把「未记录
+        # 键」披露写成了同级的第二个 if，anchor 的 elif 就挂到了它身上 —— 一份
+        # 完整记录、只是不入族的报告会直接拿到「认证胜者」文案（codex r13）。
         self.assertIn("if not _governed:", src)
+        gate_at = src.index("if not _governed:")
+        fold_at = src.index('if _anchor == "fold_phase":')
+        unrec_at = src.index("if _unrecorded:")
+        self.assertLess(gate_at, fold_at)
+        # anchor 链必须在「未记录」披露**之前**，且缩进比它深（嵌套的标志）。
+        self.assertLess(fold_at, unrec_at)
+        self.assertIn('        if _anchor == "fold_phase":', src)
+        self.assertNotIn('    elif _anchor == "fold_phase":', src)
 
     def test_superseded_ids_are_not_aliased_into_the_newest_report(self) -> None:
         # codex #444 r4: r3 把**每个**被覆盖的 id 都塞进别名表，于是点旧行
@@ -749,6 +759,61 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         src = _PAGE_WF.read_text(encoding="utf-8")
         self.assertIn("_unrecorded", src)
         self.assertIn("本报告未记录", src)
+
+    def test_identity_does_not_move_with_the_viewer_environment(self) -> None:
+        # codex #444 r13: 权威里的数据源路径写成 ${QUANT_*:-...}。若按**看页面
+        # 那个进程**的环境再展开一次，同一份报告会因为 UI 起在别的机器上而
+        # 突然「换族」、丢掉治理标签。
+        import importlib
+        import json
+        import os
+        from unittest import mock
+
+        from web.operator_ui.pages import _walk_forward_helpers as H
+
+        env_keys = H._environment_dependent_keys()
+        self.assertTrue(env_keys, "环境相关键判定失效了")
+        for key in env_keys:
+            with self.subTest(key=key):
+                self.assertNotIn(key, _GOVERNED_FAMILY)
+
+        report = (
+            PROJECT_ROOT / "output" / "walk_forward"
+            / "csi800_cadence5_conservative" / "walk_forward_report.json"
+        )
+        if not report.is_file():
+            self.skipTest("本机没有认证运行的报告")
+        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
+            "config"
+        ) or {}
+        before = H.governed_family_coverage(cfg)
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "QUANT_NAMECHANGE_PATH": "E:/elsewhere/names.parquet",
+                    "QUANT_DELISTED_REGISTRY": "E:/elsewhere/reg.parquet",
+                    "QUANT_PROVIDER_URI": "E:/elsewhere/bundle",
+                },
+            ):
+                reloaded = importlib.reload(H)
+                self.assertEqual(before, reloaded.governed_family_coverage(cfg))
+        finally:
+            # 还原模块状态,免得污染后续用例（本文件曾被这类 reload 咬过）。
+            importlib.reload(H)
+
+    def test_environment_dependence_is_derived_not_hand_listed(self) -> None:
+        # 判据是「权威值本身长成 ${...} 模板」—— 手挑键名正是这条规则存在的
+        # 原因（同类已经漏过四次）。
+        from web.operator_ui.pages._walk_forward_helpers import (
+            _is_environment_dependent,
+        )
+
+        self.assertTrue(_is_environment_dependent("${QUANT_X:-/d/x}"))
+        self.assertTrue(_is_environment_dependent("${QUANT_X}"))
+        self.assertFalse(_is_environment_dependent("D:/qlib_data/x.parquet"))
+        self.assertFalse(_is_environment_dependent(50))
+        self.assertFalse(_is_environment_dependent(None))
 
     def test_numeric_knobs_compare_across_int_and_float_spellings(self) -> None:
         # YAML 里 5 与 5.0 都出现过；按字符串比会把等价配置判成不符。

@@ -148,6 +148,20 @@ run time, so judging only YAML-present keys leaves knobs like
 `label_horizon_days` unguarded, and a run that flips one is a materially
 different experiment wearing the certified label.
 
+Keys whose pinned value is itself an environment template
+(`${VAR:-default}`) SHALL be excluded from the identity. Those are data
+locations, not experiment semantics, and re-expanding them under the
+**viewer's** process environment would make one unchanged report gain or
+lose its governance label depending on where the UI happens to run. The
+exclusion SHALL be derived from the value's shape, not from a hand-kept
+key list.
+
+Every governance label SHALL be rendered **inside** the family gate, not
+merely after it. A sibling branch is not a gate: a fully-recorded run
+that fails membership can fall through into the anchor branch and be
+labelled the certified winner immediately after being told it is outside
+the family.
+
 A key the candidate report does **not** record SHALL NOT count as a
 mismatch — a run predating that field genuinely ran on the contract
 default, and treating absence as disagreement would eject every historic

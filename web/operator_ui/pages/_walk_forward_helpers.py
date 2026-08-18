@@ -21,8 +21,6 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from src.core._yaml_loader import _expand_env_vars_in_tree
-
 # ---------------------------------------------------------------------------
 # Display sentinels + Plotly color constants
 # ---------------------------------------------------------------------------
@@ -165,6 +163,34 @@ def _reported_config_defaults() -> dict[str, Any]:
     )
 
 
+def _is_environment_dependent(value: Any) -> bool:
+    """这个权威值是否随**看页面的人**的环境而变。
+
+    `config_walk.yaml` 里的数据源路径写成 `${QUANT_NAMECHANGE_PATH:-...}`。
+    认证运行落盘的是**跑它的那个进程**展开出来的值,而这里若按 Streamlit 进程
+    的环境再展开一次,同一份报告会因为 UI 起在别的机器/别的环境变量下而突然
+    「换族」、丢掉治理标签(codex #444 r13)。
+
+    判据是**可推导**的:权威值本身长成 `${...}` 模板 = 它是环境参数,不是实验
+    身份。不是手挑键名——手挑正是这条规则存在的原因。这些键从身份里剔除,
+    因此也不会出现在「未记录」披露里。
+    """
+    return isinstance(value, str) and "${" in value
+
+
+def _environment_dependent_keys() -> frozenset[str]:
+    """被判定为环境相关、因此不参与身份比对的键(供页面与测试查证)。"""
+    preset = _load_mapping(_CERTIFIED_PRESET_PATH)
+    base_rel = str(preset.get("extends") or "")
+    merged: dict[str, Any] = {}
+    if base_rel:
+        merged.update(_load_mapping(_CERTIFIED_PRESET_PATH.parent / base_rel))
+    merged.update(preset)
+    return frozenset(
+        key for key, value in merged.items() if _is_environment_dependent(value)
+    )
+
+
 def _load_governed_family() -> dict[str, Any]:
     """入族条件 = 认证 preset 链 ∪ 生产服务参数,减去族内维度。
 
@@ -192,11 +218,11 @@ def _load_governed_family() -> dict[str, Any]:
     reported = set(resolved)
     resolved.update({k: v for k, v in merged.items() if k in reported})
     identity = {
-        key: _expand_env_vars_in_tree(value, source_path=_CERTIFIED_PRESET_PATH)
-        if isinstance(value, str)
-        else value
+        key: value
         for key, value in resolved.items()
-        if key not in _FAMILY_INTERNAL_KEYS and key not in _NON_IDENTITY_KEYS
+        if key not in _FAMILY_INTERNAL_KEYS
+        and key not in _NON_IDENTITY_KEYS
+        and not _is_environment_dependent(value)
     }
     if not identity:
         raise GovernedFamilyUnavailableError("认证族身份为空——权威工件异常")
