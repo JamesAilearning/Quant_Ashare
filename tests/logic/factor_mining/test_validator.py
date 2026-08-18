@@ -532,21 +532,32 @@ def test_tie_break_digest_is_stable_across_processes():
     """规范摘要必须只依赖表达式串 —— tie-break 决定"谁先入池"，用
     Python 加盐 hash 会让同一批工件在两次执行里保留不同幸存者。"""
     import hashlib
+    import os
     import subprocess
     import sys
+    from pathlib import Path as _Path
 
     from src.factor_mining.validator import canonical_expr_digest
+
+    _REPO_ROOT = _Path(__file__).resolve().parents[3]
 
     expr = "cs_rank(div_safe($revenue, $total_assets))"
     local = canonical_expr_digest(expr)
     assert local == hashlib.sha256(expr.encode("utf-8")).hexdigest()
     # 另起一个 PYTHONHASHSEED 不同的解释器，摘要必须逐字相同。
+    #
+    # 环境要**继承后覆盖**，不能清空：把 PATH/SYSTEMROOT 置空曾让
+    # windows-3.10 的 CI 起不来解释器（本机 3.11 侥幸能起，于是本地全绿
+    # 而 CI 红）。这里要证的是种子无关性，不是纯净环境。
+    env = dict(os.environ)
+    env["PYTHONHASHSEED"] = "12345"
+    assert os.environ.get("PYTHONHASHSEED") != "12345", "种子须与本进程不同"
     out = subprocess.run(
         [sys.executable, "-c",
          "from src.factor_mining.validator import canonical_expr_digest as d;"
          f"print(d({expr!r}))"],
         capture_output=True, text=True, check=True,
-        env={"PYTHONHASHSEED": "12345", "PATH": "", "SYSTEMROOT": ""},
+        env=env, cwd=str(_REPO_ROOT),
     )
     assert out.stdout.strip() == local
 
