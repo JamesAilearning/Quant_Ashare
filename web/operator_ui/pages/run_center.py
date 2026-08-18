@@ -35,6 +35,7 @@ from web.operator_ui.pages._run_center_helpers import (
     await_window_expired,
 )
 from web.operator_ui.recommend_runner import run_daily_recommend
+from web.operator_ui.update_progress import last_fetch_progress
 from web.operator_ui.update_runner import (
     START_DATE,
     default_log_path,
@@ -165,6 +166,22 @@ elif _status.kind == "running":
             "⚠ running 记录的起始时间无法核实——本页**无法确认**它是否"
             "仍在运行,请查日志尾部。"
         )
+    # 「走到哪了」——信息本来就在日志里(fetch 每 200 支票打一条),只是埋在
+    # 几百行里。抬到这里,让上面那句「正在运行」能接上下文。
+    #
+    # **只在 running 分支里读**:日志是追加的,一次运行结束后最后一条进度行
+    # 仍留在文件尾。在非 running 时显示它,等于把**上一次**运行的进度当成
+    # 当前进度——那是撒谎。陈旧/不可核实的 running 反而最该显示:昨晚那次
+    # 断在 fetch 2400/5883,这一行正是唯一能说清「断在哪」的东西。
+    _progress = last_fetch_progress(log_tail(default_log_path(_provider_path)))
+    if _progress is not None:
+        st.caption(
+            f"⏳ 最后进度(fetch 阶段):{_progress.describe()} —— 分母是**该"
+            "端点该年**的票数,不是整轮进度(fetch 只是六个阶段中的一个);"
+            "时间戳见下方日志尾部。"
+        )
+    else:
+        st.caption("⏳ 日志尾部还没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
 elif _status.ok:
     st.success(
         f"🟢 上次更新成功(exit 0):run_date={_status.run_date},"
