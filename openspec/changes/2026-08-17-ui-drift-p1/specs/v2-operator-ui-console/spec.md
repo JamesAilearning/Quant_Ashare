@@ -4,12 +4,20 @@
 
 ### Requirement: A listed run SHALL be reachable from the row that lists it
 
-Every run the jobs list renders SHALL be openable from its detail
-action. Detail pages SHALL therefore accept runs from BOTH launch
-sources — the UI job directory and the CLI run catalog — because the
-jobs list already merges them; a detail page that only knows one source
-turns the majority of rows into dead ends that read as "the history is
-gone".
+Every run the jobs list renders SHALL either be openable from its
+detail action, or have that action **visibly unavailable with a
+stated reason**. A row SHALL NEVER route to a page that answers "run
+not found" — the record exists, so that answer is false, and it reads
+as "the history is gone".
+
+Detail pages SHALL therefore accept runs from BOTH launch sources —
+the UI job directory and the CLI run catalog — because the jobs list
+already merges them; a detail page that only knows one source turns
+the majority of rows into dead ends.
+
+Run types with no detail view at all (the retired data-source
+inspection) SHALL keep their rows listed — the records and logs are
+still real — but SHALL disable the detail action and say why.
 
 Rows whose artifacts lie outside the console's read boundary
 (`output/` and `output/operator_ui/`) SHALL NOT be listed, because they
@@ -17,7 +25,12 @@ can never be opened. Their count SHALL be disclosed on the page — a
 silently truncated list reads as full coverage. The inspectability
 verdict SHALL be pure path arithmetic (no per-row filesystem I/O) and
 SHALL anchor relative paths at the repository root, not the process
-working directory.
+working directory. "No per-row I/O" is load-bearing rather than
+aspirational: the filter runs over every catalog row on every rerun, so
+a per-row `resolve()` costs hundreds of milliseconds and stalls on a
+slow or disconnected share. Lexical containment is therefore the
+verdict; the resolving guard stays at the **artifact-read** boundary,
+where the file access actually happens.
 
 #### Scenario: a CLI walk-forward run opens from the jobs list
 
@@ -62,6 +75,13 @@ working directory.
 - **AND** the fold that decides this — anchoring, newest-per-directory,
   and the refusal to alias overwritten ids — SHALL have a single
   implementation shared by both pages, because a per-page copy diverges
+
+#### Scenario: a run type with no detail view says so instead of 404ing
+
+- **GIVEN** a listed run whose type has no detail view
+- **WHEN** the operator looks at its actions
+- **THEN** the detail action is disabled and states why
+- **AND** clicking through never reaches a "run not found" page
 
 #### Scenario: unopenable rows are set aside and counted
 

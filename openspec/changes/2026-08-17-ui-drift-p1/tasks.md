@@ -130,6 +130,40 @@
   认证对入族而 base 不入 / 全预设恰好两个 / int-float 拼写等价)与 `..` 折平、
   判据共用锚定、被覆盖 id 路由四组;两条失效的源码钉重新对准新实现
 
+## codex #444 r7（两条 P1 + 一条 P2）+ 并行自审扫描
+
+- [x] **入族条件漏了约束语义**:profile 里的 `risk_constraint_scope`
+  (canonical 默认 `all_days`,晋升族预注册 `rebalance_days`)与
+  `campaign_constraints` 也是门的一部分。少比它们,一个把风控约束关掉、或换成
+  别的标定的运行照样顶着「认证胜者」文案被读。修:`risk_constraint_scope` 直接
+  入表;`campaign_constraints` 是语义开关、报告 config 里无同名键,显式映射到
+  `risk_constraints_enabled` + `risk_constraints_calibration=campaign_v1`。
+  三把新钥匙各自能踢出跑偏运行(逐个实测),全预设仍恰好两个入族
+- [x] `_knob_matches` 补布尔特判:`bool` 是 `int` 子类,不特判的话
+  `risk_constraints_enabled: 1` 会静默等于 `True`
+- [x] **代码身份说不出来时反而静默**:`git_commit` 为 null(引擎在**续跑**且
+  各折来源不一致时就这么标)或整键缺失时,此前整条代码身份都不渲染——最不可
+  溯源的报告一个字都不说,还照打认证族文案。修:两种情况各给一条明确告警,
+  且分开(null=混合来源 / 缺键=该字段落地之前),不含糊成一句
+- [x] **判据「纯路径算术」是假话**(codex P2 与自审扫描独立抓到同一条):
+  它逐行 `Path.resolve()`(走符号链接、真碰盘)。本机 3527 行实测每次渲染
+  **771 ms**;行侧改词法后 409 ms(余量在逐行 `allowed_output_roots()` 的
+  2×N 次 resolve),两个根按 `_ALLOWED_ROOTS` **身份**缓存后 **23 ms**——33×。
+  十一条语义回归逐条对齐(含 `..` 逃逸、`output_extra` 前缀陷阱、patch 边界)。
+  规格与 proposal 里那句话同步改成实话
+- [x] 放弃行侧 `resolve()` = 放弃**此处**的符号链接逃逸检测,这是**有意**的:
+  真正读文件时仍走 `guard_output_path`(它 resolve),安全检查留在文件访问处;
+  词法 `..` 逃逸由 `anchored_run_dir` 先折平,仍然拦得住
+- [x] **7 条数据源作业是死链**(自审扫描):`tushare_provider` 行列在作业页,点
+  「查看详情」路由到 results.py 得到「运行未找到,可能已被删除」——**假消息**,
+  记录在、产物在,只是 U3 下线了那个视图。修:按钮禁用 + 说明原因;规格补上
+  「够不着就当场说清,不得路由到否认它存在的页面」
+- [x] 两条注释与实现不符(自审扫描):`metric_status` 那条把方向写反了——指标算
+  在**未裁剪**、已违约束的持仓上(`positions` 绑 qlib 实际执行),clip 是事后
+  动作、落旁路字段 `positions_clipped`,不进指标,所以这类数字可能系统性**偏
+  高**而非偏保守;`run_options` 那条说自己在去重,其实去重早由
+  `fold_catalog_by_dir` 接管,它真正的职责是不让 CLI id 顶掉 UI 作业的标签
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed

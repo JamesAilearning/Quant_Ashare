@@ -13,6 +13,7 @@ accidentally drift the metric math.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,13 @@ from scripts.eval_profiles import EVAL_PROFILES
 # Display sentinels + Plotly color constants
 # ---------------------------------------------------------------------------
 
-#: 被治理的 csi800 认证族的**入族条件**,取自晋升族语义本身而非抄一份字面量。
-#: 去掉 `rebalance_anchor` —— 族跨两个锚(认证胜者 `fold_phase` / 生产服务
-#: `iso_week`),它是族**内**的区分维度。
+#: 晋升族语义里**在报告 config 中同名**的那些键。取自 profile 本身而非抄
+#: 一份字面量。去掉 `rebalance_anchor` —— 族跨两个锚(认证胜者 `fold_phase` /
+#: 生产服务 `iso_week`),它是族**内**的区分维度。
 #: `slippage_bps` 必须在里面:`csi800_cadence5_base` 的四个旧谓词全中,却是
-#: **5 bps 灵敏度臂**,不是 20 bps 的认证胜者——少这一条它就会被标成认证胜者
-#: (codex #444 r6)。base 与 conservative 恰差 {output_dir, slippage_bps}。
+#: **5 bps 灵敏度臂**,不是 20 bps 的认证胜者(codex #444 r6)。
+#: `risk_constraint_scope` 同理:canonical 默认 `all_days`,而晋升族预注册的是
+#: `rebalance_days`——换了作用域就是另一个门(codex #444 r7)。
 _GOVERNED_FAMILY: dict[str, Any] = {
     _k: _v
     for _k, _v in EVAL_PROFILES["csi800_n5"].items()
@@ -40,21 +42,54 @@ _GOVERNED_FAMILY: dict[str, Any] = {
         "rebalance_cadence_days",
         "rebalance_phase",
         "slippage_bps",
+        "risk_constraint_scope",
     }
+}
+
+#: profile 的 `campaign_constraints` 是个**语义开关**,在报告 config 里没有同名
+#: 键——它对应这两把钥匙(见 csi800 扩池守卫三件套)。关掉约束、或换成别的标定,
+#: 跑的就不是晋升族那个门,不能算认证族证据(codex #444 r7)。
+_CAMPAIGN_CONSTRAINT_FIELDS: dict[str, Any] = {
+    "risk_constraints_enabled": True,
+    "risk_constraints_calibration": "campaign_v1",
 }
 
 
 def _knob_matches(actual: object, want: object) -> bool:
     """配置里的一个旋钮是否等于晋升族要求的值。
 
-    数值按 float 比(YAML 里 ``5`` 与 ``5.0`` 都出现过),其余按字符串比。
+    数值按 float 比(YAML 里 ``5`` 与 ``5.0`` 都出现过),布尔按布尔比
+    (``bool`` 是 ``int`` 的子类,不特判的话 ``True`` 会等于 ``1.0``),
+    其余按字符串比。
     """
-    if isinstance(want, (int, float)) and not isinstance(want, bool):
+    if isinstance(want, bool):
+        return actual is want
+    if isinstance(want, (int, float)):
         try:
             return float(actual) == float(want)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
     return str(actual or "") == str(want)
+
+
+def governed_family_mismatches(config: Mapping[str, Any]) -> list[str]:
+    """本次运行**不符**晋升族的那些键(空 = 入族)。
+
+    比的是整族语义,不是某一两个旋钮:少比一个,那个维度上跑偏的运行就会
+    顶着「认证胜者」的文案被读——证据归属写错比不给判断更糟。
+    """
+    bad = [
+        key
+        for key, want in _GOVERNED_FAMILY.items()
+        if not _knob_matches(config.get(key), want)
+    ]
+    if EVAL_PROFILES["csi800_n5"].get("campaign_constraints"):
+        bad.extend(
+            key
+            for key, want in _CAMPAIGN_CONSTRAINT_FIELDS.items()
+            if not _knob_matches(config.get(key), want)
+        )
+    return bad
 
 MISSING = "—"
 

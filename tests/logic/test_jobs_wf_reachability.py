@@ -14,6 +14,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -28,8 +29,10 @@ from web.operator_ui.job_io import (  # noqa: E402
     run_dir_is_inspectable,
 )
 from web.operator_ui.pages._walk_forward_helpers import (  # noqa: E402
+    _CAMPAIGN_CONSTRAINT_FIELDS,
     _GOVERNED_FAMILY,
     _knob_matches,
+    governed_family_mismatches,
 )
 
 _PAGE_JOBS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "jobs.py"
@@ -364,10 +367,10 @@ class PageSourcePinsTests(unittest.TestCase):
         # _GOVERNED_FAMILY —— 字段清单本身由 GovernedFamilyPredicateTests
         # 对着 EVAL_PROFILES 真跑核对。这里只钉「页面确实消费它」。
         src = _PAGE_WF.read_text(encoding="utf-8")
-        self.assertIn("_GOVERNED_FAMILY.items()", src)
+        self.assertIn("governed_family_mismatches(_wf_config)", src)
         self.assertIn("_governed = not _mismatched", src)
         # 页面里不得再硬写一份字段清单。
-        gov_at = src.index("_mismatched = [")
+        gov_at = src.index("_mismatched = governed_family_mismatches")
         block = src[gov_at : gov_at + 400]
         for field in ("instruments", "benchmark_code", "rebalance_cadence_days",
                       "rebalance_phase", "slippage_bps"):
@@ -462,10 +465,7 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         return loaded if isinstance(loaded, dict) else {}
 
     def _governed(self, cfg: dict[str, object]) -> bool:
-        return all(
-            _knob_matches(cfg.get(key), want)
-            for key, want in _GOVERNED_FAMILY.items()
-        )
+        return not governed_family_mismatches(cfg)
 
     def test_predicate_is_derived_from_the_promotion_profile(self) -> None:
         # 不复述字面量：晋升族语义钉在 EVAL_PROFILES，抄一份到 UI 只会各自漂。
@@ -514,6 +514,47 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
             ],
         )
 
+    def test_constraint_semantics_are_part_of_the_identity(self) -> None:
+        # codex #444 r7: profile 的 risk_constraint_scope / campaign_constraints
+        # 也是晋升门的一部分。少比它们，一个把约束关掉、或把作用域换回
+        # canonical 默认 all_days 的运行照样顶着「认证胜者」文案被读。
+        self.assertIn("risk_constraint_scope", _GOVERNED_FAMILY)
+        cfg = self._preset("csi800_cadence5_conservative")
+        for key, bad in (
+            ("risk_constraint_scope", "all_days"),
+            ("risk_constraints_enabled", False),
+            ("risk_constraints_calibration", "something_else"),
+        ):
+            with self.subTest(key=key):
+                broken = dict(cfg)
+                broken[key] = bad
+                self.assertEqual(governed_family_mismatches(broken), [key])
+
+    def test_campaign_switch_maps_onto_the_report_config_keys(self) -> None:
+        # profile 里 campaign_constraints 是个语义开关，报告 config 里没有同名
+        # 键 —— 映射写错等于这一维根本没比。
+        from scripts.eval_profiles import EVAL_PROFILES
+
+        self.assertTrue(EVAL_PROFILES["csi800_n5"]["campaign_constraints"])
+        self.assertEqual(
+            _CAMPAIGN_CONSTRAINT_FIELDS,
+            {"risk_constraints_enabled": True,
+             "risk_constraints_calibration": "campaign_v1"},
+        )
+        # 而这两把钥匙确实是认证预设里写着的值。
+        cfg = self._preset("csi800_cadence5_conservative")
+        for key, want in _CAMPAIGN_CONSTRAINT_FIELDS.items():
+            with self.subTest(key=key):
+                self.assertEqual(cfg[key], want)
+
+    def test_booleans_do_not_collapse_into_numbers(self) -> None:
+        # bool 是 int 的子类：不特判的话 True 会等于 1.0，
+        # risk_constraints_enabled=1 这种写法会静默通过。
+        self.assertTrue(_knob_matches(True, True))
+        self.assertFalse(_knob_matches(1, True))
+        self.assertFalse(_knob_matches("true", True))
+        self.assertFalse(_knob_matches(None, True))
+
     def test_numeric_knobs_compare_across_int_and_float_spellings(self) -> None:
         # YAML 里 5 与 5.0 都出现过；按字符串比会把等价配置判成不符。
         self.assertTrue(_knob_matches(5, 5.0))
@@ -523,6 +564,86 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         self.assertFalse(_knob_matches("abc", 5))
         self.assertTrue(_knob_matches("csi800", "csi800"))
         self.assertFalse(_knob_matches(None, "csi800"))
+
+
+class InspectabilityIsPureTests(unittest.TestCase):
+    """判据必须真的无逐行 I/O（codex #444 r7 与自审并行抓到同一条）。"""
+
+    def test_no_resolve_call_on_the_row_side(self) -> None:
+        src = (PROJECT_ROOT / "web" / "operator_ui" / "job_io.py").read_text(
+            encoding="utf-8"
+        )
+        whole = src[
+            src.index("def run_dir_is_inspectable") : src.index(
+                "def anchored_run_dir"
+            )
+        ]
+        # 只看可执行部分 —— docstring 里正要讲「为什么不能 resolve」。
+        code = whole[whole.index('"""', whole.index('"""') + 3) + 3 :]
+        # 逐行 resolve() 会走符号链接、真碰盘：本机 3527 行每次渲染 771 ms。
+        self.assertNotIn(".resolve()", code)
+        self.assertIn("_allowed_root_keys()", code)
+
+    def test_root_keys_are_not_recomputed_per_row(self) -> None:
+        # 根只有两个且不随行变化；逐行调用 allowed_output_roots() 等于把
+        # 2×N 次 resolve 摊到整轮过滤上（改完行侧后仍剩 409 ms 就是这里）。
+        from web.operator_ui import job_io
+
+        calls = 0
+        real = job_io.allowed_output_roots
+
+        def counting() -> tuple[Path, ...]:
+            nonlocal calls
+            calls += 1
+            return real()
+
+        job_io._ROOT_KEYS_CACHE = None
+        with mock.patch.object(job_io, "allowed_output_roots", counting):
+            for _ in range(50):
+                job_io.run_dir_is_inspectable("output/runs/x")
+        self.assertLessEqual(calls, 1)
+
+    def test_cache_follows_a_patched_boundary(self) -> None:
+        # 缓存过期会让判据放行本该拒绝的路径 —— 比慢严重得多。
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        self.assertTrue(run_dir_is_inspectable("output/runs/x"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch(
+                "web.operator_ui._path_guard._ALLOWED_ROOTS", (root,)
+            ):
+                self.assertFalse(job_io.run_dir_is_inspectable("output/runs/x"))
+                self.assertTrue(job_io.run_dir_is_inspectable(str(root / "a")))
+        self.assertTrue(run_dir_is_inspectable("output/runs/x"))
+
+    def test_containment_is_not_a_bare_prefix_match(self) -> None:
+        # output_extra 以 output 开头，但不在读边界内。
+        self.assertFalse(run_dir_is_inspectable("output_extra/runs/a"))
+        self.assertTrue(run_dir_is_inspectable("output"))
+
+
+class DeadEndRowsTests(unittest.TestCase):
+    def test_types_without_a_detail_view_disable_the_action(self) -> None:
+        # 本机 117 行里 7 行是 tushare_provider：记录在、产物在，点进去却说
+        # 「运行未找到，可能已被删除」—— 那是假消息。
+        src = _PAGE_JOBS.read_text(encoding="utf-8")
+        self.assertIn("_has_detail_view", src)
+        self.assertIn('selected.type in {"pipeline", "walk_forward"}', src)
+        self.assertIn("disabled=not _has_detail_view", src)
+        # 禁用了还得说清为什么。
+        self.assertIn("没有详情视图", src)
+
+    def test_walk_forward_page_always_states_code_provenance(self) -> None:
+        # codex #444 r7: git_commit 为 null（续跑混合来源，引擎显式这么标）
+        # 或整键缺失时，此前整条代码身份都不渲染 —— 最不可溯源的报告反而
+        # 一个字都不说，还照打认证族文案。
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn('elif "git_commit" in wf_report:', src)
+        self.assertIn("无法归属到单个提交", src)
+        self.assertIn("未记录", src)
 
 
 class GovernanceCaptionTests(unittest.TestCase):

@@ -77,6 +77,7 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     _stability_color,
     _stability_label,
     _synthesised_stitched_nav,
+    governed_family_mismatches,
 )
 from web.operator_ui.report_reader import (
     read_fold_reports,
@@ -150,7 +151,10 @@ for _job in _folded.newest:
     # 本次调用的记录:与同目录的 UI 作业 id 互为别名,两个 id 都能跳对。
     _run_id_to_dir.setdefault(_job.run_id, _resolved)
     if _resolved not in run_options:
-        # _cli_wf 按 completed_at 倒序,首次出现即最新的那一次。
+        # 去重已由 fold_catalog_by_dir 做完(newest 每目录至多一条),这个 if
+        # 不是去重——它是**不让 CLI 目录记录的 run_id 顶掉同目录上 UI 作业
+        # 已占的标签**。删掉它,从作业页点着某个 job_id 过来的操作人会在
+        # 选择器上找不到那个 id,只能靠目录路径反推。
         run_options[_resolved] = _job.run_id
 #: 被覆盖的 id → 它那个目录(现在住着覆盖它的那次运行)。**不进** _run_id_to_dir:
 #: 那张表是「静默跳过去」的路,被覆盖的 id 走这条,要带着告警。但也不能就这么
@@ -443,11 +447,7 @@ if isinstance(_wf_config, dict) and _wf_config:
     # 语义钉在那里,治理测试也钉着它,抄一份到 UI 只会各自漂。
     # 去掉 `rebalance_anchor`:族**跨**两个锚(认证胜者跑 fold_phase、生产服务
     # 跑 iso_week),它是族内的区分维度,不是入族条件。
-    _mismatched = [
-        _key
-        for _key, _want in _GOVERNED_FAMILY.items()
-        if not _knob_matches(_wf_config.get(_key), _want)
-    ]
+    _mismatched = governed_family_mismatches(_wf_config)
     _governed = not _mismatched
     if not _governed:
         st.caption(
@@ -474,17 +474,36 @@ if isinstance(_wf_config, dict) and _wf_config:
     else:
         st.caption(f"ℹ `anchor={_anchor}` 不是本仓已知的两种 schedule 之一。")
 
-    _commit = str(wf_report.get("git_commit") or "")
+    # 代码身份**永远要说一句**。此前只在有 commit 时才渲染,于是两种「说不出
+    # 来源」的情况反而**静默**:引擎在续跑折混合来源时会显式把 git_commit 置
+    # null,早于该字段的旧报告则整键缺失。缺失被当成没问题,页面照样打着认证族
+    # 文案——而恰恰是这种报告最不能当可复现证据(codex #444 r7)。
+    _commit_raw = wf_report.get("git_commit")
+    _commit = str(_commit_raw or "")
     if _commit:
         _dirty = bool(wf_report.get("git_dirty"))
         st.caption(
             f"代码身份:`{_commit[:8]}`"
             + ("(**脏树运行**——产物不可溯源到某个提交)" if _dirty else "")
         )
+    elif "git_commit" in wf_report:
+        st.warning(
+            "⚠ 代码身份:**无法归属到单个提交**——报告显式写了 `git_commit: "
+            "null`,引擎在**续跑**且各折来源不一致时就是这么标的。这份数字"
+            "产自哪份代码不可考,不可作为可复现证据。"
+        )
+    else:
+        st.warning(
+            "⚠ 代码身份:**未记录**——报告里没有 `git_commit` 键(该字段落地"
+            "之前的运行)。缺失**不等于**干净:产自哪份代码同样不可考。"
+        )
 
 # --- 指标口径判定 ---
 # 引擎自 codex #406 起给报告盖 metric_status 戳,专为防止把 RAISE 拒绝过的
-# (clip 后持仓上算的)数字当正式结果发布。页面此前对它零引用,于是
+# 数字当正式结果发布。方向别搞反:指标算在 **未裁剪**、已经违反风控约束的
+# 持仓上(`positions` 绑定 qlib 的实际执行),clip 只是事后动作、落到旁路字段
+# `positions_clipped`,不进指标。所以这类数字可能系统性**偏高**,不是偏保守。
+# 页面此前对它零引用,于是
 # predictions_only / unverified 的运行与认证运行长得一模一样。
 # **缺失是主路径不是边角**:本机 21 个真实运行里 16 个没有这个键(含全部
 # csi800 战役运行,它们早于 #406)——缺失一律显式标注,绝不落进 official。

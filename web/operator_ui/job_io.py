@@ -319,14 +319,57 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     )
 
 
+#: ``(_ALLOWED_ROOTS 当时那个对象, 算好的比较键)``。缓存**按身份**失效:
+#: 测试用 ``patch`` 换上另一个元组对象时身份就变了,于是重算——宁可多算,
+#: 绝不返回过期的边界(那会让判据放行本该拒绝的路径)。
+_ROOT_KEYS_CACHE: tuple[object, tuple[str, ...]] | None = None
+
+
+def _allowed_root_keys() -> tuple[str, ...]:
+    """读边界的比较键。
+
+    ``allowed_output_roots()`` 每次调用都对两个根 ``resolve()``(碰盘)。
+    根不随行变化,逐行调用就是把 2×N 次 resolve 摊到整轮过滤上——本机
+    3527 行实测 771 ms,把行侧改成词法后仍剩 409 ms,余量全在这里。
+    """
+    global _ROOT_KEYS_CACHE
+    from web.operator_ui import _path_guard
+
+    marker = _path_guard._ALLOWED_ROOTS
+    cached = _ROOT_KEYS_CACHE
+    if cached is not None and cached[0] is marker:
+        return cached[1]
+    keys = tuple(
+        os.path.normcase(os.path.normpath(str(root)))
+        for root in allowed_output_roots()
+    )
+    _ROOT_KEYS_CACHE = (marker, keys)
+    return keys
+
+
 def run_dir_is_inspectable(run_dir: str) -> bool:
     """True iff a run's artifacts could be opened from the detail pages.
 
-    Pure path arithmetic — no filesystem I/O, so it stays cheap across
-    thousands of catalog rows. The predicate is exactly the console
-    spec's read boundary (file access confined to ``output/`` and
-    ``output/operator_ui/``): a run whose artifacts live anywhere else
-    can never be rendered, whatever its status says.
+    Pure path arithmetic — **no per-row filesystem I/O**. That claim used
+    to be false: the containment check ran ``Path.resolve()`` per row,
+    which walks symlinks and therefore hits the disk. Measured on this
+    box, 3527 catalog rows cost **771 ms every render** (219 µs/row), and
+    ``resolve()`` is ~320x slower than ``normpath`` (codex #444 r6 sweep).
+    Now the row side is lexical only (``anchored_run_dir`` normpaths, then
+    ``normcase``) and the two roots are resolved once per pass.
+
+    Dropping ``resolve()`` gives up symlink-escape detection **here**;
+    that is deliberate. This predicate answers "is this row worth
+    listing", and every actual read still goes through
+    ``guard_output_path`` (which resolves) before touching a file — the
+    security check stays where the file access is. Lexical ``..`` escapes,
+    the case this filter is really about, are still caught because
+    ``anchored_run_dir`` collapses them first.
+
+    The predicate is exactly the console spec's read boundary (file
+    access confined to ``output/`` and ``output/operator_ui/``): a run
+    whose artifacts live anywhere else can never be rendered, whatever
+    its status says.
 
     This matters because the catalog's default path is CWD-relative, so
     test runs executed from the repo root append their records to the
@@ -341,17 +384,10 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
     # 锚定走 ``anchored_run_dir`` —— 就是那**一段**代码,不是各写一份。
     # 判据与页面折叠若各锚各的,在仓库根之外启动 UI 时「判定可达」的运行
     # 会反被路径守卫拒绝(codex #444 r1)。
-    candidate = anchored_run_dir(text)
-    try:
-        resolved = candidate.resolve()
-    except OSError:
-        return False
-    for root in allowed_output_roots():
-        try:
-            resolved.relative_to(root)
+    candidate = os.path.normcase(str(anchored_run_dir(text)))
+    for root in _allowed_root_keys():
+        if candidate == root or candidate.startswith(root + os.sep):
             return True
-        except ValueError:
-            continue
     return False
 
 

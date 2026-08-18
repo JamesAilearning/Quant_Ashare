@@ -598,11 +598,26 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
         else:
             act_open, act_copy = st.columns(2)
         with act_open:
+            # 只有 pipeline / walk_forward 有详情视图(数据源作业的检视视图在
+            # U3 已下线)。按钮照旧渲染却路由过去,得到的是「运行未找到,可能
+            # 已被删除」——那是**假消息**:记录在、产物也在,只是没有视图。
+            # 本机 117 行里有 7 行是这种(codex #444 r6 后自审扫出)。禁用并
+            # 说明,好过把人送去一句错话(spec:「a listed run SHALL be
+            # reachable」——够不着就得当场说清,不能路由到否认它存在的页面)。
+            _has_detail_view = selected.type in {"pipeline", "walk_forward"}
             if st.button(
                 "▶ 查看详情",
                 key=f"jobs_open_{selected.run_id}",
                 type="primary",
                 use_container_width=True,
+                disabled=not _has_detail_view,
+                help=(
+                    None
+                    if _has_detail_view
+                    else f"`{selected.type}` 类型没有详情视图（U3 已下线数据源"
+                    "作业的检视页）。记录与日志仍在，可用上面的运行 ID 直接"
+                    "查看运行目录。"
+                ),
             ):
                 # results.py reads ``st.query_params["run_id"]`` via
                 # ``_query_run_id`` and walk_forward.py picks up the same
