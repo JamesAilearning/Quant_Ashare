@@ -357,6 +357,28 @@
 - [x] 三种环境实测均 67 passed:干净环境 / `QUANT_DELISTED_REGISTRY=""` /
   `QUANT_NAMECHANGE_PATH="" QUANT_PROVIDER_URI=E:/weird`
 
+## CI 红（Windows 三个矩阵位）——根因判定与修复
+
+- [x] **不是实现 bug,是测试断言超出设计承诺**。机制已用双联接复现:判据看得穿
+  「根的拼写」与「根的解析形」两种(它们都是根键),看不穿**第三种**拼写(另一个
+  联接 / 8.3 短名 / 另一条符号链接指向同一目录)——那种行被搁置并计入报数,是
+  **假阴性**(安全方向),反向错误才不可接受
+- [x] runner 上 TEMP 是 8.3 短名(`C:\Users\RUNNER~1\...`),
+  `link.resolve()` 展开成长名,而夹具用短名 base 拼出的 `real/runs/a` 就成了
+  第三种拼写——两个候选活在不同命名空间,断言测的不是它想测的东西。两个子用例
+  都叫 `candidate='a'`,日志还分不出是哪一个
+- [x] 修测试层:夹具 `base = Path(tmp).resolve()` 统一命名空间;子用例标签改成
+  「链接拼写 / 解析拼写」以便日志可辨
+- [x] **改前/改后对照证明**(用联接造「别名 base」模拟短名 TEMP):
+  改前 解析拼写 `inspectable=False guard=True`(正是 CI 那条红);
+  改后 两种拼写皆 `True`
+- [x] 限制**显式钉住而非掩盖**:新增
+  `test_a_third_spelling_is_set_aside_by_design`,断言第三种拼写被搁置而守卫
+  接受——两者不一致是**有意**的;同一条限制写进 `run_dir_is_inspectable`
+  docstring 与 spec delta,并写明「不得为此重新引入逐行 resolve()」
+- [x] 顺带确认 `pytest-randomly` **未安装**,`-p no:randomly` 一直是空操作,
+  CI 与本机都是顺序执行——排除测试间污染这一层
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed
