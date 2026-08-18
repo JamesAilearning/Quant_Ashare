@@ -767,7 +767,6 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # 那个进程**的环境再展开一次，同一份报告会因为 UI 起在别的机器上而
         # 突然「换族」、丢掉治理标签。
         import importlib
-        import json
         import os
         from unittest import mock
 
@@ -782,15 +781,10 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertIn(key, H._PRESENCE_ONLY_KEYS)
 
-        report = (
-            PROJECT_ROOT / "output" / "walk_forward"
-            / "csi800_cadence5_conservative" / "walk_forward_report.json"
-        )
-        if not report.is_file():
-            self.skipTest("本机没有认证运行的报告")
-        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
-            "config"
-        ) or {}
+        # 用 **tracked** 的预设链构造报告形态。`output/` 整棵树都不入库
+        # （.gitignore:20），拿盘上的真实报告做夹具会让整条用例在 CI 里
+        # skip —— 我刚修的回归就会完全没有覆盖（codex #444 r16）。
+        cfg = self._preset("csi800_cadence5_conservative")
         before = H.governed_family_coverage(cfg)
         try:
             with mock.patch.dict(
@@ -811,19 +805,12 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # codex #444 r14: 空 delisted_registry_path 是合法配置，但它关掉 PIT
         # provider、退回 legacy WARN 掩码 —— 掩码/归因语义不同，不能顶着认证
         # 胜者的文案。路径**字面量**不比（随机器变），「配没配」必须比。
-        import json
-
         from web.operator_ui.pages import _walk_forward_helpers as H
 
-        report = (
-            PROJECT_ROOT / "output" / "walk_forward"
-            / "csi800_cadence5_conservative" / "walk_forward_report.json"
-        )
-        if not report.is_file():
-            self.skipTest("本机没有认证运行的报告")
-        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
-            "config"
-        ) or {}
+        # 用 **tracked** 的预设链构造报告形态。`output/` 整棵树都不入库
+        # （.gitignore:20），拿盘上的真实报告做夹具会让整条用例在 CI 里
+        # skip —— 我刚修的回归就会完全没有覆盖（codex #444 r16）。
+        cfg = self._preset("csi800_cadence5_conservative")
         self.assertEqual(H.governed_family_coverage(cfg)[0], [])
         for blank in ("", "   "):
             with self.subTest(value=repr(blank)):
@@ -843,19 +830,12 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # 值上。早于 delisted_registry_path 的报告缺这个键，意味着它按默认 ''
         # 跑：PIT provider 关闭、legacy WARN 掩码，与认证运行语义不同，是真正
         # 的不符，不能只记一句「未记录」就放行。
-        import json
-
         from web.operator_ui.pages import _walk_forward_helpers as H
 
-        report = (
-            PROJECT_ROOT / "output" / "walk_forward"
-            / "csi800_cadence5_conservative" / "walk_forward_report.json"
-        )
-        if not report.is_file():
-            self.skipTest("本机没有认证运行的报告")
-        cfg = (json.loads(report.read_text(encoding="utf-8")) or {}).get(
-            "config"
-        ) or {}
+        # 用 **tracked** 的预设链构造报告形态。`output/` 整棵树都不入库
+        # （.gitignore:20），拿盘上的真实报告做夹具会让整条用例在 CI 里
+        # skip —— 我刚修的回归就会完全没有覆盖（codex #444 r16）。
+        cfg = self._preset("csi800_cadence5_conservative")
         defaults = H._reported_config_defaults()
         # 默认值与认证值**不同**的键：缺了就是不符。
         for key in ("delisted_registry_path", "namechange_path"):

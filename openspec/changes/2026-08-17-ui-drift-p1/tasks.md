@@ -332,6 +332,20 @@
 - [x] spec delta 改述:未记录键 SHALL 按契约默认值判定,并写明「缺 registry =
   按空默认跑 = 关闭 PIT = 语义不同,不是无从判断」
 
+## codex #444 r16（一条 P2）
+
+- [x] **我 r13-r15 加的三条治理身份测试在 CI 里全 skip**:夹具读的是
+  `output/walk_forward/csi800_cadence5_conservative/walk_forward_report.json`,
+  而 `output/` 整棵树被 `.gitignore:20` 排除(`git ls-files output/` = **0**)。
+  于是刚修的 `delisted_registry_path` / `namechange_path` 缺键回归**没有任何 CI
+  覆盖**——本机绿、CI 空转。修:三处夹具改用 **tracked** 的预设链构造
+  (`_preset()` = 契约默认值 + 解析后的认证 preset,正是报告形态)
+- [x] **变异测试证明非空转**:把 r15 的「缺键按默认值比对」退回成「只记未记录」,
+  `test_absent_keys_are_judged_by_their_runtime_default` 的两个子用例
+  (`delisted_registry_path` / `namechange_path`)立刻变红;恢复后 67 全绿
+- [x] 教训记一笔:**测试夹具落在 gitignore 的目录里 = 该测试在 CI 不存在**。
+  本轮之所以没早发现,是因为我一直只看本机跑绿
+
 ## 验证
 
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed
