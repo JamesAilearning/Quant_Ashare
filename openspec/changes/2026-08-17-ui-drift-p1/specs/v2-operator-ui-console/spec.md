@@ -32,6 +32,15 @@ slow or disconnected share. Lexical containment is therefore the
 verdict; the resolving guard stays at the **artifact-read** boundary,
 where the file access actually happens.
 
+A lexical verdict sees through the root's own spelling and its resolved
+target, but not a **third** spelling of the same directory (another
+junction, an 8.3 short name, a second symlink). Such a row SHALL be set
+aside and counted rather than admitted — a false negative that the
+disclosure already reports, versus a false positive that would admit a
+row outside the read boundary. This limit SHALL be stated where the
+verdict is defined, so it is not later "fixed" by reintroducing
+per-row `resolve()`.
+
 #### Scenario: a CLI walk-forward run opens from the jobs list
 
 - **GIVEN** a walk-forward run recorded in the CLI catalog with artifacts

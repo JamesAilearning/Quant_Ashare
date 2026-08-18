@@ -395,6 +395,18 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
     Now the row side is lexical only (``anchored_run_dir`` normpaths, then
     ``normcase``) and the two roots are resolved once per pass.
 
+    The lexical rule sees through exactly two spellings of a linked root:
+    the root's own spelling and its resolved target (both are root keys).
+    A **third** spelling that resolves into the boundary — another
+    junction, an 8.3 short name, a second symlink — is set aside and
+    counted. That is a false negative, the safe direction, and the page
+    reports how many rows it set aside. The opposite error (admitting a
+    row that is actually outside) is the one that must not happen.
+    (This is what turned a CI run red: the GitHub Windows runner sets
+    TEMP to an 8.3 short path, so a test fixture built two spellings in
+    different namespaces — see the pins in
+    ``tests/logic/test_jobs_wf_reachability.py``.)
+
     Dropping ``resolve()`` gives up symlink-escape detection **here**;
     that is deliberate. This predicate answers "is this row worth
     listing", and every actual read still goes through

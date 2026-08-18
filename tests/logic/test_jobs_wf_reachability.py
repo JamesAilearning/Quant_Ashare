@@ -966,7 +966,11 @@ class InspectabilityIsPureTests(unittest.TestCase):
         from web.operator_ui._path_guard import guard_output_path
 
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
+            # **必须 resolve**：GitHub 的 Windows runner 把 TEMP 设成 8.3 短名
+            # (`C:\Users\RUNNER~1\...`)，于是 link.resolve() 展开成长名，而用
+            # 短名 base 拼出的 real/runs/a 就成了**第三种拼写** —— 两个候选活在
+            # 不同命名空间里，断言测的就不是它想测的东西了（CI 实测红）。
+            base = Path(tmp).resolve()
             real = base / "real_volume"
             (real / "runs").mkdir(parents=True)
             link = base / "output_link"
@@ -989,8 +993,11 @@ class InspectabilityIsPureTests(unittest.TestCase):
                     "web.operator_ui._path_guard._ALLOWED_ROOTS", (link,)
                 ):
                     # 两种拼写都必须与产物守卫给出同一个答案。
-                    for candidate in (link / "runs" / "a", real / "runs" / "a"):
-                        with self.subTest(candidate=candidate.name):
+                    for label, candidate in (
+                        ("链接拼写", link / "runs" / "a"),
+                        ("解析拼写", real / "runs" / "a"),
+                    ):
+                        with self.subTest(spelling=label):
                             guard_output_path(candidate)  # 守卫接受 → 不抛
                             self.assertTrue(
                                 job_io.run_dir_is_inspectable(str(candidate))
@@ -1022,6 +1029,55 @@ class InspectabilityIsPureTests(unittest.TestCase):
                         [r.run_id for r in folded.newest], ["newest"]
                     )
                     self.assertIn("older", folded.superseded_dir_of_run)
+            finally:
+                job_io._ROOT_KEYS_CACHE = None
+
+    def test_a_third_spelling_is_set_aside_by_design(self) -> None:
+        """别名拼写被搁置是**设计**，不是 bug —— 钉住它，别让它被误当缺陷修掉。
+
+        判据是纯词法（无逐行 I/O：3527 行 771ms → 23ms 那条 SHALL）。它看得穿
+        「根的拼写」与「根的解析形」这两种，但看不穿**第三种**拼写（另一个
+        联接 / 8.3 短名 / 另一条符号链接指向同一目录）。那种行会被判不可检视
+        并计入搁置数 —— **假阴性**，安全方向，且页面有报数。反过来（把边界外
+        的行放进来）才是不可接受的。
+
+        CI 上那次红就是这个形态被夹具无意撞上的：runner 的 TEMP 是 8.3 短名。
+        """
+        import subprocess
+        import tempfile
+
+        from web.operator_ui import job_io
+        from web.operator_ui._path_guard import guard_output_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            real = base / "real_volume"
+            (real / "runs").mkdir(parents=True)
+            link, alias = base / "output_link", base / "third_spelling"
+            for path in (link, alias):
+                try:
+                    path.symlink_to(real, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    if sys.platform != "win32":
+                        self.skipTest("本机无法建立符号链接")
+                    made = subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(path), str(real)],
+                        capture_output=True, text=True,
+                    )
+                    if made.returncode != 0 or not path.exists():
+                        self.skipTest("本机无法建立目录联接")
+            if link.resolve() == Path(os.path.normpath(str(link))):
+                self.skipTest("该文件系统上根的解析形与词法形相同")
+            job_io._ROOT_KEYS_CACHE = None
+            try:
+                with mock.patch(
+                    "web.operator_ui._path_guard._ALLOWED_ROOTS", (link,)
+                ):
+                    third = alias / "runs" / "a"
+                    # 守卫（会 resolve）接受它……
+                    guard_output_path(third)
+                    # ……而词法判据搁置它。两者**不一致是有意的**。
+                    self.assertFalse(job_io.run_dir_is_inspectable(str(third)))
             finally:
                 job_io._ROOT_KEYS_CACHE = None
 
