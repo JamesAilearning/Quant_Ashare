@@ -77,3 +77,11 @@ the engine as fresh.
 - **THEN** it carries that run's terminal pool and the established-run
   marker
 - **AND** scoring against a wider panel still refuses
+
+#### Scenario: a checkpoint predates terminal-pool recording
+- **WHEN** a checkpoint carries neither the established-run marker nor a
+  recorded terminal pool
+- **THEN** loading refuses, because the restored population and caches
+  demonstrably came from a run whose search space cannot be recovered
+- **AND** treating it as a fresh engine is NOT permitted: that skips the
+  pool guard entirely, which is the permissive direction
