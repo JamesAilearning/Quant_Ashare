@@ -6,6 +6,25 @@ on:
   pull_request:
     branches: [main]
 
+# 同一分支上只保留最新一次运行。没有这块时，每推一次就多排一个 run,而每个
+# run 是 6 个测试矩阵位 + mechanical-move —— 审查循环里连推几次就把队列堆满,
+# 后来的运行（含 main 的合并后校验）要排数小时才开始。实测:一次审查循环留下
+# 8 个 queued run，最早的两个等了约 3.5 小时才拿到 runner。
+#
+# 分组按事件类型分叉：
+#
+# * PR —— 按 ref 分组，新提交取消旧运行（旧结论已无人消费）。
+# * push 到 main —— 按 **commit SHA** 分组，每个提交自成一组、互不相干。
+#
+# main 用 SHA 而不是「共用一组 + cancel-in-progress: false」，是因为
+# `cancel-in-progress: false` **保不住排队中的运行**：GitHub 每组只允许一个
+# pending，新的 pending 会顶掉旧的 pending，与该开关无关（它只管正在跑的那
+# 个）。共用一组时，A 在跑、B 排队、C 到达 → **B 被取消，那个提交的结论就此
+# 丢失**。合并后校验的每个结论都要留档，所以只能靠分组本身唯一。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
