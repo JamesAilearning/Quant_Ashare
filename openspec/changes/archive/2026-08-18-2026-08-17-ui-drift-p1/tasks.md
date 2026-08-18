@@ -401,4 +401,4 @@
 - [x] 定向 + governance：490 passed / 1 skipped；jobs 源码钉 11 passed
 - [x] mypy CI 精确命令 220 文件 Success；ruff 全过
 - [x] `openspec validate --strict`
-- [ ] codex CLEAN + CI 绿 → STOP 等 merge
+- [x] codex CLEAN + CI 绿 → STOP 等 merge

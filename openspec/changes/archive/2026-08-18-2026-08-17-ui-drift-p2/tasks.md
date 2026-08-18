@@ -59,6 +59,6 @@
 ## 验证
 
 - [x] 定向 72 passed；mypy CI 精确命令 220 文件 Success；ruff 全过
-- [ ] logic + governance 全层
-- [ ] `openspec validate --strict`
-- [ ] codex CLEAN + CI 绿 → STOP 等 merge
+- [x] logic + governance 全层
+- [x] `openspec validate --strict`
+- [x] codex CLEAN + CI 绿 → STOP 等 merge

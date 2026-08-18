@@ -56,6 +56,6 @@
 
 - [x] 定向：`test_csi800_guard_triple_ui` + `test_operator_ui_config_run_source`
   + `test_daily_decision_page_source` → 131 passed
-- [ ] governance 全层 + CI 精确 mypy 全量 + ruff
-- [ ] `openspec validate --strict`
-- [ ] codex CLEAN + CI 绿 → STOP 等 merge
+- [x] governance 全层 + CI 精确 mypy 全量 + ruff
+- [x] `openspec validate --strict`
+- [x] codex CLEAN + CI 绿 → STOP 等 merge

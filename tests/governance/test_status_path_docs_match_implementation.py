@@ -30,8 +30,12 @@ from src.data_pipeline.daily_update import (  # noqa: E402
     default_status_path,
 )
 
-_CHANGE = (_PROJECT_ROOT / "openspec" / "changes"
-           / "2026-08-14-daily-update-run-status")
+# 该 change 已归档（#434 shipped），delta 也已并进主 specs。钉**主 spec**
+# 而不是追归档路径:归档件是历史留档,主 spec 才是活契约——实现漂了要红的是
+# 后者。归档时这几条曾因路径搬家而断,正是「钉在会搬的东西上」的代价。
+_SPECS = _PROJECT_ROOT / "openspec" / "specs"
+_CHANGE = (_PROJECT_ROOT / "openspec" / "changes" / "archive"
+           / "2026-08-18-2026-08-14-daily-update-run-status")
 
 # Spellings that named a location nothing writes. Kept as DATA so a fourth
 # variant is added here rather than re-derived from memory.
@@ -136,7 +140,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # final `--status-path` — archived, the invariant vanishes and a
         # future spec-compliant implementation may reintroduce the staging
         # clobber. The spec must keep stating both.
-        spec = (_CHANGE / "specs" / "v2-daily-data-update"
+        spec = (_SPECS / "v2-daily-data-update"
                 / "spec.md").read_text(encoding="utf-8")
         self.assertIn(".tmp", spec)
         self.assertIn("staging sibling", spec)
@@ -151,7 +155,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # negative age never fresh, unknown age never worded as "已超过")
         # must survive archiving, or a spec-compliant implementation may
         # again render every persisted running record as active.
-        spec = (_CHANGE / "specs" / "v2-operator-ui"
+        spec = (_SPECS / "v2-operator-ui"
                 / "spec.md").read_text(encoding="utf-8")
         for required in ("SHALL NOT, by itself, be rendered",
                          "NEGATIVE age", "unverifiable",
@@ -166,7 +170,7 @@ class StatusPathDocsMatchImplementationTests(unittest.TestCase):
         # — the spec demanded something nothing enforces and nothing
         # satisfies. It must state the enforced constraint (import/invoke)
         # and must not drift back to the unenforceable one.
-        spec = (_CHANGE / "specs" / "v2-operator-ui"
+        spec = (_SPECS / "v2-operator-ui"
                 / "spec.md").read_text(encoding="utf-8")
         self.assertIn("**import or invoke**", spec)
         self.assertNotIn("SHALL NOT name the orchestrator", spec)

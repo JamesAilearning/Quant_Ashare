@@ -380,9 +380,11 @@ class PageSourcePinsTests(unittest.TestCase):
     def test_spec_delta_does_not_encode_anchor_only_governance(self) -> None:
         # codex #444 r3: 归档时 spec delta 里的错话会把治理错误重新引回来
         # —— 比 UI 上的一句话更持久。
+        # change 已归档（#444 shipped），delta 已并进主 spec。钉**主 spec**
+        # 而不是追归档路径：归档件是历史留档，主 spec 才是活契约。
         spec = (
-            PROJECT_ROOT / "openspec" / "changes" / "2026-08-17-ui-drift-p1"
-            / "specs" / "v2-operator-ui-console" / "spec.md"
+            PROJECT_ROOT / "openspec" / "specs"
+            / "v2-operator-ui-console" / "spec.md"
         ).read_text(encoding="utf-8")
         self.assertIn("SHALL NOT be presented as deciding what is production", spec)
         self.assertIn("certified winner runs on\n`fold_phase`", spec)
