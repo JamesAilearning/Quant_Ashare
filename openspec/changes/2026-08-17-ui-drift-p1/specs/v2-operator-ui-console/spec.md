@@ -139,10 +139,21 @@ restating their values in the UI. The authority is the union of
    binding chain, which governance tests pin value-for-value against the
    `iso_week` re-check preset.
 
-Membership SHALL be judged over every key those artifacts pin, narrowed
-to the fields the walk-forward report's `config` actually records, and
-excluding only `rebalance_anchor` and `output_dir` — the two keys by
-which the certified pair itself differs. Hand-picking a key list is
+Membership SHALL be judged over the certified run's **resolved**
+parameter set — the report-config contract's own defaults, overlaid with
+the values those artifacts pin — excluding only `rebalance_anchor` and
+`output_dir`, the two keys by which the certified pair itself differs.
+Defaults are load-bearing: a field the YAML omits still takes a value at
+run time, so judging only YAML-present keys leaves knobs like
+`label_horizon_days` unguarded, and a run that flips one is a materially
+different experiment wearing the certified label.
+
+A key the candidate report does **not** record SHALL NOT count as a
+mismatch — a run predating that field genuinely ran on the contract
+default, and treating absence as disagreement would eject every historic
+report. The page SHALL instead disclose how many identity knobs were
+judged and which ones the report did not record, so "in the family" is
+never read as "compared item by item". Hand-picking a key list is
 what this requirement exists to forbid: four review rounds each found
 one more missing knob (`slippage_bps`, the constraint switches, `topk`
 and `attribution_sleeve_grouping`, `ensemble_window`), and each gap let

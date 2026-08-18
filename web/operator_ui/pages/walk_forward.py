@@ -83,7 +83,7 @@ from web.operator_ui.pages._walk_forward_helpers import (  # noqa: F401
     _stability_color,
     _stability_label,
     _synthesised_stitched_nav,
-    governed_family_mismatches,
+    governed_family_coverage,
 )
 from web.operator_ui.report_reader import (
     read_fold_reports,
@@ -477,7 +477,7 @@ if isinstance(_wf_config, dict) and _wf_config:
     # 语义钉在那里,治理测试也钉着它,抄一份到 UI 只会各自漂。
     # 去掉 `rebalance_anchor`:族**跨**两个锚(认证胜者跑 fold_phase、生产服务
     # 跑 iso_week),它是族内的区分维度,不是入族条件。
-    _mismatched = governed_family_mismatches(_wf_config)
+    _mismatched, _unrecorded = governed_family_coverage(_wf_config)
     _governed = not _mismatched
     if not _governed:
         st.caption(
@@ -486,6 +486,14 @@ if isinstance(_wf_config, dict) and _wf_config:
             "**本次运行不属于被治理的 csi800 认证族**（不符项："
             + "、".join(f"`{_k}`" for _k in _mismatched)
             + "），所以这里不给任何「认证胜者 / 生产锚」的判断。"
+        )
+    if _unrecorded:
+        # 判定基于 N 个身份键,其中若干本报告根本没记(该字段落地之前的运行)。
+        # 不说出来的话,「入族」会被读成「逐项比对全过」——它不是。
+        st.caption(
+            f"⚙ 身份判定覆盖 **{len(_GOVERNED_FAMILY)}** 个旋钮,其中 "
+            f"**{len(_unrecorded)}** 个本报告未记录（该字段落地之前的运行），"
+            "按契约默认值采信：" + "、".join(f"`{_k}`" for _k in _unrecorded)
         )
     elif _anchor == "fold_phase":
         st.caption(

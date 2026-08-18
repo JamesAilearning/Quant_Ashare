@@ -79,17 +79,46 @@ _WF_CONFIG_SOURCE = (
 )
 
 
-def _reported_config_fields() -> frozenset[str]:
-    """报告 config 里**会出现**的字段名。
+#: 三个默认值写成模块常量而非字面量,常量本身定义在这些文件里。
+_CONSTANT_SOURCES = (
+    _REPO_ROOT / "src" / "core" / "canonical_backtest_contract.py",
+    _REPO_ROOT / "src" / "contracts" / "taxonomy_data_contract.py",
+)
 
-    只留这些键参与身份比对:`provider_uri` / `region` 这类运行环境参数根本
-    不在报告里,不做这道交集,认证运行自己都会因「缺这两个键」被判出族,
-    标签全灭(本机实测)。
+
+def _module_constants() -> dict[str, Any]:
+    """那几个源文件里顶层的字面量常量(``NAME = "literal"``)。"""
+    found: dict[str, Any] = {}
+    for path in _CONSTANT_SOURCES:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):  # pragma: no cover - 仓库损坏
+            continue
+        for stmt in tree.body:
+            if not isinstance(stmt, ast.Assign) or stmt.value is None:
+                continue
+            try:
+                value = ast.literal_eval(stmt.value)
+            except (ValueError, SyntaxError):
+                continue
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    found.setdefault(target.id, value)
+    return found
+
+
+def _reported_config_defaults() -> dict[str, Any]:
+    """报告 config 的**字段名及其默认值**。
+
+    只有字段名不够(codex #444 r11 只做到这一步):YAML **没写**的字段在运行时
+    落到 dataclass 默认值,而那些默认值同样是认证身份的一部分——把
+    ``label_horizon_days`` 从默认的 1 改成 5、或把 ``risk_constraints_mode``
+    从 ``raise`` 改掉,是**实质不同的实验**,却因为 YAML 里没有这个键而零不符项
+    (codex #444 r12)。所以这里连默认值一起取出来,与 YAML 值叠加成完整身份。
 
     用 ``ast`` 读源码而**不是** import 那个 dataclass:导进来会连带
     ``src.core`` 的整条链——实测把 **qlib 与 gym** 拉进这个号称
-    「纯、无 streamlit」的 helper,1.19 秒、2042 个模块。UI 侧不该为了
-    一份字段名付这个代价,logic 套件更不该。契约变了这里照样自动跟上。
+    「纯、无 streamlit」的 helper,1.19 秒、2042 个模块。契约变了这里照样跟上。
     """
     try:
         tree = ast.parse(_WF_CONFIG_SOURCE.read_text(encoding="utf-8"))
@@ -97,16 +126,40 @@ def _reported_config_fields() -> frozenset[str]:
         raise GovernedFamilyUnavailableError(
             f"读不出报告配置契约({_WF_CONFIG_SOURCE}):{exc}"
         ) from exc
+    constants = _module_constants()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "WalkForwardConfig":
-            names = {
-                stmt.target.id
-                for stmt in node.body
-                if isinstance(stmt, ast.AnnAssign)
+        if not (
+            isinstance(node, ast.ClassDef) and node.name == "WalkForwardConfig"
+        ):
+            continue
+        defaults: dict[str, Any] = {}
+        unresolved: list[str] = []
+        for stmt in node.body:
+            if not (
+                isinstance(stmt, ast.AnnAssign)
                 and isinstance(stmt.target, ast.Name)
-            }
-            if names:
-                return frozenset(names)
+            ):
+                continue
+            name = stmt.target.id
+            if stmt.value is None:
+                unresolved.append(name)
+                continue
+            if isinstance(stmt.value, ast.Name) and stmt.value.id in constants:
+                defaults[name] = constants[stmt.value.id]
+                continue
+            try:
+                defaults[name] = ast.literal_eval(stmt.value)
+            except (ValueError, SyntaxError):
+                unresolved.append(name)
+        if not defaults:
+            break
+        if unresolved:
+            # 解析不出默认值的字段**不能默默跳过**——那正是 r12 抓到的口子。
+            raise GovernedFamilyUnavailableError(
+                "报告配置契约里这些字段的默认值解析不出来,身份无从建立:"
+                + ", ".join(sorted(unresolved))
+            )
+        return defaults
     raise GovernedFamilyUnavailableError(
         f"{_WF_CONFIG_SOURCE} 里找不到 WalkForwardConfig 的字段"
     )
@@ -121,9 +174,9 @@ def _load_governed_family() -> dict[str, Any]:
     `attribution_sleeve_grouping`(r10)、`ensemble_window` 这类实验语义(r11)。
     两个权威工件都整份取用之后,任一边新增字段都会自动进入判据。
 
-    边界说清楚:引擎默认级的旋钮(如 `label_horizon_days`)两个工件都没钉,
-    因此不在判据内——页面据此**只**报「按 N 个已钉旋钮判定」,不宣称做过
-    全量比对。
+    r12 起连 dataclass 默认值一起纳入:YAML 没写的字段运行时落默认值,那些
+    默认值同样是认证身份的一部分(`label_horizon_days=1` /
+    `risk_constraints_mode='raise'` / `metrics_purpose='official'`)。
     """
     preset = _load_mapping(_CERTIFIED_PRESET_PATH)
     base_rel = str(preset.get("extends") or "")
@@ -132,15 +185,18 @@ def _load_governed_family() -> dict[str, Any]:
         merged.update(_load_mapping(_CERTIFIED_PRESET_PATH.parent / base_rel))
     merged.update(preset)
     merged.update(_load_mapping(_SERVING_PARAMS_PATH))
-    reported = _reported_config_fields()
+    # 完整身份 = dataclass 默认值 **叠加** YAML 显式值。只取 YAML 的话,它没写
+    # 的字段(运行时落默认值)就成了盲区(codex #444 r12);只取默认值的话,
+    # preset 钉住的那些又丢了。两层叠加才是「认证运行实际跑的那套参数」。
+    resolved: dict[str, Any] = dict(_reported_config_defaults())
+    reported = set(resolved)
+    resolved.update({k: v for k, v in merged.items() if k in reported})
     identity = {
         key: _expand_env_vars_in_tree(value, source_path=_CERTIFIED_PRESET_PATH)
         if isinstance(value, str)
         else value
-        for key, value in merged.items()
-        if key in reported
-        and key not in _FAMILY_INTERNAL_KEYS
-        and key not in _NON_IDENTITY_KEYS
+        for key, value in resolved.items()
+        if key not in _FAMILY_INTERNAL_KEYS and key not in _NON_IDENTITY_KEYS
     }
     if not identity:
         raise GovernedFamilyUnavailableError("认证族身份为空——权威工件异常")
@@ -157,6 +213,11 @@ def _knob_matches(actual: object, want: object) -> bool:
     (``bool`` 是 ``int`` 的子类,不特判的话 ``True`` 会等于 ``1.0``),
     其余按字符串比。
     """
+    if want is None:
+        # ``str(None or "")`` 是 ``""`` 而 ``str(None)`` 是 ``"None"`` —— 落到
+        # 下面那条会把 None==None 判成**不符**,认证运行自己因此出族(实测四个
+        # 键:stamp_tax_schedule / dataset_cache_dir / 两个 industry_*)。
+        return actual is None
     if isinstance(want, bool):
         return actual is want
     if isinstance(want, (int, float)):
@@ -167,17 +228,33 @@ def _knob_matches(actual: object, want: object) -> bool:
     return str(actual or "") == str(want)
 
 
-def governed_family_mismatches(config: Mapping[str, Any]) -> list[str]:
-    """本次运行**不符**晋升族的那些键(空 = 入族)。
+def governed_family_coverage(
+    config: Mapping[str, Any],
+) -> tuple[list[str], list[str]]:
+    """``(不符项, 报告未记录项)``。
 
     比的是整族语义,不是某一两个旋钮:少比一个,那个维度上跑偏的运行就会
     顶着「认证胜者」的文案被读——证据归属写错比不给判断更糟。
+
+    **报告没记的键不算不符**:该字段落地之前产出的报告根本没有它,那次运行
+    当时就跑在契约默认值上。把「缺失」判成「不符」会让**每一份历史报告**
+    出族(本机 20 个目录全灭),等于把功能删掉。但也不静默——缺了几个键、
+    是哪几个,交给调用方如实说出来。
     """
-    return [
-        key
-        for key, want in _GOVERNED_FAMILY.items()
-        if not _knob_matches(config.get(key), want)
-    ]
+    mismatched: list[str] = []
+    unrecorded: list[str] = []
+    for key, want in _GOVERNED_FAMILY.items():
+        if key not in config:
+            unrecorded.append(key)
+            continue
+        if not _knob_matches(config[key], want):
+            mismatched.append(key)
+    return mismatched, unrecorded
+
+
+def governed_family_mismatches(config: Mapping[str, Any]) -> list[str]:
+    """只要不符项(不含报告未记录的键)。"""
+    return governed_family_coverage(config)[0]
 
 MISSING = "—"
 

@@ -395,10 +395,10 @@ class PageSourcePinsTests(unittest.TestCase):
         # _GOVERNED_FAMILY —— 字段清单本身由 GovernedFamilyPredicateTests
         # 对着 EVAL_PROFILES 真跑核对。这里只钉「页面确实消费它」。
         src = _PAGE_WF.read_text(encoding="utf-8")
-        self.assertIn("governed_family_mismatches(_wf_config)", src)
+        self.assertIn("governed_family_coverage(_wf_config)", src)
         self.assertIn("_governed = not _mismatched", src)
         # 页面里不得再硬写一份字段清单。
-        gov_at = src.index("_mismatched = governed_family_mismatches")
+        gov_at = src.index("_mismatched, _unrecorded = governed_family_coverage")
         block = src[gov_at : gov_at + 400]
         for field in ("instruments", "benchmark_code", "rebalance_cadence_days",
                       "rebalance_phase", "slippage_bps"):
@@ -511,7 +511,7 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # 形式去比，认证预设自己都判不符 —— 那是测试的失真，不是实现的。
         from src.core._yaml_loader import _expand_env_vars_in_tree
 
-        return {
+        expanded = {
             key: (
                 _expand_env_vars_in_tree(value, source_path=path)
                 if isinstance(value, str)
@@ -519,6 +519,17 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
             )
             for key, value in merged.items()
         }
+        # 再用 dataclass 默认值打底 —— 报告 config 是**完整**的（引擎 dump 整个
+        # dataclass），而裸 preset 只有它显式写的那几个键。不打底的话，预设没写
+        # 的键全部落进「未记录」而被跳过，于是像 `csi800` 这种只写两三个键的
+        # 预设也会「入族」（codex #444 r12 让未记录键不算不符之后的连带效应）。
+        from web.operator_ui.pages._walk_forward_helpers import (
+            _reported_config_defaults,
+        )
+
+        simulated = dict(_reported_config_defaults())
+        simulated.update({k: v for k, v in expanded.items() if k in simulated})
+        return simulated
 
     def _governed(self, cfg: dict[str, object]) -> bool:
         return not governed_family_mismatches(cfg)
@@ -581,10 +592,10 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         # 运行环境参数，报告里没有 —— 把它们算进去，认证运行自己都会因
         # 「缺这两个键」被判出族，标签全灭（本机实测）。
         from web.operator_ui.pages._walk_forward_helpers import (
-            _reported_config_fields,
+            _reported_config_defaults,
         )
 
-        reported = _reported_config_fields()
+        reported = set(_reported_config_defaults())
         self.assertTrue(set(_GOVERNED_FAMILY) <= set(reported))
         self.assertNotIn("provider_uri", _GOVERNED_FAMILY)
         self.assertNotIn("region", _GOVERNED_FAMILY)
@@ -697,6 +708,47 @@ class GovernedFamilyPredicateTests(unittest.TestCase):
         self.assertFalse(_knob_matches(1, True))
         self.assertFalse(_knob_matches("true", True))
         self.assertFalse(_knob_matches(None, True))
+
+    def test_dataclass_defaults_are_part_of_the_identity(self) -> None:
+        # codex #444 r12: 只取 YAML 的话，它没写的字段（运行时落 dataclass
+        # 默认值）是盲区 —— label_horizon_days 从 1 改成 5 是实质不同的实验，
+        # 却零不符项。默认值必须一起进身份。
+        for key, want in (
+            ("label_horizon_days", 1),
+            ("risk_constraints_mode", "raise"),
+            ("metrics_purpose", "official"),
+            ("seed", 42),
+        ):
+            with self.subTest(key=key):
+                self.assertIn(key, _GOVERNED_FAMILY)
+                self.assertEqual(_GOVERNED_FAMILY[key], want)
+
+    def test_none_defaults_do_not_read_as_mismatches(self) -> None:
+        # str(None or "") 是 ""，str(None) 是 "None" —— 落到字符串比会把
+        # None==None 判成不符，认证运行自己因此出族（实测四个键）。
+        self.assertTrue(_knob_matches(None, None))
+        self.assertFalse(_knob_matches("x", None))
+        self.assertFalse(_knob_matches(0, None))
+
+    def test_unrecorded_keys_are_disclosed_not_counted_as_mismatch(self) -> None:
+        # 报告没记的键（该字段落地之前的运行）不算不符 —— 否则每一份历史报告
+        # 都出族，功能等于删掉。但也不能静默：页面必须说出覆盖了几个、缺几个。
+        from web.operator_ui.pages._walk_forward_helpers import (
+            governed_family_coverage,
+        )
+
+        cfg = self._preset("csi800_cadence5_conservative")
+        trimmed = {k: v for k, v in cfg.items() if k != "topk"}
+        bad, unrecorded = governed_family_coverage(trimmed)
+        self.assertNotIn("topk", bad)
+        self.assertIn("topk", unrecorded)
+        # 有键但值不同,仍然算不符。
+        wrong = dict(cfg)
+        wrong["topk"] = 30
+        self.assertIn("topk", governed_family_coverage(wrong)[0])
+        src = _PAGE_WF.read_text(encoding="utf-8")
+        self.assertIn("_unrecorded", src)
+        self.assertIn("本报告未记录", src)
 
     def test_numeric_knobs_compare_across_int_and_float_spellings(self) -> None:
         # YAML 里 5 与 5.0 都出现过；按字符串比会把等价配置判成不符。
