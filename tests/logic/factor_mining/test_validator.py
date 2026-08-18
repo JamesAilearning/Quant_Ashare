@@ -544,22 +544,30 @@ def test_tie_break_digest_is_stable_across_processes():
     expr = "cs_rank(div_safe($revenue, $total_assets))"
     local = canonical_expr_digest(expr)
     assert local == hashlib.sha256(expr.encode("utf-8")).hexdigest()
-    # 另起一个 PYTHONHASHSEED 不同的解释器，摘要必须逐字相同。
+    # 起**两个**显式不同种子的解释器，三方摘要须逐字相同。
     #
-    # 环境要**继承后覆盖**，不能清空：把 PATH/SYSTEMROOT 置空曾让
-    # windows-3.10 的 CI 起不来解释器（本机 3.11 侥幸能起，于是本地全绿
-    # 而 CI 红）。这里要证的是种子无关性，不是纯净环境。
-    env = dict(os.environ)
-    env["PYTHONHASHSEED"] = "12345"
-    assert os.environ.get("PYTHONHASHSEED") != "12345", "种子须与本进程不同"
-    out = subprocess.run(
-        [sys.executable, "-c",
-         "from src.factor_mining.validator import canonical_expr_digest as d;"
-         f"print(d({expr!r}))"],
-        capture_output=True, text=True, check=True,
-        env=env, cwd=str(_REPO_ROOT),
-    )
-    assert out.stdout.strip() == local
+    # 两条环境教训都写在这里：
+    # ① 环境要**继承后覆盖**，不能清空 —— 把 PATH/SYSTEMROOT 置空曾让
+    #    windows-3.10 的 CI 起不来解释器（本机 3.11 侥幸能起，于是本地
+    #    全绿而 CI 红）。要证的是种子无关性，不是纯净环境。
+    # ② 不得断言"父进程的种子必须 != X" —— 那会让一个合法的确定性 CI
+    #    配置（父进程本就设 PYTHONHASHSEED=12345）在子进程还没跑之前就
+    #    失败，等于把刚修掉的"环境依赖失败"换个位置又造一遍
+    #    （codex #448 r7 P2）。改为两个子进程互比：无论父进程是什么种子，
+    #    12345 与 54321 之间必有一个与父进程不同，且两者本就该彼此相等。
+    digests = set()
+    for seed in ("12345", "54321"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from src.factor_mining.validator import canonical_expr_digest "
+             f"as d;print(d({expr!r}))"],
+            capture_output=True, text=True, check=True,
+            env=env, cwd=str(_REPO_ROOT),
+        )
+        digests.add(out.stdout.strip())
+    assert digests == {local}, (digests, local)
 
 
 def test_correlation_evaluation_failure_refuses_instead_of_keeping():
