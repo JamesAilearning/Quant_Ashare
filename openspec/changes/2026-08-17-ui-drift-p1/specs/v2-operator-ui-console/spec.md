@@ -26,6 +26,25 @@ working directory.
 - **WHEN** the operator clicks through from the jobs list
 - **THEN** the detail page renders that run
 
+#### Scenario: a CLI pipeline run opens from the jobs list
+
+- **GIVEN** a pipeline run recorded in the CLI catalog with artifacts
+  under `output/`
+- **WHEN** the operator clicks through from the jobs list
+- **THEN** the results page renders that run rather than "run not found"
+
+#### Scenario: the two detail pages agree on which run a row means
+
+- **GIVEN** a run whose artifacts were overwritten by a later run writing
+  to the same `output_dir`
+- **WHEN** the operator opens it from either detail page
+- **THEN** both pages state that the artifacts were overwritten and name
+  the run now occupying that directory, rather than silently rendering
+  the later run's report
+- **AND** the fold that decides this — anchoring, newest-per-directory,
+  and the refusal to alias overwritten ids — SHALL have a single
+  implementation shared by both pages, because a per-page copy diverges
+
 #### Scenario: unopenable rows are set aside and counted
 
 - **GIVEN** catalog rows whose `output_dir` is outside the read boundary

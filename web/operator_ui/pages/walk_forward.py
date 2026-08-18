@@ -28,7 +28,7 @@ import pandas as pd
 import streamlit as st
 
 from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
-from web.operator_ui._path_guard import PROJECT_ROOT, output_path
+from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.components import (
     render_empty_state,
@@ -39,7 +39,7 @@ from web.operator_ui.formatting import (
     format_number,
     format_percent,
 )
-from web.operator_ui.job_io import list_all_jobs
+from web.operator_ui.job_io import fold_catalog_by_dir, list_all_jobs
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
 
@@ -123,45 +123,28 @@ run_options = {j["run_dir"]: j.get("job_id", "?") for j in wf_jobs if j.get("run
 _cli_wf, _, _ = list_all_jobs(
     type_filter="walk_forward", source_filter="cli", page=1, page_size=100_000,
 )
-# 同一个 preset 反复跑会**追加**新的目录条目,却把报告写回**同一个**
-# output_dir——旧运行的产物已被覆盖,盘上只剩最新那一次。所以按目录取最新
-# 是唯一诚实的做法(把旧 run_id 也列成独立条目,只会让它们渲染出同一份
-# 最新报告)。但"取最新"不能静默:下面对匹配失败给出明确告警,并在此统计
-# 被覆盖的条目数(codex #444 r2)。
-_superseded_runs = 0
+# 折叠(锚定 / 首条即最新 / 被覆盖者只计数不别名)只有一份实现,与
+# results.py 共用 —— 这三条各自都被审查抓到过一次(#444 r1/r2/r4),
+# 两页各写一份必然分叉。锚定与可检视判据同源(``anchored_run_dir``):
+# 判据把相对 output_dir 锚在仓库根,而下面 `Path(selected)` →
+# `guard_output_path` 走的是进程 CWD,两处不同锚会让「判定可达」的运行
+# 反被守卫拒绝(codex #444 r1)。
+_folded = fold_catalog_by_dir(_cli_wf)
+# 被覆盖的历史运行:既不别名(否则点它会静默看到别人的报告),也不进选择器,
+# 只计数并交给告警路径(codex #444 r2/r4)。
+_superseded_runs = _folded.superseded_count
 # id → 目录。选择器每个目录只放一条,但跳转要认**所有**已知 id:UI 作业 id
-# 与 CLI 目录 id 常常指向同一个目录(见下),旧的 CLI 运行也可能与新的共用目录。
-# 别名只覆盖**同一次调用**的两个 id(UI 作业 id + 它的 CLI 镜像),不覆盖
-# 被覆盖掉的历史运行——把后者也别名进来,点旧行就会 _requested_found=True
-# 而跳过告警、静默渲染最新那份报告(codex #444 r4)。
+# 与 CLI 目录 id 常常指向同一个目录——UI 启动的滚动验证会**同时**留下一条
+# UI 作业和一条 CLI 目录记录(JobManager 把结果目录写进 config["output_dir"],
+# 引擎再按它编目),只保留先到的那个 id 会让另一个 id 的跳转永远匹配不上
+# (codex #444 r3)。
 _run_id_to_dir: dict[str, str] = {
     str(j.get("job_id") or ""): str(j.get("run_dir") or "")
     for j in wf_jobs
     if j.get("job_id") and j.get("run_dir")
 }
-#: 已经收过 CLI 记录的目录。每个目录的**第一条**(即最新那条)是本次调用的
-#: 记录——UI 启动时它就是 UI 作业的镜像;之后的都是被覆盖的历史运行。
-_cli_dirs_seen: set[str] = set()
-for _job in _cli_wf:
-    if not _job.run_dir:
-        continue
-    # 必须与可检视判据**同一套锚定**:判据把相对 output_dir 锚在仓库根,
-    # 而下面 `Path(selected)` → `guard_output_path` 走的是进程 CWD。若在
-    # 仓库根之外启动 UI,存原始相对串会让「判定可达」的运行反被守卫拒绝
-    # (codex #444 r1)。
-    _resolved = _job.run_dir
-    if not Path(_resolved).is_absolute():
-        _resolved = str(PROJECT_ROOT / _resolved)
-    # 每一个已知 id 都要能定位到目录。UI 启动的滚动验证会**同时**留下一条
-    # UI 作业和一条 CLI 目录记录,指向同一个 output_dir(JobManager 把结果目录
-    # 写进 config["output_dir"],引擎再按它编目)——只保留先到的那个 id,会让
-    # 另一个 id 的跳转永远匹配不上(codex #444 r3)。
-    if _resolved in _cli_dirs_seen:
-        # 该目录已有更晚的 CLI 记录 → 这条是**被覆盖的历史运行**。既不别名
-        # (否则点它会静默看到别人的报告),也不进选择器,只计数并交给告警路径。
-        _superseded_runs += 1
-        continue
-    _cli_dirs_seen.add(_resolved)
+for _job in _folded.newest:
+    _resolved = str(_folded.dir_of_run[_job.run_id])
     # 本次调用的记录:与同目录的 UI 作业 id 互为别名,两个 id 都能跳对。
     _run_id_to_dir.setdefault(_job.run_id, _resolved)
     if _resolved not in run_options:

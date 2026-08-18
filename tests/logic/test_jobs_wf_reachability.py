@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -21,11 +22,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from web.operator_ui.job_io import (  # noqa: E402
     JobSummary,
     _normalise_cli_entry,
+    fold_catalog_by_dir,
+    list_all_jobs,
     run_dir_is_inspectable,
 )
 
 _PAGE_JOBS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "jobs.py"
 _PAGE_WF = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "walk_forward.py"
+_PAGE_RESULTS = PROJECT_ROOT / "web" / "operator_ui" / "pages" / "results.py"
 
 
 class StatusVocabularyTests(unittest.TestCase):
@@ -104,6 +108,113 @@ class JobSummaryCarriesRunDirTests(unittest.TestCase):
         self.assertEqual(JobSummary(run_id="x", type="p", status="ok").run_dir, "")
 
 
+class CatalogFoldBehaviorTests(unittest.TestCase):
+    """折叠算法的**行为**覆盖。
+
+    r1/r2/r4 三轮改的都是这个算法，此前只有字符串钉守着；提到共享层之后
+    它是纯函数，可以真跑一遍。三个维度各至少一例：锚定、首条即最新、
+    被覆盖者的去向。
+    """
+
+    @staticmethod
+    def _row(run_id: str, run_dir: str) -> JobSummary:
+        return JobSummary(
+            run_id=run_id, type="pipeline", status="completed", source="cli",
+            run_dir=run_dir,
+        )
+
+    def test_relative_dirs_anchor_at_the_repo_not_the_cwd(self) -> None:
+        # 与可检视判据同源：判据锚在仓库根，页面若锚在 CWD，在仓库根之外
+        # 启动 UI 时「判定可达」的运行会反被路径守卫拒绝（codex #444 r1）。
+        folded = fold_catalog_by_dir([self._row("a", "output/runs/x")])
+        self.assertEqual(folded.dir_of_run["a"], PROJECT_ROOT / "output/runs/x")
+        # 判据与折叠对同一条相对行必须给出一致的答案。
+        self.assertTrue(run_dir_is_inspectable("output/runs/x"))
+
+    def test_absolute_dirs_pass_through_untouched(self) -> None:
+        target = PROJECT_ROOT / "output" / "runs" / "abs"
+        folded = fold_catalog_by_dir([self._row("a", str(target))])
+        self.assertEqual(folded.dir_of_run["a"], target)
+
+    def test_first_row_per_dir_wins_and_the_rest_are_superseded(self) -> None:
+        # 目录记录按完成时间倒序，首条即最新；同目录更早的那些产物已被覆盖。
+        rows = [
+            self._row("newest", "output/runs/same"),
+            self._row("older", "output/runs/same"),
+            self._row("oldest", "output/runs/same"),
+            self._row("other", "output/runs/elsewhere"),
+        ]
+        folded = fold_catalog_by_dir(rows)
+        self.assertEqual([r.run_id for r in folded.newest], ["newest", "other"])
+        self.assertEqual(folded.superseded_count, 2)
+        self.assertEqual(
+            set(folded.superseded_dir_of_run), {"older", "oldest"}
+        )
+
+    def test_superseded_ids_never_appear_in_the_alias_side(self) -> None:
+        # codex #444 r4 的核心：被覆盖的 id 若也能定位到目录，点它就会静默
+        # 渲染出别人的报告。两张表必须不相交。
+        rows = [
+            self._row("newest", "output/runs/same"),
+            self._row("older", "output/runs/same"),
+        ]
+        folded = fold_catalog_by_dir(rows)
+        self.assertEqual(
+            set(folded.dir_of_run) & set(folded.superseded_dir_of_run), set()
+        )
+        self.assertNotIn("older", folded.dir_of_run)
+        # 但它仍要能说出「谁覆盖了它」，否则告警无从指路。
+        self.assertEqual(
+            folded.superseded_dir_of_run["older"], folded.dir_of_run["newest"]
+        )
+
+    def test_case_differences_collapse_on_windows_semantics(self) -> None:
+        # 同一个目录写成两种大小写，若不 normcase 就会被当成两个目录，
+        # 折叠漏掉一半。
+        rows = [
+            self._row("a", "output/runs/CaseDir"),
+            self._row("b", "output/runs/casedir"),
+        ]
+        folded = fold_catalog_by_dir(rows)
+        if os.path.normcase("A") == os.path.normcase("a"):
+            self.assertEqual(len(folded.newest), 1)
+            self.assertEqual(folded.superseded_count, 1)
+        else:
+            self.assertEqual(len(folded.newest), 2)
+
+    def test_rows_without_a_dir_are_dropped_not_crashed(self) -> None:
+        folded = fold_catalog_by_dir(
+            [self._row("blank", ""), self._row("real", "output/runs/y")]
+        )
+        self.assertEqual([r.run_id for r in folded.newest], ["real"])
+        self.assertNotIn("blank", folded.dir_of_run)
+        self.assertNotIn("blank", folded.superseded_dir_of_run)
+
+    def test_empty_input_is_an_empty_fold(self) -> None:
+        folded = fold_catalog_by_dir([])
+        self.assertEqual(folded.newest, ())
+        self.assertEqual(folded.superseded_count, 0)
+
+    def test_real_catalog_folds_identically_for_both_run_types(self) -> None:
+        # 真目录上跑一遍：本机 92 条滚动验证行折叠成 20 个目录 / 72 条被覆盖。
+        # 断言的是**不变式**而不是这两个数字（目录内容会变）。
+        for kind in ("walk_forward", "pipeline"):
+            rows, _, _ = list_all_jobs(
+                type_filter=kind, source_filter="cli", page=1, page_size=100_000,
+            )
+            folded = fold_catalog_by_dir(rows)
+            with self.subTest(kind=kind):
+                dirs = {os.path.normcase(str(p)) for p in folded.dir_of_run.values()}
+                self.assertEqual(len(dirs), len(folded.newest))
+                self.assertEqual(
+                    len(folded.newest) + folded.superseded_count,
+                    sum(1 for r in rows if r.run_dir),
+                )
+                self.assertEqual(
+                    set(folded.dir_of_run) & set(folded.superseded_dir_of_run), set()
+                )
+
+
 class PageSourcePinsTests(unittest.TestCase):
     def test_walk_forward_page_accepts_cli_runs(self) -> None:
         src = _PAGE_WF.read_text(encoding="utf-8")
@@ -158,14 +269,16 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertNotIn("pg_next", block)
         self.assertNotIn("pg_prev", block)
 
-    def test_cli_options_are_anchored_like_the_inspectability_check(self) -> None:
-        # codex #444 r1: 判据把相对 output_dir 锚在仓库根，而页面下游的
-        # `Path(selected)` → guard_output_path 走进程 CWD。存原始相对串会
-        # 让「判定可达」的运行反被守卫拒绝（在仓库根之外启动 UI 时）。
-        src = _PAGE_WF.read_text(encoding="utf-8")
-        self.assertIn("PROJECT_ROOT", src)
-        self.assertIn("if not Path(_resolved).is_absolute():", src)
-        self.assertIn("str(PROJECT_ROOT / _resolved)", src)
+    def test_both_detail_pages_share_one_fold_implementation(self) -> None:
+        # codex #444 r1/r2/r4 三轮改的是**同一个**算法（锚定 / 首条即最新 /
+        # 被覆盖者只计数不别名），r5 又要求结果页做同一件事。两页各写一份
+        # 必然分叉 —— 所以实现只留一份，两页都调它。
+        for page in (_PAGE_WF, _PAGE_RESULTS):
+            src = page.read_text(encoding="utf-8")
+            with self.subTest(page=page.name):
+                self.assertIn("fold_catalog_by_dir", src)
+                # 页面里不得再自己写一遍折叠。
+                self.assertNotIn("if not Path(_resolved).is_absolute():", src)
 
     def test_unmatched_requested_run_is_not_silently_swapped(self) -> None:
         # codex #444 r2: 同一 preset 反复跑会把报告写回同一个 output_dir，
@@ -229,20 +342,47 @@ class PageSourcePinsTests(unittest.TestCase):
         # codex #444 r4: r3 把**每个**被覆盖的 id 都塞进别名表，于是点旧行
         # 时 _requested_found=True，绕过告警、静默渲染最新那份报告 ——
         # 等于把 r2 加的告警又废掉了。别名只覆盖同一次调用的 UI/CLI 两个 id。
+        # 判据已提到共享层，所以这里钉的是「页面消费的是被覆盖表而不是
+        # 别名表」；折叠本身的行为由 CatalogFoldBehaviorTests 真跑一遍。
         src = _PAGE_WF.read_text(encoding="utf-8")
-        self.assertIn("_cli_dirs_seen", src)
-        seen_at = src.index("if _resolved in _cli_dirs_seen:")
-        # 精确切到该分支本身（到它的 continue 为止）——窗口放宽会把
-        # continue 之后的正常别名写入也框进来，断言就废了。
-        branch_end = src.index("continue", seen_at) + len("continue")
-        branch = src[seen_at:branch_end]
-        self.assertIn("_superseded_runs += 1", branch)
-        # 被覆盖的分支里**不得**有别名写入。
-        self.assertNotIn("_run_id_to_dir.setdefault", branch)
-        # 而别名写入必须存在于 continue **之后**（本次调用那条才别名）。
-        self.assertIn(
-            "_run_id_to_dir.setdefault", src[branch_end : branch_end + 400]
+        self.assertIn("_superseded_runs = _folded.superseded_count", src)
+        alias_at = src.index("_run_id_to_dir.setdefault(_job.run_id, _resolved)")
+        # 别名只在遍历 newest 的循环体内写入 —— newest 里不含被覆盖的行。
+        loop_at = src.index("for _job in _folded.newest:")
+        self.assertLess(loop_at, alias_at)
+        self.assertNotIn("superseded_dir_of_run", src[loop_at:alias_at])
+
+    def test_results_page_admits_cli_pipeline_runs(self) -> None:
+        # codex #444 r5: 作业页把 CLI 流水线行路由到结果页，而结果页的选择器
+        # 只由 JobManager.list_jobs() 构成 —— 那些行点进去是「运行未找到」，
+        # 正是本 change 的 delta 所禁止的死链。
+        src = _PAGE_RESULTS.read_text(encoding="utf-8")
+        self.assertIn('type_filter="pipeline", source_filter="cli"', src)
+        self.assertIn("_run_id_alias", src)
+        # 别名解析必须发生在 run-not-found 之前，否则 CLI 镜像 id 仍会撞墙。
+        alias_at = src.index('_alias = _run_id_alias.get(requested_run_id, "")')
+        not_found_at = src.index("_render_run_not_found(requested_run_id)")
+        self.assertLess(alias_at, not_found_at)
+
+    def test_results_page_does_not_flash_away_its_superseded_warning(self) -> None:
+        # 解析后的 id 若拿去和**原始请求**比，别名/被覆盖两条路一进来就会
+        # 改写 query_params → 触发重跑 → 告警只闪一下就没了。
+        src = _PAGE_RESULTS.read_text(encoding="utf-8")
+        self.assertIn("if selected_job_id and selected_job_id != _selected_run_id:", src)
+        self.assertNotIn(
+            "if selected_job_id and selected_job_id != requested_run_id:", src
         )
+
+    def test_results_page_separates_overwritten_from_missing(self) -> None:
+        # 「产物被覆盖」说成「运行未找到」会让操作人以为记录被删了。
+        src = _PAGE_RESULTS.read_text(encoding="utf-8")
+        self.assertIn("_superseded_owner", src)
+        self.assertIn("的产物已被覆盖", src)
+        # 被覆盖表必须在 newest 建完之后才填 —— 纯 CLI 目录的占位者正是那轮
+        # 才写进 _dir_owner 的，先填会把它们漏成「运行未找到」。
+        newest_at = src.index("for _row in _folded.newest:")
+        sup_at = src.index("for _run_id, _dir in _folded.superseded_dir_of_run.items():")
+        self.assertLess(newest_at, sup_at)
 
     def test_anchor_caption_matches_the_governance_pin(self) -> None:
         # codex #444 r1: 起初把 iso_week 说成「认证胜者」——写反了。治理钉

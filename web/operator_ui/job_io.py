@@ -6,7 +6,7 @@ import contextlib
 import json
 import os
 import sys
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -356,6 +356,72 @@ def run_dir_is_inspectable(run_dir: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+def anchored_run_dir(run_dir: str) -> Path:
+    """把目录记录里的 ``output_dir`` 锚在**仓库根**,而不是进程 CWD。
+
+    与 :func:`run_dir_is_inspectable` 共用同一个锚点,而且是同一段代码——
+    两处各写一份不等式正是它们会分叉的方式:判据锚在仓库根、页面锚在
+    CWD 时,在仓库根之外启动 UI,「判定可达」的运行会反被路径守卫拒绝
+    (codex #444 r1)。
+    """
+    candidate = Path(str(run_dir or "").strip())
+    return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+
+
+@dataclass(frozen=True)
+class CatalogFold:
+    """CLI 目录记录按**产物目录**折叠后的结果。
+
+    同一个 preset 反复跑会追加新的目录条目,却把报告写回**同一个**
+    ``output_dir``——旧运行的产物已被覆盖,盘上只剩最新一份。所以每个目录
+    只有最新那条能当选择器条目;更早的那些既不能列出(会渲染出别人的报告),
+    也不能静默别名过去(点它就会以为看的是自己点的那次)。
+    """
+
+    #: 每个目录最新的那条记录,按输入顺序(``list_all_jobs`` 已按完成时间倒序)。
+    newest: tuple[JobSummary, ...]
+    #: ``newest`` 里每条的 run_id → 锚定后的绝对目录。
+    dir_of_run: Mapping[str, Path]
+    #: 产物被同目录更晚运行覆盖的 run_id → 那个目录(绝对)。走告警路径,不别名。
+    superseded_dir_of_run: Mapping[str, Path]
+
+    @property
+    def superseded_count(self) -> int:
+        return len(self.superseded_dir_of_run)
+
+
+def fold_catalog_by_dir(rows: Iterable[JobSummary]) -> CatalogFold:
+    """把目录记录折叠成「每个产物目录一条」。
+
+    详情页(``results.py`` / ``walk_forward.py``)都要做这件事,而且必须做得
+    **一模一样**:锚定、首条即最新、被覆盖者只计数不别名——这三条各自都被
+    审查抓到过一次(#444 r1/r2/r4)。所以它只有这一份实现。
+
+    比较键走 ``os.path.normcase``:Windows 上路径大小写不敏感,同一个目录写成
+    两种大小写会被当成两个目录,折叠就漏了。展示用的路径保留原样。
+    """
+    newest: list[JobSummary] = []
+    dir_of_run: dict[str, Path] = {}
+    superseded: dict[str, Path] = {}
+    seen: dict[str, Path] = {}
+    for row in rows:
+        if not row.run_dir:
+            continue
+        resolved = anchored_run_dir(row.run_dir)
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            superseded[row.run_id] = seen[key]
+            continue
+        seen[key] = resolved
+        newest.append(row)
+        dir_of_run[row.run_id] = resolved
+    return CatalogFold(
+        newest=tuple(newest),
+        dir_of_run=dir_of_run,
+        superseded_dir_of_run=superseded,
+    )
 
 
 def count_cli_rows_outside_output_tree() -> int:
