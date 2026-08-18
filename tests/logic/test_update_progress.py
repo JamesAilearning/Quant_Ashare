@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from web.operator_ui.update_progress import (  # noqa: E402
     FetchProgress,
     last_fetch_progress,
-    progress_for_run,
 )
 
 _TZ = timezone(timedelta(hours=8))
@@ -77,63 +76,45 @@ class ParseTests(unittest.TestCase):
                 self.assertIn(token, text)
 
 
-class RunAttributionTests(unittest.TestCase):
-    """进度必须能**归属到本次运行**，否则不显示（codex #450 r1）。
+class NoAttributionClaimTests(unittest.TestCase):
+    """本层**不声称**这条属于哪一次运行 —— 而且必须说出来（codex #450 r2）。
 
-    日志是追加的，每行只带 HH:MM:SS、不带日期，而且计划任务启动的运行**不写**
-    任何起始横幅（`[run_center]` 标记只有 UI 启动才写）。所以「取最后一条」
-    不等于「本次的」—— 一次刚起步、还没打出第一条进度行的运行，尾部那条属于
-    上一次。
+    日志行只带 HH:MM:SS、不含日期，计划任务启动的运行也不写带日期的起始横幅，
+    所以「昨天 21:00」与「今天 21:00」在数据里不可区分。三种启发式都被连着
+    证伪过（mtime 门 / 挂钟回退 / 时刻比大小），根因是结构性的。这里钉住的
+    是：**不要再往回加推断**，改为如实披露。
     """
 
-    _OLD = ("21:02:58 [f] INFO —   daily year=2026 progress: 2400/5883 "
-            "tickers (written=3263, skipped=46201)")
-    _STARTED = datetime(2026, 8, 18, 20, 43, 3, tzinfo=_TZ)
-
-    def test_log_untouched_since_start_yields_nothing(self) -> None:
-        # 本次运行开始后日志一个字都没写 → 尾部那条必然是上一次的。
-        stale_mtime = datetime(2026, 8, 17, 21, 2, 58, tzinfo=_TZ)
-        self.assertIsNone(progress_for_run(
-            self._OLD, log_mtime=stale_mtime,
-            started_at=self._STARTED.isoformat(),
-        ))
-
-    def test_old_progress_followed_by_a_new_run_boundary(self) -> None:
-        # codex 点名要的回归：旧进度行 + 新运行的行（挂钟回退）→ 不得采信。
-        text = self._OLD + chr(10) + "20:44:10 [d] INFO — Stage 0 repair: none"
-        mtime = datetime(2026, 8, 18, 20, 44, 10, tzinfo=_TZ)
-        self.assertIsNone(progress_for_run(
-            text, log_mtime=mtime, started_at=self._STARTED.isoformat(),
-        ))
-        # 同一判据在纯解析层也成立（不依赖 mtime）。
-        self.assertIsNone(last_fetch_progress(text))
-
-    def test_this_runs_own_progress_is_returned(self) -> None:
-        text = (self._OLD + chr(10)
-                + "20:44:10 [d] INFO — Stage 0 repair: none" + chr(10)
-                + "20:55:00 [f] INFO —   daily year=2026 progress: 600/5883 "
-                  "tickers (written=120, skipped=3)")
-        mtime = datetime(2026, 8, 18, 20, 55, 0, tzinfo=_TZ)
-        got = progress_for_run(
-            text, log_mtime=mtime, started_at=self._STARTED.isoformat(),
+    def test_a_later_starting_rerun_is_not_silently_attributed(self) -> None:
+        # codex 的场景：旧进度 10:30，新运行 15:00 起，当前非进度行 15:01。
+        # 任何「猜归属」的实现都会在这里把旧的当成新的。本层的契约是**只**
+        # 返回尾部最后一条，由调用方披露不确定性 —— 所以这里返回的就是那条
+        # 旧的，且**页面必须说它不可证明**（见 PagePlacementTests）。
+        text = (
+            "10:30:00 [f] INFO —   daily year=2026 progress: 2400/5883 "
+            "tickers (written=3263, skipped=46201)" + chr(10)
+            + "15:01:00 [d] INFO — Stage 0 repair: nothing to do"
         )
+        got = last_fetch_progress(text)
         assert got is not None
-        self.assertEqual((got.done, got.total, got.at), (600, 5883, "20:55:00"))
+        self.assertEqual((got.done, got.at), (2400, "10:30:00"))
 
-    def test_unattributable_inputs_yield_nothing_not_a_guess(self) -> None:
-        mtime = datetime(2026, 8, 18, 20, 55, 0, tzinfo=_TZ)
-        cases = {
-            "started_at 不可解析": dict(log_mtime=mtime, started_at="不是时间"),
-            "started_at 为空": dict(log_mtime=mtime, started_at=""),
-            "mtime 取不到": dict(log_mtime=None,
-                                started_at=self._STARTED.isoformat()),
-            "tz 一有一无": dict(
-                log_mtime=datetime(2026, 8, 18, 20, 55),
-                started_at=self._STARTED.isoformat()),
-        }
-        for label, kwargs in cases.items():
-            with self.subTest(case=label):
-                self.assertIsNone(progress_for_run(self._OLD, **kwargs))
+    def test_the_module_does_not_grow_an_attribution_guess_back(self) -> None:
+        # 防回潮：三种被证伪的启发式都不得再出现在这一层。
+        src = (
+            PROJECT_ROOT / "web" / "operator_ui" / "update_progress.py"
+        ).read_text(encoding="utf-8")
+        for forbidden in ("def progress_for_run", "log_mtime", "started_at"):
+            with self.subTest(forbidden=forbidden):
+                # docstring 里复述这段历史是允许的，禁的是**代码**。
+                code = src[src.index('"""', src.index('"""') + 3) + 3 :]
+                self.assertNotIn(forbidden, code)
+
+    def test_the_timestamp_is_carried_so_the_caller_can_disclose_it(self) -> None:
+        got = last_fetch_progress(_REAL_TAIL)
+        assert got is not None
+        self.assertEqual(got.at, "21:02:58")
+        self.assertIn("21:02:58", got.describe())
 
 
 class PagePlacementTests(unittest.TestCase):
@@ -150,9 +131,14 @@ class PagePlacementTests(unittest.TestCase):
         self.assertLess(progress_at, next_branch)
 
     def test_absent_progress_says_so_rather_than_rendering_nothing(self) -> None:
-        self.assertIn("还没有**本次运行**的 fetch 进度行", self.src)
-        # 缺失时必须说清「不拿旧的顶」，否则读者会以为只是还没开始。
-        self.assertIn("归属不了就不显示", self.src)
+        self.assertIn("日志尾部没有 fetch 进度行", self.src)
+
+    def test_the_caption_admits_it_cannot_prove_attribution(self) -> None:
+        # 撤回归属承诺之后，**必须**把不确定性说出来，并同时摆出两个时刻让
+        # 操作人自己判断 —— 否则读者会默认它就是本次运行的进度。
+        self.assertIn("无法证明这条属于本次运行", self.src)
+        self.assertIn("本次运行始于", self.src)
+        self.assertIn("_progress.describe()", self.src)
 
     def test_progress_is_part_of_the_polling_rerun_condition(self) -> None:
         # codex #450 r1: 片段计时只重跑片段，而追加的 fetch 行**不改变**状态

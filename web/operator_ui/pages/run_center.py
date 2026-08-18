@@ -35,7 +35,7 @@ from web.operator_ui.pages._run_center_helpers import (
     await_window_expired,
 )
 from web.operator_ui.recommend_runner import run_daily_recommend
-from web.operator_ui.update_progress import FetchProgress, progress_for_run
+from web.operator_ui.update_progress import FetchProgress, last_fetch_progress
 from web.operator_ui.update_runner import (
     START_DATE,
     default_log_path,
@@ -75,18 +75,16 @@ _LAST_LAUNCH_KEY = "run_center::last_launch"
 
 
 def _read_progress() -> FetchProgress | None:
-    """本次运行的最后一条 fetch 进度。整页与片段**共用这一个读取器**。
+    """日志尾部最后一条 fetch 进度。整页与片段**共用这一个读取器**。
 
     两处各写一份正是它们会分叉的方式(#442 r1/r3/r4 在这一页上连栽三次)。
+
+    **不判断它属于哪一次运行**:日志行只带时分秒、不含日期,计划任务的运行
+    也不写带日期的起始横幅,所以「昨天 21:00」与「今天 21:00」不可区分
+    (codex #450 r1/r2 连着证伪了三种启发式)。归属由下面的文案**如实披露**,
+    不用推断假装消除它。
     """
-    log_path = default_log_path(_provider_path)
-    try:
-        mtime = datetime.fromtimestamp(log_path.stat().st_mtime, tz=_CN_TZ)
-    except OSError:
-        mtime = None
-    return progress_for_run(
-        log_tail(log_path), log_mtime=mtime, started_at=_status.started_at
-    )
+    return last_fetch_progress(log_tail(default_log_path(_provider_path)))
 
 
 def _status_signature(
@@ -191,15 +189,14 @@ elif _status.kind == "running":
     _progress = _read_progress()
     if _progress is not None:
         st.caption(
-            f"⏳ 最后进度(fetch 阶段):{_progress.describe()} —— 分母是**该"
-            "端点该年**的票数,不是整轮进度(fetch 只是六个阶段中的一个);"
-            "时间戳见下方日志尾部。"
+            f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
+            f"本次运行始于 **{_status.started_at or '?'}** —— 日志行只带时分秒、"
+            "不含日期,**无法证明这条属于本次运行**(也可能是上一次留下的),"
+            "请对着两个时刻自行判断。分母是该端点该年的票数,不是整轮进度"
+            "(fetch 只是六个阶段中的一个)。"
         )
     else:
-        st.caption(
-            "⏳ 还没有**本次运行**的 fetch 进度行(可能尚未进入 fetch 阶段,"
-            "或日志尾部那条属于上一次运行——归属不了就不显示,绝不拿旧的顶)。"
-        )
+        st.caption("⏳ 日志尾部没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
 elif _status.ok:
     st.success(
         f"🟢 上次更新成功(exit 0):run_date={_status.run_date},"
@@ -259,9 +256,9 @@ st.caption(
 # ——闸门继续锁着、陈旧告警仍然不出(codex #442 r2)。
 _baseline_signature = _status_signature(_status, _status_class)
 # 进度也要进重跑判据:片段计时只重跑片段,而追加的 fetch 行**不改变**状态
-# 签名(kind/started_at/分类都不动)。只比签名的话,页面会一直冻在「还没有
-# 进度行」直到运行结束(codex #450 r1)。基线同样在整页渲染时刻定格——
-# 两侧都在片段里重算,正是 #442 r2 证伪过的那个错法。
+# 签名(kind/started_at/分类都不动)。只比签名的话,页面会一直冻在旧的那一行
+# 直到运行结束(codex #450 r1)。基线同样在整页渲染时刻定格——两侧都在片段里
+# 重算,正是 #442 r2 证伪过的那个错法。
 _baseline_progress = _read_progress()
 
 if _watching:
