@@ -775,6 +775,105 @@ def _gen(
                             allowed, allowed_operators)
 
 
+def _leaf_taints_available(allowed: frozenset[str] | None) -> frozenset[str]:
+    """白名单下**还能取到叶子**的 taint 集合。
+
+    叶子只有两类来源:``FEATURE``/``FLOAT`` 走
+    ``_restrict(sampling_pool(taint, allowed), allowed)``,受白名单约束;
+    ``INT_WINDOW`` 取字面量,与白名单无关。这里只回答受约束的那一类。
+    """
+    taints: set[str] = set()
+    for taint in ("PURE", "ADJ_TAINTED"):
+        pool = sampling_pool(taint, allowed)
+        if allowed is None or any(t in allowed for t in pool):
+            taints.add(taint)
+    return frozenset(taints)
+
+
+def _provably_unsatisfiable(
+    target_type: ExprType,
+    allowed: frozenset[str] | None,
+    allowed_operators: frozenset[str] | None,
+) -> bool:
+    """在给定白名单/算子池下,``target_type`` 是否**可证明**无解。
+
+    刻意**不收** ``max_depth``:深度不是判据的一部分(见下),留着这个参数会让
+    读者以为「深一点就能生成」的配置会被区别对待。
+
+    这是一次**保守**判断:只在能证明「无论怎么抽都构造不出来」时返回 True,
+    其余一律 False,交回原采样路径。判错方向的代价不对称——拒掉一个本可生成
+    的配置等于悄悄缩小 GP 搜索空间,那比慢严重得多(战役的池子会与预注册的
+    实验不符)。
+
+    做法是自底向上的可达性不动点,规则与 ``_gen``/``_random_leaf``/
+    ``_random_operator`` 完全同源:
+
+    * 底层只有叶子:``FEATURE``/``FLOAT`` 要求该 taint 在白名单下仍有终端,
+      ``INT_WINDOW`` 恒可(字面量);
+    * 每轮追加「存在一个**在算子池内**、输出该类型、且其**每个**输入类型
+      已可达」的算子,**跑到收敛为止**。
+
+    **承诺边界:只覆盖「类型层」可证明无解。** 构造器层的排除——``expression.py``
+    的 AST 后置校验,例如 ``_ts_corr_is_trivial`` 否掉两个操作数结构相同的
+    相关系数——**不建模**,那类配置照旧走原采样路径。
+
+    这是**刻意**的,不是遗漏(codex #452 r2)。把构造器规则镜像进来,等于让这里
+    成为 ``expression.py`` 里那套判断的第二份拷贝:将来每加一条校验规则都得
+    两处同步,不同步就静默漂。更要命的是**错法会反向**——现在的错是「拒得
+    太少」(安全:调用方退回采样),而构造器规则建模错了就是「拒得太多」,那会
+    悄悄缩小战役的搜索空间。拿那个风险去换完备性,对这个子系统不划算。
+
+    残留代价实测(默认 ``max_depth=6``):``allowed_terminals={"$close"}`` 配
+    ``allowed_operators={"ts_corr","cs_rank"}`` 走 188,525 次生成、**5.05 秒**
+    后抛错;对比类型层命中时 0.0001 秒、本次修复所消除的 38.8 分钟病理。
+    慢但正确,落在保守侧。
+
+    收敛而不按 ``max_depth`` 封顶,是因为 ``_gen`` 的深度边界并不真的封住无叶
+    类型:``max_depth=0`` 时 ``CSF`` 仍会走 ``_random_operator``,子节点拿到
+    ``max_depth-1`` 也照样能取叶子——``cs_winsorize($circ_mv)`` 就是 depth 0
+    下真实生成得出来的(codex #452)。按深度封顶会把它误判成无解,那正是本函数
+    最不能犯的错。用收敛集合只会**少拒**不会多拒:某个配置若只在更深处才有解,
+    这里放行、退回原采样路径(慢但正确)。
+
+    **不消耗任何随机数**——可满足时 rng 序列与改前逐字节一致,种子可复现是
+    本子系统钉死的不变量。
+    """
+    leaf_taints = _leaf_taints_available(allowed)
+
+    def leaf_ok(t: ExprType) -> bool:
+        if t.kind == "INT_WINDOW":
+            return True
+        if t.kind in ("FEATURE", "FLOAT"):
+            return t.taint in leaf_taints
+        return False
+
+    op_pool = V1_OPERATORS if allowed_operators is None else allowed_operators
+    table = _generator_table()
+    # 深度 0:只有叶子。
+    reachable: set[tuple[str, str]] = {
+        (kind, taint)
+        for kind in ("FEATURE", "FLOAT", "INT_WINDOW")
+        for taint in ("PURE", "ADJ_TAINTED")
+        if leaf_ok(ExprType(kind, taint))
+    }
+    # 跑到不动点收敛。轮数上界 = 类型数(每轮至少新增一个,否则已收敛)。
+    for _ in range(len(table) + 1):
+        grown = set(reachable)
+        for key, entries in table.items():
+            if key in grown:
+                continue
+            for op, inputs in entries:
+                if op.name not in op_pool:
+                    continue
+                if all((i.kind, i.taint) in reachable for i in inputs):
+                    grown.add(key)
+                    break
+        if grown == reachable:
+            break
+        reachable = grown
+    return (target_type.kind, target_type.taint) not in reachable
+
+
 def random_expression(
     target_type: ExprType,
     max_depth: int,
@@ -833,6 +932,18 @@ def random_expression(
                 f"{sorted(unknown)}; refusing to sample from a pool "
                 "narrower than the one declared."
             )
+    # 无解配置必须**立刻**说不,而不是花 MAX_OP_RETRIES ** max_depth 步才说
+    # (默认 max_depth=6 → 10^6;实测一次约 11.6 秒)。预检保守且不碰 rng:
+    # 判不准就照旧走下面的采样路径,可满足时抽取序列逐字节不变。
+    if _provably_unsatisfiable(target_type, allowed_terminals,
+                               allowed_operators):
+        raise GrammarError(
+            f"Generator cannot construct {target_type!r} under the campaign's "
+            f"frozen field set: terminal whitelist "
+            f"{sorted(allowed_terminals) if allowed_terminals else 'None'} "
+            "leaves no reachable leaf for the required input types. "
+            "Refusing up front rather than exhausting the retry budget."
+        )
     if rng is None:
         rng = Random()
     return _gen(target_type, max_depth, min_depth, rng, allowed_terminals,
