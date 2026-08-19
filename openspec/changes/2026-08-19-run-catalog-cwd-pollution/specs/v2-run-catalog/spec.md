@@ -81,6 +81,20 @@ The maintenance tool SHALL apply the **same** predicate function as the
 writer. Two copies of a containment rule are how the tool comes to
 classify legitimate rows for removal.
 
+The base a relative row is anchored against SHALL be named by the caller
+and SHALL NOT be derived from the output tree's path. Deriving it repeats
+the defect this change already removed twice: a tree named through a link
+alias would anchor legitimate relative rows beside the alias and mark them
+as debris. No behaviour in this feature is decided by where a path sits or
+how it is spelled.
+
+#### Scenario: the tree is named through a link alias
+
+- **GIVEN** the output tree named through a symlink or junction, and a
+  relative row that resolves inside it
+- **WHEN** the tool classifies the catalog
+- **THEN** the row is retained
+
 #### Scenario: a linked spelling of the tree is still inside it
 
 - **GIVEN** a run directory reached through a symlink or junction whose
@@ -146,12 +160,18 @@ take the lock SHALL modify nothing and say so. OS-level advisory locks are
 released by the kernel when a process dies, so no stale-lock heuristic is
 needed.
 
-Because a run's bookkeeping must never block the run itself, a writer that
-cannot take the lock within a short timeout SHALL log a warning and append
-anyway. The residual window this leaves — a writer that waited out its
-full timeout while the tool's millisecond-long critical section was open —
-SHALL still be detected by comparing the catalog against its state at the
-start of that section, and SHALL abort the rewrite.
+A writer that cannot take the lock SHALL NOT append without it. An
+unlocked append can land after the tool's final verification and before
+its replace, where no check can see it and the replace discards it — so a
+deliberate bypass path reopens exactly the window the lock exists to
+close. Such a writer SHALL instead emit the complete record to the log and
+skip the append, so the row is visible rather than silently dropped, and
+the catalog is explicitly a side record rather than the run's product.
+
+The tool SHALL additionally compare the catalog against its state at the
+start of the critical section before replacing it. With no bypass path
+this is a belt against a future writer that does not honour the lock, not
+protection for a designed one.
 
 Lines the tool cannot interpret SHALL be retained, including valid JSON
 that is not a record object (`null`, arrays, scalars). Such a value SHALL
@@ -164,18 +184,17 @@ identifiable as debris; anything else is the operator's data.
 - **WHEN** the tool is asked to prune
 - **THEN** nothing is written and the tool reports why
 
-#### Scenario: an append that bypassed the lock
+#### Scenario: an append that did not honour the lock
 
-- **GIVEN** a row appended inside the tool's critical section by a writer
-  that had already timed out waiting for the lock
+- **GIVEN** a row appended inside the tool's critical section
 - **WHEN** the tool is about to replace the catalog
 - **THEN** nothing is written and the tool reports why
 
-#### Scenario: a writer that cannot take the lock still records its run
+#### Scenario: a writer that cannot take the lock does not bypass it
 
 - **GIVEN** the lock held elsewhere for longer than the writer's timeout
 - **WHEN** a run appends its record
-- **THEN** the record is appended and the wait is logged
+- **THEN** nothing is appended and the complete record is logged
 
 #### Scenario: a JSON value that is not a record
 

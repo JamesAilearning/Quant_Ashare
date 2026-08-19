@@ -112,9 +112,20 @@ def catalog_boundary_verdict(
     return None
 
 
-#: 写入侧等锁的上限。等不到就**照样写**并告警——一次运行的旁路记账不该把运行
-#: 本身卡住。清理脚本的临界区只有毫秒级,正常情况下永远等不到这个超时。
-_WRITER_LOCK_TIMEOUT = 5.0
+#: 写入侧等锁的上限。
+#:
+#: 曾经是 5 秒、等不到就**绕过锁照样写**。那条「刻意的无锁写入路径」正是残余
+#: 竞态的唯一来源:它可能落在清理脚本最后一次指纹比对之后、``os.replace`` 之
+#: 前,于是那一行照样被丢掉——指纹兜底根本兜不住它(codex #453)。取消绕过,
+#: 窗口才真的关上。
+#:
+#: 于是这个上限只是「出大事了」的安全阀:清理脚本的临界区是一次本地文件重写,
+#: 几十毫秒量级(3560 行的索引重写远不到 1 毫秒),30 秒已是千倍余量;而持锁
+#: 进程一旦死掉,内核立刻释放锁,不会留下需要人工清理的僵尸锁。
+#:
+#: 与清理脚本的上限取同一量级:两边都是安全阀,不是调优参数。真等满了,清理
+#: 脚本可以挑空闲时刻重跑,写入侧则把记录原样打进日志。
+_WRITER_LOCK_TIMEOUT = 30.0
 _LOCK_POLL_SECONDS = 0.05
 
 
@@ -200,8 +211,9 @@ def append_run_record(
 ) -> None:
     """Append a single JSON line to the run catalog.
 
-    追加本身走跨进程劝告锁 (`catalog_lock`),与清理脚本互斥。等不到锁则照样
-    写并告警:一次运行的旁路记账不该把运行本身卡住。
+    追加本身走跨进程劝告锁 (`catalog_lock`),与清理脚本互斥。等不到锁**不会
+    绕过**:整条记录原样打进日志后放弃追加。绕过写入会落进清理脚本的临界区、
+    被随后的替换丢掉,那正是加锁要消灭的东西。
     """
     dest = catalog_path or _DEFAULT_CATALOG_PATH
 
@@ -245,11 +257,17 @@ def append_run_record(
     try:
         with catalog_lock(dest, timeout=_WRITER_LOCK_TIMEOUT) as held:
             if not held:
-                _logger.warning(
-                    "Run catalog lock not acquired within %.1fs (path=%s) — "
-                    "appending anyway, because a run's bookkeeping must never "
-                    "block the run itself.", _WRITER_LOCK_TIMEOUT, dest,
+                # 不绕过。无锁写入会落进清理脚本的临界区,被随后的替换悄悄
+                # 丢掉;这里把整条记录原样打进日志,于是它没有被静默吞掉,
+                # 只是没进索引。
+                _logger.error(
+                    "Run catalog append REFUSED: could not take the catalog "
+                    "lock within %.0fs (path=%s). Appending without the lock "
+                    "would let a concurrent maintenance rewrite discard this "
+                    "row, so the record is emitted here verbatim instead: %s",
+                    _WRITER_LOCK_TIMEOUT, dest, line.strip(),
                 )
+                return
             with open(dest, "a", encoding="utf-8") as fh:
                 fh.write(line)
     except OSError:

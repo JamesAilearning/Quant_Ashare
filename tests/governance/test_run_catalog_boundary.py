@@ -259,19 +259,23 @@ class TheCatalogLockSerializesWriters(unittest.TestCase):
                 with catalog_lock(catalog, timeout=0.2) as second:
                     self.assertFalse(second, "锁不排他 —— 清理脚本的保护是空的")
 
-    def test_a_writer_that_cannot_get_the_lock_still_appends(self) -> None:
-        # 一次运行的旁路记账不该把运行本身卡住。等不到锁就照样写 + 告警。
+    def test_a_writer_that_cannot_get_the_lock_does_not_bypass_it(self) -> None:
+        # 曾经是「等不到就照样写」。那条刻意的无锁写入路径正是残余竞态的唯一
+        # 来源:它可能落在清理脚本最后一次指纹比对之后、替换之前,于是那一行
+        # 照样被丢掉 —— 指纹兜底兜不住它。不绕过,窗口才真的关上。
         with tempfile.TemporaryDirectory() as tmp:
             catalog = Path(tmp) / "_index.jsonl"
             catalog.write_text("", encoding="utf-8")
             with catalog_lock(catalog, timeout=0.2) as held:
                 self.assertTrue(held)
-                with mock.patch.object(run_catalog, "_WRITER_LOCK_TIMEOUT", 0.1):
+                with mock.patch.object(run_catalog, "_WRITER_LOCK_TIMEOUT", 0.1),                         self.assertLogs("src.core.run_catalog", "ERROR") as logs:
                     append_run_record(
                         build_record(engine="pipeline", status="ok",
                                      output_dir=str(Path(tmp) / "x")),
                         catalog_path=catalog)
-            self.assertEqual(_line_count(catalog), 1, "等不到锁就把运行的记账丢了")
+            self.assertEqual(_line_count(catalog), 0, "绕过了锁 —— 竞态窗口还开着")
+            # 没进索引,但绝不是静默丢弃:整条记录原样在日志里。
+            self.assertIn("pipeline", "".join(logs.output))
 
 
 class PruneToolPreservesEvidence(unittest.TestCase):
@@ -292,7 +296,10 @@ class PruneToolPreservesEvidence(unittest.TestCase):
         return catalog, tree
 
     def _argv(self, catalog: Path, tree: Path, *extra: str) -> list[str]:
-        return ["--catalog", str(catalog), "--tree", str(tree), *extra]
+        # 相对锚点**独立点名**,绝不从 --tree 反推:--tree 一旦经别名指向 output
+        # 树,反推出来的锚会把合法的相对行判成残骸(codex #453)。
+        return ["--catalog", str(catalog), "--tree", str(tree),
+                "--relative-base", str(tree.parent), *extra]
 
     def test_report_only_by_default(self) -> None:
         from scripts.prune_run_catalog import main
@@ -325,8 +332,31 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(
                     {"engine": "walk_forward", "output_dir": "output/wf/keep"}) + "\n")
-            keep, drop, _ = classify(catalog, tree)
+            keep, drop, _ = classify(catalog, tree, tree.parent)
             self.assertEqual(len(keep), 2, "相对路径的合法行被判成了残骸")
+
+    def test_the_relative_anchor_does_not_follow_the_tree_spelling(self) -> None:
+        # `--tree` 经别名/联接指向 output 树时，用 `tree.parent` 当锚会把合法的
+        # 相对行锚到别名旁边而判成残骸。锚点必须独立点名 —— 这是「从路径的拼写
+        # 或位置推导语义」这个病的第三次复发（codex #453）。
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            tree = root / "output"
+            (tree / "runs").mkdir(parents=True)
+            (tree / "wf" / "keep").mkdir(parents=True)
+            alias = Path(tmp) / "alias"
+            if not _link(alias, tree):
+                self.skipTest("这个环境造不出目录链接（需要权限）")
+            catalog = tree / "runs" / "_index.jsonl"
+            catalog.write_text(json.dumps(
+                {"engine": "walk_forward", "output_dir": "output/wf/keep"}) + "\n",
+                encoding="utf-8")
+            keep, drop, _ = classify(catalog, alias, root)
+            self.assertEqual(
+                (len(keep), len(drop)), (1, 0),
+                "--tree 走别名时，合法的相对行被判成了残骸")
 
     def test_unparseable_lines_are_kept_not_dropped(self) -> None:
         # 看不懂的行不动 —— 那是别人的数据，判据只针对能证明是残骸的那些。
@@ -336,7 +366,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write("{ this is not json\n")
-            keep, drop, _ = classify(catalog, tree)
+            keep, drop, _ = classify(catalog, tree, tree.parent)
             self.assertIn("{ this is not json", keep)
             self.assertEqual(len(drop), 2)
 
@@ -349,7 +379,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write("null\n[1, 2]\n")
-            keep, drop, _ = classify(catalog, tree)
+            keep, drop, _ = classify(catalog, tree, tree.parent)
             self.assertIn("null", keep)
             self.assertIn("[1, 2]", keep)
             self.assertEqual(len(drop), 2)
@@ -371,9 +401,10 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             self.assertEqual(
                 list(catalog.parent.glob("_index.pruned-*.jsonl")), [])
 
-    def test_an_append_that_bypassed_the_lock_aborts_the_prune(self) -> None:
-        # 锁内还能变，只剩一种可能：写入侧等锁超时后绕过了锁。分类与写回之间
-        # 追加的行，既不在保留集也不在旁车里 —— 一改写就永久丢失。
+    def test_an_append_that_ignored_the_lock_aborts_the_prune(self) -> None:
+        # 走到这里索引还会变，只剩一种可能：有个不遵守这把锁的写入者。现有写入
+        # 侧不会（等不到锁就放弃追加），所以这是给「将来某个新写入口忘了拿锁」
+        # 留的兜底。分类与写回之间追加的行，既不在保留集也不在旁车里。
         import scripts.prune_run_catalog as tool
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -381,8 +412,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             real_classify = tool.classify
             calls: list[int] = []
 
-            def racing(path: Path, boundary: Path):
-                result = real_classify(path, boundary)
+            def racing(path: Path, boundary: Path, base: Path):
+                result = real_classify(path, boundary, base)
                 calls.append(1)
                 if len(calls) == 2:        # 锁内那次分类之后才插进去
                     with open(path, "a", encoding="utf-8") as fh:

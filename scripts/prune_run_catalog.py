@@ -12,11 +12,13 @@
 
     python scripts/prune_run_catalog.py                 # 只报数,什么都不动
     python scripts/prune_run_catalog.py --prune         # 清理,移除行写旁车留证
-    python scripts/prune_run_catalog.py --catalog PATH --tree DIR
+    python scripts/prune_run_catalog.py --catalog PATH --tree DIR \
+                                        --relative-base DIR
 
-`--tree` 是判据的边界,默认 `<repo>/output`,并且**总会打印出来**。它不从索引
-路径反推:`<tree>/runs/<file>` 这种布局一旦被当成判据,换个摆放位置就会悄悄
-改变边界,把文件位置变成隐藏的安全契约。
+`--tree`(判据的边界)和 `--relative-base`(相对路径的锚)都是**独立点名**的,
+默认分别是 `<repo>/output` 和 `<repo>`,并且**总会打印出来**。两者都不从别的
+路径反推:一旦让「文件摆在哪」或「路径怎么拼」去决定判据,换个摆放位置或换成
+链接拼写就会悄悄改变结论 —— 这个病在本 change 里犯过三次。
 
 清理走跨进程锁,与写入侧互斥;拿不到锁就不动手。
 
@@ -46,18 +48,24 @@ from src.core.run_catalog import (  # noqa: E402
 _DEFAULT_CATALOG = _REPO_ROOT / "output" / "runs" / "_index.jsonl"
 _DEFAULT_TREE = _REPO_ROOT / "output"
 
-#: 清理脚本等锁的上限。写入侧只等 5 秒就绕过,这里给足余量。
+#: 清理脚本等锁的上限。等不到就整个不动手 —— 清理是操作人手动发起的维护动作,
+#: 挑个空闲时刻重跑没有代价;写入侧则相反,那是运行的最后一步。
 _PRUNE_LOCK_TIMEOUT = 30.0
 
 
 def classify(
-    catalog: Path, tree: Path,
+    catalog: Path, tree: Path, relative_base: Path,
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     """``(树内行, 树外行, 树外行的解析结果)``。原始文本原样保留,不重排。
 
-    相对路径按「相对仓库根」解析 —— 本脚本是事后另起的进程,拿不到历史行当年
-    的 CWD,只能沿用控制台读侧那条约定。判据本来就是「控制台永远打不开的行」,
-    与控制台同约定才自洽。
+    ``relative_base`` 是相对路径的锚,**由调用方点名传进来**,绝不从 ``tree``
+    反推。本脚本是事后另起的进程,拿不到历史行当年的 CWD,只能沿用控制台读侧
+    那条约定(相对 = 相对仓库根);判据本来就是「控制台永远打不开的行」,与
+    控制台同约定才自洽。
+
+    曾经写成 ``tree.parent``:那样 ``--tree`` 一旦经别名/联接指向 output 树,
+    合法的相对行就会被锚到别名旁边而判成残骸(codex #453)。这是同一个病的
+    第三次复发 —— **从路径的拼写或位置推导语义**。
     """
     keep: list[str] = []
     drop: list[str] = []
@@ -80,7 +88,7 @@ def classify(
             continue
         if catalog_boundary_verdict(
                 str(record.get("output_dir") or ""),
-                tree=tree, relative_base=tree.parent) is None:
+                tree=tree, relative_base=relative_base) is None:
             keep.append(line)
         else:
             drop.append(line)
@@ -118,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         help="判据的边界:产物目录必须落在这棵树内(默认 <repo>/output)。",
     )
     parser.add_argument(
+        "--relative-base", type=Path, default=_DEFAULT_TREE.parent,
+        help="相对 output_dir 的锚(默认仓库根,与控制台读侧同约定)。",
+    )
+    parser.add_argument(
         "--prune", action="store_true",
         help="真的动手清理(默认只报数)。移除的行原样写入旁车文件留证。",
     )
@@ -128,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"边界(树内即保留):{args.tree}")
-    keep, drop, drop_records = classify(args.catalog, args.tree)
+    print(f"相对路径锚在  :{args.relative_base}")
+    keep, drop, drop_records = classify(
+        args.catalog, args.tree, args.relative_base)
     report(keep, drop, drop_records)
 
     if not args.prune:
@@ -151,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
         before = _fingerprint(args.catalog)
-        keep, drop, drop_records = classify(args.catalog, args.tree)
+        keep, drop, drop_records = classify(
+            args.catalog, args.tree, args.relative_base)
         if not drop:
             print("\n没有可清理的行。")
             return 0
@@ -164,13 +179,14 @@ def main(argv: list[str] | None = None) -> int:
         staged = args.catalog.with_name(f"{args.catalog.name}.tmp-{stamp}")
         staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
 
-        # 锁内还能变,只剩一种可能:某个写入侧等锁超时后绕过了锁。它得先干等
-        # 满 5 秒,而这里的临界区是毫秒级 —— 真撞上就宁可不动手。
+        # 走到这里索引还会变,只剩一种可能:有个不遵守这把锁的写入者。现有的
+        # 写入侧不会——它等不到锁就放弃追加而不是绕过——所以这是给「将来某个
+        # 新写入口忘了拿锁」留的兜底,不是给某条设计好的绕行路径打补丁。
         if _fingerprint(args.catalog) != before:
             staged.unlink(missing_ok=True)
             sidecar.unlink(missing_ok=True)
             print(
-                "\n索引在清理期间仍被改动(有写入侧绕过了锁)。为免吞掉那一行,"
+                "\n索引在清理期间仍被改动(有写入者没走这把锁)。为免吞掉那一行,"
                 "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
             return 3
 
