@@ -51,6 +51,14 @@ presented as a current production signal.
 - **THEN** the workbench displays "needs verification"
 - **AND** it does not display HOLD or rebalance as an actionable state
 
+#### Scenario: newest artifact has an invalid candidate list
+- **WHEN** the newest artifact otherwise matches the current incumbent but its
+  `picks` value is missing, is not a list, or contains a non-object member
+- **THEN** the workbench SHALL use the detailed page's candidate-list
+  validation boundary
+- **AND** it SHALL display "needs verification" rather than HOLD, rebalance,
+  or a current daily signal
+
 ### Requirement: Workbench SHALL surface operational exceptions without owning jobs
 
 The workbench SHALL display a read-only operational summary derived from the

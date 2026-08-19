@@ -6,6 +6,8 @@
   latest terminal failure from the existing unified job summaries.
 - [x] 1.3 Add pure parsing and one-shot selection helpers for a published
   daily-recommendation artifact date.
+- [x] 1.4 Reuse the detailed-page candidate-list validator before classifying
+  a recommendation as a current signal.
 
 ## 2. Operator UI
 

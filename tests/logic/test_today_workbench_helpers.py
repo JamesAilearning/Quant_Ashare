@@ -22,6 +22,7 @@ def _ensemble_payload(
         "rebalance_day": rebalance_day,
         "next_rebalance_date": "2026-08-25",
         "meta": {"ensemble": {"manifest_sha256": manifest}},
+        "picks": [],
     }
 
 
@@ -77,6 +78,37 @@ class DailySignalSummaryTests(unittest.TestCase):
                     current_model_sha=None,
                 )
                 self.assertEqual(result.kind, "needs_verification")
+
+    def test_invalid_picks_shape_never_becomes_a_current_signal(self) -> None:
+        cases: tuple[tuple[str, object], ...] = (
+            ("missing", None),
+            ("not a list", "not-a-list"),
+            ("non-object member", ["not-a-dict"]),
+        )
+        for label, picks in cases:
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                if label == "missing":
+                    payload.pop("picks")
+                else:
+                    payload["picks"] = picks
+                result = summarise_daily_signal(
+                    "2026-08-18",
+                    payload,
+                    incumbent=self.incumbent,
+                    current_model_sha=None,
+                )
+                self.assertEqual(result.kind, "needs_verification")
+                self.assertIn("候选列表", result.detail)
+
+    def test_empty_picks_remains_a_valid_rebalance_artifact(self) -> None:
+        result = summarise_daily_signal(
+            "2026-08-18",
+            _ensemble_payload(),
+            incumbent=self.incumbent,
+            current_model_sha=None,
+        )
+        self.assertEqual(result.kind, "rebalance")
 
 
 def _job(*, run_id: str, status: str, finished_at: str = "") -> JobSummary:

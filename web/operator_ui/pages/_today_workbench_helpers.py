@@ -12,6 +12,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_OK,
     artifact_meta_status,
     hold_state,
+    picks_table_rows,
     provenance_verdict,
 )
 
@@ -94,6 +95,19 @@ def summarise_daily_signal(
         return DailySignalSummary(
             "needs_verification",
             f"工件来源无法与现任模型确认（{verdict}）。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+
+    try:
+        # The detailed page treats a missing/non-list picks value, or a
+        # non-object member, as a corrupt producer artifact. The workbench
+        # must use that same boundary before presenting this file as current.
+        picks_table_rows(payload)
+    except ValueError as exc:
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选列表不合法：{exc}",
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
