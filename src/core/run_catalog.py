@@ -30,25 +30,57 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CATALOG_PATH = _REPO_ROOT / "output" / "runs" / "_index.jsonl"
 
 
-def _catalog_output_tree(catalog_path: Path) -> Path:
-    """索引所索引的那棵 output 树。
-
-    布局约定是 ``<tree>/runs/_index.jsonl``,所以树就是 ``parent.parent``。
-    判据锚在**索引自己**而不是硬编码仓库根:别的 worktree 有自己的 output
-    树,它们的运行该进它们自己的索引。
-    """
-    return catalog_path.resolve().parent.parent
+#: 默认索引所索引的那棵 output 树。**不从索引路径反推**——
+#: `<tree>/runs/<file>` 这种布局约定一旦被当成判据,任意 `catalog_path` 都会
+#: 悄悄改变边界:`/tmp/catalog.jsonl` 推出 `/`(于是接受一切绝对路径),
+#: `<repo>/output/custom.jsonl` 推出 `<repo>`(于是接受 output 树外的运行)。
+#: 把文件摆放位置变成隐藏的安全契约是坏设计(codex #453)。
+_DEFAULT_OUTPUT_TREE = _REPO_ROOT / "output"
 
 
 def _is_inside(child: Path, root: Path) -> bool:
-    """``child`` 是否落在 ``root`` 内(纯词法,不碰盘)。"""
+    """``child`` 是否落在 ``root`` 内。
+
+    **两侧都 resolve**。只归一化词法(normpath/normcase)挡不住同一目录的第三种
+    拼写:符号链接、Windows 联接、以及 8.3 短名——GitHub 的 Windows runner 把
+    TEMP 设成 `C:/Users/RUNNER~1/...`,于是索引解析成长名而 `output_dir` 保持
+    短名,合法运行被误拒(codex #453,本仓 CI 实测三个 Windows 位全红)。
+    #444 在控制台读边界上栽过同一个坑,这里不再重犯。
+
+    这里 resolve 的代价可接受:每次**运行**才走一次,不是逐行热路径(控制台那
+    条判据是逐行的,所以它才必须纯词法)。
+    """
     try:
-        norm_child = Path(os.path.normcase(os.path.normpath(str(child))))
-        norm_root = Path(os.path.normcase(os.path.normpath(str(root))))
-        norm_child.relative_to(norm_root)
+        child_resolved = child.resolve()
+        root_resolved = root.resolve()
+    except OSError:                       # pragma: no cover - 路径异常
+        return False
+    try:
+        Path(os.path.normcase(str(child_resolved))).relative_to(
+            Path(os.path.normcase(str(root_resolved)))
+        )
     except ValueError:
         return False
     return True
+
+
+def catalog_boundary_verdict(
+    output_dir: str, *, tree: Path,
+) -> str | None:
+    """``None`` = 可以编目;否则返回拒绝原因。
+
+    与清理脚本**共用这一个判据**——两处各写一份正是它们会分叉的方式
+    (codex #453 明确点了重复实现这一点)。
+    """
+    text = str(output_dir or "").strip()
+    if not text:
+        return "output_dir is missing"
+    target = Path(text)
+    if not target.is_absolute():
+        target = tree.parent / target
+    if not _is_inside(target, tree):
+        return f"output_dir is not inside the output tree ({tree})"
+    return None
 
 
 def append_run_record(
@@ -65,28 +97,24 @@ def append_run_record(
     """
     dest = catalog_path or _DEFAULT_CATALOG_PATH
 
-    # 产物落在 output 树外的运行,操作人**永远打不开**(那是控制台钉死的读
-    # 边界),却照样进索引 —— 于是索引里 97.1% 是必然被搁置的残骸。写入侧
-    # 在这里挡住:不是这棵树的运行,就不写这棵树的索引。
+    # 边界**只管默认那份共享索引**。显式传 catalog_path 本身就是「我知道我在
+    # 做什么、就要记到这里」的刻意行为(也是文档里给树外运行留的逃生口),不该
+    # 被二次猜测;而从任意索引路径反推它的 output 树,只会把文件摆放位置变成
+    # 隐藏契约(codex #453)。
     #
-    # 跳过而非抛错,与本函数既有契约一致(下面 OSError 也是 warning + 继续,
-    # 「产物仍在运行目录里」)——编目是旁路记录,不是运行的产物。确实需要为
-    # 树外运行编目的调用方,显式传 ``catalog_path``。
-    output_dir = str(record.get("output_dir") or "").strip()
-    tree = _catalog_output_tree(dest)
-    resolved_output = Path(output_dir) if output_dir else None
-    if resolved_output is not None and not resolved_output.is_absolute():
-        resolved_output = tree.parent / resolved_output
-    if resolved_output is None or not _is_inside(resolved_output, tree):
-        _logger.warning(
-            "Run catalog append SKIPPED: output_dir=%r is not inside this "
-            "catalog's output tree (%s). A run whose artifacts live outside "
-            "the tree can never be opened from the console, so cataloguing "
-            "it would only produce a row that is always set aside. Pass an "
-            "explicit catalog_path to index such a run deliberately.",
-            output_dir or "(missing)", tree,
-        )
-        return
+    # 污染仍被堵住:测试从不传 catalog_path,它们走的正是这条默认路径。
+    if catalog_path is None:
+        reason = catalog_boundary_verdict(
+            str(record.get("output_dir") or ""), tree=_DEFAULT_OUTPUT_TREE)
+        if reason is not None:
+            _logger.warning(
+                "Run catalog append SKIPPED: %s. A run whose artifacts live "
+                "outside the tree can never be opened from the console, so "
+                "cataloguing it would only produce a row that is always set "
+                "aside. Pass an explicit catalog_path to index such a run "
+                "deliberately.", reason,
+            )
+            return
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 
