@@ -20,7 +20,9 @@
 路径反推:一旦让「文件摆在哪」或「路径怎么拼」去决定判据,换个摆放位置或换成
 链接拼写就会悄悄改变结论 —— 这个病在本 change 里犯过三次。
 
-清理走跨进程锁,与写入侧互斥;拿不到锁就不动手。
+清理走跨进程锁,与写入侧互斥;拿不到锁就不动手。索引先归到**规范身份**再派生
+锁/旁车/暂存件/替换目标 —— 否则 `--catalog` 写成别名拼写时,替换动的是别名条目
+而锁又从别名派生,互斥直接落空。硬链接认不出来,发现就拒绝动手。
 
 **先合写入侧的修复再清理**:反过来做,下一次跑全量测试就重新污染。
 """
@@ -41,6 +43,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.core.run_catalog import (  # noqa: E402
+    canonical_catalog_path,
     catalog_boundary_verdict,
     catalog_lock,
 )
@@ -139,10 +142,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"索引不存在:{args.catalog}", file=sys.stderr)
         return 2
 
+    # 先把索引归到它的**规范身份**,后面的锁、旁车、暂存件、替换目标全部从它
+    # 派生。否则 `--catalog` 写成符号链接或经联接的目录拼写时:替换动的是那个
+    # 别名条目(真索引纹丝不动却报告清理成功),而锁又从别名派生,写入侧和这里
+    # 各拿各的锁 —— 互斥直接落空(codex #453)。
+    catalog = canonical_catalog_path(args.catalog)
+
+    print(f"索引            :{catalog}")
+    if str(catalog) != str(args.catalog):
+        print(f"  (你传的是 {args.catalog},上面是它的规范路径)")
     print(f"边界(树内即保留):{args.tree}")
-    print(f"相对路径锚在  :{args.relative_base}")
+    print(f"相对路径锚在    :{args.relative_base}")
     keep, drop, drop_records = classify(
-        args.catalog, args.tree, args.relative_base)
+        catalog, args.tree, args.relative_base)
     report(keep, drop, drop_records)
 
     if not args.prune:
@@ -156,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     # 丢失。原子替换关不上这个窗口:原子的是「换文件」那一步,不是「读—改—写」
     # 这整段(codex #453)。所以**整段都放进跨进程锁里**,并在锁内重新分类:
     # 上面报数用的那份快照可能已经过期。
-    with catalog_lock(args.catalog, timeout=_PRUNE_LOCK_TIMEOUT) as held:
+    with catalog_lock(catalog, timeout=_PRUNE_LOCK_TIMEOUT) as held:
         if not held:
             print(
                 f"\n{_PRUNE_LOCK_TIMEOUT:.0f} 秒内没拿到索引的锁,**没有清理"
@@ -164,25 +176,37 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr)
             return 4
 
-        before = _fingerprint(args.catalog)
+        # 硬链接靠路径规范化认不出来:两个名字指同一个 inode,``realpath``
+        # 也分不清谁是谁。而本工具是「换文件」式重写——换掉其中一个名字,
+        # 另外那些名字仍指着旧内容。认不出来就不动手。
+        links = catalog.stat().st_nlink
+        if links > 1:
+            print(
+                f"\n索引有 {links} 个硬链接名字。本工具靠原子替换改写,只会换掉"
+                "其中一个名字,别的名字仍指着旧内容 —— **没有清理任何东西**。"
+                "先解开硬链接再重跑。", file=sys.stderr)
+            return 5
+
+        before = _fingerprint(catalog)
         keep, drop, drop_records = classify(
-            args.catalog, args.tree, args.relative_base)
+            catalog, args.tree, args.relative_base)
         if not drop:
             print("\n没有可清理的行。")
             return 0
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        sidecar = args.catalog.with_name(f"{args.catalog.stem}.pruned-{stamp}.jsonl")
+        sidecar = catalog.with_name(f"{catalog.stem}.pruned-{stamp}.jsonl")
         # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
         sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
         # 经临时文件原子替换:中途失败留下的是完整旧索引,不是半截文件。
-        staged = args.catalog.with_name(f"{args.catalog.name}.tmp-{stamp}")
+        # 暂存件与旁车都落在规范路径旁边,于是 ``os.replace`` 必定同盘。
+        staged = catalog.with_name(f"{catalog.name}.tmp-{stamp}")
         staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
 
         # 走到这里索引还会变,只剩一种可能:有个不遵守这把锁的写入者。现有的
         # 写入侧不会——它等不到锁就放弃追加而不是绕过——所以这是给「将来某个
         # 新写入口忘了拿锁」留的兜底,不是给某条设计好的绕行路径打补丁。
-        if _fingerprint(args.catalog) != before:
+        if _fingerprint(catalog) != before:
             staged.unlink(missing_ok=True)
             sidecar.unlink(missing_ok=True)
             print(
@@ -190,10 +214,10 @@ def main(argv: list[str] | None = None) -> int:
                 "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
             return 3
 
-        os.replace(staged, args.catalog)
+        os.replace(staged, catalog)
 
     print(f"\n已移除 {len(drop)} 行,原样留证于:\n  {sidecar}")
-    print(f"索引现存 {len(keep)} 行:\n  {args.catalog}")
+    print(f"索引现存 {len(keep)} 行:\n  {catalog}")
     return 0
 
 

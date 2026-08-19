@@ -178,6 +178,33 @@ that is not a record object (`null`, arrays, scalars). Such a value SHALL
 NOT abort the report — the criterion applies only to rows provably
 identifiable as debris; anything else is the operator's data.
 
+The identity a lock is taken on, and the target the tool replaces, SHALL
+be the catalog's canonical path rather than the string a caller supplied.
+Mutual exclusion only holds if both sides compute the same lock, so
+deriving the lock name from the given spelling hands exclusion to spelling:
+a symlink alias yields a different lock file, and replacing through that
+alias overwrites the link while the real catalog keeps its old content and
+the tool reports success. The sidecar and the staging file SHALL sit
+beside the canonical path so the replace stays on one filesystem.
+
+Hard links cannot be collapsed this way — several names share one inode
+and none is canonical. Since the tool rewrites by replacing a name, the
+other names would keep pointing at the old content, so the tool SHALL
+refuse to prune a catalog that has more than one name.
+
+#### Scenario: the catalog is given through a symlink alias
+
+- **GIVEN** `--catalog` naming a symlink to the live catalog
+- **WHEN** the tool prunes
+- **THEN** the live catalog is the file rewritten, and the symlink is
+  still a symlink
+
+#### Scenario: the catalog has more than one name
+
+- **GIVEN** a catalog with a hard link
+- **WHEN** the tool is asked to prune
+- **THEN** nothing is written and the tool reports why
+
 #### Scenario: the tool cannot take the lock
 
 - **GIVEN** another process holding the catalog lock

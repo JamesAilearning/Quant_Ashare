@@ -35,6 +35,7 @@ from src.core.run_catalog import (  # noqa: E402
     _DEFAULT_OUTPUT_TREE,
     append_run_record,
     build_record,
+    canonical_catalog_path,
     catalog_lock,
 )
 
@@ -62,6 +63,20 @@ def _link(alias: Path, target: Path) -> bool:
     except OSError:
         return False
     return alias.exists()
+
+
+def _file_link(alias: Path, target: Path) -> bool:
+    """给**文件** ``target`` 造一个符号链接别名;造不出来返回 False。
+
+    目录联接不足以复现这一类:联接下的 ``alias/_index.jsonl`` 与真目录里的
+    是同一个目录条目,替换和锁都自然落在真文件上。要让别名成为**自己的**目录
+    条目,只有文件符号链接(POSIX 随手可造;Windows 需要开发者模式)。
+    """
+    try:
+        os.symlink(target, alias)
+    except (OSError, NotImplementedError):
+        return False
+    return alias.is_symlink()
 
 
 @contextlib.contextmanager
@@ -259,6 +274,39 @@ class TheCatalogLockSerializesWriters(unittest.TestCase):
                 with catalog_lock(catalog, timeout=0.2) as second:
                     self.assertFalse(second, "锁不排他 —— 清理脚本的保护是空的")
 
+    def test_canonical_path_collapses_aliased_spellings(self) -> None:
+        # 规范化函数本身:同一个文件经别名目录拼写,必须归到同一个路径。
+        # （这条用目录联接，Windows 上不需要特权，于是本机也跑得到；下面两条
+        # 需要文件符号链接，Windows 无开发者模式时会 skip，由 ubuntu CI 腿跑。）
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            catalog = real / "_index.jsonl"
+            catalog.write_text("", encoding="utf-8")
+            alias = Path(tmp) / "alias"
+            if not _link(alias, real):
+                self.skipTest("这个环境造不出目录链接（需要权限）")
+            self.assertEqual(
+                canonical_catalog_path(alias / "_index.jsonl"),
+                canonical_catalog_path(catalog),
+                "别名拼写没有归到同一个规范路径 —— 锁与替换都会各走各的",
+            )
+
+    def test_the_lock_identity_ignores_the_spelling(self) -> None:
+        # 锁名跟着调用方传进来的字符串走,等于把互斥交给了拼写:一个符号链接
+        # 别名会让两边各拿各的锁,互斥直接落空。
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog = Path(tmp) / "_index.jsonl"
+            catalog.write_text("", encoding="utf-8")
+            alias = Path(tmp) / "alias.jsonl"
+            if not _file_link(alias, catalog):
+                self.skipTest("这个环境造不出文件符号链接（需要权限）")
+            with catalog_lock(catalog, timeout=0.2) as first:
+                self.assertTrue(first)
+                with catalog_lock(alias, timeout=0.2) as second:
+                    self.assertFalse(
+                        second, "同一个文件的两种拼写各拿各的锁 —— 互斥落空")
+
     def test_a_writer_that_cannot_get_the_lock_does_not_bypass_it(self) -> None:
         # 曾经是「等不到就照样写」。那条刻意的无锁写入路径正是残余竞态的唯一
         # 来源:它可能落在清理脚本最后一次指纹比对之后、替换之前,于是那一行
@@ -384,6 +432,54 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             self.assertIn("[1, 2]", keep)
             self.assertEqual(len(drop), 2)
             self.assertEqual(main(self._argv(catalog, tree)), 0)
+
+    def test_prune_through_a_symlink_rewrites_the_real_catalog(self) -> None:
+        # 替换若落在别名条目上:符号链接被换成一个普通文件，真索引纹丝不动，
+        # 而工具报告清理成功。走规范路径的写入者继续往没被清理的那份追加。
+        from scripts.prune_run_catalog import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            alias = catalog.with_name("alias.jsonl")
+            if not _file_link(alias, catalog):
+                self.skipTest("这个环境造不出文件符号链接（需要权限）")
+            self.assertEqual(main(self._argv(alias, tree, "--prune")), 0)
+            self.assertEqual(
+                _line_count(catalog), 1, "替换动的是别名条目 —— 真索引没被清理")
+            self.assertTrue(alias.is_symlink(), "符号链接被换成了普通文件")
+
+    def test_the_tool_acts_on_the_canonical_path_not_the_given_one(self) -> None:
+        # 上一条要文件符号链接，Windows 无开发者模式时会 skip —— 而 skip 的测试
+        # 等于没测。这条把「工具是否真的走规范路径」变成平台无关的行为断言：
+        # 让规范化返回另一个真实文件，被清理的必须是它，传进来的那份不许动。
+        import scripts.prune_run_catalog as tool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            given, tree = self._catalog_with(Path(tmp))
+            stand_in = given.with_name("canonical.jsonl")
+            stand_in.write_text(given.read_text(encoding="utf-8"), encoding="utf-8")
+            with mock.patch.object(
+                    tool, "canonical_catalog_path", lambda _p: stand_in):
+                self.assertEqual(tool.main(self._argv(given, tree, "--prune")), 0)
+            self.assertEqual(_line_count(stand_in), 1, "没有对规范路径动手")
+            self.assertEqual(_line_count(given), 3, "对传进来的那个拼写动了手")
+
+    def test_prune_refuses_a_hard_linked_catalog(self) -> None:
+        # 硬链接靠路径规范化认不出来（两个名字同一个 inode）。而本工具是
+        # 「换文件」式重写：换掉其中一个名字，别的名字仍指着旧内容。
+        from scripts.prune_run_catalog import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            before = catalog.read_text(encoding="utf-8")
+            try:
+                os.link(catalog, catalog.with_name("second-name.jsonl"))
+            except (OSError, NotImplementedError):
+                self.skipTest("这个环境造不出硬链接")
+            self.assertEqual(main(self._argv(catalog, tree, "--prune")), 5)
+            self.assertEqual(catalog.read_text(encoding="utf-8"), before)
+            self.assertEqual(
+                list(catalog.parent.glob("_index.pruned-*.jsonl")), [])
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。

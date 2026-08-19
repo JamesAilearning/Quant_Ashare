@@ -166,6 +166,16 @@ def _unlock(fd: int) -> None:
         pass
 
 
+def canonical_catalog_path(catalog: Path) -> Path:
+    """索引文件的**规范身份**:同一个文件的任何拼写都归到同一个路径。
+
+    互斥只有在两边算出同一把锁时才成立。锁名跟着调用方传进来的字符串走,
+    等于把互斥交给了拼写:一个相对的 ``--catalog``、一个经联接的目录拼写、
+    一个符号链接别名,都会让清理脚本和写入侧各拿各的锁(codex #453)。
+    """
+    return Path(os.path.realpath(str(catalog)))
+
+
 @contextmanager
 def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
     """索引的跨进程互斥。``yield`` 出「是否真的拿到了」。
@@ -173,8 +183,12 @@ def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
     没有它,清理脚本读完与写回之间被追加的那一行会**永久丢失**:它既不在保留
     集里,也不在旁车留证里(codex #453)。原子替换关不上这个窗口——原子的是
     「换文件」这一步,不是「读—改—写」这整段。
+
+    锁名从**规范化后**的路径派生,于是拼写不同不会各拿各的锁。这条归一化放在
+    锁自己身上,而不是让每个调用方各自记得先规范化——那种约定迟早有人忘。
     """
-    lock_path = catalog.with_name(catalog.name + ".lock")
+    canonical = canonical_catalog_path(catalog)
+    lock_path = canonical.with_name(canonical.name + ".lock")
     fd = -1
     held = False
     try:
