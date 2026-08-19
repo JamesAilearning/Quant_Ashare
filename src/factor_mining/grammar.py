@@ -792,11 +792,13 @@ def _leaf_taints_available(allowed: frozenset[str] | None) -> frozenset[str]:
 
 def _provably_unsatisfiable(
     target_type: ExprType,
-    max_depth: int,
     allowed: frozenset[str] | None,
     allowed_operators: frozenset[str] | None,
 ) -> bool:
-    """在给定白名单/算子池/深度下,``target_type`` 是否**可证明**无解。
+    """在给定白名单/算子池下,``target_type`` 是否**可证明**无解。
+
+    刻意**不收** ``max_depth``:深度不是判据的一部分(见下),留着这个参数会让
+    读者以为「深一点就能生成」的配置会被区别对待。
 
     这是一次**保守**判断:只在能证明「无论怎么抽都构造不出来」时返回 True,
     其余一律 False,交回原采样路径。判错方向的代价不对称——拒掉一个本可生成
@@ -806,16 +808,21 @@ def _provably_unsatisfiable(
     做法是自底向上的可达性不动点,规则与 ``_gen``/``_random_leaf``/
     ``_random_operator`` 完全同源:
 
-    * 深度 0 只有叶子:``FEATURE``/``FLOAT`` 要求该 taint 在白名单下仍有终端,
+    * 底层只有叶子:``FEATURE``/``FLOAT`` 要求该 taint 在白名单下仍有终端,
       ``INT_WINDOW`` 恒可(字面量);
-    * 深度 d 追加「存在一个**在算子池内**、输出该类型、且其**每个**输入类型
-      在深度 d-1 可达」的算子。
+    * 每轮追加「存在一个**在算子池内**、输出该类型、且其**每个**输入类型
+      已可达」的算子,**跑到收敛为止**。
+
+    收敛而不按 ``max_depth`` 封顶,是因为 ``_gen`` 的深度边界并不真的封住无叶
+    类型:``max_depth=0`` 时 ``CSF`` 仍会走 ``_random_operator``,子节点拿到
+    ``max_depth-1`` 也照样能取叶子——``cs_winsorize($circ_mv)`` 就是 depth 0
+    下真实生成得出来的(codex #452)。按深度封顶会把它误判成无解,那正是本函数
+    最不能犯的错。用收敛集合只会**少拒**不会多拒:某个配置若只在更深处才有解,
+    这里放行、退回原采样路径(慢但正确)。
 
     **不消耗任何随机数**——可满足时 rng 序列与改前逐字节一致,种子可复现是
     本子系统钉死的不变量。
     """
-    if max_depth < 0:
-        return True
     leaf_taints = _leaf_taints_available(allowed)
 
     def leaf_ok(t: ExprType) -> bool:
@@ -834,8 +841,8 @@ def _provably_unsatisfiable(
         for taint in ("PURE", "ADJ_TAINTED")
         if leaf_ok(ExprType(kind, taint))
     }
-    # 逐层加深,最多 max_depth 层;不动点提前收敛就停。
-    for _ in range(max_depth):
+    # 跑到不动点收敛。轮数上界 = 类型数(每轮至少新增一个,否则已收敛)。
+    for _ in range(len(table) + 1):
         grown = set(reachable)
         for key, entries in table.items():
             if key in grown:
@@ -913,7 +920,7 @@ def random_expression(
     # 无解配置必须**立刻**说不,而不是花 MAX_OP_RETRIES ** max_depth 步才说
     # (默认 max_depth=6 → 10^6;实测一次约 11.6 秒)。预检保守且不碰 rng:
     # 判不准就照旧走下面的采样路径,可满足时抽取序列逐字节不变。
-    if _provably_unsatisfiable(target_type, max_depth, allowed_terminals,
+    if _provably_unsatisfiable(target_type, allowed_terminals,
                                allowed_operators):
         raise GrammarError(
             f"Generator cannot construct {target_type!r} under the campaign's "

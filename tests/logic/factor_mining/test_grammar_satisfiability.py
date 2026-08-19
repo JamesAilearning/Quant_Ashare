@@ -70,11 +70,14 @@ class RefusesUnsatisfiableUpFront(unittest.TestCase):
 class NeverRefusesSomethingGeneratable(unittest.TestCase):
     """假拒绝是**治理级**错误：池子会与预注册的实验不符。"""
 
-    #: 对照用的深度。**故意取小**:建立「事实」那一侧要直接调 `_gen`,而无解
+    #: 对照用的深度。**故意取小**：建立「事实」那一侧要直接调 `_gen`，而无解
     #: 白名单在那条路径上仍是 10 ** depth —— 深度 6 会让这条守护用例自己跑
-    #: 三分钟,那就成了它要防的那种测试。判据本身是深度参数化的,小深度同样
-    #: 能同时覆盖「可生成」与「不可生成」两侧。
-    _DEPTH = 3
+    #: 三分钟，那就成了它要防的那种测试。
+    #:
+    #: **必须含 0**：codex #452 抓到的假拒绝正是 `max_depth=0` —— 无叶类型
+    #: (CSF) 在 depth 0 仍会走 `_random_operator`，`cs_winsorize($circ_mv)`
+    #: 真的生成得出来。我上一版只测了 depth=6，整条深度维度是盲区。
+    _DEPTHS = (0, 1, 2, 3)
 
     def test_verdict_agrees_with_reality_across_whitelist_subsets(self) -> None:
         terms = sorted(FeatureRegistry.V1)
@@ -90,19 +93,21 @@ class NeverRefusesSomethingGeneratable(unittest.TestCase):
         false_refusals = []
         refused_count = generatable_count = 0
         for allowed in subsets:
-            refused = _provably_unsatisfiable(_TARGET, self._DEPTH, allowed, None)
-            produced = False
-            for seed in range(6):
-                try:
-                    _gen(_TARGET, self._DEPTH, 2, Random(seed), allowed, None)
-                    produced = True
-                    break
-                except (GrammarError, ValueError):
-                    continue
+            refused = _provably_unsatisfiable(_TARGET, allowed, None)
             refused_count += int(refused)
-            generatable_count += int(produced)
-            if refused and produced:
-                false_refusals.append(sorted(allowed))
+            for depth in self._DEPTHS:
+                produced = False
+                for seed in range(5):
+                    try:
+                        _gen(_TARGET, depth, min(2, depth), Random(seed),
+                             allowed, None)
+                        produced = True
+                        break
+                    except (GrammarError, ValueError):
+                        continue
+                generatable_count += int(produced)
+                if refused and produced:
+                    false_refusals.append((sorted(allowed), depth))
         self.assertEqual(
             false_refusals, [],
             f"预检拒绝了实际可生成的白名单: {false_refusals[:3]}",
@@ -112,11 +117,25 @@ class NeverRefusesSomethingGeneratable(unittest.TestCase):
         self.assertGreater(refused_count, 0, "样本里没有无解白名单")
         self.assertGreater(generatable_count, 0, "样本里没有可生成白名单")
 
+    def test_depth_zero_leafless_target_is_not_refused(self) -> None:
+        # codex #452：max_depth=0 时 CSF 无叶，`_gen` 仍走 `_random_operator`，
+        # 子节点拿 max_depth-1 照样取叶子 —— cs_winsorize($circ_mv) 是 depth 0
+        # 下真实生成得出来的。按 max_depth 封顶的可达性会把它误判成无解。
+        self.assertFalse(_provably_unsatisfiable(_TARGET, None, None))
+        produced = None
+        for seed in range(8):
+            try:
+                produced = _gen(_TARGET, 0, 0, Random(seed), None, None)
+                break
+            except (GrammarError, ValueError):
+                continue
+        self.assertIsNotNone(produced, "depth 0 本就应当生成得出来")
+
     def test_a_single_taint_whitelist_still_generates(self) -> None:
         # 注释里点名的合法情形：白名单只admits一种 taint，于是部分算子候选的
         # 输入池为空 —— 靠重试换候选仍应成功，预检**不得**拦它。
         seven = frozenset(sorted(FeatureRegistry.V1)[:7])
-        self.assertFalse(_provably_unsatisfiable(_TARGET, 6, seven, None))
+        self.assertFalse(_provably_unsatisfiable(_TARGET, seven, None))
         self.assertIsNotNone(
             random_expression(_TARGET, 6, 2, Random(3), seven, None)
         )
@@ -127,7 +146,7 @@ class DoesNotDisturbTheRngSequence(unittest.TestCase):
         # 可满足配置下，预检前后 rng 状态必须一致 —— 它一个数都不许抽。
         rng = Random(11)
         before = rng.getstate()
-        _provably_unsatisfiable(_TARGET, 6, None, None)
+        _provably_unsatisfiable(_TARGET, None, None)
         self.assertEqual(before, rng.getstate())
 
     def test_seeded_generation_is_unchanged(self) -> None:
