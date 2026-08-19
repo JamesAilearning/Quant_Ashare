@@ -1,0 +1,109 @@
+# 基本面 GP 挖掘战役 · 研究台账（append-only）
+#
+# 规则（与 quality_profitability_ledger.yaml 同款）：
+#   * 每次点火前记 intent，出结果后记对应 result —— 成对。
+#   * 阴性、作废、被拒的 run **照录**：无记录不得声称已校正选择偏差。
+#   * 本文件是冻结包的一部分，进 FROZEN_ARTIFACTS；任何改动都会推后
+#     冻结时间戳，从而使早于改动的 run 不再合规（门会抓）。
+#
+# holdout 揭盲的机器语义：终裁 run 点火后**立即**把 plan 的
+# holdout_unblinded 翻为 true + 在此追加 unblinding 条目 + commit。
+# 门对任何后续终裁见 true 即永拒 —— 重复终裁 = 在已签 holdout 上迭代。
+
+protocol_id: fundamental_gp_v1
+
+effective_trials_rule: >-
+  N = 本台账中 status=evaluated 的 OOS 试验数（每个进 OOS 评估的候选记
+  一次），加上任何注册过的敏感性切片。FWER 家族 = all_oos_evaluated_
+  candidates，与 plan.adjudication.gate_F_A.scope 同义。挖掘期被
+  coverage_min / 有效性门拒掉的表达式**不计入** N —— 它们从未被 OOS
+  评估，计入会稀释门槛（与 pv 战役同款口径）。
+  短窗 trial（n_days < plan.adjudication.gate_F_A.per_trial_min_n_days）**留在**
+  N 内、照常参与自举 max-t 零分布的构造，但不具备幸存者资格，另行单报
+  —— 即 plan 的 short_window_trial_policy: in_family_not_eligible。
+  此前 plan 写"出族"、本台账写"唯一排除项是挖掘期被拒的表达式"，
+  同一个候选按两份文件得到两个 N，而 N 决定门槛（codex #446 自审
+  P2）。归一取保守一侧：排除短窗会缩小 N、压低门槛，方向是宽松的。
+entries:
+  - id: E001
+    at: "2026-08-17"
+    kind: link_verification
+    status: completed
+    intent: >-
+      链路验证批次（不是本役试验）：证明"面板化 → GP → 边际贡献"链路与
+      三件套防线在真数据上成立，并实测全窗墙钟。窗 2021-01-01..2022-12-31
+      （IS 内），GP 40x3，无 prereg 门，**不做因子裁决**。
+    result: >-
+      链路成立。面板 (485, 964)，22 财报终端；面板构建边际 0.86s/日
+      （一次性装载 45.3s），mine 1025.4s，starter-check 482.0s。
+      三个冻结起步因子确定性求值全部产出观测：coverage 0.9928 /
+      0.9956 / 0.9495，日换手 0.0055 / 0.0049 / 0.0066，
+      rank_ic_mean −0.011862950049470897 / −0.008976871647367497 /
+      −0.007631585807496477。run 20260817T133006-20260817-73b31a09。
+    consequences_for_this_protocol:
+      - "性能：逐日 Python 循环不构成瓶颈，提案预留的 merge_asof 向量化不启用。"
+      - "复杂度惩罚偏置被实测量化（C3 34 节点吃 0.34），据此把主判据钉死
+         为净超额 + 换手，不用 fitness / IC。"
+      - "换手门槛 0.5 的实测锚点：纯财报因子年化单边约 1.2，现役 N5
+         csi800 为 6.49（比值约 0.18），门槛不卡真低换手因子。"
+      - "oper_cost 交叉核对在 A 股金融股上是弱信号（28 条分歧），协议
+         显式记为 weak signal，行业名单仍是主规则。"
+    caveat: >-
+      三个 IC 皆微负**不构成阴性证据**：2 年、单一 regime、IS 内、无行业
+      中性化、无多重检验。本条目记录的是链路事实，不是因子读数。
+
+  - id: E002
+    at: "2026-08-18"
+    kind: protocol_signature
+    # 签署 = #446 merge。本条目与 plan 的 signed_at_pr 必须同时成立：
+    # 一个说已签、另一个说待签，会让仓库同时暴露两个互相矛盾的治理
+    # 状态（codex #446 r2 P1）。治理钉子双向对账。
+    status: signed
+    signed_at_pr: 446
+    intent: >-
+      冻结本协议（plan + 本台账 + 战役 preset + 治理钉子）。签署前
+      **不得**点火战役 run；签署后本包内容不可修改，偏离走新提案。
+    result: >-
+      协议冻结生效：窗 IS 2019-01-01..2022-12-31 / OOS 2023-2024 /
+      holdout 2025 盲态；终端 34（17 字段 x 当期/prior，int_exp 按实测
+      覆盖 0.03 排除）；算子 基线 28 + coalesce；主判据 = 净超额 + 换手，
+      F_B 状态表（由裁尺三值裁决驱动，非点估计；状态数以协议的
+      state_count 为准；换手门槛 turnover_ratio <= 0.5）。
+    open_items:
+      - "预注册门（fundamental_prereg_gate.py）与演练脚本属后继 PR：
+         操作人 2026-08-18 裁决走「复制新门」而非泛化 gate3 门
+         （后者在质量因子包的 FROZEN_ARTIFACTS 内，改它会推后那个
+         已签包的冻结时间戳）。"
+      - "两个 rehearsal 场景（注入探针 / 金丝雀存活 → 门 REFUSE，仿 R6）
+         随新门同批。"
+      - "生产物化消费者未接线：含财报终端的池写生产目录目前由
+         promote 的可执行拒绝挡住（早于 mkdir）。晋升实操前必须落地。"
+
+# 已知未接线项。协议头的"尚未接线"一节与本段必须同时成立 —— 一份文件
+# 声称受门保护、另一份承认门还没写，是本包此前的自相矛盾（codex #446
+# 自审 P2）。治理钉双向对账。
+open_items:
+  - id: O1
+    what: scripts/research/fundamental_prereg_gate.py
+    status: not_implemented
+    note: >-
+      独立的预注册门与演练脚本属后继 PR。在它落地之前，协议**不得**
+      声称受门保护；当前的机器保证是 campaign 脚本的 load_frozen_plan /
+      assert_* 四项（协议头"已接线"一节）与治理钉。
+  - id: O3
+    what: run 目录之外的锚点（run_id + 池内容摘要记进版本控制台账）
+    status: not_implemented
+    note: >-
+      run 目录里的每一件都是伪造者可以一并改写的：两个既有摘要的比对
+      方式是"记录值 vs 就地重算"，实测改值 + 重算写回即可通过；
+      `pool_top_k` 与 `full_pool_size_pre_truncation` 更是不在任何摘要
+      覆盖内。当前三道检查拦粗心改动，不拦成体系伪造 —— 协议 search 段
+      已如实记账，**不得**声称它们防篡改。闭合方式是在挖矿时把 run_id
+      与池内容摘要写进本台账（受版本控制，伪造须连带改写 git 历史），
+      随 O1 的预注册门一并落地。
+  - id: O2
+    what: FROZEN_ARTIFACTS 登记
+    status: not_implemented
+    note: >-
+      本包四件尚未进 gate3_prereg_gate.py 的 FROZEN_ARTIFACTS 表；
+      冻结时间戳 vs run 时间戳的比较随 O1 一并落地。
