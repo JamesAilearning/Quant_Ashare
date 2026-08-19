@@ -8,6 +8,7 @@ without resorting to ``find`` + ``jq``.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,37 @@ from src.core.logger import get_logger
 
 _logger = get_logger(__name__)
 
-_DEFAULT_CATALOG_PATH = Path("output/runs/_index.jsonl")
+#: 仓库根。与 ``git_provenance`` 同惯例。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: 默认索引位置,**锚在仓库根**而不是进程 CWD。
+#:
+#: 相对路径意味着「同一份代码从不同目录启动就写到不同文件」——pytest 从仓库
+#: 根跑,于是每一次触发引擎的测试都往操作人的真实索引追加一行(实测该文件
+#: 3560 行里 3455 行、97.1% 是这么来的)。这与 #444 修过的
+#: ``run_dir_is_inspectable`` 锚定问题是同一类。
+_DEFAULT_CATALOG_PATH = _REPO_ROOT / "output" / "runs" / "_index.jsonl"
+
+
+def _catalog_output_tree(catalog_path: Path) -> Path:
+    """索引所索引的那棵 output 树。
+
+    布局约定是 ``<tree>/runs/_index.jsonl``,所以树就是 ``parent.parent``。
+    判据锚在**索引自己**而不是硬编码仓库根:别的 worktree 有自己的 output
+    树,它们的运行该进它们自己的索引。
+    """
+    return catalog_path.resolve().parent.parent
+
+
+def _is_inside(child: Path, root: Path) -> bool:
+    """``child`` 是否落在 ``root`` 内(纯词法,不碰盘)。"""
+    try:
+        norm_child = Path(os.path.normcase(os.path.normpath(str(child))))
+        norm_root = Path(os.path.normcase(os.path.normpath(str(root))))
+        norm_child.relative_to(norm_root)
+    except ValueError:
+        return False
+    return True
 
 
 def append_run_record(
@@ -33,6 +64,30 @@ def append_run_record(
     multi-process safety use a file lock or a dedicated writer process.
     """
     dest = catalog_path or _DEFAULT_CATALOG_PATH
+
+    # 产物落在 output 树外的运行,操作人**永远打不开**(那是控制台钉死的读
+    # 边界),却照样进索引 —— 于是索引里 97.1% 是必然被搁置的残骸。写入侧
+    # 在这里挡住:不是这棵树的运行,就不写这棵树的索引。
+    #
+    # 跳过而非抛错,与本函数既有契约一致(下面 OSError 也是 warning + 继续,
+    # 「产物仍在运行目录里」)——编目是旁路记录,不是运行的产物。确实需要为
+    # 树外运行编目的调用方,显式传 ``catalog_path``。
+    output_dir = str(record.get("output_dir") or "").strip()
+    tree = _catalog_output_tree(dest)
+    resolved_output = Path(output_dir) if output_dir else None
+    if resolved_output is not None and not resolved_output.is_absolute():
+        resolved_output = tree.parent / resolved_output
+    if resolved_output is None or not _is_inside(resolved_output, tree):
+        _logger.warning(
+            "Run catalog append SKIPPED: output_dir=%r is not inside this "
+            "catalog's output tree (%s). A run whose artifacts live outside "
+            "the tree can never be opened from the console, so cataloguing "
+            "it would only produce a row that is always set aside. Pass an "
+            "explicit catalog_path to index such a run deliberately.",
+            output_dir or "(missing)", tree,
+        )
+        return
+
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     line = json.dumps(_sanitize_for_json(record), ensure_ascii=False,
