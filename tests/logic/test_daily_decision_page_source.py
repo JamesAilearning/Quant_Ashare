@@ -63,6 +63,13 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("uuid4().hex", self.page)
         self.assertIn('st.button("✍ 记录决策"', self.page)
 
+    def test_review_progress_is_human_only_and_respects_hold_boundary(self) -> None:
+        self.assertIn("summarise_daily_review_progress", self.page)
+        self.assertIn("人工审阅进度", self.page)
+        self.assertIn("不表示买入、卖出、持仓或订单已执行", self.page)
+        self.assertIn("HOLD 日不显示人工审阅完成度", self.page)
+        self.assertIn("不计入上方审阅进度", self.page)
+
 
 class RegistrationAndDocsTests(unittest.TestCase):
     def test_page_registered_in_daily_decision_group_with_icon(self) -> None:

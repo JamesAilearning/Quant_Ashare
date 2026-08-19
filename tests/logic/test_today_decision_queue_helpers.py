@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import pytest
 
+from web.operator_ui.decision_journal import DecisionEntry
 from web.operator_ui.job_io import JobSummary
+from web.operator_ui.pages._daily_review_progress_helpers import (
+    summarise_daily_review_progress,
+)
 from web.operator_ui.pages._today_decision_queue_helpers import (
     build_today_decision_queue,
     queue_counts,
     queue_page_link,
-    review_progress,
 )
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
 
@@ -20,6 +23,21 @@ def _job(run_id: str, status: str, *, finished_at: str = "") -> JobSummary:
         source="ui",
         finished_at=finished_at,
         error_message=f"{run_id} failed" if status == "failed" else "",
+    )
+
+
+def _review_entry(code: str) -> DecisionEntry:
+    return DecisionEntry(
+        journal_version=1,
+        trade_date="2026-08-19",
+        code=code,
+        action="adopt",
+        reason="已完成核对",
+        rank=1,
+        score=0.01,
+        model_id="model-sha",
+        decided_at="2026-08-19T09:00:00+08:00",
+        nonce=f"nonce-{code}",
     )
 
 
@@ -75,8 +93,9 @@ def test_same_source_key_deduplicates_but_distinct_jobs_remain_visible() -> None
 
 
 def test_valid_signal_with_unreviewed_candidates_creates_dated_review_navigation() -> None:
-    progress = review_progress(
-        "2026-08-19", ("SH600000", "SZ000001"), {("2026-08-19", "SH600000"): object()},
+    progress = summarise_daily_review_progress(
+        "2026-08-19", ("SH600000", "SZ000001"),
+        {("2026-08-19", "SH600000"): _review_entry("SH600000")},
     )
     items = _queue(review=progress)
 
@@ -95,7 +114,7 @@ def test_journal_or_candidate_shape_problem_blocks_fake_zero_review_count() -> N
     assert any(item.source_key == "review:verification" and item.kind == "blocker" for item in items)
     assert not any(item.kind == "review" for item in items)
     with pytest.raises(ValueError, match="重复"):
-        review_progress("2026-08-19", ("SH600000", "SH600000"), {})
+        summarise_daily_review_progress("2026-08-19", ("SH600000", "SH600000"), {})
 
 
 def test_malformed_job_catalog_blocks_a_partial_catalog_from_looking_healthy() -> None:

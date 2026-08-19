@@ -64,8 +64,36 @@ from web.operator_ui.pages._daily_decision_helpers import (
     resolve_incumbent,
     resolve_model_path,
 )
+from web.operator_ui.pages._daily_review_progress_helpers import (
+    DailyReviewProgress,
+    summarise_daily_review_progress,
+    validate_review_candidate_codes,
+)
 
 _ACTION_LABELS = {"adopt": "采纳", "reject": "拒绝", "watch": "观望"}
+
+
+def _render_review_progress(progress: DailyReviewProgress) -> None:
+    """Render journal-derived human-review coverage without execution claims."""
+    st.subheader("人工审阅进度")
+    if not progress.candidate_count:
+        st.info("当前有效信号没有候选，未生成审阅完成度。")
+        return
+    coverage_cols = st.columns(3)
+    coverage_cols[0].metric("候选", progress.candidate_count)
+    coverage_cols[1].metric("已审阅", progress.reviewed_count)
+    coverage_cols[2].metric("未审阅", progress.unreviewed_count)
+    action_cols = st.columns(3)
+    action_cols[0].metric("人工采纳", progress.adopt_count)
+    action_cols[1].metric("人工拒绝", progress.reject_count)
+    action_cols[2].metric("人工观望", progress.watch_count)
+    st.caption(
+        "上述仅表示当前候选的有效人工审阅记录，不表示买入、卖出、持仓或订单已执行。"
+    )
+    if progress.latest_reviewed_at:
+        st.caption(f"最近一次有效人工审阅：{progress.latest_reviewed_at}")
+    else:
+        st.caption("当前候选尚无有效人工审阅记录。")
 
 render_page_header(
     "日度信号与人工决策",
@@ -393,10 +421,11 @@ st.caption(
     "评分是**1 日**预测收益而生产周频持有约 5 日,故该列是**保守下界**,"
     "不是逐日门槛。"
 )
-if _rows:
-    st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("该工件买入清单为空(topk=0 或全部被掩)。")
+# Declare the visual positions before the form. The journal is read after a
+# possible append below, so the same click renders the up-to-date effective
+# record without adding a second JSONL reader or a manual refresh step.
+_review_summary_slot = st.container()
+_candidate_table_slot = st.container()
 
 # ---------------------------------------------------------------------------
 # 决策表单(显式按钮 + 落盘 nonce 幂等;见威胁对表 T1)
@@ -417,7 +446,13 @@ except DecisionJournalError as _journal_exc:
 if "dd_nonce" not in st.session_state:
     st.session_state["dd_nonce"] = uuid4().hex
 
-_codes = [str(row["代码"]) for row in _rows if row.get("代码")]
+try:
+    _codes = validate_review_candidate_codes(
+        _selected_date, (str(row.get("代码") or "") for row in _rows),
+    )
+except ValueError as _candidate_code_exc:
+    st.error(f"⚠ 工件候选标识无法核验：{_candidate_code_exc}")
+    st.stop()
 if _hold.is_hold:
     # spec(v2-daily-decision-page HOLD reader): 入场表单 SHALL 被禁用或
     # 等效阻断 — HOLD 日不渲染表单控件,监控视图不受理入场决策。
@@ -492,11 +527,52 @@ try:
 except DecisionJournalError as _read_exc:
     st.error(f"⚠ 决策日志读取失败:{_read_exc}")
     st.stop()
-if _journal.malformed_count:
-    st.warning(
-        f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
-        f"文件:{_journal_file})。"
-    )
+with _review_summary_slot:
+    if _journal.malformed_count:
+        st.warning(
+            f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
+            f"文件:{_journal_file})。以下仅统计有效记录，审阅完整性需要核验。"
+        )
+    if _hold.is_hold:
+        st.info("HOLD 日不显示人工审阅完成度；该工件不构成入场决策。")
+        _review_progress = None
+    else:
+        try:
+            _review_progress = summarise_daily_review_progress(
+                _selected_date, _codes, _journal.effective,
+            )
+        except ValueError as _review_exc:
+            st.error(f"⚠ 无法核验当前候选的人工审阅进度：{_review_exc}")
+            st.stop()
+        _render_review_progress(_review_progress)
+
+with _candidate_table_slot:
+    if _rows:
+        if _review_progress is None:
+            _candidate_display_rows = _rows
+        else:
+            _candidate_display_rows = [
+                {
+                    **row,
+                    "人工审阅": (
+                        "未审阅"
+                        if state.action is None
+                        else f"人工审阅·{_ACTION_LABELS.get(state.action, state.action)}"
+                    ),
+                    "最新理由摘要": state.reason_summary or "—",
+                    "最近审阅时间": state.decided_at or "—",
+                }
+                for row, state in zip(
+                    _rows, _review_progress.candidates, strict=True,
+                )
+            ]
+        st.dataframe(
+            pd.DataFrame(_candidate_display_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("该工件买入清单为空(topk=0 或全部被掩)。")
 _today_effective = [
     {
         "代码": entry.code,
@@ -509,7 +585,8 @@ _today_effective = [
     for (t_date, _code), entry in sorted(_journal.effective.items())
     if t_date == _selected_date
 ]
-st.subheader(f"{_selected_date} 的决策({len(_today_effective)})")
+st.caption("下方为该日期的全部有效日志记录；与当前候选不匹配的记录不计入上方审阅进度。")
+st.subheader(f"{_selected_date} 的有效日志记录({len(_today_effective)})")
 if _today_effective:
     st.dataframe(
         pd.DataFrame(_today_effective), use_container_width=True, hide_index=True,
