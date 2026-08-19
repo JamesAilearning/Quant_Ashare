@@ -57,6 +57,9 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _six_increasing_indices,
     _trading_day_options,
     _walk_forward_date_defaults,
+    build_config_review_sections,
+    config_preset_differences,
+    unsupported_prefill_keys,
 )
 from web.operator_ui.training_guards import (
     ProviderMetadata,
@@ -307,7 +310,10 @@ def _prefill_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
-render_page_header("配置运行", "配置并启动流水线或滚动验证作业。")
+render_page_header(
+    "配置运行",
+    "逐步配置并启动日频研究运行；本页不会发布或修改生产 serving。",
+)
 
 # ---------------------------------------------------------------------------
 # Prefill from previous run
@@ -342,8 +348,9 @@ if "cr_preset_initialized" not in st.session_state:
     st.session_state["cr_preset_initialized"] = True
 
 # ---------------------------------------------------------------------------
-# Mode & Preset bar
+# Research goal & preset
 # ---------------------------------------------------------------------------
+st.markdown("#### ① 研究目标与预设")
 bar_col1, bar_col2 = st.columns(2)
 with bar_col2:
     # 只有 UI 形状的预设进下拉框。战役冻结件(无 mode 键)本页跑不了:
@@ -448,7 +455,7 @@ form_col, preview_col = st.columns([0.62, 0.38])
 with form_col:
 
     # --- Data section ---
-    with st.expander("📊 数据", expanded=True):
+    with st.expander("② 数据范围", expanded=True):
         # The publisher / UI Tushare ingest + its saved-provider catalog were
         # retired (unify U3). Point provider_uri at a PRODUCTION bundle built by
         # the data-pipeline scripts (scripts/data_pipeline/); QUANT_PROVIDER_URI
@@ -617,26 +624,8 @@ with form_col:
                     ),
                 )
 
-    # --- Model section ---
-    with st.expander("🧠 模型", expanded=True):
-        model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
-        model_default = _cr("model_type", "LGBModel")
-        model_type = st.selectbox(
-            "模型类型 (model_type)",
-            model_options,
-            index=model_options.index(model_default) if model_default in model_options else 0,
-            key="cr_model_type",
-        )
-        with st.expander("高级参数", expanded=False):
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                num_boost_round = st.number_input("迭代轮数 (num_boost_round)", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
-                early_stopping_rounds = st.number_input("早停轮数 (early_stopping_rounds)", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
-            with ac2:
-                learning_rate = st.number_input("学习率 (learning_rate)", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
-
     # --- Strategy section ---
-    with st.expander("💹 策略", expanded=True):
+    with st.expander("③ 策略约束", expanded=True):
         sc1, sc2 = st.columns(2)
         with sc1:
             topk = st.number_input("持仓数 (topk)", value=_cr("topk", 50), min_value=1, key="cr_topk")
@@ -651,6 +640,24 @@ with form_col:
             )
             benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300TR"), key="cr_benchmark_code")
 
+    # --- Advanced model / training section ---
+    with st.expander("④ 高级设置 · 模型与训练", expanded=False):
+        model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
+        model_default = _cr("model_type", "LGBModel")
+        model_type = st.selectbox(
+            "模型类型 (model_type)",
+            model_options,
+            index=model_options.index(model_default) if model_default in model_options else 0,
+            key="cr_model_type",
+        )
+        st.markdown("##### 训练参数")
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            num_boost_round = st.number_input("迭代轮数 (num_boost_round)", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
+            early_stopping_rounds = st.number_input("早停轮数 (early_stopping_rounds)", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
+        with ac2:
+            learning_rate = st.number_input("学习率 (learning_rate)", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
+
     # --- Backtest / cost-model section ---
     # Cost-model + risk knobs that PipelineConfig / WalkForwardConfig accept but
     # the form previously left at their (backend) defaults. The literals below
@@ -659,7 +666,7 @@ with form_col:
     # the defaults. stamp_tax_schedule is intentionally NOT exposed (it's a
     # dated schedule, not a scalar; backend resolves None -> the 2023-08-28
     # reform default).
-    with st.expander("⚙️ 回测 / 成本模型（高级）", expanded=False):
+    with st.expander("④ 高级设置 · 回测 / 成本模型", expanded=False):
         bc1, bc2 = st.columns(2)
         with bc1:
             adjust_default = str(
@@ -733,7 +740,7 @@ with form_col:
         )
 
     # --- Compute section ---
-    with st.expander("⚙️ 算力", expanded=True):
+    with st.expander("④ 高级设置 · 算力", expanded=False):
         cc1, cc2 = st.columns(2)
         with cc1:
             device_default = _cr("compute_device", "cpu")
@@ -747,7 +754,10 @@ with form_col:
         with cc2:
             st.caption("Workers：auto")
 
-    with st.expander("🛡️ csi800 扩池守卫（instruments=csi800 时为必填契约）"):
+    with st.expander(
+        "④ 高级设置 · csi800 扩池守卫（instruments=csi800 时为必填契约）",
+        expanded=False,
+    ):
         st.caption(
             "后端把这三项当作 `instruments=csi800` 的**构造前置**:缺一项即"
             "拒绝构造配置(没有 sleeve 分解与 campaign 约束的 csi800 指标,"
@@ -957,8 +967,81 @@ with form_col:
     _calibration_rate = _gather_calibration_seconds_per_unit()
     estimated = _estimate_duration(preview_config, seconds_per_unit=_calibration_rate)
 
-    # --- Sticky run bar ---
+    # --- Final review -------------------------------------------------------
     st.divider()
+    st.subheader("⑤ 提交前复核")
+    st.caption(
+        "以下内容直接读取本次即将提交的配置。此处只会启动研究运行，"
+        "不会发布模型、修改 production serving 或生成交易指令。"
+    )
+
+    _selected_preset = str(st.session_state.get("cr_preset", "Default"))
+    _review_preset = (
+        _load_preset(_selected_preset)
+        if _selected_preset != CUSTOM_PRESET_NAME
+        else None
+    )
+    _review_preset = _review_preset or None
+    _review_sections = build_config_review_sections(preview_config)
+    _preset_differences = config_preset_differences(
+        preview_config, _review_preset,
+    )
+    _unsupported_prefill = unsupported_prefill_keys(
+        PREFILL_CONFIG, preview_config,
+    )
+
+    with st.expander("完整提交配置（只读）", expanded=True):
+        st.caption(f"模式：`{mode}` · 所选预设：`{_selected_preset}`")
+        for _section in _review_sections:
+            st.markdown(f"**{_section.title}**")
+            st.dataframe(
+                [
+                    {"配置项": key, "即将提交": str(value)}
+                    for key, value in _section.rows
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+    with st.expander("相对预设的差异（只读）", expanded=True):
+        if _selected_preset == CUSTOM_PRESET_NAME:
+            st.info("Custom 没有可读取的预设基线，无法确认差异。")
+        elif _preset_differences is None:
+            st.warning(
+                f"预设 `{_selected_preset}` 无法读取，无法确认差异；"
+                "不会使用默认值替代。"
+            )
+        elif not _preset_differences:
+            st.success("与所选预设没有差异。")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "配置项": _difference.key,
+                        "预设值": (
+                            str(_difference.preset_value)
+                            if _difference.preset_present
+                            else "（预设未定义）"
+                        ),
+                        "即将提交": (
+                            str(_difference.emitted_value)
+                            if _difference.emitted_present
+                            else "（本页不会提交）"
+                        ),
+                    }
+                    for _difference in _preset_differences
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+    if _unsupported_prefill:
+        st.warning(
+            "历史运行中以下字段不属于本页当前支持的提交 schema，"
+            "本次不会静默携带：" + ", ".join(_unsupported_prefill)
+        )
+
+    # --- Research launch controls ------------------------------------------
     status_col, btn_col = st.columns([3, 2])
     with status_col:
         if guard_errors:
@@ -1003,7 +1086,11 @@ with form_col:
         st.caption(f"预估耗时：{estimated}")
 
     with btn_col:
-        submitted = st.button("🚀 运行", disabled=(not provider_uri_valid or bool(guard_errors)), use_container_width=True)
+        submitted = st.button(
+            "🚀 启动研究运行",
+            disabled=(not provider_uri_valid or bool(guard_errors)),
+            use_container_width=True,
+        )
         if st.button("💾 保存为预设", use_container_width=True):
             st.session_state["cr_saving_preset"] = True
 
@@ -1154,7 +1241,7 @@ with form_col:
 
 # ===== RIGHT: Live YAML preview =====
 with preview_col:
-    st.markdown("#### 配置预览")
+    st.markdown("#### 完整提交 YAML（只读）")
 
     # --- Preview actions: copy + diff toggle ---------------------------------
     # Two buttons; both bind directly to session_state flags consumed below

@@ -13,6 +13,8 @@ side cannot accidentally drift the calendar math.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
@@ -21,6 +23,171 @@ from web.operator_ui.training_guards import (
     LABEL_LOOKAHEAD_DAYS,
     ProviderMetadata,
 )
+
+
+@dataclass(frozen=True)
+class ConfigReviewSection:
+    """One readable group from the exact emitted run configuration."""
+
+    title: str
+    rows: tuple[tuple[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class ConfigPresetDifference:
+    """One difference between an emitted value and the selected preset."""
+
+    key: str
+    emitted_value: Any | None
+    emitted_present: bool
+    preset_value: Any | None
+    preset_present: bool
+
+
+# Presentation ordering only.  These keys are read from the already-built
+# payload; this module MUST NOT provide defaults or manufacture configuration
+# fields, because ``config_run.py`` has one authoritative launch builder.
+_CONFIG_REVIEW_SECTION_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "研究目标",
+        ("mode", "model_type", "feature_handler"),
+    ),
+    (
+        "数据范围",
+        (
+            "provider_uri",
+            "instruments",
+            "train_start",
+            "train_end",
+            "valid_start",
+            "valid_end",
+            "test_start",
+            "test_end",
+            "overall_start",
+            "overall_end",
+            "train_months",
+            "valid_months",
+            "test_months",
+            "step_months",
+            "ensemble_window",
+            "namechange_path",
+        ),
+    ),
+    (
+        "策略约束",
+        (
+            "benchmark_code",
+            "topk",
+            "n_drop",
+            "signal_to_execution_lag",
+            "attribution_sleeve_grouping",
+            "risk_constraints_enabled",
+            "risk_constraints_calibration",
+        ),
+    ),
+    (
+        "高级设置",
+        (
+            "compute_device",
+            "num_boost_round",
+            "early_stopping_rounds",
+            "learning_rate",
+            "adjust_mode",
+            "limit_threshold",
+            "commission_rate",
+            "slippage_bps",
+            "min_cost",
+            "init_cash",
+            "seed",
+        ),
+    ),
+)
+
+
+def build_config_review_sections(
+    emitted_config: Mapping[str, Any],
+) -> tuple[ConfigReviewSection, ...]:
+    """Group every emitted field for a pre-launch review.
+
+    The helper retains all fields, including a future key that has not yet been
+    assigned a presentation group.  Such fields use a stable final group so a
+    UI update can never hide part of the submitted payload by omission.
+    """
+
+    seen: set[str] = set()
+    sections: list[ConfigReviewSection] = []
+    for title, keys in _CONFIG_REVIEW_SECTION_KEYS:
+        rows = tuple(
+            (key, emitted_config[key])
+            for key in keys
+            if key in emitted_config
+        )
+        seen.update(key for key, _ in rows)
+        if rows:
+            sections.append(ConfigReviewSection(title=title, rows=rows))
+
+    remaining = tuple(
+        (key, emitted_config[key])
+        for key in sorted(set(emitted_config) - seen)
+    )
+    if remaining:
+        sections.append(ConfigReviewSection(title="其他已提交设置", rows=remaining))
+    return tuple(sections)
+
+
+def config_preset_differences(
+    emitted_config: Mapping[str, Any],
+    preset_config: Mapping[str, Any] | None,
+) -> tuple[ConfigPresetDifference, ...] | None:
+    """Return stable, explicit differences from a selected preset.
+
+    ``None`` means no loadable preset was supplied, which is different from an
+    empty tuple: the latter is an affirmative proof that both mappings match.
+    Keys only present on one side are preserved with a presence flag rather
+    than silently treated as a default.
+    """
+
+    if preset_config is None:
+        return None
+
+    ordered_keys = list(emitted_config)
+    ordered_keys.extend(sorted(set(preset_config) - set(emitted_config)))
+    differences: list[ConfigPresetDifference] = []
+    for key in ordered_keys:
+        emitted_present = key in emitted_config
+        preset_present = key in preset_config
+        emitted_value = emitted_config.get(key)
+        preset_value = preset_config.get(key)
+        if (
+            emitted_present
+            and preset_present
+            and emitted_value == preset_value
+        ):
+            continue
+        differences.append(
+            ConfigPresetDifference(
+                key=key,
+                emitted_value=emitted_value,
+                emitted_present=emitted_present,
+                preset_value=preset_value,
+                preset_present=preset_present,
+            )
+        )
+    return tuple(differences)
+
+
+def unsupported_prefill_keys(
+    prefill_config: Mapping[str, Any],
+    emitted_config: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Name prefilled fields that the current page will not submit.
+
+    A historic configuration can contain fields unsupported by the standalone
+    UI.  Reporting them is intentionally conservative: it does not add them
+    to the launch payload or pretend their old semantics still apply.
+    """
+
+    return tuple(sorted(set(prefill_config) - set(emitted_config)))
 
 
 def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:

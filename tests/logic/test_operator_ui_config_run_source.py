@@ -118,6 +118,36 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertNotIn("validate_config_keys(preview_config", source)
         self.assertNotIn("JobManager.start(preview_config", source)
 
+    def test_research_configuration_uses_progressive_review_without_a_second_builder(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
+
+        labels = (
+            "① 研究目标与预设",
+            "② 数据范围",
+            "③ 策略约束",
+            "④ 高级设置",
+            "⑤ 提交前复核",
+        )
+        for label in labels:
+            with self.subTest(label=label):
+                self.assertIn(label, source)
+        self.assertEqual(
+            [source.index(label) for label in labels],
+            sorted(source.index(label) for label in labels),
+        )
+        self.assertIn('"④ 高级设置 · 模型与训练", expanded=False', source)
+        self.assertIn('"④ 高级设置 · 回测 / 成本模型", expanded=False', source)
+        self.assertIn('"④ 高级设置 · 算力", expanded=False', source)
+        self.assertIn("build_config_review_sections(preview_config)", source)
+        self.assertIn("config_preset_differences(", source)
+        self.assertIn("unsupported_prefill_keys(", source)
+        self.assertIn("启动研究运行", source)
+        self.assertIn("不会发布模型、修改 production serving", source)
+        # The review is read-only: it consumes preview_config, while the page
+        # keeps one authoritative configuration builder and one start call.
+        self.assertEqual(source.count("config_dict: dict[str, Any] = {"), 1)
+        self.assertEqual(source.count("job_id = JobManager.start(config_dict, mode)"), 1)
+
     def test_config_dict_injects_namechange_path_for_both_modes(self) -> None:
         """PR-F (audit E1): the official single-fold AND walk-forward
         backtest paths now hard-require a non-empty ``namechange_path``
