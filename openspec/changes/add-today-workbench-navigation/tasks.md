@@ -15,6 +15,8 @@
   validation, and production governance without removing a route.
 - [x] 2.3 Add the Run Center success action and daily-decision selection handoff
   for an unambiguously published recommendation artifact.
+- [x] 2.4 Persist the unambiguous published date across the action's second
+  Streamlit rerun, clearing any superseded or ambiguous result.
 
 ## 3. Validation
 

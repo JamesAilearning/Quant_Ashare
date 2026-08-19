@@ -14,8 +14,9 @@ Boundary reminders (machine-enforced by tests/logic):
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pandas as pd
@@ -185,7 +186,8 @@ if not _artifacts:
     st.stop()
 
 _date_options = [item[0] for item in _artifacts]
-prepare_daily_decision_selection(st.session_state, _date_options)
+_session_state = cast(MutableMapping[str, object], st.session_state)
+prepare_daily_decision_selection(_session_state, _date_options)
 _selected_date = st.selectbox("交易日(as_of)", _date_options, key="dd_date")
 _selected_path = dict(_artifacts)[_selected_date]
 

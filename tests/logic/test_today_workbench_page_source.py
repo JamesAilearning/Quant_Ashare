@@ -40,9 +40,21 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
 
     def test_success_handoff_requires_a_published_dated_artifact(self) -> None:
         source = _RUN_CENTER.read_text(encoding="utf-8")
-        self.assertIn("published_recommendation_date", source)
+        self.assertIn("remember_run_center_published_date", source)
+        self.assertIn("run_center_published_date", source)
         self.assertIn("DAILY_DECISION_REQUESTED_DATE_KEY", source)
         self.assertIn('st.switch_page("pages/daily_decision.py")', source)
+
+    def test_review_action_is_rendered_outside_the_one_shot_run_branch(self) -> None:
+        source = _RUN_CENTER.read_text(encoding="utf-8")
+        result_branch = source.index('elif st.button(\n    "📝 跑今日出单')
+        review_action = source.index('key="run_center::view_published_daily_signal"')
+        dashboard = source.index("# ③ 看板入口")
+        self.assertGreater(review_action, result_branch)
+        self.assertLess(review_action, dashboard)
+        self.assertIn(
+            "This stays outside the one-shot ``run_recommend`` branch", source
+        )
 
     def test_decision_page_consumes_the_one_shot_handoff_before_selectbox(self) -> None:
         source = _DECISION.read_text(encoding="utf-8")

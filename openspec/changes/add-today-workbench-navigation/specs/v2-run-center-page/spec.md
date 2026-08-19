@@ -22,3 +22,13 @@ newest file in the output directory.
   than one, dated daily-recommendation artifact
 - **THEN** the page gives only the existing generic review guidance
 - **AND** it does not guess or preselect a recommendation date
+
+#### Scenario: review action survives its separate Streamlit interaction
+- **WHEN** a successful run publishes exactly one dated recommendation artifact
+- **AND** the operator selects the rendered review action in a later Streamlit
+  rerun
+- **THEN** the Run Center SHALL retain that exact published date until the
+  action is selected
+- **AND** it SHALL consume the retained date after handing it to the detailed
+  daily-decision page
+- **AND** a later ambiguous result SHALL clear any older retained date

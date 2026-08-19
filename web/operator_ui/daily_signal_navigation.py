@@ -9,6 +9,7 @@ from pathlib import Path
 
 DAILY_DECISION_DATE_KEY = "dd_date"
 DAILY_DECISION_REQUESTED_DATE_KEY = "daily_decision::requested_date"
+RUN_CENTER_PUBLISHED_DATE_KEY = "run_center::published_recommendation_date"
 
 _ARTIFACT_RE = re.compile(r"daily_recommendation_(\d{4}-\d{2}-\d{2})\.json")
 
@@ -47,6 +48,48 @@ def published_recommendation_date(published: Iterable[str]) -> str | None:
     return dates[0] if len(dates) == 1 else None
 
 
+def remember_run_center_published_date(
+    session_state: MutableMapping[str, object], published: Iterable[str]
+) -> str | None:
+    """Store only an unambiguous run result for a later Streamlit rerun.
+
+    ``st.button`` triggers a fresh rerun.  Clearing the prior value before
+    recording the current result ensures that a failed or ambiguous later run
+    cannot offer a link to an older recommendation artifact.
+    """
+
+    session_state.pop(RUN_CENTER_PUBLISHED_DATE_KEY, None)
+    artifact_date = published_recommendation_date(published)
+    if artifact_date is not None:
+        session_state[RUN_CENTER_PUBLISHED_DATE_KEY] = artifact_date
+    return artifact_date
+
+
+def run_center_published_date(
+    session_state: MutableMapping[str, object],
+) -> str | None:
+    """Return the persisted review date, discarding malformed state."""
+
+    value = session_state.get(RUN_CENTER_PUBLISHED_DATE_KEY)
+    if not isinstance(value, str):
+        session_state.pop(RUN_CENTER_PUBLISHED_DATE_KEY, None)
+        return None
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        session_state.pop(RUN_CENTER_PUBLISHED_DATE_KEY, None)
+        return None
+    return value
+
+
+def clear_run_center_published_date(
+    session_state: MutableMapping[str, object],
+) -> None:
+    """Remove a consumed or superseded Run Center review action."""
+
+    session_state.pop(RUN_CENTER_PUBLISHED_DATE_KEY, None)
+
+
 def prepare_daily_decision_selection(
     session_state: MutableMapping[str, object],
     available_dates: Collection[str],
@@ -71,7 +114,11 @@ def prepare_daily_decision_selection(
 __all__ = [
     "DAILY_DECISION_DATE_KEY",
     "DAILY_DECISION_REQUESTED_DATE_KEY",
+    "RUN_CENTER_PUBLISHED_DATE_KEY",
+    "clear_run_center_published_date",
     "prepare_daily_decision_selection",
     "published_recommendation_date",
     "recommendation_artifact_date",
+    "remember_run_center_published_date",
+    "run_center_published_date",
 ]
