@@ -97,6 +97,15 @@ class GPConfig:
     # its complete operator set here; the config dump freezes it with
     # the run.
     allowed_operators: tuple[str, ...] = ()
+    # Terminal whitelist for generation/mutation sampling. Empty = derive
+    # from the panel keys (legacy behaviour verbatim). A campaign whose
+    # frozen protocol admits a SUBSET of what the panel carries must list
+    # it here: the panel legitimately carries terminals the search must
+    # not breed on — a fundamental campaign needs the price-volume leg in
+    # the panel (coverage denominator, forward-return geometry) while its
+    # protocol freezes the search to financial-statement terminals only.
+    # Deriving the whitelist from panel keys alone cannot express that.
+    allowed_terminals: tuple[str, ...] = ()
 
     @property
     def target_type(self) -> ExprType:
@@ -218,6 +227,18 @@ class GPEngine:
         # from the panel actually loaded, so the generator and point
         # mutation can only build expressions over admitted inputs.
         self._allowed_terminals: frozenset[str] | None = None
+        # 声明式白名单的**注册表**校验在这里做，与 allowed_operators 完全
+        # 对称。此前放在 _sampling_pool() 的惰性解析里 —— 而 mutate_subtree
+        # / mutate_point 的采样写在 `except (GrammarError, ValueError):
+        # return expr` 这个**可恢复失败块**内，于是一个 typo 出来的终端名
+        # 不是 fail-loud，而是让变异静默退化成 no-op（codex #446 r14 P2）。
+        #
+        # 修在这一层而不是把调用点挪出 try：挪出去只治当前两个采样点，
+        # 下一个把 _sampling_pool() 写进 try 的人会重犯。校验前移之后
+        # _sampling_pool() 是**全函数**（永不抛），放哪里都无所谓。
+        # 面板存在性那一半仍留在 run()/score_expression —— 它需要面板。
+        if config.allowed_terminals:
+            self._registry_validated_terminals()
         if config.allowed_operators:
             unknown = set(config.allowed_operators) - {
                 op.name for op in REGISTRY.all_operators()}
@@ -258,7 +279,16 @@ class GPEngine:
     # ------------------------------------------------------------------
 
     def initialize_population(self) -> None:
-        """Generate the initial population of unique random expressions."""
+        """Generate the initial population of unique random expressions.
+
+        A frozen terminal whitelist applies HERE too, not only inside
+        ``run``: this is a public lifecycle method, and a caller invoking
+        it first would otherwise generate from the V1 pool
+        (``_allowed_terminals`` still None) and ``run`` would keep that
+        already-populated generation. Registry validation belongs here
+        (no panel available); ``run`` re-validates against the panel.
+        """
+        self._sampling_pool()
         target = self.config.target_type
         seen: set[int] = set()
         pop: list[Expression] = []
@@ -274,7 +304,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
-                    allowed_terminals=self._allowed_terminals,
+                    allowed_terminals=self._sampling_pool(),
                     allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
@@ -302,6 +332,69 @@ class GPEngine:
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
+
+    def _sampling_pool(self) -> frozenset[str] | None:
+        """采样池的**唯一**解析点，惰性生效。
+
+        每个采样入口（生成 / 点变异 / 子树变异 / 换代）都经这里取池，
+        而不是直接读 ``_allowed_terminals``。此前只有 ``run`` 与
+        ``initialize_population`` 应用冻结白名单，于是先调
+        ``mutate_point`` / ``mutate_subtree`` / ``next_generation`` 的
+        引擎里 ``_allowed_terminals`` 仍是 None，变异**静默退回 V1 量价
+        池** —— 实测点变异 200 次漏出 $volume / $pb / $pe / $total_mv
+        等 8 个池外终端（codex #446 r12 P2）。
+
+        修在这一层而不是给三个入口各打一个补丁：再加第五个公开入口时，
+        它自然经过这里，不会重犯。
+
+        未配置 ``allowed_terminals`` 的引擎行为逐字不变 —— 直接返回
+        既有的 ``_allowed_terminals``（None = V1 哨兵）。
+        """
+        if self._allowed_terminals is None and self.config.allowed_terminals:
+            # __init__ 已做过注册表校验，所以这里**不会抛** —— 本函数是
+            # 全函数，可以安全地出现在任何可恢复失败块内部。
+            self._allowed_terminals = self._registry_validated_terminals()
+        return self._allowed_terminals
+
+    def _registry_validated_terminals(self) -> frozenset[str]:
+        """The declared whitelist, checked against the REGISTRY alone.
+
+        Split from the panel-aware check so generation can validate the
+        half it is able to: the generator intersects the declaration with
+        registered terminals, so a typo'd entry silently narrows the
+        experiment and a checkpoint then records a config claiming a
+        search space that never existed. Symmetric with
+        ``allowed_operators``, which is registry-validated in ``__init__``.
+        """
+        declared = frozenset(self.config.allowed_terminals)
+        unregistered = declared - frozenset(FeatureRegistry.ALL_REGISTERED)
+        if unregistered:
+            raise GrammarError(
+                f"allowed_terminals names unregistered terminal(s) "
+                f"{sorted(unregistered)} — nothing could be built from "
+                "them; refusing before generation."
+            )
+        return declared
+
+    def _validated_terminal_pool(
+        self, panel_fields: frozenset[str],
+    ) -> frozenset[str]:
+        """The frozen terminal whitelist, validated against registry+panel.
+
+        A declared terminal must be REGISTERED (else no expression can be
+        constructed from it) and PRESENT in the panel (else the evaluator
+        raises KeyError on the first candidate referencing it — a
+        setup-time contract violation, not a per-expression failure).
+        """
+        declared = self._registry_validated_terminals()
+        absent = declared - panel_fields
+        if absent:
+            raise GrammarError(
+                f"allowed_terminals names terminal(s) absent from the "
+                f"panel {sorted(absent)} — the search would breed "
+                "expressions the evaluator cannot resolve; refusing."
+            )
+        return declared
 
     def score_expression(
         self,
@@ -334,7 +427,12 @@ class GPEngine:
             k for k in (panel.keys() if hasattr(panel, "keys") else [])
             if isinstance(k, str) and k.startswith("$")
         )
-        if self._has_run:
+        if self.config.allowed_terminals:
+            # 冻结协议声明的搜索空间优先：全新打分引擎（starter-check 每
+            # 因子一个）也必须按它把关，否则审计路径能给协议禁止的终端
+            # 出分。
+            term_pool = self._validated_terminal_pool(panel_fields)
+        elif self._has_run:
             # Established pool wins over whatever panel THIS call passes:
             # re-deriving would widen it (a run on {$revenue} then scored
             # against a wider panel would accept $volume). ``None`` here
@@ -620,7 +718,7 @@ class GPEngine:
         try:
             new_sub = random_expression(
                 target_type, max_depth=remaining, min_depth=sub_min,
-                rng=self.rng, allowed_terminals=self._allowed_terminals,
+                rng=self.rng, allowed_terminals=self._sampling_pool(),
                     allowed_operators=self._allowed_operators,
             )
             return _replace_subtree(expr, pos_path, new_sub)
@@ -675,14 +773,14 @@ class GPEngine:
             # to a no-op for the entire campaign (openspec r9 P2). Sampling and
             # mutation now draw from one place, so a new terminal group cannot
             # be reachable by one and invisible to the other.
-            pool = [t for t in sampling_pool(target.taint,
-                                             self._allowed_terminals)
+            frozen_pool = self._sampling_pool()
+            pool = [t for t in sampling_pool(target.taint, frozen_pool)
                     if t != exclude]
             # Point mutation must respect the campaign whitelist too
             # (codex #401 r9) — otherwise a legal parent mutates into
             # an expression over a forbidden terminal.
-            if self._allowed_terminals is not None:
-                pool = [t for t in pool if t in self._allowed_terminals]
+            if frozen_pool is not None:
+                pool = [t for t in pool if t in frozen_pool]
             if not pool:
                 raise GrammarError("no alternative terminal available")
             return Terminal(self.rng.choice(pool))
@@ -748,7 +846,7 @@ class GPEngine:
                     max_depth=self.config.max_depth,
                     min_depth=self.config.min_depth,
                     rng=self.rng,
-                    allowed_terminals=self._allowed_terminals,
+                    allowed_terminals=self._sampling_pool(),
                     allowed_operators=self._allowed_operators,
                 )
             except (GrammarError, ValueError):
@@ -803,11 +901,16 @@ class GPEngine:
             k for k in (panel.keys() if hasattr(panel, "keys") else [])
             if isinstance(k, str) and k.startswith("$")
         )
-        derived = (
-            panel_fields
-            if panel_fields and panel_fields != frozenset(FeatureRegistry.V1)
-            else None
-        )
+        # 冻结白名单优先于面板推导；随后是已建立池的 resume 守卫。
+        # 前者决定"这次该用哪个池"，后者禁止"同一实验换池"。
+        if self.config.allowed_terminals:
+            derived = self._validated_terminal_pool(panel_fields)
+        else:
+            derived = (
+                panel_fields
+                if panel_fields and panel_fields != frozenset(FeatureRegistry.V1)
+                else None
+            )
         if self._has_run and derived != self._allowed_terminals:
             # A RESUMED engine (loaded checkpoint / re-run) already bred
             # under a pool. Silently adopting a pool derived from this
