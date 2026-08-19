@@ -775,6 +775,83 @@ def _gen(
                             allowed, allowed_operators)
 
 
+def _leaf_taints_available(allowed: frozenset[str] | None) -> frozenset[str]:
+    """白名单下**还能取到叶子**的 taint 集合。
+
+    叶子只有两类来源:``FEATURE``/``FLOAT`` 走
+    ``_restrict(sampling_pool(taint, allowed), allowed)``,受白名单约束;
+    ``INT_WINDOW`` 取字面量,与白名单无关。这里只回答受约束的那一类。
+    """
+    taints: set[str] = set()
+    for taint in ("PURE", "ADJ_TAINTED"):
+        pool = sampling_pool(taint, allowed)
+        if allowed is None or any(t in allowed for t in pool):
+            taints.add(taint)
+    return frozenset(taints)
+
+
+def _provably_unsatisfiable(
+    target_type: ExprType,
+    max_depth: int,
+    allowed: frozenset[str] | None,
+    allowed_operators: frozenset[str] | None,
+) -> bool:
+    """在给定白名单/算子池/深度下,``target_type`` 是否**可证明**无解。
+
+    这是一次**保守**判断:只在能证明「无论怎么抽都构造不出来」时返回 True,
+    其余一律 False,交回原采样路径。判错方向的代价不对称——拒掉一个本可生成
+    的配置等于悄悄缩小 GP 搜索空间,那比慢严重得多(战役的池子会与预注册的
+    实验不符)。
+
+    做法是自底向上的可达性不动点,规则与 ``_gen``/``_random_leaf``/
+    ``_random_operator`` 完全同源:
+
+    * 深度 0 只有叶子:``FEATURE``/``FLOAT`` 要求该 taint 在白名单下仍有终端,
+      ``INT_WINDOW`` 恒可(字面量);
+    * 深度 d 追加「存在一个**在算子池内**、输出该类型、且其**每个**输入类型
+      在深度 d-1 可达」的算子。
+
+    **不消耗任何随机数**——可满足时 rng 序列与改前逐字节一致,种子可复现是
+    本子系统钉死的不变量。
+    """
+    if max_depth < 0:
+        return True
+    leaf_taints = _leaf_taints_available(allowed)
+
+    def leaf_ok(t: ExprType) -> bool:
+        if t.kind == "INT_WINDOW":
+            return True
+        if t.kind in ("FEATURE", "FLOAT"):
+            return t.taint in leaf_taints
+        return False
+
+    op_pool = V1_OPERATORS if allowed_operators is None else allowed_operators
+    table = _generator_table()
+    # 深度 0:只有叶子。
+    reachable: set[tuple[str, str]] = {
+        (kind, taint)
+        for kind in ("FEATURE", "FLOAT", "INT_WINDOW")
+        for taint in ("PURE", "ADJ_TAINTED")
+        if leaf_ok(ExprType(kind, taint))
+    }
+    # 逐层加深,最多 max_depth 层;不动点提前收敛就停。
+    for _ in range(max_depth):
+        grown = set(reachable)
+        for key, entries in table.items():
+            if key in grown:
+                continue
+            for op, inputs in entries:
+                if op.name not in op_pool:
+                    continue
+                if all((i.kind, i.taint) in reachable for i in inputs):
+                    grown.add(key)
+                    break
+        if grown == reachable:
+            break
+        reachable = grown
+    return (target_type.kind, target_type.taint) not in reachable
+
+
 def random_expression(
     target_type: ExprType,
     max_depth: int,
@@ -833,6 +910,18 @@ def random_expression(
                 f"{sorted(unknown)}; refusing to sample from a pool "
                 "narrower than the one declared."
             )
+    # 无解配置必须**立刻**说不,而不是花 MAX_OP_RETRIES ** max_depth 步才说
+    # (默认 max_depth=6 → 10^6;实测一次约 11.6 秒)。预检保守且不碰 rng:
+    # 判不准就照旧走下面的采样路径,可满足时抽取序列逐字节不变。
+    if _provably_unsatisfiable(target_type, max_depth, allowed_terminals,
+                               allowed_operators):
+        raise GrammarError(
+            f"Generator cannot construct {target_type!r} under the campaign's "
+            f"frozen field set: terminal whitelist "
+            f"{sorted(allowed_terminals) if allowed_terminals else 'None'} "
+            "leaves no reachable leaf for the required input types. "
+            "Refusing up front rather than exhausting the retry budget."
+        )
     if rng is None:
         rng = Random()
     return _gen(target_type, max_depth, min_depth, rng, allowed_terminals,
