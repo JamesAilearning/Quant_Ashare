@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Final
 
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
@@ -24,6 +25,11 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
+
+# ``src.inference.daily_recommend`` is deliberately not imported here: opening
+# this read-only Streamlit helper must not pull qlib-bound inference imports
+# into the UI process. The producer's named value is pinned by a source test.
+SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
 
 
 @dataclass(frozen=True)
@@ -80,6 +86,19 @@ def summarise_daily_signal(
             "needs_verification",
             "工件缺少有效 entry_date，无法确认信号时点。",
             as_of_date=as_of_date,
+        )
+
+    schema_version = payload.get("artifact_schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION
+    ):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件 schema 版本缺失、格式错误或不受当前工作台支持。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
         )
 
     meta_status = artifact_meta_status(payload, current_model_sha)
@@ -170,6 +189,7 @@ def _job_timestamp(job: JobSummary) -> tuple[str, str]:
 __all__ = [
     "DailySignalSummary",
     "OperationalSummary",
+    "SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION",
     "summarise_daily_signal",
     "summarise_operations",
 ]
