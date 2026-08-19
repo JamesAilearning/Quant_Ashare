@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pandas as pd
 
@@ -70,6 +70,11 @@ _logger = get_logger(__name__)
 # (web/operator_ui/formatting.py ``_CN_TZ``). Asia/Shanghai has no DST, so the
 # fixed offset is exact and avoids a zoneinfo/tzdata dependency on Windows.
 _CN_TZ = timezone(timedelta(hours=8))
+
+# Serialized contract for ``daily_recommendation_YYYY-MM-DD.json``. Read-side
+# UI helpers intentionally pin this value without importing this qlib-bound
+# module; ``test_today_workbench_helpers`` keeps the two copies aligned.
+DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
 
 
 class DailyRecommendationError(RuntimeError):
@@ -1328,7 +1333,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         # Artifact contract v2 (add-daily-decision-page A1): the version marker
         # + meta block let readers DISTINGUISH a legacy v1 file (both absent)
         # from a self-describing one — readers warn on absence, never default.
-        "artifact_schema_version": 2,
+        "artifact_schema_version": DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
         "as_of_date": result.as_of_date,
         "entry_date": result.entry_date,
         "n_scored": result.n_scored,

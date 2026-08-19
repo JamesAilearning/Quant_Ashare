@@ -644,6 +644,31 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
                 rows = job_io._load_ui_jobs()
         self.assertEqual(rows[0]["status"], "running")
 
+    def test_read_only_all_jobs_keeps_dead_running_job_artifact_unchanged(self) -> None:
+        import json
+        import tempfile
+
+        from web.operator_ui import job_io
+        from web.operator_ui.job_io import load_all_jobs_read_only, write_job_json
+
+        job_root = Path(tempfile.mkdtemp())
+        job_dir = job_root / "read-only"
+        job_dir.mkdir(parents=True)
+        original = {"job_id": "read-only", "status": "running", "pid": 51003}
+        write_job_json(job_dir, original)
+
+        with patch.object(job_io, "_JOB_ROOT", job_root):
+            with patch(
+                "web.operator_ui.job_manager._pid_is_alive", return_value=False
+            ) as probe:
+                rows = load_all_jobs_read_only(source_filter="ui")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].status, "running")
+        probe.assert_not_called()
+        on_disk = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(on_disk, original)
+
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
     """write_job_json(only_if_status=...) is the atomic guard that prevents a

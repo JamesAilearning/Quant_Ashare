@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._today_workbench_helpers import (
+    SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
     summarise_daily_signal,
     summarise_operations,
 )
+
+_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ensemble_payload(
@@ -109,6 +113,43 @@ class DailySignalSummaryTests(unittest.TestCase):
             current_model_sha=None,
         )
         self.assertEqual(result.kind, "rebalance")
+
+    def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
+        cases: tuple[tuple[str, object], ...] = (
+            ("missing", None),
+            ("boolean", True),
+            ("string", "2"),
+            ("future", 999),
+        )
+        for label, version in cases:
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                if label == "missing":
+                    payload.pop("artifact_schema_version")
+                else:
+                    payload["artifact_schema_version"] = version
+                result = summarise_daily_signal(
+                    "2026-08-18",
+                    payload,
+                    incumbent=self.incumbent,
+                    current_model_sha=None,
+                )
+                self.assertEqual(result.kind, "needs_verification")
+                self.assertIn("schema", result.detail)
+
+    def test_workbench_version_is_pinned_to_named_producer_contract(self) -> None:
+        producer = (
+            _ROOT / "src" / "inference" / "daily_recommend.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION, 2)
+        self.assertIn(
+            "DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2",
+            producer,
+        )
+        self.assertIn(
+            '"artifact_schema_version": DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION',
+            producer,
+        )
 
 
 def _job(*, run_id: str, status: str, finished_at: str = "") -> JobSummary:

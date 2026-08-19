@@ -19,7 +19,7 @@ from web.operator_ui.incumbent import (
     resolve_model_path,
     unusable_path_reason,
 )
-from web.operator_ui.job_io import load_all_jobs
+from web.operator_ui.job_io import load_all_jobs_read_only
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
     list_recommendation_artifacts,
@@ -278,7 +278,7 @@ with signal_col:
 
 st.subheader("运行状态")
 try:
-    operations = summarise_operations(load_all_jobs())
+    operations = summarise_operations(load_all_jobs_read_only())
 except (OSError, RuntimeError, ValueError) as exc:
     _render_card(
         "当前运行或异常",
