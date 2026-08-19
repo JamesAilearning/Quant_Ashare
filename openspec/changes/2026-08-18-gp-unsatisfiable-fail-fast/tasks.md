@@ -41,3 +41,19 @@ logic+governance   25:28            →  6:50   (4379 passed / 29 skipped)
 - [x] 确定性含深度复验:2 白名单 × 3 深度 × 20 种子 = 120 样本,改前改后逐字节相同
 - [x] 变异验证:把 `max_depth` 封顶加回去 → 三条用例红(含新加的 depth-0 那条)
 - [x] 全量:logic + governance `4380 passed / 29 skipped`(5:20)
+
+## codex #452 r2（一条 P2）——裁决：不改，写清边界
+
+- [x] **核实属实**:`allowed_terminals={"$close"}` + `allowed_operators=
+  {"ts_corr","cs_rank"}` 时,可达性只看类型签名,看不见构造器层的
+  `_ts_corr_is_trivial`(只有一个特征 → 两操作数结构相同 → 逐个被否),于是
+  预检放行、仍走指数路径。实测 depth=4/5/6 分别 0.11s / 0.50s / **5.05s**
+  (188,525 次 `_gen`);对照类型层命中 0.0001s、原始病理 38.8 分钟
+- [x] **方向判定:这是「不完备」不是「不正确」**——假阴性,落在本 change 选定
+  的保守侧;红线(假拒绝)仍为 0,确定性不受影响,搜索空间不被缩小
+- [x] **裁决不修**:建模构造器规则 = 让本判据成为 `expression.py` 那套判断的
+  第二份拷贝(每加一条校验都要两处同步,不同步就漂),且**错法反向**——现在
+  错在「拒太少」(安全),建模错了是「拒太多」(治理级)。这是 detector-of-
+  detector 边界,本 PR 不越
+- [x] 边界写进 spec delta(含一条专门场景)与 `_provably_unsatisfiable`
+  docstring,数字原样留档
