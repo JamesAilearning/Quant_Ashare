@@ -106,6 +106,26 @@ def _regex(pattern: re.Pattern[str]) -> Callable[[str], str | None]:
     return check
 
 
+def _run_ids(value: str) -> str | None:
+    """Validate the comma-separated run selection used by the comparison page.
+
+    A comparison URL carries full IDs rather than display labels.  Keep this
+    validation beside the single-run guard so the page never has to trust a
+    raw query parameter.  One ID is accepted too: it lets the page explain
+    the two-to-five selection rule rather than erasing a shared one-run URL.
+    """
+    if not value:
+        return ""
+    run_ids = value.split(",")
+    if not 1 <= len(run_ids) <= 5:
+        return None
+    if len(set(run_ids)) != len(run_ids):
+        return None
+    if not all(_RUN_ID_RE.fullmatch(run_id) for run_id in run_ids):
+        return None
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Schema registry
 # ---------------------------------------------------------------------------
@@ -122,6 +142,7 @@ _VALIDATORS: dict[str, Callable[[str], str | None]] = {
     "page": _regex(_PAGE_RE),
     "autorefresh": _enum(_AUTOREFRESH_ALLOWED),
     "run_id": _regex(_RUN_ID_RE),
+    "run_ids": _run_ids,
 }
 
 

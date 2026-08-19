@@ -86,6 +86,7 @@ _ICON_MAP = {
     "运行中心": "\U0001f39b",        # 🎛
     "结果": "\U0001f4c8",            # 📈
     "滚动验证": "\U0001f501",        # 🔁
+    "研究运行对比": "\U0001f50d",    # 🔍
     "设计系统": "\U0001f3a8",        # 🎨
 }
 # Nav-icon injection. A ``MutationObserver`` replaces the old
@@ -215,6 +216,7 @@ _navigation: dict[str, list[Any]] = {
         st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
         st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
+        st.Page(str(_PAGES_DIR / "research_run_comparison.py"), title="研究运行对比"),
     ],
     "生产治理": [
         # 生产运维驾驶舱:现任身份 / 授权门 / 再认证时钟 / 重训窗 / 数据新鲜度,
