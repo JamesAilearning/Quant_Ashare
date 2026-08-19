@@ -65,10 +65,10 @@ class PageBoundaryTests(unittest.TestCase):
 
 
 class RegistrationAndDocsTests(unittest.TestCase):
-    def test_page_registered_in_run_group_with_icon(self) -> None:
+    def test_page_registered_in_daily_decision_group_with_icon(self) -> None:
         app = _APP.read_text(encoding="utf-8")
-        self.assertIn('daily_decision.py"), title="今日推荐"', app)
-        self.assertIn('"今日推荐": "\\U0001f4dd"', app)
+        self.assertIn('daily_decision.py"), title="日度信号与人工决策"', app)
+        self.assertIn('"日度信号与人工决策": "\\U0001f4dd"', app)
 
     def test_env_var_documented(self) -> None:
         doc = _ENV_DOC.read_text(encoding="utf-8")

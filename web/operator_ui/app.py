@@ -80,7 +80,8 @@ elif _completed:
 _ICON_MAP = {
     "作业": "\U0001f4cb",            # 📋
     "配置运行": "\U0001f680",        # 🚀
-    "今日推荐": "\U0001f4dd",        # 📝
+    "今日工作台": "\U0001f4cc",      # 📌
+    "日度信号与人工决策": "\U0001f4dd",  # 📝
     "生产运维": "\U0001f6e0",        # 🛠
     "运行中心": "\U0001f39b",        # 🎛
     "结果": "\U0001f4c8",            # 📈
@@ -199,23 +200,26 @@ with st.sidebar:
 _PAGES_DIR = Path(__file__).resolve().parent / "pages"
 
 _navigation: dict[str, list[Any]] = {
-    "运行": [
-        st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
-        st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
-        # 每日决策页:只读渲染 daily_recommend 落盘工件 + 决策日志
-        # (openspec add-daily-decision-page A2)。不触发任何作业。
-        st.Page(str(_PAGES_DIR / "daily_decision.py"), title="今日推荐"),
-        # 生产运维驾驶舱:现任身份 / 授权门 / 再认证时钟 / 重训窗 / 数据新鲜度,
-        # 全部只读 + 命令文本(openspec 2026-08-14-ui-ops-cockpit)。不代跑任何命令。
-        st.Page(str(_PAGES_DIR / "ops_cockpit.py"), title="生产运维"),
+    "日常决策": [
+        st.Page(str(_PAGES_DIR / "today_workbench.py"), title="今日工作台"),
         # 运行中心:数据更新手动补跑(后台子进程)+ 今日出单(同步子进程),
         # 参数与驾驶舱同源绑定(openspec 2026-08-16-ui-run-center)。「代跑」
         # 职责归这里,驾驶舱的只读承诺不动。
         st.Page(str(_PAGES_DIR / "run_center.py"), title="运行中心"),
+        # 每日决策页:只读渲染 daily_recommend 落盘工件 + 决策日志
+        # (openspec add-daily-decision-page A2)。不触发任何作业。
+        st.Page(str(_PAGES_DIR / "daily_decision.py"), title="日度信号与人工决策"),
     ],
-    "分析": [
+    "研究与验证": [
+        st.Page(str(_PAGES_DIR / "config_run.py"), title="配置运行"),
+        st.Page(str(_PAGES_DIR / "jobs.py"), title="作业"),
         st.Page(str(_PAGES_DIR / "results.py"), title="结果"),
         st.Page(str(_PAGES_DIR / "walk_forward.py"), title="滚动验证"),
+    ],
+    "生产治理": [
+        # 生产运维驾驶舱:现任身份 / 授权门 / 再认证时钟 / 重训窗 / 数据新鲜度,
+        # 全部只读 + 命令文本(openspec 2026-08-14-ui-ops-cockpit)。不代跑任何命令。
+        st.Page(str(_PAGES_DIR / "ops_cockpit.py"), title="生产运维"),
         # P3-6b: read-only inspector of the PRODUCTION bundle (integrity stamp
         # + health + on-demand 06 validation). The UI never builds bundles.
         st.Page(str(_PAGES_DIR / "data_inspect.py"), title="数据检视"),

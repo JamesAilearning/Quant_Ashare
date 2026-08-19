@@ -10,12 +10,20 @@ openspec 2026-08-16-ui-run-center。
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 
 import streamlit as st
 
 from web.operator_ui.bundle_health import resolve_default_provider_uri
+from web.operator_ui.daily_signal_navigation import (
+    DAILY_DECISION_REQUESTED_DATE_KEY,
+    clear_run_center_published_date,
+    remember_run_center_published_date,
+    run_center_published_date,
+)
 from web.operator_ui.incumbent import (
     anchored_to_repo,
     resolve_incumbent,
@@ -72,6 +80,11 @@ _CN_TZ = timezone(timedelta(hours=8))
 _AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
 _AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW
 _LAST_LAUNCH_KEY = "run_center::last_launch"
+
+# Streamlit's SessionStateProxy exposes the mapping operations used below, but
+# its stubs do not inherit MutableMapping.  Keep the cast at the UI boundary;
+# the navigation helpers remain Streamlit-free and testable with plain dicts.
+_SESSION_STATE = cast(MutableMapping[str, object], st.session_state)
 
 
 def _read_progress() -> FetchProgress | None:
@@ -423,6 +436,10 @@ elif st.button(
     key="run_center::run_recommend",
     type="primary",
 ):
+    # A new invocation must never retain a direct-review action from an older
+    # successful run. The current result repopulates it only after one dated
+    # recommendation artifact is published.
+    clear_run_center_published_date(_SESSION_STATE)
     with st.spinner("正在子进程中运行 daily_recommend …"):
         _result = run_daily_recommend(
             ensemble_manifest=_manifest,
@@ -434,11 +451,12 @@ elif st.button(
     if _result.kind == "ok":
         st.success(
             f"出单完成(exit 0,{_result.elapsed_s:.0f}s)。清单与 HOLD 披露"
-            "到「今日推荐」页查看;**每次必读打印的 entry_date**——它是"
+            "到「日度信号与人工决策」页查看;**每次必读打印的 entry_date**——它是"
             "已收盘会话,不是「明早买入指令」。"
         )
         if _result.published:
             st.caption("已发布工件:" + "、".join(_result.published))
+        remember_run_center_published_date(_SESSION_STATE, _result.published)
         if _result.stdout_tail:
             st.code(_result.stdout_tail)
     elif _result.kind == "blocked_by_update":
@@ -460,6 +478,18 @@ elif st.button(
     else:
         st.error(f"无法运行({_result.kind}):{_result.error}")
 
+# This stays outside the one-shot ``run_recommend`` branch. Clicking the
+# action is a second Streamlit rerun, so the persisted date is what makes the
+# exact successful artifact available to the callback on that second click.
+_published_date = run_center_published_date(_SESSION_STATE)
+if _published_date is not None and st.button(
+    "查看本次日度信号",
+    key="run_center::view_published_daily_signal",
+):
+    _SESSION_STATE[DAILY_DECISION_REQUESTED_DATE_KEY] = _published_date
+    clear_run_center_published_date(_SESSION_STATE)
+    st.switch_page("pages/daily_decision.py")
+
 # ---------------------------------------------------------------------------
 # ③ 看板入口
 # ---------------------------------------------------------------------------
@@ -467,5 +497,5 @@ st.subheader("③ 看板")
 st.markdown(
     "- **生产运维**:五问一屏(现任 / 授权门 / 年检 / 重训窗 / 数据新鲜度)\n"
     "- **数据检视**:bundle 健康 + 上次数据更新 + PIT 校验\n"
-    "- **今日推荐**:最新出单工件与 HOLD 披露(非再平衡日拦下单表单)"
+    "- **日度信号与人工决策**:最新出单工件与 HOLD 披露(非再平衡日拦下单表单)"
 )

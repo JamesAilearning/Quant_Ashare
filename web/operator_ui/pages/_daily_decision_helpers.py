@@ -1,4 +1,4 @@
-"""Pure helpers for the 今日推荐 (daily decision) page.
+"""Pure helpers for the 日度信号与人工决策 (daily decision) page.
 
 No Streamlit imports here — everything is unit-testable plain Python
 (the P1-1 pages pattern: ``pages/_*_helpers.py`` pure + thin render page).
@@ -7,15 +7,15 @@ No Streamlit imports here — everything is unit-testable plain Python
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from scripts.eval_profiles import EVAL_PROFILES
 from web.operator_ui._path_guard import output_path
+from web.operator_ui.daily_signal_navigation import recommendation_artifact_date
 
-# The incumbent resolver now lives at package level so 今日推荐 and 生产运维
+# The incumbent resolver now lives at package level so 日度信号与人工决策 and 生产运维
 # resolve production identity through the SAME code — two copies could name
 # two different models. Re-exported here so this module's existing import
 # surface (and the pins on it) stay unchanged.
@@ -56,8 +56,6 @@ from web.operator_ui.incumbent import (
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").
 RECOMMEND_OUT_DIRNAME = "daily_recommend"
-
-_ARTIFACT_RE = re.compile(r"daily_recommendation_(\d{4}-\d{2}-\d{2})\.json")
 
 # The banner contract fields (工单 §2 / spec v2-daily-decision-page: model
 # identity = model_path + model_type). Missing ANY of them renders a prominent
@@ -210,9 +208,9 @@ def list_recommendation_artifacts(
         return ()
     found: list[tuple[str, Path]] = []
     for child in base.iterdir():
-        match = _ARTIFACT_RE.fullmatch(child.name)
-        if match and child.is_file():
-            found.append((match.group(1), child))
+        artifact_date = recommendation_artifact_date(child.name)
+        if artifact_date is not None and child.is_file():
+            found.append((artifact_date, child))
     found.sort(key=lambda item: item[0], reverse=True)
     return tuple(found)
 
