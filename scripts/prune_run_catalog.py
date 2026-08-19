@@ -18,6 +18,8 @@
 路径反推:`<tree>/runs/<file>` 这种布局一旦被当成判据,换个摆放位置就会悄悄
 改变边界,把文件位置变成隐藏的安全契约。
 
+清理走跨进程锁,与写入侧互斥;拿不到锁就不动手。
+
 **先合写入侧的修复再清理**:反过来做,下一次跑全量测试就重新污染。
 """
 
@@ -36,16 +38,27 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.core.run_catalog import catalog_boundary_verdict  # noqa: E402
+from src.core.run_catalog import (  # noqa: E402
+    catalog_boundary_verdict,
+    catalog_lock,
+)
 
 _DEFAULT_CATALOG = _REPO_ROOT / "output" / "runs" / "_index.jsonl"
 _DEFAULT_TREE = _REPO_ROOT / "output"
+
+#: 清理脚本等锁的上限。写入侧只等 5 秒就绕过,这里给足余量。
+_PRUNE_LOCK_TIMEOUT = 30.0
 
 
 def classify(
     catalog: Path, tree: Path,
 ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-    """``(树内行, 树外行, 树外行的解析结果)``。原始文本原样保留,不重排。"""
+    """``(树内行, 树外行, 树外行的解析结果)``。原始文本原样保留,不重排。
+
+    相对路径按「相对仓库根」解析 —— 本脚本是事后另起的进程,拿不到历史行当年
+    的 CWD,只能沿用控制台读侧那条约定。判据本来就是「控制台永远打不开的行」,
+    与控制台同约定才自洽。
+    """
     keep: list[str] = []
     drop: list[str] = []
     drop_records: list[dict[str, Any]] = []
@@ -66,7 +79,8 @@ def classify(
             keep.append(line)
             continue
         if catalog_boundary_verdict(
-                str(record.get("output_dir") or ""), tree=tree) is None:
+                str(record.get("output_dir") or ""),
+                tree=tree, relative_base=tree.parent) is None:
             keep.append(line)
         else:
             drop.append(line)
@@ -114,7 +128,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"边界(树内即保留):{args.tree}")
-    before = _fingerprint(args.catalog)
     keep, drop, drop_records = classify(args.catalog, args.tree)
     report(keep, drop, drop_records)
 
@@ -125,23 +138,44 @@ def main(argv: list[str] | None = None) -> int:
         print("\n没有可清理的行。")
         return 0
 
-    # 分类与重写之间有个窗口:一次并发运行在此期间追加的行,既不在 keep 里也
-    # 不在旁车里,一改写就永久丢失(codex #453)。改写前重新指纹比对,变了就
-    # 拒绝动手 —— 宁可让操作人挑个空闲时刻重跑,也不能静默吃掉一次真实运行。
-    if _fingerprint(args.catalog) != before:
-        print(
-            "\n索引在体检期间被改动(很可能有运行正在追加)。为免吞掉那一行,"
-            "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
-        return 3
+    # 读完与写回之间被追加的那一行,既不在保留集也不在旁车里 —— 一改写就永久
+    # 丢失。原子替换关不上这个窗口:原子的是「换文件」那一步,不是「读—改—写」
+    # 这整段(codex #453)。所以**整段都放进跨进程锁里**,并在锁内重新分类:
+    # 上面报数用的那份快照可能已经过期。
+    with catalog_lock(args.catalog, timeout=_PRUNE_LOCK_TIMEOUT) as held:
+        if not held:
+            print(
+                f"\n{_PRUNE_LOCK_TIMEOUT:.0f} 秒内没拿到索引的锁,**没有清理"
+                "任何东西**。多半有运行正在写入;等它结束后重跑。",
+                file=sys.stderr)
+            return 4
 
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    sidecar = args.catalog.with_name(f"{args.catalog.stem}.pruned-{stamp}.jsonl")
-    # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
-    sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
-    # 经临时文件原子替换:中途失败留下的是完整旧索引,不是半截文件。
-    staged = args.catalog.with_name(f"{args.catalog.name}.tmp-{stamp}")
-    staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
-    os.replace(staged, args.catalog)
+        before = _fingerprint(args.catalog)
+        keep, drop, drop_records = classify(args.catalog, args.tree)
+        if not drop:
+            print("\n没有可清理的行。")
+            return 0
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        sidecar = args.catalog.with_name(f"{args.catalog.stem}.pruned-{stamp}.jsonl")
+        # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
+        sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
+        # 经临时文件原子替换:中途失败留下的是完整旧索引,不是半截文件。
+        staged = args.catalog.with_name(f"{args.catalog.name}.tmp-{stamp}")
+        staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
+
+        # 锁内还能变,只剩一种可能:某个写入侧等锁超时后绕过了锁。它得先干等
+        # 满 5 秒,而这里的临界区是毫秒级 —— 真撞上就宁可不动手。
+        if _fingerprint(args.catalog) != before:
+            staged.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+            print(
+                "\n索引在清理期间仍被改动(有写入侧绕过了锁)。为免吞掉那一行,"
+                "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
+            return 3
+
+        os.replace(staged, args.catalog)
+
     print(f"\n已移除 {len(drop)} 行,原样留证于:\n  {sidecar}")
     print(f"索引现存 {len(keep)} 行:\n  {args.catalog}")
     return 0

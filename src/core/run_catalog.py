@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,23 +68,129 @@ def _is_inside(child: Path, root: Path) -> bool:
     return True
 
 
+def anchor_output_dir(output_dir: str, *, relative_base: Path) -> Path | None:
+    """把记录里的 ``output_dir`` 变成绝对路径;空值返回 ``None``。
+
+    ``relative_base`` **必须由调用方点名**,因为相对路径该按谁解析,取决于
+    调用方站在哪个位置:
+
+    - **写入侧**站在生产者进程里,产物就在生产者的 CWD 下
+      (`WalkForwardConfig.output_dir` 缺省是相对的 `"output/walk_forward"`,
+      索引里 105 条合法行有 101 条是相对路径)。按仓库根去解析,会把一次在
+      `/tmp` 里启动的运行当成 `<repo>/output/...` 而放行——索引照旧被污染,
+      控制台还会指向毫不相干的仓库产物(codex #453)。
+    - **清理脚本**是事后另起的进程,拿不到历史行当年的 CWD,只能沿用控制台
+      读侧那条约定(相对 = 相对仓库根)。它的判据本来就是「控制台永远打不开的
+      行」,与控制台同约定才自洽。
+    """
+    text = str(output_dir or "").strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = relative_base / target
+    return Path(os.path.normpath(str(target)))
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
 def catalog_boundary_verdict(
-    output_dir: str, *, tree: Path,
+    output_dir: str, *, tree: Path, relative_base: Path,
 ) -> str | None:
     """``None`` = 可以编目;否则返回拒绝原因。
 
     与清理脚本**共用这一个判据**——两处各写一份正是它们会分叉的方式
     (codex #453 明确点了重复实现这一点)。
     """
-    text = str(output_dir or "").strip()
-    if not text:
+    target = anchor_output_dir(output_dir, relative_base=relative_base)
+    if target is None:
         return "output_dir is missing"
-    target = Path(text)
-    if not target.is_absolute():
-        target = tree.parent / target
     if not _is_inside(target, tree):
         return f"output_dir is not inside the output tree ({tree})"
     return None
+
+
+#: 写入侧等锁的上限。等不到就**照样写**并告警——一次运行的旁路记账不该把运行
+#: 本身卡住。清理脚本的临界区只有毫秒级,正常情况下永远等不到这个超时。
+_WRITER_LOCK_TIMEOUT = 5.0
+_LOCK_POLL_SECONDS = 0.05
+
+
+def _try_lock(fd: int) -> bool:
+    """非阻塞地尝试拿排他锁。
+
+    用 OS 级劝告锁(POSIX ``flock`` / Windows ``msvcrt.locking``):进程崩溃时
+    内核自动释放,于是不需要「陈旧锁文件怎么办」那一整套超时启发式——那正是
+    角落穷举的开端。
+    """
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:                       # pragma: no cover - 释放失败
+        pass
+
+
+@contextmanager
+def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
+    """索引的跨进程互斥。``yield`` 出「是否真的拿到了」。
+
+    没有它,清理脚本读完与写回之间被追加的那一行会**永久丢失**:它既不在保留
+    集里,也不在旁车留证里(codex #453)。原子替换关不上这个窗口——原子的是
+    「换文件」这一步,不是「读—改—写」这整段。
+    """
+    lock_path = catalog.with_name(catalog.name + ".lock")
+    fd = -1
+    held = False
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"0")        # Windows 锁的是字节区间
+        # 建不出锁文件时如实 yield False:清理脚本据此拒绝动手,写入侧据此告警
+        # 后继续——没有任何一方会把它当成「拿到了锁」。
+        except OSError:  # fallback-ok: 如实上报「没拿到锁」,调用方各自处置
+            yield False
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            if _try_lock(fd):
+                held = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_LOCK_POLL_SECONDS)
+        yield held
+    finally:
+        if fd >= 0:
+            if held:
+                _unlock(fd)
+            os.close(fd)
 
 
 def append_run_record(
@@ -90,10 +200,8 @@ def append_run_record(
 ) -> None:
     """Append a single JSON line to the run catalog.
 
-    Thread-safe on POSIX (O_APPEND + single write ≤ PIPE_BUF). On
-    Windows the single ``json.dumps`` + ``os.write`` is also safe in
-    practice because CPython holds the GIL during the write; for
-    multi-process safety use a file lock or a dedicated writer process.
+    追加本身走跨进程劝告锁 (`catalog_lock`),与清理脚本互斥。等不到锁则照样
+    写并告警:一次运行的旁路记账不该把运行本身卡住。
     """
     dest = catalog_path or _DEFAULT_CATALOG_PATH
 
@@ -104,8 +212,11 @@ def append_run_record(
     #
     # 污染仍被堵住:测试从不传 catalog_path,它们走的正是这条默认路径。
     if catalog_path is None:
+        # 相对路径按**生产者的 CWD** 解析:产物就在那里。
+        launch_dir = Path.cwd()
+        text = str(record.get("output_dir") or "")
         reason = catalog_boundary_verdict(
-            str(record.get("output_dir") or ""), tree=_DEFAULT_OUTPUT_TREE)
+            text, tree=_DEFAULT_OUTPUT_TREE, relative_base=launch_dir)
         if reason is not None:
             _logger.warning(
                 "Run catalog append SKIPPED: %s. A run whose artifacts live "
@@ -116,14 +227,31 @@ def append_run_record(
             )
             return
 
+        # 读侧(控制台、清理脚本)只能把相对路径当成「相对仓库根」。绝大多数
+        # 运行从仓库根启动,两种约定同解,**存的字符串一个字节都不变**;只有
+        # 分歧时才改存绝对路径,免得记录指向一个不存在的目录。
+        anchored = anchor_output_dir(text, relative_base=launch_dir)
+        as_read = anchor_output_dir(text, relative_base=_REPO_ROOT)
+        if anchored is not None and as_read is not None and not _same_path(
+                anchored, as_read):
+            record = dict(record)
+            record["output_dir"] = str(anchored)
+
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     line = json.dumps(_sanitize_for_json(record), ensure_ascii=False,
                       sort_keys=True, default=str, allow_nan=False) + "\n"
 
     try:
-        with open(dest, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        with catalog_lock(dest, timeout=_WRITER_LOCK_TIMEOUT) as held:
+            if not held:
+                _logger.warning(
+                    "Run catalog lock not acquired within %.1fs (path=%s) — "
+                    "appending anyway, because a run's bookkeeping must never "
+                    "block the run itself.", _WRITER_LOCK_TIMEOUT, dest,
+                )
+            with open(dest, "a", encoding="utf-8") as fh:
+                fh.write(line)
     except OSError:
         _logger.warning(
             "Run catalog append failed (path=%s) — run results are "

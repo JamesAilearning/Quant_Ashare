@@ -88,6 +88,45 @@ classify legitimate rows for removal.
 - **WHEN** the record is appended
 - **THEN** the record is appended
 
+### Requirement: A relative output directory SHALL be read against the producer's launch directory
+
+The writer SHALL resolve a relative `output_dir` against the process
+working directory of the run that produced it, not against the repository
+root. The engines create artifacts relative to their own CWD, and
+`WalkForwardConfig.output_dir` defaults to the relative
+`"output/walk_forward"` — measured on the operator's catalog, **101 of
+the 105 legitimate rows are relative paths**, so this is the common case
+rather than an edge one.
+
+Reading them against the repository root would accept a run launched
+elsewhere — an actual `/tmp/output/walk_forward/...` run would be
+recorded as though it were `<repo>/output/walk_forward/...`. The catalog
+would stay polluted, and the console would offer to open unrelated
+repository artifacts under that run's name.
+
+Readers — the console and the maintenance tool — cannot know the
+producer's CWD after the fact and SHALL keep reading relative rows as
+repository-root-relative. Where the two readings agree, which is every
+run launched from the repository root, the writer SHALL store the
+recorded text **unchanged**, so the catalog stays portable rather than
+pinned to one machine's layout. Only where they disagree SHALL the writer
+store the absolute path, so the row never names a directory that does not
+exist.
+
+#### Scenario: a run launched outside the repository
+
+- **GIVEN** an engine launched from a directory outside the repository,
+  recording the relative default `output/...`
+- **WHEN** the record is appended to the default catalog
+- **THEN** nothing is appended, and the reason is logged
+
+#### Scenario: the ordinary run stores exactly what it recorded
+
+- **GIVEN** an engine launched from the repository root recording
+  `output/wf/r1`
+- **WHEN** the record is appended
+- **THEN** the stored `output_dir` is still `output/wf/r1`
+
 ### Requirement: The maintenance tool SHALL NOT lose rows it did not account for
 
 The tool SHALL report by default and modify the catalog only when
@@ -97,19 +136,46 @@ replace the catalog atomically.
 
 Between classifying and rewriting, a concurrent run may append a row that
 is in neither the retained set nor the sidecar; rewriting would destroy it
-permanently. The tool SHALL detect that the catalog changed under it and
-SHALL refuse to modify anything rather than swallow that row.
+permanently. An atomic replace does not close this window — what is atomic
+is swapping the file, not the read-modify-write around it.
+
+The writer and the tool SHALL therefore serialize through a shared
+cross-process advisory lock, and the tool SHALL classify **inside** that
+lock rather than acting on a snapshot taken before it. A tool that cannot
+take the lock SHALL modify nothing and say so. OS-level advisory locks are
+released by the kernel when a process dies, so no stale-lock heuristic is
+needed.
+
+Because a run's bookkeeping must never block the run itself, a writer that
+cannot take the lock within a short timeout SHALL log a warning and append
+anyway. The residual window this leaves — a writer that waited out its
+full timeout while the tool's millisecond-long critical section was open —
+SHALL still be detected by comparing the catalog against its state at the
+start of that section, and SHALL abort the rewrite.
 
 Lines the tool cannot interpret SHALL be retained, including valid JSON
 that is not a record object (`null`, arrays, scalars). Such a value SHALL
 NOT abort the report — the criterion applies only to rows provably
 identifiable as debris; anything else is the operator's data.
 
-#### Scenario: the catalog changed during the report
+#### Scenario: the tool cannot take the lock
 
-- **GIVEN** a row appended after classification and before the rewrite
+- **GIVEN** another process holding the catalog lock
 - **WHEN** the tool is asked to prune
 - **THEN** nothing is written and the tool reports why
+
+#### Scenario: an append that bypassed the lock
+
+- **GIVEN** a row appended inside the tool's critical section by a writer
+  that had already timed out waiting for the lock
+- **WHEN** the tool is about to replace the catalog
+- **THEN** nothing is written and the tool reports why
+
+#### Scenario: a writer that cannot take the lock still records its run
+
+- **GIVEN** the lock held elsewhere for longer than the writer's timeout
+- **WHEN** a run appends its record
+- **THEN** the record is appended and the wait is logged
 
 #### Scenario: a JSON value that is not a record
 
