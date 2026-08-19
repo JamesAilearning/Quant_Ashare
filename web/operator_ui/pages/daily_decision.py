@@ -24,7 +24,10 @@ import streamlit as st
 
 from web.operator_ui.artifact_reader import read_json_artifact
 from web.operator_ui.components import render_empty_state
-from web.operator_ui.daily_signal_navigation import prepare_daily_decision_selection
+from web.operator_ui.daily_signal_navigation import (
+    DAILY_DECISION_REQUESTED_DATE_KEY,
+    prepare_daily_decision_selection,
+)
 from web.operator_ui.decision_journal import (
     ACTIONS,
     DecisionJournalError,
@@ -187,6 +190,13 @@ if not _artifacts:
 
 _date_options = [item[0] for item in _artifacts]
 _session_state = cast(MutableMapping[str, object], st.session_state)
+# The Today Workbench can link to one dated artifact.  Consume the URL hint
+# once, just as the Run Center's session-state handoff is consumed below, so a
+# later operator selection is not silently overwritten on every rerun.
+_requested_as_of = st.query_params.get("as_of")
+if isinstance(_requested_as_of, str):
+    _session_state[DAILY_DECISION_REQUESTED_DATE_KEY] = _requested_as_of
+    del st.query_params["as_of"]
 prepare_daily_decision_selection(_session_state, _date_options)
 _selected_date = st.selectbox("交易日(as_of)", _date_options, key="dd_date")
 _selected_path = dict(_artifacts)[_selected_date]

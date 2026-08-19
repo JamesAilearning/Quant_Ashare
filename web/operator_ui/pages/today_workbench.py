@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import streamlit as st
 
 from web.operator_ui.artifact_reader import read_json_artifact
 from web.operator_ui.bundle_health import (
+    BundleHealthSummary,
     resolve_default_provider_uri,
     summarise_bundle_health,
 )
 from web.operator_ui.components import render_stat_card
+from web.operator_ui.decision_journal import DecisionJournalError, read_journal
 from web.operator_ui.incumbent import (
     anchored_to_repo,
     resolve_incumbent,
@@ -24,6 +26,14 @@ from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
     list_recommendation_artifacts,
     load_trainer_sidecar_sha,
+    picks_table_rows,
+)
+from web.operator_ui.pages._today_decision_queue_helpers import (
+    TodayQueueItem,
+    build_today_decision_queue,
+    queue_counts,
+    queue_page_link,
+    review_progress,
 )
 from web.operator_ui.pages._today_workbench_helpers import (
     DailySignalSummary,
@@ -33,6 +43,7 @@ from web.operator_ui.pages._today_workbench_helpers import (
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
     RUNNING_STALE,
+    UpdateRunStatus,
     classify_running,
     read_update_status,
     record_matches_provider,
@@ -60,17 +71,21 @@ def _render_card(
     st.caption(detail)
 
 
-def _render_update_summary(provider_path: Path) -> None:
+def _render_update_summary(
+    provider_path: Path,
+) -> tuple[UpdateRunStatus | None, bool | None, str | None]:
     try:
         status_path = status_path_for_provider(provider_path)
     except ValueError as exc:
         _render_card("上次数据更新", "无法建立", str(exc), color="negative")
-        return
+        return None, None, str(exc)
 
     update = read_update_status(status_path)
-    if update.kind not in ("missing", "corrupt") and not record_matches_provider(
-        update, provider_path
-    ):
+    matches_provider = (
+        record_matches_provider(update, provider_path)
+        if update.kind not in ("missing", "corrupt") else None
+    )
+    if matches_provider is False:
         _render_card(
             "上次数据更新",
             "来源不匹配",
@@ -124,6 +139,23 @@ def _render_update_summary(provider_path: Path) -> None:
             f"{update.exit_meaning}；失败阶段：{update.failed_stage or '未记录'}。",
             color="negative",
         )
+    return update, matches_provider, None
+
+
+def _render_queue_item(item: TodayQueueItem) -> None:
+    label = {
+        "blocker": "阻塞",
+        "attention": "需关注",
+        "in_progress": "进行中",
+        "review": "可审阅",
+        "information": "信息",
+    }[item.kind]
+    st.markdown(f"**{label} · {item.title}**")
+    st.caption(item.detail)
+    if item.source_time:
+        st.caption(f"来源时间：{item.source_time}")
+    page, query_params = queue_page_link(item)
+    st.page_link(page, label="前往详情", query_params=query_params)
 
 
 def _render_signal_summary(signal: DailySignalSummary) -> None:
@@ -187,6 +219,10 @@ if not provider.strip():
     provider_problem = "未从 config.yaml 解析出 provider_uri。"
 else:
     provider_problem = unusable_path_reason(provider) or ""
+health: BundleHealthSummary | None = None
+update_status: UpdateRunStatus | None = None
+update_matches_provider: bool | None = None
+update_error: str | None = None
 
 data_col, update_col = st.columns(2)
 with data_col:
@@ -224,12 +260,16 @@ with update_col:
             color="negative",
         )
     else:
-        _render_update_summary(Path(provider))
+        update_status, update_matches_provider, update_error = _render_update_summary(
+            Path(provider)
+        )
 
 identity_col, signal_col = st.columns(2)
+incumbent_detail = ""
 with identity_col:
     incumbent = resolve_incumbent()
     if incumbent.is_ensemble:
+        incumbent_detail = "当前 serving manifest 指向 ensemble；仅供身份核对。"
         _render_card(
             "现任服务身份",
             f"ensemble · {len(incumbent.members)} 成员",
@@ -237,6 +277,7 @@ with identity_col:
             secondary=[("manifest", Path(str(incumbent.manifest_path)).name)],
         )
     elif incumbent.kind == "single":
+        incumbent_detail = "当前 serving manifest 显式声明单模型形态；仅供身份核对。"
         _render_card(
             "现任服务身份",
             "单模型形态",
@@ -244,6 +285,7 @@ with identity_col:
             color="warning",
         )
     else:
+        incumbent_detail = incumbent.error or "现任 manifest 无法解析；请勿据此判断信号来源。"
         _render_card(
             "现任服务身份",
             "无法确认",
@@ -252,6 +294,7 @@ with identity_col:
         )
 
 with signal_col:
+    signal_payload: dict[str, Any] | None = None
     artifacts = list_recommendation_artifacts()
     if artifacts:
         artifact_date, artifact_path = artifacts[0]
@@ -267,6 +310,8 @@ with signal_col:
                 artifact_read.issue.message if artifact_read.issue is not None else None
             ),
         )
+        if isinstance(artifact_read.value, dict):
+            signal_payload = artifact_read.value
     else:
         signal = summarise_daily_signal(
             None,
@@ -277,9 +322,13 @@ with signal_col:
     _render_signal_summary(signal)
 
 st.subheader("运行状态")
+all_jobs = ()
+jobs_error: str | None = None
 try:
-    operations = summarise_operations(load_all_jobs_read_only())
+    all_jobs = tuple(load_all_jobs_read_only())
+    operations = summarise_operations(all_jobs)
 except (OSError, RuntimeError, ValueError) as exc:
+    jobs_error = f"作业目录无法汇总：{type(exc).__name__}: {exc}"
     _render_card(
         "当前运行或异常",
         "无法读取",
@@ -313,6 +362,84 @@ else:
         )
     else:
         _render_card("当前运行或异常", "全部空闲", operations.detail)
+
+review = None
+review_error: str | None = None
+if signal.kind in {"daily", "rebalance"}:
+    if signal_payload is None:
+        review_error = "有效信号没有可读取的原始 payload，无法核验人工审阅进度。"
+    else:
+        try:
+            candidate_rows = picks_table_rows(signal_payload)  # shared shape boundary
+            candidate_codes = [str(row.get("代码") or "") for row in candidate_rows]
+            journal = read_journal()
+            if journal.malformed_count:
+                review_error = f"决策日志含 {journal.malformed_count} 行坏行，审阅进度需要核验。"
+            else:
+                review = review_progress(
+                    signal.as_of_date or "", candidate_codes, journal.effective,
+                )
+        except (DecisionJournalError, ValueError) as exc:
+            review_error = f"人工审阅进度不可读：{type(exc).__name__}: {exc}"
+
+update_detail = ""
+update_time = ""
+update_kind = None
+update_running_class = None
+if update_status is not None:
+    update_kind = update_status.kind
+    update_time = update_status.finished_at or update_status.started_at
+    if update_matches_provider is False:
+        update_detail = "状态工件属于另一个 provider；不会把它当作当前数据的更新结果。"
+    elif update_status.kind == "corrupt":
+        update_detail = update_status.error
+    elif update_status.kind == "running":
+        update_detail = update_status.detail or update_status.started_at or "状态记录未给出开始时间。"
+        update_running_class = classify_running(update_status)
+    elif update_status.kind == "finished" and not update_status.ok:
+        update_detail = (
+            f"{update_status.exit_meaning}；失败阶段："
+            f"{update_status.failed_stage or '未记录'}。"
+        )
+
+queue = build_today_decision_queue(
+    provider_problem=provider_problem or None,
+    bundle_status=health.status if health is not None else None,
+    bundle_detail=health.message if health is not None else provider_problem,
+    update_kind=update_kind,
+    update_detail=update_detail or update_error or "",
+    update_time=update_time,
+    update_matches_provider=update_matches_provider,
+    update_running_class=update_running_class,
+    signal=signal,
+    jobs=all_jobs,
+    jobs_error=jobs_error,
+    review=review,
+    review_error=review_error,
+    incumbent_kind=incumbent.kind,
+    incumbent_detail=incumbent_detail,
+)
+counts = queue_counts(queue)
+st.subheader("今日待办")
+count_cols = st.columns(5)
+for column, (kind, label) in zip(count_cols, (
+    ("blocker", "阻塞"),
+    ("attention", "需关注"),
+    ("in_progress", "进行中"),
+    ("review", "可审阅"),
+    ("information", "信息"),
+), strict=True):
+    column.metric(label, counts[kind])
+if not counts["blocker"]:
+    st.success("当前没有阻塞项；这不是交易、持仓或订单已经执行的结论。")
+primary_items = [item for item in queue if item.kind in {"blocker", "attention"}]
+for item in primary_items:
+    _render_queue_item(item)
+secondary_items = [item for item in queue if item.kind not in {"blocker", "attention"}]
+if secondary_items:
+    with st.expander("查看进行中、可审阅与信息项", expanded=False):
+        for item in secondary_items:
+            _render_queue_item(item)
 
 st.markdown("---")
 st.subheader("按任务继续")
