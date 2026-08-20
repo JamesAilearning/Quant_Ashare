@@ -22,6 +22,7 @@ from web.operator_ui.incumbent import (
     unusable_path_reason,
 )
 from web.operator_ui.job_io import (
+    JobSummary,
     count_cli_rows_outside_output_tree,
     count_malformed_cli_entries,
     count_malformed_ui_job_entries,
@@ -327,7 +328,7 @@ with signal_col:
     _render_signal_summary(signal)
 
 st.subheader("运行状态")
-all_jobs = ()
+all_jobs: tuple[JobSummary, ...] = ()
 jobs_error: str | None = None
 try:
     all_jobs = tuple(load_all_jobs_read_only())

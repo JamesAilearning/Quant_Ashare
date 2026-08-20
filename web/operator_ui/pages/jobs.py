@@ -37,6 +37,7 @@ from web.operator_ui.formatting import (
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
     count_cli_rows_outside_output_tree,
+    count_malformed_ui_job_entries,
     jobs_eligible_for_cleanup,
     list_all_jobs,
     load_all_jobs,
@@ -458,6 +459,17 @@ if _set_aside:
         "之外(多为测试运行写到临时目录,现已不存在),本页读不到也打不开。"
         "根因是运行目录索引的默认路径按当前工作目录解析——测试与真实运行"
         "共用了同一份索引。"
+    )
+
+# The shared UI-job loader deliberately keeps valid records available when a
+# sibling lifecycle artifact is unreadable or schema-invalid.  The Jobs page
+# must disclose that partial catalog before either empty-state exit, otherwise
+# an operator could mistake the remaining rows for complete evidence.
+_malformed_ui = count_malformed_ui_job_entries()
+if _malformed_ui:
+    st.warning(
+        f"另有 **{_malformed_ui}** 个 UI 作业记录未列出：其 `job.json` 不可读或"
+        "不符合生命周期契约。请修复或移除损坏工件后再据此核验作业目录。"
     )
 
 # ---------------------------------------------------------------------------

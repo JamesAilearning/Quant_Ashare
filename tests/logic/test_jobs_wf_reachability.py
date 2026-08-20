@@ -315,6 +315,14 @@ class PageSourcePinsTests(unittest.TestCase):
         self.assertIn("count_cli_rows_outside_output_tree", src)
         self.assertIn("未列出", src)
 
+    def test_jobs_page_discloses_skipped_ui_job_artifacts(self) -> None:
+        src = _PAGE_JOBS.read_text(encoding="utf-8")
+        self.assertIn("count_malformed_ui_job_entries", src)
+        self.assertIn("UI 作业记录未列出", src)
+        disclosure_at = src.index("_malformed_ui = count_malformed_ui_job_entries()")
+        first_empty_at = src.index("if total == 0 and not _active:")
+        self.assertLess(disclosure_at, first_empty_at)
+
     def test_disclosure_precedes_empty_state_exits(self) -> None:
         # codex #444 r4: 目录全是越界记录时（正是本改动针对的重污染场景），
         # 页面会说「暂无作业」然后 st.stop()，反而一个字都不提搁置了多少
