@@ -57,6 +57,12 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _six_increasing_indices,
     _trading_day_options,
     _walk_forward_date_defaults,
+    build_config_review_sections,
+    config_preset_differences,
+    explicitly_applied_preset_name,
+    portable_config_for_preset_review,
+    snapshot_preset_for_review,
+    unsupported_prefill_keys,
 )
 from web.operator_ui.training_guards import (
     ProviderMetadata,
@@ -130,6 +136,13 @@ _RESET_FIELD_DEFAULTS: dict[str, Any] = {
     **_COST_FIELD_DEFAULTS,
     **_GUARD_FIELD_DEFAULTS,
 }
+
+# ``cr_preset`` reflects whether the current fields still exactly match a
+# preset.  Keep the explicitly applied preset separately, because a later
+# field edit deliberately changes the selector to Custom while the final
+# review still needs a truthful before-edit comparison baseline.
+_REVIEW_PRESET_NAME_STATE = "cr_review_preset_name"
+_REVIEW_PRESET_SNAPSHOT_STATE = "cr_review_preset_snapshot"
 
 
 def _duration_seconds(started_at: Any, ended_at: Any) -> float | None:
@@ -231,6 +244,8 @@ def _apply_preset(preset_name: str) -> None:
     preset = _load_preset(preset_name)
     if not preset:
         return
+    st.session_state[_REVIEW_PRESET_NAME_STATE] = preset_name
+    st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
     for key, value in preset.items():
         st.session_state[f"cr_{key}"] = value
     # Reset cost-model AND csi800-guard fields the preset doesn't define to
@@ -307,7 +322,10 @@ def _prefill_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Page header
 # ---------------------------------------------------------------------------
-render_page_header("配置运行", "配置并启动流水线或滚动验证作业。")
+render_page_header(
+    "配置运行",
+    "逐步配置并启动日频研究运行；本页不会发布或修改生产 serving。",
+)
 
 # ---------------------------------------------------------------------------
 # Prefill from previous run
@@ -318,6 +336,11 @@ if PREFILL_CONFIG:
     st.info(f"已从上一次运行 {source_job} 预填配置。启动前请核对参数。")
     prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
+        # A rerun prefill is not a preset selection. Clear any prior review
+        # identity/snapshot before the automatic field matching below may label
+        # it Default or Smoke.
+        st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
+        st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
         if PREFILL_CONFIG.get("provider_uri"):
             st.session_state["cr_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])
         for k, v in PREFILL_CONFIG.items():
@@ -342,8 +365,9 @@ if "cr_preset_initialized" not in st.session_state:
     st.session_state["cr_preset_initialized"] = True
 
 # ---------------------------------------------------------------------------
-# Mode & Preset bar
+# Research goal & preset
 # ---------------------------------------------------------------------------
+st.markdown("#### ① 研究目标与预设")
 bar_col1, bar_col2 = st.columns(2)
 with bar_col2:
     # 只有 UI 形状的预设进下拉框。战役冻结件(无 mode 键)本页跑不了:
@@ -448,7 +472,7 @@ form_col, preview_col = st.columns([0.62, 0.38])
 with form_col:
 
     # --- Data section ---
-    with st.expander("📊 数据", expanded=True):
+    with st.expander("② 数据范围", expanded=True):
         # The publisher / UI Tushare ingest + its saved-provider catalog were
         # retired (unify U3). Point provider_uri at a PRODUCTION bundle built by
         # the data-pipeline scripts (scripts/data_pipeline/); QUANT_PROVIDER_URI
@@ -617,26 +641,8 @@ with form_col:
                     ),
                 )
 
-    # --- Model section ---
-    with st.expander("🧠 模型", expanded=True):
-        model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
-        model_default = _cr("model_type", "LGBModel")
-        model_type = st.selectbox(
-            "模型类型 (model_type)",
-            model_options,
-            index=model_options.index(model_default) if model_default in model_options else 0,
-            key="cr_model_type",
-        )
-        with st.expander("高级参数", expanded=False):
-            ac1, ac2 = st.columns(2)
-            with ac1:
-                num_boost_round = st.number_input("迭代轮数 (num_boost_round)", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
-                early_stopping_rounds = st.number_input("早停轮数 (early_stopping_rounds)", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
-            with ac2:
-                learning_rate = st.number_input("学习率 (learning_rate)", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
-
     # --- Strategy section ---
-    with st.expander("💹 策略", expanded=True):
+    with st.expander("③ 策略约束", expanded=True):
         sc1, sc2 = st.columns(2)
         with sc1:
             topk = st.number_input("持仓数 (topk)", value=_cr("topk", 50), min_value=1, key="cr_topk")
@@ -651,6 +657,24 @@ with form_col:
             )
             benchmark_code = st.text_input("基准代码 (benchmark_code)", value=_cr("benchmark_code", "SH000300TR"), key="cr_benchmark_code")
 
+    # --- Advanced model / training section ---
+    with st.expander("④ 高级设置 · 模型与训练", expanded=False):
+        model_options = ["LGBModel", "XGBModel", "CatBoostModel"]
+        model_default = _cr("model_type", "LGBModel")
+        model_type = st.selectbox(
+            "模型类型 (model_type)",
+            model_options,
+            index=model_options.index(model_default) if model_default in model_options else 0,
+            key="cr_model_type",
+        )
+        st.markdown("##### 训练参数")
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            num_boost_round = st.number_input("迭代轮数 (num_boost_round)", value=_cr("num_boost_round", 1000), min_value=1, key="cr_num_boost_round")
+            early_stopping_rounds = st.number_input("早停轮数 (early_stopping_rounds)", value=_cr("early_stopping_rounds", 50), min_value=1, key="cr_early_stopping_rounds")
+        with ac2:
+            learning_rate = st.number_input("学习率 (learning_rate)", value=_cr("learning_rate", 0.005), format="%.4f", key="cr_learning_rate")
+
     # --- Backtest / cost-model section ---
     # Cost-model + risk knobs that PipelineConfig / WalkForwardConfig accept but
     # the form previously left at their (backend) defaults. The literals below
@@ -659,7 +683,7 @@ with form_col:
     # the defaults. stamp_tax_schedule is intentionally NOT exposed (it's a
     # dated schedule, not a scalar; backend resolves None -> the 2023-08-28
     # reform default).
-    with st.expander("⚙️ 回测 / 成本模型（高级）", expanded=False):
+    with st.expander("④ 高级设置 · 回测 / 成本模型", expanded=False):
         bc1, bc2 = st.columns(2)
         with bc1:
             adjust_default = str(
@@ -733,7 +757,7 @@ with form_col:
         )
 
     # --- Compute section ---
-    with st.expander("⚙️ 算力", expanded=True):
+    with st.expander("④ 高级设置 · 算力", expanded=False):
         cc1, cc2 = st.columns(2)
         with cc1:
             device_default = _cr("compute_device", "cpu")
@@ -747,7 +771,10 @@ with form_col:
         with cc2:
             st.caption("Workers：auto")
 
-    with st.expander("🛡️ csi800 扩池守卫（instruments=csi800 时为必填契约）"):
+    with st.expander(
+        "④ 高级设置 · csi800 扩池守卫（instruments=csi800 时为必填契约）",
+        expanded=False,
+    ):
         st.caption(
             "后端把这三项当作 `instruments=csi800` 的**构造前置**:缺一项即"
             "拒绝构造配置(没有 sleeve 分解与 campaign 约束的 csi800 指标,"
@@ -957,8 +984,112 @@ with form_col:
     _calibration_rate = _gather_calibration_seconds_per_unit()
     estimated = _estimate_duration(preview_config, seconds_per_unit=_calibration_rate)
 
-    # --- Sticky run bar ---
+    # --- Final review -------------------------------------------------------
     st.divider()
+    st.subheader("⑤ 提交前复核")
+    st.caption(
+        "以下内容直接读取本次即将提交的配置。此处只会启动研究运行，"
+        "不会发布模型、修改 production serving 或生成交易指令。"
+    )
+
+    _selected_preset = str(st.session_state.get("cr_preset", "Default"))
+    _review_preset_name = explicitly_applied_preset_name(
+        st.session_state.get(_REVIEW_PRESET_NAME_STATE),
+        custom_preset_name=CUSTOM_PRESET_NAME,
+    )
+    _review_preset_config = (
+        _load_preset(_review_preset_name)
+        if _review_preset_name != CUSTOM_PRESET_NAME
+        else None
+    )
+    _saved_review_snapshot = st.session_state.get(_REVIEW_PRESET_SNAPSHOT_STATE)
+    _review_snapshot = (
+        _saved_review_snapshot if isinstance(_saved_review_snapshot, dict) else None
+    )
+    _review_preset = snapshot_preset_for_review(
+        preview_config,
+        _review_preset_config or None,
+        normalization_defaults=_RESET_FIELD_DEFAULTS,
+        snapshot=_review_snapshot,
+    )
+    if _review_preset is None:
+        # An unavailable preset must not leave an old baseline behind.  If the
+        # same name later becomes readable again, rebuild from its current
+        # contents instead of comparing against a stale session snapshot.
+        st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
+    elif _review_snapshot is None:
+        st.session_state[_REVIEW_PRESET_SNAPSHOT_STATE] = dict(_review_preset)
+    _review_sections = build_config_review_sections(preview_config)
+    _preset_differences = config_preset_differences(
+        preview_config, _review_preset,
+    )
+    _unsupported_prefill = unsupported_prefill_keys(
+        PREFILL_CONFIG, preview_config,
+    )
+
+    with st.expander("完整提交配置（只读）", expanded=True):
+        st.caption(
+            f"模式：`{mode}` · 当前预设状态：`{_selected_preset}` · "
+            f"复核基线：`{_review_preset_name}`"
+        )
+        for _section in _review_sections:
+            st.markdown(f"**{_section.title}**")
+            st.dataframe(
+                [
+                    {"配置项": key, "即将提交": str(value)}
+                    for key, value in _section.rows
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+    with st.expander("相对预设的差异（只读）", expanded=True):
+        if (
+            _selected_preset == CUSTOM_PRESET_NAME
+            and _review_preset_name != CUSTOM_PRESET_NAME
+        ):
+            st.caption(
+                f"当前字段已偏离 `{_review_preset_name}`，选择器因此显示 Custom；"
+                "以下仍与最近明确应用的预设对比。"
+            )
+        if _review_preset_name == CUSTOM_PRESET_NAME:
+            st.info("尚未明确应用可读取的预设，无法确认差异。")
+        elif _preset_differences is None:
+            st.warning(
+                f"已应用预设 `{_review_preset_name}` 无法读取，无法确认差异；"
+                "不会使用默认值替代。"
+            )
+        elif not _preset_differences:
+            st.success(f"与明确应用的预设 `{_review_preset_name}` 没有差异。")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "配置项": _difference.key,
+                        "预设值": (
+                            str(_difference.preset_value)
+                            if _difference.preset_present
+                            else "（预设未定义）"
+                        ),
+                        "即将提交": (
+                            str(_difference.emitted_value)
+                            if _difference.emitted_present
+                            else "（本页不会提交）"
+                        ),
+                    }
+                    for _difference in _preset_differences
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+
+    if _unsupported_prefill:
+        st.warning(
+            "历史运行中以下字段不属于本页当前支持的提交 schema，"
+            "本次不会静默携带：" + ", ".join(_unsupported_prefill)
+        )
+
+    # --- Research launch controls ------------------------------------------
     status_col, btn_col = st.columns([3, 2])
     with status_col:
         if guard_errors:
@@ -1003,7 +1134,11 @@ with form_col:
         st.caption(f"预估耗时：{estimated}")
 
     with btn_col:
-        submitted = st.button("🚀 运行", disabled=(not provider_uri_valid or bool(guard_errors)), use_container_width=True)
+        submitted = st.button(
+            "🚀 启动研究运行",
+            disabled=(not provider_uri_valid or bool(guard_errors)),
+            use_container_width=True,
+        )
         if st.button("💾 保存为预设", use_container_width=True):
             st.session_state["cr_saving_preset"] = True
 
@@ -1146,6 +1281,8 @@ with form_col:
                 )
                 st.success(f"已保存为 {safe}")
                 st.session_state["cr_preset"] = safe
+                st.session_state[_REVIEW_PRESET_NAME_STATE] = safe
+                st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
                 st.session_state["cr_saving_preset"] = False
                 st.rerun()
         if st.button("取消", key="cr_save_cancel"):
@@ -1154,7 +1291,7 @@ with form_col:
 
 # ===== RIGHT: Live YAML preview =====
 with preview_col:
-    st.markdown("#### 配置预览")
+    st.markdown("#### 完整提交 YAML（只读）")
 
     # --- Preview actions: copy + diff toggle ---------------------------------
     # Two buttons; both bind directly to session_state flags consumed below
@@ -1185,23 +1322,34 @@ with preview_col:
 
     # --- Diff vs preset ------------------------------------------------------
     if show_diff:
-        _diff_baseline = _load_preset(st.session_state.get("cr_preset", "Default"))
-        if not _diff_baseline:
+        if _review_preset is None:
             st.caption(
-                "无法对比 — 当前预设为 Custom 或加载失败。"
+                f"无法对比 — 已应用预设 `{_review_preset_name}` 无法读取。"
             )
         else:
-            _baseline_preview = {"mode": mode, **_diff_baseline}
             baseline_yaml = yaml.dump(
-                {k: v for k, v in _baseline_preview.items() if v != ""},
+                {
+                    key: value
+                    for key, value in portable_config_for_preset_review(_review_preset).items()
+                    if value != ""
+                },
+                default_flow_style=False,
+                allow_unicode=True,
+            )
+            current_review_yaml = yaml.dump(
+                {
+                    key: value
+                    for key, value in portable_config_for_preset_review(preview_config).items()
+                    if value != ""
+                },
                 default_flow_style=False,
                 allow_unicode=True,
             )
             diff_lines = list(
                 difflib.unified_diff(
                     baseline_yaml.splitlines(),
-                    yaml_text.splitlines(),
-                    fromfile=f"{st.session_state.get('cr_preset', 'Default')}.yaml",
+                    current_review_yaml.splitlines(),
+                    fromfile=f"{_review_preset_name}.yaml",
                     tofile="current",
                     lineterm="",
                 )
