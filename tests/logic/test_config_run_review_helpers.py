@@ -8,6 +8,7 @@ from web.operator_ui.pages._config_run_helpers import (
     build_config_review_sections,
     config_preset_differences,
     effective_preset_for_review,
+    portable_config_for_preset_review,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
@@ -48,6 +49,18 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
         emitted = {"mode": "walk_forward", "ensemble_window": 3}
 
         self.assertEqual(config_preset_differences(emitted, dict(emitted)), ())
+
+    def test_portable_review_config_excludes_only_machine_local_fields(self) -> None:
+        portable = portable_config_for_preset_review(
+            {
+                "mode": "pipeline",
+                "provider_uri": "D:/machine-a/provider",
+                "namechange_path": "D:/machine-a/namechange.csv",
+                "topk": 50,
+            }
+        )
+
+        self.assertEqual(portable, {"mode": "pipeline", "topk": 50})
 
     def test_effective_preset_matches_generated_fields_and_omits_local_paths(self) -> None:
         emitted = {

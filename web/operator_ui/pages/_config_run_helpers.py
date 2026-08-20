@@ -109,6 +109,15 @@ _CONFIG_REVIEW_SECTION_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _MACHINE_LOCAL_PRESET_KEYS = frozenset({"provider_uri", "namechange_path"})
 
 
+def portable_config_for_preset_review(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the portable configuration fields shared by both review views."""
+    return {
+        key: value
+        for key, value in config.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    }
+
+
 def build_config_review_sections(
     emitted_config: Mapping[str, Any],
 ) -> tuple[ConfigReviewSection, ...]:
@@ -155,16 +164,8 @@ def config_preset_differences(
     if preset_config is None:
         return None
 
-    emitted_portable = {
-        key: value
-        for key, value in emitted_config.items()
-        if key not in _MACHINE_LOCAL_PRESET_KEYS
-    }
-    preset_portable = {
-        key: value
-        for key, value in preset_config.items()
-        if key not in _MACHINE_LOCAL_PRESET_KEYS
-    }
+    emitted_portable = portable_config_for_preset_review(emitted_config)
+    preset_portable = portable_config_for_preset_review(preset_config)
     ordered_keys = list(emitted_portable)
     ordered_keys.extend(sorted(set(preset_portable) - set(emitted_portable)))
     differences: list[ConfigPresetDifference] = []
@@ -210,21 +211,9 @@ def effective_preset_for_review(
     if preset_config is None:
         return None
 
-    effective = {
-        key: value
-        for key, value in emitted_config.items()
-        if key not in _MACHINE_LOCAL_PRESET_KEYS
-    }
-    effective.update(
-        (key, value)
-        for key, value in normalization_defaults.items()
-        if key not in _MACHINE_LOCAL_PRESET_KEYS
-    )
-    effective.update(
-        (key, value)
-        for key, value in preset_config.items()
-        if key not in _MACHINE_LOCAL_PRESET_KEYS
-    )
+    effective = portable_config_for_preset_review(emitted_config)
+    effective.update(portable_config_for_preset_review(normalization_defaults))
+    effective.update(portable_config_for_preset_review(preset_config))
     return effective
 
 

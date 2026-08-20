@@ -205,6 +205,11 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         # Diff is computed via stdlib difflib against the active preset.
         self.assertIn("difflib", source)
         self.assertIn("unified_diff", source)
+        self.assertIn("portable_config_for_preset_review", source)
+        self.assertIn("_review_preset_name", source)
+        self.assertNotIn(
+            '_load_preset(st.session_state.get("cr_preset", "Default"))', source,
+        )
         # The toast confirms the copy action.
         self.assertIn('st.toast("已复制 YAML', source)
 

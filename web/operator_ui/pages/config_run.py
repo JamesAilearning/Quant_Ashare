@@ -59,6 +59,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
+    portable_config_for_preset_review,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
@@ -1314,23 +1315,34 @@ with preview_col:
 
     # --- Diff vs preset ------------------------------------------------------
     if show_diff:
-        _diff_baseline = _load_preset(st.session_state.get("cr_preset", "Default"))
-        if not _diff_baseline:
+        if _review_preset is None:
             st.caption(
-                "无法对比 — 当前预设为 Custom 或加载失败。"
+                f"无法对比 — 已应用预设 `{_review_preset_name}` 无法读取。"
             )
         else:
-            _baseline_preview = {"mode": mode, **_diff_baseline}
             baseline_yaml = yaml.dump(
-                {k: v for k, v in _baseline_preview.items() if v != ""},
+                {
+                    key: value
+                    for key, value in portable_config_for_preset_review(_review_preset).items()
+                    if value != ""
+                },
+                default_flow_style=False,
+                allow_unicode=True,
+            )
+            current_review_yaml = yaml.dump(
+                {
+                    key: value
+                    for key, value in portable_config_for_preset_review(preview_config).items()
+                    if value != ""
+                },
                 default_flow_style=False,
                 allow_unicode=True,
             )
             diff_lines = list(
                 difflib.unified_diff(
                     baseline_yaml.splitlines(),
-                    yaml_text.splitlines(),
-                    fromfile=f"{st.session_state.get('cr_preset', 'Default')}.yaml",
+                    current_review_yaml.splitlines(),
+                    fromfile=f"{_review_preset_name}.yaml",
                     tofile="current",
                     lineterm="",
                 )
