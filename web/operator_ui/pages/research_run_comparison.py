@@ -33,7 +33,7 @@ _LOG_PATHS = (
     ("logs", "stderr.log"),
 )
 _UI_JOB_LOG_ROOT = (
-    Path(__file__).resolve().parents[2] / "output" / "operator_ui" / "jobs"
+    Path(__file__).resolve().parents[3] / "output" / "operator_ui" / "jobs"
 )
 _UI_JOB_LOG_PATHS = (
     ("stdout.log",),
@@ -204,7 +204,11 @@ requested = parse_selected_run_ids(sanitize("run_ids", st.query_params.get("run_
 unknown_requested = tuple(run_id for run_id in requested if run_id not in by_id)
 default_ids = [run_id for run_id in requested if run_id in by_id]
 if unknown_requested:
-    st.warning("以下 URL 运行 ID 当前不在可选目录中，未加载：" + "、".join(unknown_requested))
+    st.error(
+        "以下 URL 运行 ID 当前不在可选目录中，无法按请求的完整选择进行对比："
+        + "、".join(unknown_requested)
+    )
+    st.stop()
 
 selected_ids = st.multiselect(
     "选择 2–5 个历史研究运行",
