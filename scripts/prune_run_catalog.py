@@ -59,6 +59,41 @@ _DEFAULT_TREE = _REPO_ROOT / "output"
 _PRUNE_LOCK_TIMEOUT = 30.0
 
 
+def _read_lines(catalog: Path) -> tuple[list[str], bool]:
+    """按**字节忠实**地读出索引的每一行,外加「文件末尾有没有换行」。
+
+    两处不可逆的归一化都出在读这一步(codex #453),所以一起收在这里:
+
+    - ``read_text(encoding="utf-8")`` 撞上**一个**非法字节就整个抛
+      ``UnicodeDecodeError``,连只报数模式都跑不完 —— 而本工具的职责恰恰是容忍
+      畸形/外来数据。改用 ``surrogateescape`` 解码:实测往返后字节完全一致,
+      于是坏字节能以「看不懂的行」原样留住,而不是让扫描崩掉。
+    - ``str.splitlines()`` 除了换行符,还在 ``U+2028`` / ``U+0085`` 这类字符上
+      断行,而 ``json.dumps(ensure_ascii=False)`` 会把它们**原样**吐进记录里
+      (实测确认)。于是一条合法记录被切成几段畸形碎片;一旦触发 ``--prune``,
+      碎片会被用真换行重写回去,**永久毁掉那条记录**。只按换行符切。
+
+    行尾的 ``CR`` 保留不动 —— 操作人的索引实测 3560 行全是 CRLF(写入侧文本
+    模式在 Windows 上会把换行译成 CRLF)。保留它,重写时拼回去正好还原原字节;
+    换成「读时归一化、写时再译回」的老做法,一份混合行尾的文件会被悄悄改写成
+    单一行尾。
+    """
+    raw = catalog.read_bytes().decode("utf-8", errors="surrogateescape")
+    trailing_newline = raw.endswith("\n")
+    lines = raw.split("\n")
+    if trailing_newline:
+        lines.pop()            # 末尾那个换行不是一行
+    return lines, trailing_newline
+
+
+def _encode_lines(lines: list[str], trailing_newline: bool) -> bytes:
+    """与 :func:`_read_lines` 成对:拼回去正好是原来的字节。"""
+    body = "\n".join(lines)
+    if trailing_newline and lines:
+        body += "\n"
+    return body.encode("utf-8", errors="surrogateescape")
+
+
 class Classified(NamedTuple):
     """分类结果。``retained`` 按**原顺序**,重写索引时直接写回它。
 
@@ -73,6 +108,8 @@ class Classified(NamedTuple):
     dropped_records: list[dict[str, Any]]
     verified_in_tree: int
     unclassified: int
+    #: 原文件末尾有没有换行。重写时照原样还原,不替操作人补一个。
+    trailing_newline: bool
 
 
 def classify(
@@ -94,7 +131,8 @@ def classify(
     dropped_records: list[dict[str, Any]] = []
     verified = 0
     unclassified = 0
-    for line in catalog.read_text(encoding="utf-8").splitlines():
+    lines, trailing_newline = _read_lines(catalog)
+    for line in lines:
         if not line.strip():
             # 空行也**保留**。它既不在 keep 也不在 drop 的话,一次 --prune 就把
             # 它从活索引里抹掉了,而旁车留证里没有它——「移除的行留得住」这条
@@ -125,7 +163,8 @@ def classify(
         else:
             dropped.append(line)
             dropped_records.append(record)
-    return Classified(retained, dropped, dropped_records, verified, unclassified)
+    return Classified(retained, dropped, dropped_records, verified, unclassified,
+                      trailing_newline)
 
 
 def report(result: Classified) -> None:
@@ -166,7 +205,7 @@ def _create_beside_catalog(
     那份宽权限的副本还会永久留在盘上(codex #453)。**顺序是判据的一部分**,
     所以把它焊在一个函数里。
 
-    独占创建(``"x"``)则是另一条:同一秒里两次清理会派生同名文件,``write_text``
+    独占创建(``"x"``)则是另一条:同一秒里两次清理会派生同名文件,直接写
     会**静默截断**前一次的留证 —— 而本工具的全部承诺就是「移除的行留得住」。
     撞名换序号,而不是照写。
     """
@@ -287,8 +326,9 @@ def main(argv: list[str] | None = None) -> int:
                 "**没有清理任何东西**。", file=sys.stderr)
             return 6
         # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
-        sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
-        staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
+        # 按字节写回,与 `_read_lines` 成对 —— 保住行尾与不可解码的字节。
+        sidecar.write_bytes(_encode_lines(drop, True))
+        staged.write_bytes(_encode_lines(keep, result.trailing_newline))
 
         # 走到这里索引还会变,只剩一种可能:有个不遵守这把锁的写入者。现有的
         # 写入侧不会——它等不到锁就放弃追加而不是绕过——所以这是给「将来某个

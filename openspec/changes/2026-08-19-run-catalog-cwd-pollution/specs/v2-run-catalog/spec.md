@@ -144,15 +144,22 @@ The check SHALL NOT normalise the recorded `output_dir` before examining
 it. Whitespace may be stripped to decide whether a value was given at all,
 but the stripped form SHALL NOT be what gets parsed as a path.
 
-Whitespace at either end SHALL disqualify the value outright, because such
-a path cannot name one directory unambiguously: whether the whitespace
-belongs to the name depends on who reads it. The console strips it and
-would open the neighbouring directory; measured on this operator's Windows
-box, `mkdir("r1 ")` creates `r1`, so the record is wrong from the start,
-while on POSIX it really is a different directory. Either way the row
-cannot identify the run, and the run's artifacts are untouched by
-declining to record it. A value that is only whitespace still counts as
+The **writer** SHALL refuse a value carrying whitespace at either end,
+because such a path cannot name one directory unambiguously: whether that
+whitespace belongs to the name depends on who reads it. Measured on this
+operator's Windows box, `mkdir("r1 ")` creates `r1`, so the record is
+wrong from the start; on POSIX it really is a different directory. Either
+way the row cannot identify the run, and declining to record it leaves the
+run's artifacts untouched. A value that is only whitespace still counts as
 absent rather than as such a name.
+
+That rule is about what is worth **recording from now on**, and it
+deliberately does NOT live in the containment predicate the maintenance
+tool shares. The tool's question is whether the console can open a row;
+once the reader was aligned to read paths exactly, it can — so classifying
+such a historical row as debris and removing it would destroy a record
+that opens fine. The shared predicate stays the containment rule; this one
+is the writer's alone.
 
 Leading whitespace is a valid filename character — on POSIX by
 definition, and measured on this operator's Windows box a directory named
@@ -169,6 +176,13 @@ would then offer an unrelated in-tree directory under that run's name.
   repository root
 - **WHEN** the record is appended to the default catalog
 - **THEN** nothing is appended
+
+#### Scenario: the tool keeps a historical row the writer would now refuse
+
+- **GIVEN** an existing catalog row whose in-tree `output_dir` ends with a
+  space
+- **WHEN** the maintenance tool classifies the catalog
+- **THEN** the row counts as verified in-tree and is retained
 
 #### Scenario: an output directory whose name ends with a space
 
@@ -252,6 +266,30 @@ The tool SHALL additionally compare the catalog against its state at the
 start of the critical section before replacing it. With no bypass path
 this is a belt against a future writer that does not honour the lock, not
 protection for a designed one.
+
+The tool SHALL read the catalog byte-faithfully. Decoding with a strict
+UTF-8 codec makes a single invalid byte abort even report-only mode, and
+splitting on every character Unicode calls a line break — `U+2028`,
+`U+0085` — tears one valid record into malformed fragments, which a later
+prune then writes back separated by real newlines, destroying it. The
+catalog SHALL be split on newlines alone and decoded reversibly, and the
+bytes of retained lines, including their line endings, SHALL survive a
+rewrite unchanged. Measured on this operator's catalog: all 3560 rows end
+with CRLF, so a rewrite that normalises endings would silently rewrite
+every line.
+
+The tool SHALL read the catalog byte-faithfully. Decoding it strictly as
+UTF-8 aborts the whole scan on a single invalid byte — including the
+report-only pass — for exactly the corrupted or foreign data the tool
+exists to tolerate; a reversible decoding SHALL be used so an undecodable
+row can stay unclassified instead. Records SHALL be split on newlines
+only: `str.splitlines()` also breaks on `U+2028` and `U+0085`, which
+`json.dumps(ensure_ascii=False)` emits verbatim, so one valid record
+becomes several malformed fragments and a later prune rewrites them with
+real newlines, destroying it permanently. Line endings SHALL survive the
+rewrite unchanged — measured on this operator's catalog, all 3560 rows end
+CRLF, and normalising on read while translating back on write silently
+rewrites a mixed-ending file.
 
 Lines the tool cannot interpret SHALL be retained, including blank
 separator lines and valid JSON that is not a record object (`null`,
@@ -353,6 +391,36 @@ refuse to prune a catalog that has more than one name.
 - **WHEN** the tool classifies the catalog
 - **THEN** the line is retained, counted as unclassified rather than
   verified, and the report completes
+
+#### Scenario: a record containing a Unicode line separator
+
+- **GIVEN** a row whose text carries `U+2028`
+- **WHEN** the tool classifies and prunes the catalog
+- **THEN** the row stays one record, counted as in-tree
+
+#### Scenario: a byte that is not valid UTF-8
+
+- **GIVEN** a catalog line containing an undecodable byte
+- **WHEN** the tool classifies the catalog
+- **THEN** the scan completes and that line is retained
+
+#### Scenario: a record containing a Unicode line separator
+
+- **GIVEN** a row whose text carries `U+2028`
+- **WHEN** the tool classifies the catalog
+- **THEN** it counts as one row, not as several fragments
+
+#### Scenario: a byte that is not valid UTF-8
+
+- **GIVEN** a catalog line containing an undecodable byte
+- **WHEN** the tool classifies the catalog
+- **THEN** the scan completes and that line is retained unclassified
+
+#### Scenario: a catalog written with CRLF endings
+
+- **GIVEN** a catalog whose rows end CRLF
+- **WHEN** the tool prunes it
+- **THEN** the retained rows still end CRLF
 
 #### Scenario: a blank separator line
 

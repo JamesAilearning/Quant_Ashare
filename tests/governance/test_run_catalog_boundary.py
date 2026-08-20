@@ -48,6 +48,25 @@ def _line_count(path: Path) -> int:
     return len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()])
 
 
+_LF = chr(10)
+_CRLF = chr(13) + chr(10)
+
+
+def _write_catalog(path: Path, lines: list[str], newline: str = _LF) -> None:
+    """按**字节**写夹具，不走平台的换行翻译。
+
+    生产索引实测是 CRLF（写入侧文本模式在 Windows 上翻译过），而工具现在按字节
+    忠实地读写。夹具若还依赖平台翻译，用例在两个平台上比的就不是同一份内容。
+    """
+    body = newline.join(lines) + newline
+    path.write_bytes(body.encode("utf-8"))
+
+
+def _append_catalog_line(path: Path, line: str, newline: str = _LF) -> None:
+    with open(path, "ab") as fh:
+        fh.write((line + newline).encode("utf-8"))
+
+
 def _rows(path: Path) -> list[dict[str, object]]:
     return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines()
             if ln.strip()]
@@ -506,8 +525,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             {"engine": "walk_forward", "output_dir": "C:/Temp/tmpdead"},
             {"engine": "pipeline", "output_dir": ""},
         ]
-        catalog.write_text(
-            "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        _write_catalog(catalog, [json.dumps(r) for r in rows])
         return catalog, tree
 
     def _argv(self, catalog: Path, tree: Path, *extra: str) -> list[str]:
@@ -544,9 +562,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
-            with open(catalog, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(
-                    {"engine": "walk_forward", "output_dir": "output/wf/keep"}) + "\n")
+            _append_catalog_line(catalog, json.dumps(
+                {"engine": "walk_forward", "output_dir": "output/wf/keep"}))
             result = classify(catalog, tree, tree.parent)
             self.assertEqual(result.verified_in_tree, 2, "相对路径的合法行被判成了残骸")
 
@@ -579,8 +596,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
-            with open(catalog, "a", encoding="utf-8") as fh:
-                fh.write("{ this is not json\n")
+            _append_catalog_line(catalog, "{ this is not json")
             result = classify(catalog, tree, tree.parent)
             self.assertIn("{ this is not json", result.retained)
             self.assertEqual(len(result.dropped), 2)
@@ -592,8 +608,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
-            with open(catalog, "a", encoding="utf-8") as fh:
-                fh.write("null\n[1, 2]\n")
+            _append_catalog_line(catalog, "null")
+            _append_catalog_line(catalog, "[1, 2]")
             result = classify(catalog, tree, tree.parent)
             self.assertIn("null", result.retained)
             self.assertIn("[1, 2]", result.retained)
@@ -656,9 +672,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
-            with open(catalog, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(
-                    {"engine": "pipeline", "output_dir": chr(0) + "foo"}) + "\n")
+            _append_catalog_line(catalog, json.dumps(
+                {"engine": "pipeline", "output_dir": chr(0) + "foo"}))
             result = classify(catalog, tree, tree.parent)
             self.assertEqual(result.verified_in_tree, 1)
             self.assertEqual(len(result.dropped), 3, "畸形行既没被算进去，也没让扫描中断")
@@ -680,7 +695,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
             earlier = catalog.with_name("_index.pruned-20260820-000000.jsonl")
-            earlier.write_text("先前那次的留证\n", encoding="utf-8")
+            _write_catalog(earlier, ["先前那次的留证"])
             with mock.patch.object(tool, "datetime", _FixedClock):
                 self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
             self.assertEqual(
@@ -742,8 +757,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             catalog, tree = self._catalog_with(Path(tmp))
             body = catalog.read_text(encoding="utf-8").splitlines()
-            catalog.write_text(
-                body[0] + "\n\n" + "\n".join(body[1:]) + "\n", encoding="utf-8")
+            _write_catalog(catalog, [body[0], "", *body[1:]])
             self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
             after = catalog.read_text(encoding="utf-8").splitlines()
             self.assertIn("", after, "空行被静默删掉了，旁车里也没有它")
@@ -786,7 +800,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
         # 来的记录；进程若在补 chmod 前中断，宽权限的副本还会永久留在盘上。
         #
         # 这条守卫两侧都从结构推导：**谁**被写入内容，来自实际观察到的
-        # `Path.write_text` 调用（不是手写清单）；**顺序**来自事件序列。
+        # `Path.write_bytes` 调用（不是手写清单）；**顺序**来自事件序列。
         # 以后谁再加一个带内容的文件而顺序写反，这里就红。
         import scripts.prune_run_catalog as tool
 
@@ -794,18 +808,18 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             events: list[tuple[str, str]] = []
             real_chmod = os.chmod
-            real_write_text = Path.write_text
+            real_write_bytes = Path.write_bytes
 
             def rec_chmod(path: Any, mode: int, *a: Any, **kw: Any) -> None:
                 events.append(("chmod", os.path.basename(str(path))))
                 real_chmod(path, mode, *a, **kw)
 
-            def rec_write(self: Path, data: str, *a: Any, **kw: Any) -> int:
+            def rec_write(self: Path, data: bytes, *a: Any, **kw: Any) -> int:
                 events.append(("write", self.name))
-                return real_write_text(self, data, *a, **kw)
+                return real_write_bytes(self, data, *a, **kw)
 
             with mock.patch("os.chmod", rec_chmod), \
-                    mock.patch.object(Path, "write_text", rec_write):
+                    mock.patch.object(Path, "write_bytes", rec_write):
                 self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
 
             written = [name for op, name in events if op == "write"]
@@ -839,9 +853,10 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             stamp = "20260820-000000"
             for serial in range(1, 100):
                 suffix = "" if serial == 1 else f"-{serial}"
-                catalog.with_name(
-                    f"{catalog.stem}.pruned-{stamp}{suffix}.jsonl"
-                ).write_text("占位\n", encoding="utf-8")
+                _write_catalog(
+                    catalog.with_name(
+                        f"{catalog.stem}.pruned-{stamp}{suffix}.jsonl"),
+                    ["占位"])
 
             with mock.patch.object(tool, "datetime", _FixedClock):
                 self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 6)
@@ -851,6 +866,88 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                 p.name for p in catalog.parent.glob(f"{catalog.name}.tmp-*"))
             self.assertEqual(
                 leftovers, [], f"宣称什么都没动，却留下了 {leftovers}")
+
+    def test_a_unicode_line_separator_does_not_split_a_record(self) -> None:
+        """`str.splitlines()` 会在 U+2028 / U+0085 这类字符上断行 —— 而
+        `json.dumps(ensure_ascii=False)` 会把它们**原样**吐进记录里（实测确认）。
+
+        于是一条合法记录被切成几段畸形碎片；一旦触发 `--prune`，碎片会被用真
+        换行重写回去，**永久毁掉那条记录**（codex #453）。
+        """
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            row = json.dumps(
+                {"engine": "pipeline", "error": "a" + chr(0x2028) + "b",
+                 "output_dir": str(tree / "wf" / "keep")}, ensure_ascii=False)
+            self.assertGreater(
+                len(row.splitlines()), 1, "这一行没有触发 splitlines 的断行，用例是空的")
+            _append_catalog_line(catalog, row)
+
+            result = classify(catalog, tree, tree.parent)
+            self.assertIn(row, result.retained, "一条合法记录被切碎了")
+            self.assertEqual(
+                result.verified_in_tree, 2,
+                "被切碎的碎片进了「看不懂」桶，而不是算作一条树内记录")
+
+    def test_an_undecodable_byte_does_not_abort_the_scan(self) -> None:
+        # 一个非法 UTF-8 字节就让 `read_text` 整个抛 UnicodeDecodeError，连只报数
+        # 模式都跑不完 —— 而本工具的职责恰恰是容忍畸形/外来数据。
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            with open(catalog, "ab") as fh:
+                fh.write(bytes([0xFF, 0xFE]) + _LF.encode("utf-8"))
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(result.verified_in_tree, 1)
+            self.assertEqual(result.unclassified, 1, "坏字节那行没被当成「看不懂」留住")
+
+    def test_a_crlf_catalog_keeps_its_bytes(self) -> None:
+        # 操作人的真实索引实测 3560 行**全是 CRLF**（写入侧文本模式在 Windows 上
+        # 翻译过）。读时归一化、写时再译回的老做法，会把一份混合行尾的文件悄悄
+        # 改写成单一行尾；按字节读写才还原得回去。
+        from scripts.prune_run_catalog import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            rows = catalog.read_bytes().decode("utf-8").split(_LF)[:-1]
+            _write_catalog(catalog, rows, newline=_CRLF)
+            keep_row = rows[0].encode("utf-8")
+
+            self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
+
+            after = catalog.read_bytes()
+            self.assertEqual(after, keep_row + _CRLF.encode("utf-8"),
+                             "重写把 CRLF 改掉了")
+            sidecar = next(catalog.parent.glob("_index.pruned-*.jsonl"))
+            self.assertIn(_CRLF.encode("utf-8"), sidecar.read_bytes(),
+                          "留证里的行尾也被改掉了")
+
+    def test_the_tool_keeps_rows_the_writer_would_now_refuse(self) -> None:
+        """两端带空白的**历史行**：写入侧从此不收，清理工具却要留着。
+
+        这处不对称是刻意的，不是遗漏（codex 建议把规则并进共用判据，我不并）：
+
+        - 写入侧的规则管的是「**从今往后**我们愿不愿意记这一行」
+        - 工具的判据管的是「**控制台能不能打开它**」——读侧对齐之后（#460）
+          `output/wf/r1 ` 是能打开的，把它判成残骸删掉才是错的
+
+        共用的是**包含判据**，那条两边确实是同一个函数；这条是另一回事。
+        """
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            _append_catalog_line(catalog, json.dumps(
+                {"engine": "walk_forward",
+                 "output_dir": str(tree / "wf" / "keep") + " "}))
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(
+                result.verified_in_tree, 2,
+                "工具把一条控制台打得开的历史行判成了残骸")
+            self.assertEqual(len(result.dropped), 2)
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。
@@ -883,10 +980,9 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                 result = real_classify(path, boundary, base)
                 calls.append(1)
                 if len(calls) == 2:        # 锁内那次分类之后才插进去
-                    with open(path, "a", encoding="utf-8") as fh:
-                        fh.write(json.dumps(
-                            {"engine": "walk_forward",
-                             "output_dir": str(tree / "wf" / "keep")}) + "\n")
+                    _append_catalog_line(path, json.dumps(
+                        {"engine": "walk_forward",
+                         "output_dir": str(tree / "wf" / "keep")}))
                 return result
 
             with mock.patch.object(tool, "classify", racing):
