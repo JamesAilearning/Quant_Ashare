@@ -47,6 +47,7 @@ from src.core.run_catalog import (  # noqa: E402
     canonical_catalog_path,
     catalog_boundary_verdict,
     catalog_lock,
+    catalog_lock_path,
 )
 
 _DEFAULT_CATALOG = _REPO_ROOT / "output" / "runs" / "_index.jsonl"
@@ -153,13 +154,17 @@ def _fingerprint(catalog: Path) -> tuple[int, int]:
     return (info.st_size, info.st_mtime_ns)
 
 
-def _create_sidecar(catalog: Path, stamp: str) -> Path | None:
+def _create_sidecar(catalog: Path, stamp: str, mode: int) -> Path | None:
     """独占创建旁车文件;创建不出来返回 ``None``。
 
     同一秒里跑两次清理(或时钟重复),会派生出同名旁车,而 ``write_text`` 会
     **静默截断**前一次的留证 —— 本工具的全部承诺就是「移除的行留得住」,
     覆盖掉它等于把承诺反过来做(codex #453)。所以用 ``"x"`` 独占创建,撞名就
     换序号,而不是照写。
+
+    ``mode`` 是索引本身的权限。旁车装的正是被移除的那些记录 —— 内容与索引同
+    等敏感,却按进程 umask 创建(常见 0644),于是一份 0600 的索引旁边会躺着一份
+    人人可读的留证。
     """
     for serial in range(1, 100):
         suffix = "" if serial == 1 else f"-{serial}"
@@ -170,6 +175,7 @@ def _create_sidecar(catalog: Path, stamp: str) -> Path | None:
                 pass
         except FileExistsError:
             continue
+        os.chmod(candidate, mode)
         return candidate
     return None
 
@@ -246,8 +252,15 @@ def main(argv: list[str] | None = None) -> int:
             print("\n没有可清理的行。")
             return 0
 
+        # 索引自己的权限。本工具在索引旁边造的**每一个**文件都按它来:旁车装
+        # 的是被移除的记录、暂存件装的是保留的记录,两者与索引同等敏感;锁文件
+        # 只有一个字节、不含数据,但一并按同一权限,好让守卫无需维护例外表
+        # ——例外表正是漏掉入口的方式(上一轮就漏了旁车)。
+        mode = stat.S_IMODE(os.stat(catalog).st_mode)
+        os.chmod(catalog_lock_path(catalog), mode)
+
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        created = _create_sidecar(catalog, stamp)
+        created = _create_sidecar(catalog, stamp, mode)
         if created is None:
             print(
                 "\n同一秒里已有 99 份旁车留证,再造就要覆盖别人的证据了 —— "
@@ -275,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
         # ``write_text`` 按进程 umask 造暂存件(常见 0644),``os.replace`` 会把
         # 这个更宽松的权限一并换到活索引上 —— 一份 0600 的索引跑完 --prune 就
         # 对同机其他用户敞开了(codex #453)。替换前把原文件的模式抄过去。
-        os.chmod(staged, stat.S_IMODE(os.stat(catalog).st_mode))
+        os.chmod(staged, mode)
         os.replace(staged, catalog)
 
     print(f"\n已移除 {len(drop)} 行,原样留证于:\n  {sidecar}")

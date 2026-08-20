@@ -200,6 +200,16 @@ def canonical_catalog_path(catalog: Path) -> Path:
     return Path(os.path.realpath(str(catalog)))
 
 
+def catalog_lock_path(catalog: Path) -> Path:
+    """索引对应的锁文件路径。**命名规则只此一处**。
+
+    维护脚本也要按索引的权限给它 chmod,所以它得能问出这个名字;各写一份
+    ``name + ".lock"`` 正是两处日后分叉的方式(codex #453 已就重复判据提过)。
+    """
+    canonical = canonical_catalog_path(catalog)
+    return canonical.with_name(canonical.name + ".lock")
+
+
 @contextmanager
 def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
     """索引的跨进程互斥。``yield`` 出「是否真的拿到了」。
@@ -211,8 +221,7 @@ def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
     锁名从**规范化后**的路径派生,于是拼写不同不会各拿各的锁。这条归一化放在
     锁自己身上,而不是让每个调用方各自记得先规范化——那种约定迟早有人忘。
     """
-    canonical = canonical_catalog_path(catalog)
-    lock_path = canonical.with_name(canonical.name + ".lock")
+    lock_path = catalog_lock_path(catalog)
     fd = -1
     held = False
     try:

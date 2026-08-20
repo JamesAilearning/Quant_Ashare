@@ -224,6 +224,13 @@ report-only pass. A string that cannot name a file is certainly not
 inside the tree, so it is classified as debris rather than crashing the
 scan the tool exists to complete over foreign data.
 
+Every file the tool creates beside the catalog SHALL carry the catalog's
+access mode — the sidecar holds the removed records, the staged file holds
+the retained ones, and both are as sensitive as the catalog itself. The
+lock file holds no rows, but takes the same mode so that the guard needs
+no table of exceptions: a hand-kept list of "which files matter" is how
+the sidecar was missed after the staged file was fixed.
+
 Rewriting by replacement SHALL preserve what it replaces beyond the rows
 themselves. `Path.write_text` creates the staged file under the process
 umask, and `os.replace` carries that mode onto the live catalog, so a
@@ -306,7 +313,8 @@ refuse to prune a catalog that has more than one name.
 
 - **GIVEN** a catalog readable only by its owner
 - **WHEN** the tool prunes it
-- **THEN** the catalog keeps that mode afterwards
+- **THEN** the catalog keeps that mode afterwards, and every file the run
+  leaves beside it carries that mode too
 
 #### Scenario: a sidecar name already taken
 

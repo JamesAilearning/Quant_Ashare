@@ -264,34 +264,78 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
     「控制台永远列不出来的行」，正是本 change 要挡的污染。
     """
 
-    def test_an_alias_spelling_is_stored_in_a_form_the_reader_accepts(self) -> None:
+    def _assert_writer_and_reader_agree(
+        self, root: Path, tree: Path, catalog: Path, output_dir: str,
+    ) -> None:
+        """写入侧收下这一行 ⟹ 读侧列得出它。"""
         from web.operator_ui import _path_guard, job_io
 
+        with self._sandbox(tree, catalog):
+            append_run_record(build_record(
+                engine="walk_forward", status="ok", output_dir=output_dir))
+        self.assertEqual(_line_count(catalog), 1, f"这条被误拒了：{output_dir!r}")
+
+        stored = str(_rows(catalog)[0]["output_dir"])
+        # `job_io` 在导入时**按值**取走了 `PROJECT_ROOT`，所以两份都要搬进沙盒；
+        # 只搬 `_path_guard` 那一份的话，相对行会锚回真实仓库根，用例会以一个
+        # 假的「读侧列不出来」失败。生产里两者本来就是同一个仓库根。
+        with mock.patch.object(_path_guard, "PROJECT_ROOT", root), \
+                mock.patch.object(job_io, "PROJECT_ROOT", root), \
+                mock.patch.object(_path_guard, "_ALLOWED_ROOTS", None), \
+                mock.patch.object(job_io, "_ROOT_KEYS_CACHE", None):
+            listable = job_io.run_dir_is_inspectable(stored)
+        self.assertTrue(
+            listable,
+            f"写入侧收了 {output_dir!r}、存成 {stored!r}，读侧却列不出来 —— "
+            "索引里多了一行控制台永远打不开的记录",
+        )
+
+    def test_the_ordinary_spellings_round_trip(self) -> None:
+        # 先钉住常见情形：不变式对它们成立是底线，不然上面那条别名用例可能只是
+        # 因为「什么都存绝对路径」而碰巧通过。
+        for label, make in (
+            ("绝对路径", lambda tree: str(tree / "wf" / "r1")),
+            ("相对仓库根", lambda tree: "output/wf/r1"),
+        ):
+            with self.subTest(拼写=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                tree = root / "output"
+                (tree / "runs").mkdir(parents=True)
+                (tree / "wf" / "r1").mkdir(parents=True)
+                with _chdir(root):
+                    self._assert_writer_and_reader_agree(
+                        root, tree, tree / "runs" / "_index.jsonl", make(tree))
+
+    def test_an_alias_spelling_is_stored_in_a_form_the_reader_accepts(self) -> None:
+        # 第三种拼写：产物目录经联接指向 output 树内。
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tree = root / "output"
             (tree / "runs").mkdir(parents=True)
             (tree / "wf" / "r1").mkdir(parents=True)
-            alias = root / "alias"          # 第三种拼写：联接到 output 树
+            alias = root / "alias"
             if not _link(alias, tree):
                 self.skipTest("这个环境造不出目录链接（需要权限）")
-            catalog = tree / "runs" / "_index.jsonl"
-            with self._sandbox(tree, catalog):
-                append_run_record(build_record(
-                    engine="walk_forward", status="ok",
-                    output_dir=str(alias / "wf" / "r1")))
-            self.assertEqual(_line_count(catalog), 1, "别名拼写被误拒了")
+            self._assert_writer_and_reader_agree(
+                root, tree, tree / "runs" / "_index.jsonl",
+                str(alias / "wf" / "r1"))
 
-            stored = str(_rows(catalog)[0]["output_dir"])
-            with mock.patch.object(_path_guard, "PROJECT_ROOT", root), \
-                    mock.patch.object(_path_guard, "_ALLOWED_ROOTS", None), \
-                    mock.patch.object(job_io, "_ROOT_KEYS_CACHE", None):
-                listable = job_io.run_dir_is_inspectable(stored)
-            self.assertTrue(
-                listable,
-                f"写入侧收了它，读侧却列不出来：{stored!r} —— "
-                "索引里多了一行控制台永远打不开的记录",
-            )
+    def test_a_linked_tree_recorded_by_its_target_round_trips(self) -> None:
+        # 镜像情形：**output 树自己**是联接，而运行记的是解析后的目标路径。
+        # 读侧的两个根键正是「树自身的写法」和「树 resolve 后的写法」，所以这
+        # 一侧也必须成立 —— 否则一台把 output/ 挂到别的盘的机器上，每条记录都
+        # 会变成控制台打不开的行。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "real_output"
+            (real / "runs").mkdir(parents=True)
+            (real / "wf" / "r1").mkdir(parents=True)
+            tree = root / "output"          # 联接，指向 real_output
+            if not _link(tree, real):
+                self.skipTest("这个环境造不出目录链接（需要权限）")
+            self._assert_writer_and_reader_agree(
+                root, tree, tree / "runs" / "_index.jsonl",
+                str(real / "wf" / "r1"))
 
 
 class ExplicitCatalogIsTheEscapeHatch(unittest.TestCase):
@@ -625,6 +669,38 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
             after = catalog.read_text(encoding="utf-8").splitlines()
             self.assertIn("", after, "空行被静默删掉了，旁车里也没有它")
+
+    def test_every_file_the_prune_leaves_behind_carries_the_catalogs_mode(self) -> None:
+        # 上一轮我给暂存件抄了权限、**漏了旁车** —— 而旁车装的正是被移除的记录，
+        # 内容与索引同等敏感。漏掉一个入口的根因是「靠手写清单」，所以这条守卫
+        # 两侧都从结构推导：期望集来自文件系统实际多出来的文件，实际集来自真正
+        # 发生的 chmod 调用。谁再加一个新文件而忘了抄权限，这里就红。
+        #
+        # 断言 chmod 调用而不是断言最终 mode：Windows 的 chmod 只管只读位，
+        # 断言最终 mode 在本机会**恒真**——那等于没测。
+        import scripts.prune_run_catalog as tool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            before = {p.name for p in catalog.parent.iterdir()}
+            chmodded: set[str] = set()
+            real_chmod = os.chmod
+
+            def recording(path: Any, mode: int, *a: Any, **kw: Any) -> None:
+                chmodded.add(os.path.basename(str(path)))
+                real_chmod(path, mode, *a, **kw)
+
+            with mock.patch("os.chmod", recording):
+                self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
+
+            left_behind = {
+                p.name for p in catalog.parent.iterdir()
+            } - before - {catalog.name}
+            self.assertTrue(left_behind, "这次清理什么文件都没留下，用例是空的")
+            self.assertLessEqual(
+                left_behind, chmodded,
+                f"这些新文件没按索引的权限造：{sorted(left_behind - chmodded)}",
+            )
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。
