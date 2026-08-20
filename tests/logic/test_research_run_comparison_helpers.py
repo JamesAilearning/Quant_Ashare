@@ -7,6 +7,7 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     assess_comparability,
     build_comparison_run,
     parse_selected_run_ids,
+    selectable_catalog,
     selectable_catalog_rows,
 )
 
@@ -339,6 +340,42 @@ def test_selectable_catalog_folds_superseded_artifact_directories() -> None:
     )
 
     assert [job.run_id for job in selectable_catalog_rows(rows)] == ["new"]
+
+
+def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
+    ui_job = JobSummary(
+        "ui-run",
+        "pipeline",
+        "completed",
+        "ui",
+        "output/runs/shared",
+        "2026-08-20T09:00:00+08:00",
+        "",
+        "",
+        None,
+        "",
+        "",
+        {},
+    )
+    cli_mirror = JobSummary(
+        "cli-run",
+        "pipeline",
+        "completed",
+        "cli",
+        "output/runs/shared",
+        "2026-08-20T10:00:00+08:00",
+        "",
+        "",
+        None,
+        "",
+        "",
+        {},
+    )
+
+    catalog = selectable_catalog((cli_mirror, ui_job))
+
+    assert [job.run_id for job in catalog.rows] == ["ui-run"]
+    assert catalog.run_id_alias == {"cli-run": "ui-run"}
 
 
 def test_parse_selected_ids_preserves_full_order_after_url_validation() -> None:

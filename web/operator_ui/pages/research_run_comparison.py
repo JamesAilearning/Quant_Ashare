@@ -17,10 +17,11 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     CONTRACT_FIELDS,
     ComparisonIssue,
     ComparisonRun,
+    SelectableCatalog,
     assess_comparability,
     build_comparison_run,
     parse_selected_run_ids,
-    selectable_catalog_rows,
+    selectable_catalog,
 )
 
 _LOG_PATHS = (
@@ -172,9 +173,9 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
     )
 
 
-def _selectable_runs() -> tuple[JobSummary, ...]:
+def _selectable_runs() -> SelectableCatalog:
     """Return only current, inspectable artifact directories for comparison."""
-    return selectable_catalog_rows(load_all_jobs_read_only())
+    return selectable_catalog(load_all_jobs_read_only())
 
 
 def _metric_value(run: ComparisonRun, fragment: str) -> float | None:
@@ -195,14 +196,23 @@ except (OSError, RuntimeError, ValueError) as exc:
     st.error(f"无法读取统一作业目录：{type(exc).__name__}: {exc}")
     st.stop()
 
-if not catalog:
+if not catalog.rows:
     st.info("暂无可用于研究对比的流水线或滚动验证运行。")
     st.stop()
 
-by_id = {job.run_id: job for job in catalog}
+by_id = {job.run_id: job for job in catalog.rows}
 requested = parse_selected_run_ids(sanitize("run_ids", st.query_params.get("run_ids", "")))
-unknown_requested = tuple(run_id for run_id in requested if run_id not in by_id)
-default_ids = [run_id for run_id in requested if run_id in by_id]
+unknown_requested = tuple(
+    run_id
+    for run_id in requested
+    if run_id not in by_id and run_id not in catalog.run_id_alias
+)
+resolved_requested = tuple(
+    catalog.run_id_alias.get(run_id, run_id)
+    for run_id in requested
+    if run_id not in unknown_requested
+)
+default_ids = list(dict.fromkeys(resolved_requested))
 if unknown_requested:
     st.error(
         "以下 URL 运行 ID 当前不在可选目录中，无法按请求的完整选择进行对比："
@@ -218,7 +228,7 @@ selected_ids = st.multiselect(
     format_func=lambda run_id: _run_label(by_id[run_id]),
     help="选择会写入 URL，便于复查同一组历史运行。",
 )
-if tuple(selected_ids) != requested:
+if tuple(selected_ids) != resolved_requested:
     if selected_ids:
         st.query_params["run_ids"] = ",".join(selected_ids)
     elif "run_ids" in st.query_params:

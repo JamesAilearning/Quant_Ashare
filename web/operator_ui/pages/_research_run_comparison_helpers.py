@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -23,7 +24,12 @@ from src.core.canonical_backtest_contract import (
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
 )
-from web.operator_ui.job_io import JobSummary, fold_catalog_by_dir
+from web.operator_ui.job_io import (
+    JobSummary,
+    anchored_run_dir,
+    canonical_dir_key,
+    fold_catalog_by_dir,
+)
 
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("engine", "研究运行类型"),
@@ -98,6 +104,14 @@ class ComparabilityResult:
     eligible: bool
     reasons: tuple[str, ...]
     ranked_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SelectableCatalog:
+    """Current selectable rows plus same-run CLI-to-UI ID aliases."""
+
+    rows: tuple[JobSummary, ...]
+    run_id_alias: Mapping[str, str]
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -585,20 +599,58 @@ def parse_selected_run_ids(raw: str) -> tuple[str, ...]:
     return tuple(part for part in raw.split(",") if part)
 
 
+def _catalog_dir_key(run_dir: str) -> str:
+    """Use the same canonical directory key as the results views."""
+    return canonical_dir_key(run_dir) or os.path.normcase(
+        str(anchored_run_dir(run_dir))
+    )
+
+
+def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
+    """Return current rows, preferring a UI record for a shared artifact dir.
+
+    A UI launch writes both its lifecycle record and a CLI catalog row for the
+    same artifacts.  The UI record owns the selector because it preserves the
+    corresponding UI job logs; the CLI run ID remains a URL alias to that
+    owner.  Older CLI records for a reused artifact directory remain excluded
+    by :func:`fold_catalog_by_dir` rather than being silently aliased.
+    """
+    allowed_types = {"pipeline", "walk_forward"}
+    relevant = tuple(
+        row
+        for row in rows
+        if row.type in allowed_types and row.run_id and row.run_dir
+    )
+    selected: list[JobSummary] = []
+    owners: dict[tuple[str, str], JobSummary] = {}
+
+    # Match results.py / walk_forward.py: UI records own their shared
+    # directory, regardless of the combined catalog timestamp ordering.
+    for job in relevant:
+        if job.source != "ui":
+            continue
+        key = (job.type, _catalog_dir_key(job.run_dir))
+        if key not in owners:
+            owners[key] = job
+            selected.append(job)
+
+    aliases: dict[str, str] = {}
+    cli_rows = (job for job in relevant if job.source == "cli")
+    for job in fold_catalog_by_dir(cli_rows).newest:
+        key = (job.type, _catalog_dir_key(job.run_dir))
+        owner = owners.get(key)
+        if owner is None:
+            owners[key] = job
+            selected.append(job)
+        else:
+            aliases[job.run_id] = owner.run_id
+
+    return SelectableCatalog(rows=tuple(selected), run_id_alias=aliases)
+
+
 def selectable_catalog_rows(rows: Iterable[JobSummary]) -> tuple[JobSummary, ...]:
     """Return one inspectable, current catalog row for each artifact directory."""
-    selected: list[JobSummary] = []
-    seen_run_ids: set[str] = set()
-    for job in fold_catalog_by_dir(rows).newest:
-        if (
-            job.type not in {"pipeline", "walk_forward"}
-            or not job.run_id
-            or job.run_id in seen_run_ids
-        ):
-            continue
-        seen_run_ids.add(job.run_id)
-        selected.append(job)
-    return tuple(selected)
+    return selectable_catalog(rows).rows
 
 
 __all__ = [
@@ -608,9 +660,11 @@ __all__ = [
     "ComparisonRun",
     "FoldEvidence",
     "ReportMetric",
+    "SelectableCatalog",
     "assess_comparability",
     "build_comparison_run",
     "information_ratio",
     "parse_selected_run_ids",
+    "selectable_catalog",
     "selectable_catalog_rows",
 ]
