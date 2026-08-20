@@ -169,7 +169,10 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
             continue
         if not data:
             continue
-        if not _ui_job_config_is_normalisable(data):
+        if (
+            not _is_valid_ui_job_record(data)
+            or not _ui_job_config_is_normalisable(data)
+        ):
             # A readable lifecycle record may still contain nested values that
             # the normaliser cannot safely present.  It is counted by the
             # health diagnostic; keep the remaining valid jobs visible.
@@ -194,8 +197,13 @@ def _read_cli_entries_with_diagnostics() -> tuple[list[dict[str, Any]], int]:
         return [], 0
     entries: list[dict[str, Any]] = []
     malformed_count = 0
-    with open(_RUNS_INDEX, encoding="utf-8") as f:
-        for line in f:
+    with _RUNS_INDEX.open("rb") as f:
+        for raw_line in f:
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError:
+                malformed_count += 1
+                continue
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:

@@ -615,7 +615,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "z"
         job_dir.mkdir(parents=True)
-        write_job_json(job_dir, {"job_id": "z", "status": "running", "pid": 51001})
+        write_job_json(job_dir, {
+            "job_id": "z",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51001,
+        })
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
             # _reconcile_zombie (lazy-imported by _load_ui_jobs) uses
@@ -637,7 +643,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "live"
         job_dir.mkdir(parents=True)
-        write_job_json(job_dir, {"job_id": "live", "status": "running", "pid": 51002})
+        write_job_json(job_dir, {
+            "job_id": "live",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51002,
+        })
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
             with patch("web.operator_ui.job_manager._pid_is_alive", return_value=True):
@@ -654,7 +666,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "read-only"
         job_dir.mkdir(parents=True)
-        original = {"job_id": "read-only", "status": "running", "pid": 51003}
+        original = {
+            "job_id": "read-only",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51003,
+        }
         write_job_json(job_dir, original)
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
@@ -688,6 +706,25 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
             )
             with patch.object(job_io, "_RUNS_INDEX", index_path):
                 self.assertEqual(job_io.count_malformed_cli_entries(), 2)
+                self.assertEqual(
+                    [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
+                )
+
+    def test_invalid_utf8_catalog_line_is_counted_without_hiding_valid_rows(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_bytes(
+                b'{"run_id":"valid","engine":"pipeline","status":"ok",'
+                b'"completed_at":"2026-08-20T10:00:00+08:00",'
+                b'"output_dir":"output/runs/valid"}\n'
+                b'\xff\n'
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 1)
                 self.assertEqual(
                     [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
                 )
@@ -809,10 +846,16 @@ class UiJobDiagnosticsTests(unittest.TestCase):
                 '"created_at":"2026-08-20T10:00:00+08:00"}',
                 encoding="utf-8",
             )
+            (root / "invalid-mode").mkdir()
+            (root / "invalid-mode" / "job.json").write_text(
+                '{"job_id":"invalid-mode","mode":"pipline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
             with patch.object(job_io, "_JOB_ROOT", root):
                 with patch("web.operator_ui.progress.build_job_progress", return_value={}):
                     rows = job_io._load_ui_jobs(reconcile_zombies=False)
-                self.assertEqual(job_io.count_malformed_ui_job_entries(), 1)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 2)
 
         self.assertEqual([row["job_id"] for row in rows], ["valid"])
 
