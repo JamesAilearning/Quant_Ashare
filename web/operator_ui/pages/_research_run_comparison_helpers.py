@@ -14,6 +14,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from web.operator_ui.job_io import JobSummary, fold_catalog_by_dir
+
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("engine", "研究运行类型"),
     ("universe", "股票池 / universe"),
@@ -174,32 +176,19 @@ def _exchange_cost_from_config(config: Mapping[str, Any]) -> str | None:
     return _stable_value(value)
 
 
-def _data_provenance(
-    runtime: Mapping[str, Any], config: Mapping[str, Any], *, allow_config_fallback: bool
-) -> str | None:
-    """Return an existing provider snapshot; never manufacture a version tag."""
-    if runtime:
-        source = runtime
-    elif allow_config_fallback:
-        source = {
-            "provider_uri": config.get("provider_uri"),
-            "region": config.get("region"),
-            "data_adjust_mode": config.get("adjust_mode"),
-        }
-    else:
+def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
+    """Return a producer-recorded runtime snapshot, never a YAML substitute."""
+    if not runtime:
         return None
     required = ("provider_uri", "region", "data_adjust_mode")
-    if any(not source.get(key) for key in required):
+    if any(not runtime.get(key) for key in required):
         return None
-    return _stable_value({key: source[key] for key in required})
+    return _stable_value({key: runtime[key] for key in required})
 
 
-def _pipeline_contract(
-    report: Mapping[str, Any], config: Mapping[str, Any]
-) -> dict[str, str | None]:
+def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     report_config = _mapping(report.get("config"))
     provenance = _mapping(_nested(report, "backtest", "provenance", "config"))
-    request = _mapping(provenance.get("request"))
     runtime = _mapping(provenance.get("runtime"))
     return {
         "engine": "pipeline",
@@ -207,12 +196,10 @@ def _pipeline_contract(
         "training_window": _window_from_pipeline(report_config, "train_period"),
         "validation_window": _window_from_pipeline(report_config, "valid_period"),
         "testing_window": _window_from_pipeline(report_config, "test_period"),
-        "benchmark": _stable_value(request.get("benchmark_code")),
-        "execution_lag": _stable_value(request.get("signal_to_execution_lag")),
-        "exchange_cost": _exchange_cost_from_request(request),
-        "data_provenance": _data_provenance(
-            runtime, config, allow_config_fallback=False,
-        ),
+        "benchmark": _stable_value(provenance.get("benchmark_code")),
+        "execution_lag": _stable_value(provenance.get("signal_to_execution_lag")),
+        "exchange_cost": _exchange_cost_from_request(provenance),
+        "data_provenance": _data_provenance(runtime),
     }
 
 
@@ -230,9 +217,10 @@ def _walk_forward_contract(
         "benchmark": _stable_value(source.get("benchmark_code")),
         "execution_lag": _stable_value(source.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_config(source),
-        "data_provenance": _data_provenance(
-            {}, config, allow_config_fallback=True,
-        ),
+        # Existing walk-forward reports do not record the initialized qlib
+        # runtime.  A config.yaml declaration is not evidence of the runtime
+        # used, so ordering must remain blocked until a producer emits it.
+        "data_provenance": None,
     }
 
 
@@ -297,7 +285,7 @@ def build_comparison_run(
         metrics: tuple[ReportMetric, ...] = ()
         fold_evidence = None
     elif engine == "pipeline":
-        contract = _pipeline_contract(report, config)
+        contract = _pipeline_contract(report)
         metrics = _pipeline_metrics(report)
         fold_evidence = None
     else:
@@ -390,6 +378,22 @@ def parse_selected_run_ids(raw: str) -> tuple[str, ...]:
     return tuple(part for part in raw.split(",") if part)
 
 
+def selectable_catalog_rows(rows: Iterable[JobSummary]) -> tuple[JobSummary, ...]:
+    """Return one inspectable, current catalog row for each artifact directory."""
+    selected: list[JobSummary] = []
+    seen_run_ids: set[str] = set()
+    for job in fold_catalog_by_dir(rows).newest:
+        if (
+            job.type not in {"pipeline", "walk_forward"}
+            or not job.run_id
+            or job.run_id in seen_run_ids
+        ):
+            continue
+        seen_run_ids.add(job.run_id)
+        selected.append(job)
+    return tuple(selected)
+
+
 __all__ = [
     "CONTRACT_FIELDS",
     "ComparabilityResult",
@@ -401,4 +405,5 @@ __all__ = [
     "build_comparison_run",
     "information_ratio",
     "parse_selected_run_ids",
+    "selectable_catalog_rows",
 ]

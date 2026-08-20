@@ -20,6 +20,7 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     assess_comparability,
     build_comparison_run,
     parse_selected_run_ids,
+    selectable_catalog_rows,
 )
 
 _LOG_NAMES = ("stdout.log", "stderr.log", "runner_stdout.log", "runner_stderr.log")
@@ -134,17 +135,8 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
 
 
 def _selectable_runs() -> tuple[JobSummary, ...]:
-    """Return unique catalog identities; artifact validation happens on select."""
-    seen: set[str] = set()
-    result: list[JobSummary] = []
-    for job in load_all_jobs_read_only():
-        if job.type not in {"pipeline", "walk_forward"} or not job.run_id:
-            continue
-        if job.run_id in seen:
-            continue
-        seen.add(job.run_id)
-        result.append(job)
-    return tuple(result)
+    """Return only current, inspectable artifact directories for comparison."""
+    return selectable_catalog_rows(load_all_jobs_read_only())
 
 
 def _metric_value(run: ComparisonRun, fragment: str) -> float | None:

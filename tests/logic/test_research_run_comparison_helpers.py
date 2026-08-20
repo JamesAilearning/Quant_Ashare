@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
     assess_comparability,
     build_comparison_run,
     parse_selected_run_ids,
+    selectable_catalog_rows,
 )
 
 
@@ -23,19 +25,17 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
             "provenance": {
                 "config_fingerprint": "contract-1",
                 "config": {
-                    "request": {
-                        "benchmark_code": "SH000300TR",
-                        "signal_to_execution_lag": 1,
-                        "adjust_mode": "pre_adjusted",
-                        "exchange_config": {
-                            "execution_price_kind": "close",
-                            "limit_threshold": 0.095,
-                            "cost_model": {
-                                "commission_rate": 0.0005,
-                                "stamp_tax_schedule": [{"start": "2008-09-19", "rate": 0.001}],
-                                "slippage_bps": 5.0,
-                                "min_cost": 5.0,
-                            },
+                    "benchmark_code": "SH000300TR",
+                    "signal_to_execution_lag": 1,
+                    "adjust_mode": "pre_adjusted",
+                    "exchange_config": {
+                        "execution_price_kind": "close",
+                        "limit_threshold": 0.095,
+                        "cost_model": {
+                            "commission_rate": 0.0005,
+                            "stamp_tax_schedule": [{"start": "2008-09-19", "rate": 0.001}],
+                            "slippage_bps": 5.0,
+                            "min_cost": 5.0,
                         },
                     },
                     "runtime": {
@@ -84,8 +84,8 @@ def test_complete_equal_pipeline_contract_is_ranked_by_existing_information_rati
 def test_mismatched_execution_lag_blocks_controlled_ranking() -> None:
     first = _pipeline_run("run-a")
     changed = _pipeline_report()
-    request = changed["backtest"]["provenance"]["config"]["request"]  # type: ignore[index]
-    request["signal_to_execution_lag"] = 2  # type: ignore[index]
+    provenance = changed["backtest"]["provenance"]["config"]  # type: ignore[index]
+    provenance["signal_to_execution_lag"] = 2  # type: ignore[index]
     second = _pipeline_run("run-b", report=changed)
 
     result = assess_comparability((first, second))
@@ -163,7 +163,95 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert run.fold_evidence.std_information_ratio == 0.11
     assert run.fold_evidence.folds == tuple(report["folds"])
     assert any(metric.value == 0.35 for metric in run.metrics if "信息比率" in metric.label)
-    assert run.data_provenance_source == "config.yaml: provider_uri / region / adjust_mode"
+    assert run.data_provenance_source is None
+    assert any("数据来源 / 运行时快照" in issue.message for issue in run.issues)
+
+
+def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
+    config = {"provider_uri": "data/qlib_cn", "region": "cn", "adjust_mode": "pre_adjusted"}
+    report = {
+        "config": {
+            "instruments": "csi300",
+            "overall_start": "2020-01-01",
+            "overall_end": "2023-12-31",
+            "train_months": 24,
+            "valid_months": 3,
+            "test_months": 3,
+            "benchmark_code": "SH000300TR",
+            "signal_to_execution_lag": 1,
+            "execution_price_kind": "close",
+            "commission_rate": 0.0005,
+            "stamp_tax_schedule": None,
+            "slippage_bps": 5.0,
+            "min_cost": 5.0,
+            "limit_threshold": 0.095,
+            "adjust_mode": "pre_adjusted",
+        },
+        "aggregate_metrics": {"mean_information_ratio": 0.35},
+        "test_window_coverage": {"mode": "continuous"},
+    }
+    first = build_comparison_run(
+        run_id="wf-a",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="",
+        report_path="",
+        log_paths=(),
+        config=config,
+        report=report,
+    )
+    second = build_comparison_run(
+        run_id="wf-b",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="",
+        report_path="",
+        log_paths=(),
+        config=config,
+        report=report,
+    )
+
+    result = assess_comparability((first, second))
+
+    assert result.eligible is False
+    assert any("数据来源 / 运行时快照" in reason for reason in result.reasons)
+
+
+def test_selectable_catalog_folds_superseded_artifact_directories() -> None:
+    rows = (
+        JobSummary(
+            "new",
+            "pipeline",
+            "completed",
+            "cli",
+            "output/runs/shared",
+            "2026-08-20T10:00:00+08:00",
+            "",
+            "",
+            None,
+            "",
+            "",
+            {},
+        ),
+        JobSummary(
+            "old",
+            "pipeline",
+            "completed",
+            "cli",
+            "output/runs/shared",
+            "2026-08-19T10:00:00+08:00",
+            "",
+            "",
+            None,
+            "",
+            "",
+            {},
+        ),
+    )
+
+    assert [job.run_id for job in selectable_catalog_rows(rows)] == ["new"]
 
 
 def test_parse_selected_ids_preserves_full_order_after_url_validation() -> None:
