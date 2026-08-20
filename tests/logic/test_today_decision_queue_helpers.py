@@ -210,6 +210,17 @@ def test_missing_update_status_is_visible_as_an_information_item() -> None:
     assert missing.destination == "run_center"
 
 
+def test_update_path_error_creates_a_visible_verification_blocker() -> None:
+    items = _queue(
+        update_kind=None,
+        update_detail="更新状态文件不能位于文件系统根目录。",
+    )
+
+    verification = next(item for item in items if item.source_key == "update:verification")
+    assert verification.kind == "blocker"
+    assert verification.destination == "run_center"
+
+
 @pytest.mark.parametrize("kind", ("unresolvable", "unsupported"))
 def test_unverifiable_serving_identity_creates_a_blocker(kind: str) -> None:
     items = _queue(incumbent_kind=kind, incumbent_detail="serving manifest unreadable")

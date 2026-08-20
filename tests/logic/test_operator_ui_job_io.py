@@ -758,8 +758,15 @@ class UiJobDiagnosticsTests(unittest.TestCase):
                 '"created_at":"2026-08-20T10:00:00+08:00"}',
                 encoding="utf-8",
             )
+            (root / "invalid-config").mkdir()
+            (root / "invalid-config" / "job.json").write_text(
+                '{"job_id":"invalid-config","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":{"instruments":[1]}}',
+                encoding="utf-8",
+            )
             with patch.object(job_io, "_JOB_ROOT", root):
-                self.assertEqual(job_io.count_malformed_ui_job_entries(), 3)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 4)
 
     def test_ui_loader_skips_a_malformed_artifact_and_keeps_readable_jobs(self) -> None:
         import tempfile
@@ -779,6 +786,33 @@ class UiJobDiagnosticsTests(unittest.TestCase):
             with patch.object(job_io, "_JOB_ROOT", root):
                 with patch("web.operator_ui.progress.build_job_progress", return_value={}):
                     rows = job_io._load_ui_jobs(reconcile_zombies=False)
+
+        self.assertEqual([row["job_id"] for row in rows], ["valid"])
+
+    def test_ui_loader_skips_non_normalisable_config_and_keeps_readable_jobs(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "invalid-config").mkdir()
+            (root / "invalid-config" / "job.json").write_text(
+                '{"job_id":"invalid-config","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":{"instruments":[1]}}',
+                encoding="utf-8",
+            )
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"failed",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 1)
 
         self.assertEqual([row["job_id"] for row in rows], ["valid"])
 

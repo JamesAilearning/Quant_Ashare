@@ -169,6 +169,11 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
             continue
         if not data:
             continue
+        if not _ui_job_config_is_normalisable(data):
+            # A readable lifecycle record may still contain nested values that
+            # the normaliser cannot safely present.  It is counted by the
+            # health diagnostic; keep the remaining valid jobs visible.
+            continue
         if reconcile is not None:
             data = reconcile(job_dir, data)
         data["progress"] = build_job_progress(job_dir, data)
@@ -249,9 +254,24 @@ def count_malformed_ui_job_entries() -> int:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             malformed_count += 1
             continue
-        if not isinstance(loaded, Mapping) or not _is_valid_ui_job_record(loaded):
+        if (
+            not isinstance(loaded, Mapping)
+            or not _is_valid_ui_job_record(loaded)
+            or not _ui_job_config_is_normalisable(loaded)
+        ):
             malformed_count += 1
     return malformed_count
+
+
+def _ui_job_config_is_normalisable(record: Mapping[str, Any]) -> bool:
+    """Reject nested config shapes that would crash UI job normalisation."""
+    config = record.get("config")
+    if not isinstance(config, Mapping):
+        return True
+    instruments = config.get("instruments")
+    return not isinstance(instruments, list) or all(
+        isinstance(instrument, str) for instrument in instruments
+    )
 
 
 def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:

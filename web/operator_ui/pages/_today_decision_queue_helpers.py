@@ -193,7 +193,12 @@ def build_today_decision_queue(
             destination="data_inspect",
         ))
 
-    if update_matches_provider is False:
+    if update_kind is None and update_detail:
+        items.append(_item(
+            "blocker", "update:verification", "数据更新状态需要核验", update_detail,
+            source_time=update_time, destination="run_center",
+        ))
+    elif update_matches_provider is False:
         items.append(_item(
             "blocker", "update:provider-mismatch", "数据更新来源不匹配", update_detail,
             source_time=update_time, destination="run_center",
