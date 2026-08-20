@@ -8,6 +8,7 @@ from web.operator_ui.pages._config_run_helpers import (
     build_config_review_sections,
     config_preset_differences,
     effective_preset_for_review,
+    snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
 
@@ -70,6 +71,36 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
         self.assertEqual(config_preset_differences(emitted, effective), ())
         self.assertNotIn("provider_uri", effective)
         self.assertNotIn("namechange_path", effective)
+
+    def test_preset_snapshot_keeps_the_before_edit_review_baseline(self) -> None:
+        before_edit = {
+            "mode": "pipeline",
+            "topk": 50,
+            "train_start": "2022-01-01",
+            "commission_rate": 0.0005,
+        }
+        raw_preset = {"mode": "pipeline", "topk": 50}
+        baseline = snapshot_preset_for_review(
+            before_edit,
+            raw_preset,
+            normalization_defaults={"commission_rate": 0.0005},
+            snapshot=None,
+        )
+        assert baseline is not None
+
+        after_edit = {**before_edit, "topk": 30, "train_start": "2023-01-01"}
+        retained = snapshot_preset_for_review(
+            after_edit,
+            raw_preset,
+            normalization_defaults={"commission_rate": 0.0005},
+            snapshot=baseline,
+        )
+
+        differences = config_preset_differences(after_edit, retained)
+        assert differences is not None
+        self.assertEqual([difference.key for difference in differences], ["topk", "train_start"])
+        self.assertEqual(differences[0].preset_value, 50)
+        self.assertEqual(differences[1].preset_value, "2022-01-01")
 
     def test_unavailable_preset_is_not_reported_as_a_match(self) -> None:
         self.assertIsNone(config_preset_differences({"mode": "pipeline"}, None))

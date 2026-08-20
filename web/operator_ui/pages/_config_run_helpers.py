@@ -228,6 +228,31 @@ def effective_preset_for_review(
     return effective
 
 
+def snapshot_preset_for_review(
+    emitted_config: Mapping[str, Any],
+    preset_config: Mapping[str, Any] | None,
+    *,
+    normalization_defaults: Mapping[str, Any],
+    snapshot: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the original review baseline instead of recalculating it.
+
+    A form field edit causes the visible preset selector to become ``Custom``.
+    The review must still compare that edit with the last preset the operator
+    explicitly applied, not build a new baseline from the already-edited
+    emitted mapping.  Callers persist the first effective mapping as
+    ``snapshot`` for that explicitly applied preset.
+    """
+
+    if snapshot is not None:
+        return dict(snapshot)
+    return effective_preset_for_review(
+        emitted_config,
+        preset_config,
+        normalization_defaults=normalization_defaults,
+    )
+
+
 def unsupported_prefill_keys(
     prefill_config: Mapping[str, Any],
     emitted_config: Mapping[str, Any],

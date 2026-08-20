@@ -59,7 +59,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
-    effective_preset_for_review,
+    snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
 from web.operator_ui.training_guards import (
@@ -134,6 +134,13 @@ _RESET_FIELD_DEFAULTS: dict[str, Any] = {
     **_COST_FIELD_DEFAULTS,
     **_GUARD_FIELD_DEFAULTS,
 }
+
+# ``cr_preset`` reflects whether the current fields still exactly match a
+# preset.  Keep the explicitly applied preset separately, because a later
+# field edit deliberately changes the selector to Custom while the final
+# review still needs a truthful before-edit comparison baseline.
+_REVIEW_PRESET_NAME_STATE = "cr_review_preset_name"
+_REVIEW_PRESET_SNAPSHOT_STATE = "cr_review_preset_snapshot"
 
 
 def _duration_seconds(started_at: Any, ended_at: Any) -> float | None:
@@ -235,6 +242,8 @@ def _apply_preset(preset_name: str) -> None:
     preset = _load_preset(preset_name)
     if not preset:
         return
+    st.session_state[_REVIEW_PRESET_NAME_STATE] = preset_name
+    st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
     for key, value in preset.items():
         st.session_state[f"cr_{key}"] = value
     # Reset cost-model AND csi800-guard fields the preset doesn't define to
@@ -977,16 +986,26 @@ with form_col:
     )
 
     _selected_preset = str(st.session_state.get("cr_preset", "Default"))
-    _review_preset = (
-        _load_preset(_selected_preset)
-        if _selected_preset != CUSTOM_PRESET_NAME
+    _review_preset_name = str(
+        st.session_state.get(_REVIEW_PRESET_NAME_STATE, _selected_preset),
+    )
+    _review_preset_config = (
+        _load_preset(_review_preset_name)
+        if _review_preset_name != CUSTOM_PRESET_NAME
         else None
     )
-    _review_preset = effective_preset_for_review(
-        preview_config,
-        _review_preset or None,
-        normalization_defaults=_RESET_FIELD_DEFAULTS,
+    _saved_review_snapshot = st.session_state.get(_REVIEW_PRESET_SNAPSHOT_STATE)
+    _review_snapshot = (
+        _saved_review_snapshot if isinstance(_saved_review_snapshot, dict) else None
     )
+    _review_preset = snapshot_preset_for_review(
+        preview_config,
+        _review_preset_config or None,
+        normalization_defaults=_RESET_FIELD_DEFAULTS,
+        snapshot=_review_snapshot,
+    )
+    if _review_preset is not None and _review_snapshot is None:
+        st.session_state[_REVIEW_PRESET_SNAPSHOT_STATE] = dict(_review_preset)
     _review_sections = build_config_review_sections(preview_config)
     _preset_differences = config_preset_differences(
         preview_config, _review_preset,
@@ -996,7 +1015,10 @@ with form_col:
     )
 
     with st.expander("完整提交配置（只读）", expanded=True):
-        st.caption(f"模式：`{mode}` · 所选预设：`{_selected_preset}`")
+        st.caption(
+            f"模式：`{mode}` · 当前预设状态：`{_selected_preset}` · "
+            f"复核基线：`{_review_preset_name}`"
+        )
         for _section in _review_sections:
             st.markdown(f"**{_section.title}**")
             st.dataframe(
@@ -1009,15 +1031,23 @@ with form_col:
             )
 
     with st.expander("相对预设的差异（只读）", expanded=True):
-        if _selected_preset == CUSTOM_PRESET_NAME:
-            st.info("Custom 没有可读取的预设基线，无法确认差异。")
+        if (
+            _selected_preset == CUSTOM_PRESET_NAME
+            and _review_preset_name != CUSTOM_PRESET_NAME
+        ):
+            st.caption(
+                f"当前字段已偏离 `{_review_preset_name}`，选择器因此显示 Custom；"
+                "以下仍与最近明确应用的预设对比。"
+            )
+        if _review_preset_name == CUSTOM_PRESET_NAME:
+            st.info("尚未明确应用可读取的预设，无法确认差异。")
         elif _preset_differences is None:
             st.warning(
-                f"预设 `{_selected_preset}` 无法读取，无法确认差异；"
+                f"已应用预设 `{_review_preset_name}` 无法读取，无法确认差异；"
                 "不会使用默认值替代。"
             )
         elif not _preset_differences:
-            st.success("与所选预设没有差异。")
+            st.success(f"与明确应用的预设 `{_review_preset_name}` 没有差异。")
         else:
             st.dataframe(
                 [
@@ -1238,6 +1268,8 @@ with form_col:
                 )
                 st.success(f"已保存为 {safe}")
                 st.session_state["cr_preset"] = safe
+                st.session_state[_REVIEW_PRESET_NAME_STATE] = safe
+                st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
                 st.session_state["cr_saving_preset"] = False
                 st.rerun()
         if st.button("取消", key="cr_save_cancel"):
