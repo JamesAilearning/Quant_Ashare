@@ -425,7 +425,14 @@ st.caption(
 # possible append below, so the same click renders the up-to-date effective
 # record without adding a second JSONL reader or a manual refresh step.
 _review_summary_slot = st.container()
-_candidate_table_slot = st.container()
+_candidate_table_slot = st.empty()
+with _candidate_table_slot:
+    if _rows:
+        st.dataframe(
+            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+        )
+    else:
+        st.info("该工件买入清单为空(topk=0 或全部被掩)。")
 
 # ---------------------------------------------------------------------------
 # 决策表单(显式按钮 + 落盘 nonce 幂等;见威胁对表 T1)
@@ -573,7 +580,7 @@ with _candidate_table_slot:
         )
     else:
         st.info("该工件买入清单为空(topk=0 或全部被掩)。")
-_today_effective = [
+_today_entries = [
     {
         "代码": entry.code,
         "决策": _ACTION_LABELS.get(entry.action, entry.action),
@@ -582,14 +589,14 @@ _today_effective = [
         "score": entry.score,
         "decided_at": entry.decided_at,
     }
-    for (t_date, _code), entry in sorted(_journal.effective.items())
-    if t_date == _selected_date
+    for entry in _journal.entries
+    if entry.trade_date == _selected_date
 ]
-st.caption("下方为该日期的全部有效日志记录；与当前候选不匹配的记录不计入上方审阅进度。")
-st.subheader(f"{_selected_date} 的有效日志记录({len(_today_effective)})")
-if _today_effective:
+st.caption("下方为该日期的全部有效 append-only 日志记录；与当前候选不匹配的记录不计入上方审阅进度。")
+st.subheader(f"{_selected_date} 的有效日志记录({len(_today_entries)})")
+if _today_entries:
     st.dataframe(
-        pd.DataFrame(_today_effective), use_container_width=True, hide_index=True,
+        pd.DataFrame(_today_entries), use_container_width=True, hide_index=True,
     )
 else:
     st.caption("该交易日尚无决策记录。")

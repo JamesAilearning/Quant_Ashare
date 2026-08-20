@@ -70,6 +70,18 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("HOLD 日不显示人工审阅完成度", self.page)
         self.assertIn("不计入上方审阅进度", self.page)
 
+    def test_candidates_render_before_journal_failures_and_audit_keeps_history(self) -> None:
+        self.assertIn("_candidate_table_slot = st.empty()", self.page)
+        self.assertLess(
+            self.page.index("with _candidate_table_slot:"),
+            self.page.index("_journal_file = journal_path()"),
+        )
+        self.assertIn("for entry in _journal.entries", self.page)
+        self.assertNotIn(
+            "for (t_date, _code), entry in sorted(_journal.effective.items())",
+            self.page,
+        )
+
 
 class RegistrationAndDocsTests(unittest.TestCase):
     def test_page_registered_in_daily_decision_group_with_icon(self) -> None:
