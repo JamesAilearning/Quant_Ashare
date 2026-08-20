@@ -5,6 +5,7 @@ from copy import deepcopy
 from src.core.canonical_backtest_contract import CANONICAL_OFFICIAL_BACKTEST_PATH
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
+    _config_has_explicit_provider,
     assess_comparability,
     build_comparison_run,
     duplicate_run_ids,
@@ -153,6 +154,7 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
         ("instruments", False),
         ("train_period", "not a period"),
         ("train_period", "2023-01-01 ~ 2023-01-01"),
+        ("valid_period", "2022-12-31 ~ 2023-06-30"),
         ("valid_period", ["2023-01-01", "2023-06-30"]),
         ("test_period", "2023-12-31 ~ 2023-07-01"),
     ):
@@ -194,6 +196,13 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
     )
     assert oversized_result.eligible is False
     assert oversized_result.ranked_run_ids == ()
+
+
+def test_comparison_config_requires_the_explicit_provider_uri() -> None:
+    assert _config_has_explicit_provider({"provider_uri": "data/qlib_cn"})
+    assert not _config_has_explicit_provider({})
+    assert not _config_has_explicit_provider({"unrelated": True})
+    assert not _config_has_explicit_provider({"provider_uri": "  "})
 
 
 def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:

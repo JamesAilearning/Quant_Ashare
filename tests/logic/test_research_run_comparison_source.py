@@ -33,6 +33,7 @@ def test_comparison_page_is_read_only_and_uses_guarded_catalog_artifacts() -> No
     assert '("runner_stderr.log",)' in source
     assert "JobManager.start" not in source
     assert "st.switch_page" not in source
+    assert "_config_has_explicit_provider(loaded)" in source
 
 
 def test_unknown_url_run_ids_block_comparison_without_rewriting_the_request() -> None:

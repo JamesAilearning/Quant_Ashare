@@ -20,6 +20,7 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     SelectableCatalog,
     assess_comparability,
     build_comparison_run,
+    _config_has_explicit_provider,
     duplicate_run_ids,
     parse_selected_run_ids,
     selectable_catalog,
@@ -68,6 +69,14 @@ def _read_config(path: Path, issues: list[ComparisonIssue]) -> Mapping[str, obje
         return {}
     if not isinstance(loaded, Mapping):
         issues.append(ComparisonIssue("invalid_config", "config.yaml 顶层必须是映射，当前无法核验。"))
+        return {}
+    if not _config_has_explicit_provider(loaded):
+        issues.append(
+            ComparisonIssue(
+                "invalid_config",
+                "config.yaml 必须记录非空 provider_uri，当前无法核验研究合同。",
+            )
+        )
         return {}
     return loaded
 

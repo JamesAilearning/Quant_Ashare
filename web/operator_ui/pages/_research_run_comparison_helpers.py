@@ -168,8 +168,8 @@ def _required_text(value: Any) -> str | None:
     return normalized or None
 
 
-def _date_window(value: Any) -> str | None:
-    """Validate the producer's ``YYYY-MM-DD ~ YYYY-MM-DD`` period format."""
+def _date_window_bounds(value: Any) -> tuple[date, date] | None:
+    """Return a strict producer date window without accepting overlap inputs."""
     text = _required_text(value)
     if text is None:
         return None
@@ -182,6 +182,15 @@ def _date_window(value: Any) -> str | None:
         return None
     if start >= end:
         return None
+    return start, end
+
+
+def _date_window(value: Any) -> str | None:
+    """Validate the producer's ``YYYY-MM-DD ~ YYYY-MM-DD`` period format."""
+    bounds = _date_window_bounds(value)
+    if bounds is None:
+        return None
+    start, end = bounds
     return f"{start.isoformat()} ~ {end.isoformat()}"
 
 
@@ -200,6 +209,21 @@ def _non_boolean_int(value: Any) -> int | None:
 
 def _window_from_pipeline(config: Mapping[str, Any], key: str) -> str | None:
     return _date_window(config.get(key))
+
+
+def _pipeline_windows_are_ordered(config: Mapping[str, Any]) -> bool:
+    """Match the canonical pipeline's strict train/valid/test ordering."""
+    train = _date_window_bounds(config.get("train_period"))
+    valid = _date_window_bounds(config.get("valid_period"))
+    test = _date_window_bounds(config.get("test_period"))
+    if train is None or valid is None or test is None:
+        return False
+    return train[1] < valid[0] and valid[1] < test[0]
+
+
+def _config_has_explicit_provider(config: Mapping[str, Any]) -> bool:
+    """Require the producer-owned runtime key from an artifact config.yaml."""
+    return _required_text(config.get("provider_uri")) is not None
 
 
 def _window_from_walk_forward(config: Mapping[str, Any], kind: str) -> str | None:
@@ -454,12 +478,17 @@ def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     backtest_provenance = _mapping(_nested(report, "backtest", "provenance"))
     provenance = _mapping(backtest_provenance.get("config"))
     runtime = _mapping(provenance.get("runtime"))
+    training_window = _window_from_pipeline(report_config, "train_period")
+    validation_window = _window_from_pipeline(report_config, "valid_period")
+    testing_window = _window_from_pipeline(report_config, "test_period")
+    if not _pipeline_windows_are_ordered(report_config):
+        training_window = validation_window = testing_window = None
     return {
         "engine": "pipeline",
         "universe": _required_text(report_config.get("instruments")),
-        "training_window": _window_from_pipeline(report_config, "train_period"),
-        "validation_window": _window_from_pipeline(report_config, "valid_period"),
-        "testing_window": _window_from_pipeline(report_config, "test_period"),
+        "training_window": training_window,
+        "validation_window": validation_window,
+        "testing_window": testing_window,
         "benchmark": _required_text(provenance.get("benchmark_code")),
         "execution_lag": _execution_lag(provenance.get("signal_to_execution_lag")),
         "execution_semantics_provenance": _execution_semantics_provenance(
