@@ -17,6 +17,7 @@ from datetime import date
 from typing import Any
 
 from src.core.canonical_backtest_contract import (
+    CANONICAL_OFFICIAL_BACKTEST_PATH,
     COMMISSION_RATE_MAX,
     OFFICIAL_METRIC_STATUS,
     SLIPPAGE_BPS_MAX,
@@ -198,8 +199,12 @@ def _window_from_walk_forward(config: Mapping[str, Any], kind: str) -> str | Non
     return f"{period}; {kind}_months={months}"
 
 
-def _test_window_coverage(value: Any) -> str | None:
-    """Accept only the aggregate coverage schema emitted by the WF producer."""
+def _test_window_coverage(config: Mapping[str, Any], value: Any) -> str | None:
+    """Bind producer-recorded walk-forward schedule and coverage evidence."""
+    test_months = _positive_int(config.get("test_months"))
+    step_months = _positive_int(config.get("step_months"))
+    if test_months is None or step_months is None:
+        return None
     coverage = _mapping(value)
     numeric_keys = (
         "gap_count",
@@ -218,7 +223,14 @@ def _test_window_coverage(value: Any) -> str | None:
     ):
         return None
     return json.dumps(
-        {"mode": coverage["mode"], **{key: coverage[key] for key in numeric_keys}},
+        {
+            "test_months": test_months,
+            "step_months": step_months,
+            "coverage": {
+                "mode": coverage["mode"],
+                **{key: coverage[key] for key in numeric_keys},
+            },
+        },
         sort_keys=True,
         ensure_ascii=False,
     )
@@ -416,7 +428,7 @@ def _walk_forward_contract(
         "universe": _required_text(source.get("instruments")),
         "training_window": _window_from_walk_forward(source, "train"),
         "validation_window": _window_from_walk_forward(source, "valid"),
-        "testing_window": _test_window_coverage(report.get("test_window_coverage")),
+        "testing_window": _test_window_coverage(source, report.get("test_window_coverage")),
         "benchmark": _required_text(source.get("benchmark_code")),
         "execution_lag": _execution_lag(source.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_config(source),
@@ -520,6 +532,20 @@ def build_comparison_run(
     if not report:
         collected_issues.append(ComparisonIssue("missing_report", "报告工件不可用，无法核验现有指标。"))
 
+    metric_status = _effective_metric_status(report)
+    if (
+        engine == "pipeline"
+        and metric_status == OFFICIAL_METRIC_STATUS
+        and _required_text(report.get("official_backtest_path"))
+        != CANONICAL_OFFICIAL_BACKTEST_PATH
+    ):
+        collected_issues.append(
+            ComparisonIssue(
+                "unverified_metric_path",
+                "正式指标未记录为 canonical qlib 回测路径，无法作为可排序证据。",
+            )
+        )
+
     model_source = _mapping(report.get("config")) or config
     data_provenance_source = (
         "pipeline_report.json:backtest.provenance.config.runtime"
@@ -538,7 +564,7 @@ def build_comparison_run(
         log_paths=tuple(log_paths),
         contract=contract,
         metrics=metrics,
-        metric_status=_effective_metric_status(report),
+        metric_status=metric_status,
         model_identity=_stable_value(model_source.get("model_type")),
         config_identity=_stable_value(_nested(report, "backtest", "provenance", "config_fingerprint")),
         # Version is deliberately unavailable until a producer writes one.  A

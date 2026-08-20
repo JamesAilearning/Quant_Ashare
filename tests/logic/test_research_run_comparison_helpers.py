@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from src.core.canonical_backtest_contract import CANONICAL_OFFICIAL_BACKTEST_PATH
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
     assess_comparability,
@@ -16,6 +17,7 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
 def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
     return {
         "metric_status": "official",
+        "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         "config": {
             "instruments": "csi300",
             "train_period": "2020-01-01 ~ 2022-12-31",
@@ -213,6 +215,22 @@ def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> N
         assert any("指标状态" in reason for reason in result.reasons)
 
 
+def test_official_pipeline_metrics_require_the_canonical_backtest_path() -> None:
+    official = _pipeline_run("official")
+
+    for path in (None, "custom.backtest.path"):
+        report = _pipeline_report()
+        if path is None:
+            del report["official_backtest_path"]
+        else:
+            report["official_backtest_path"] = path
+        result = assess_comparability((official, _pipeline_run("unverified", report=report)))
+
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("canonical qlib 回测路径" in reason for reason in result.reasons)
+
+
 def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalculation() -> None:
     config = {
         "provider_uri": "data/qlib_cn",
@@ -229,6 +247,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             "train_months": 24,
             "valid_months": 3,
             "test_months": 3,
+            "step_months": 3,
             "benchmark_code": "SH000300TR",
             "signal_to_execution_lag": 1,
             "execution_price_kind": "close",
@@ -247,7 +266,14 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             "std_information_ratio": 0.11,
             "valid_folds_information_ratio": 2,
         },
-        "test_window_coverage": {"mode": "continuous", "gap_count": 0},
+        "test_window_coverage": {
+            "mode": "continuous",
+            "gap_count": 0,
+            "max_gap_days": 0,
+            "overlap_count": 0,
+            "max_overlap_days": 0,
+            "max_overlap_depth": 0,
+        },
         "folds": [{"fold_index": 0, "information_ratio": 0.2}, {"fold_index": 1, "information_ratio": 0.5}],
     }
 
@@ -271,6 +297,24 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert run.data_provenance_source is None
     assert any("数据来源 / 运行时快照" in issue.message for issue in run.issues)
 
+    changed = deepcopy(report)
+    changed["config"]["step_months"] = 6  # type: ignore[index]
+    different_schedule = build_comparison_run(
+        run_id="wf-different-schedule",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=changed,
+    )
+    result = assess_comparability((run, different_schedule))
+
+    assert result.eligible is False
+    assert any("测试窗口不一致" in reason for reason in result.reasons)
+
 
 def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
     config = {"provider_uri": "data/qlib_cn", "region": "cn", "adjust_mode": "pre_adjusted"}
@@ -282,6 +326,7 @@ def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
             "train_months": 24,
             "valid_months": 3,
             "test_months": 3,
+            "step_months": 3,
             "benchmark_code": "SH000300TR",
             "signal_to_execution_lag": 1,
             "execution_price_kind": "close",
