@@ -486,7 +486,15 @@ else:
             placeholder="例:评分高出成本参照且流动性充足",
         )
     if st.button("✍ 记录决策", key="dd_submit", type="primary"):
-        _pick_row = next((r for r in _rows if str(r["代码"]) == _sel_code), None)
+        # ``validate_review_candidate_codes`` normalises surrounding
+        # whitespace before the selectbox exposes the exact journal key.  Use
+        # that same normalisation for the display-row lookup, or an accepted
+        # artifact code such as ``" SH600000 "`` would lose its rank/score
+        # when the append-only decision entry is created.
+        _pick_row = next(
+            (r for r in _rows if str(r.get("代码") or "").strip() == _sel_code),
+            None,
+        )
         try:
             _entry = make_entry(
                 trade_date=str(_payload.get("as_of_date", "")),

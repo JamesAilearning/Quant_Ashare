@@ -70,6 +70,11 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("HOLD 日不显示人工审阅完成度", self.page)
         self.assertIn("不计入上方审阅进度", self.page)
 
+    def test_decision_row_lookup_uses_the_same_normalized_candidate_code(self) -> None:
+        self.assertIn(
+            'str(r.get("代码") or "").strip() == _sel_code', self.page
+        )
+
     def test_candidates_render_before_journal_failures_and_audit_keeps_history(self) -> None:
         self.assertIn("_candidate_table_slot = st.empty()", self.page)
         self.assertLess(
