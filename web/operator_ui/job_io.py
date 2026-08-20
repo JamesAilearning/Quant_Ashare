@@ -161,7 +161,12 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
     for job_dir in sorted(_JOB_ROOT.iterdir(), reverse=True):
         if not job_dir.is_dir():
             continue
-        data = read_job_json(job_dir)
+        try:
+            data = read_job_json(job_dir)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # The health diagnostic reports this artifact separately.  The
+            # listing must still expose every other readable lifecycle record.
+            continue
         if not data:
             continue
         if reconcile is not None:
@@ -252,9 +257,14 @@ def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
         isinstance(record.get(field), str) and record[field].strip()
         for field in ("created_at", "started_at")
     )
-    return has_lifecycle_timestamp and all(
-        isinstance(record.get(field), str) and record[field].strip()
-        for field in required
+    return (
+        isinstance(record.get("mode"), str)
+        and record["mode"] in {"pipeline", "walk_forward"}
+        and has_lifecycle_timestamp
+        and all(
+            isinstance(record.get(field), str) and record[field].strip()
+            for field in required
+        )
     )
 
 

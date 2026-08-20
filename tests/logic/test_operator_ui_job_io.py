@@ -735,8 +735,35 @@ class UiJobDiagnosticsTests(unittest.TestCase):
                 '"started_at":"2026-08-19T10:00:00+08:00"}',
                 encoding="utf-8",
             )
+            (root / "invalid-mode").mkdir()
+            (root / "invalid-mode" / "job.json").write_text(
+                '{"job_id":"invalid-mode","mode":"pipline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
             with patch.object(job_io, "_JOB_ROOT", root):
-                self.assertEqual(job_io.count_malformed_ui_job_entries(), 2)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 3)
+
+    def test_ui_loader_skips_a_malformed_artifact_and_keeps_readable_jobs(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "broken").mkdir()
+            (root / "broken" / "job.json").write_text("{", encoding="utf-8")
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"failed",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+
+        self.assertEqual([row["job_id"] for row in rows], ["valid"])
 
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
