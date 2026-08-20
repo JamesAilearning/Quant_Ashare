@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -25,6 +24,10 @@ from src.core.canonical_backtest_contract import (
     STAMP_TAX_BPS_MAX,
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
+)
+from src.core.backtest_runner import (
+    EXECUTION_TIMING_SEMANTICS,
+    PRICE_LIMIT_SEMANTICS,
 )
 from web.operator_ui.job_io import (
     JobSummary,
@@ -190,7 +193,7 @@ def _positive_int(value: Any) -> int | None:
 
 def _non_boolean_int(value: Any) -> int | None:
     """Return producer-recorded count evidence without accepting ``bool``."""
-    if isinstance(value, bool) or not isinstance(value, int):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return int(value)
 
@@ -251,7 +254,10 @@ def _test_window_coverage(config: Mapping[str, Any], value: Any) -> str | None:
 def _bounded_number(value: Any, *, lower: float, upper: float | None = None) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     if not math.isfinite(number) or number < lower or (upper is not None and number > upper):
         return None
     return number
@@ -429,8 +435,8 @@ def _execution_semantics_provenance(provenance: Mapping[str, Any]) -> str | None
     if (
         execution is None
         or price_limit is None
-        or re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", execution) is None
-        or re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", price_limit) is None
+        or execution != EXECUTION_TIMING_SEMANTICS
+        or price_limit != PRICE_LIMIT_SEMANTICS
     ):
         return None
     return json.dumps(

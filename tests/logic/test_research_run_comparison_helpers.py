@@ -116,7 +116,7 @@ def test_explicit_execution_semantics_are_required_for_ranking() -> None:
     result = assess_comparability((first, second))
 
     assert result.eligible is False
-    assert any("执行时序与涨跌停语义指纹不一致" in reason for reason in result.reasons)
+    assert any("执行时序与涨跌停语义指纹" in reason for reason in result.reasons)
 
     legacy = _pipeline_report()
     del legacy["backtest"]["provenance"]["execution_timing_semantics"]  # type: ignore[index]
@@ -124,6 +124,12 @@ def test_explicit_execution_semantics_are_required_for_ranking() -> None:
     legacy_result = assess_comparability((first, _pipeline_run("legacy", report=legacy)))
     assert legacy_result.eligible is False
     assert any("执行时序与涨跌停语义指纹" in reason for reason in legacy_result.reasons)
+
+    invented = _pipeline_report()
+    invented["backtest"]["provenance"]["execution_timing_semantics"] = "made_up_v1"  # type: ignore[index]
+    invented_result = assess_comparability((first, _pipeline_run("invented", report=invented)))
+    assert invented_result.eligible is False
+    assert any("执行时序与涨跌停语义指纹" in reason for reason in invented_result.reasons)
 
 
 def test_malformed_execution_lag_blocks_controlled_ranking() -> None:
@@ -180,6 +186,14 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
     assert result.eligible is False
     assert result.ranked_run_ids == ()
     assert any("交易所与成本模型不一致" in reason for reason in result.reasons)
+
+    oversized_cost = _pipeline_report()
+    oversized_cost["backtest"]["provenance"]["config"]["exchange_config"]["cost_model"]["commission_rate"] = 10 ** 10000  # type: ignore[index]
+    oversized_result = assess_comparability(
+        (complete, _pipeline_run("run-oversized-cost", report=oversized_cost))
+    )
+    assert oversized_result.eligible is False
+    assert oversized_result.ranked_run_ids == ()
 
 
 def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:
@@ -340,23 +354,24 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert run.data_provenance_source is None
     assert any("数据来源 / 运行时快照" in issue.message for issue in run.issues)
 
-    malformed_counts = deepcopy(report)
-    malformed_counts["num_folds"] = True
-    malformed_counts["aggregate_metrics"]["valid_folds_information_ratio"] = False  # type: ignore[index]
-    malformed_count_run = build_comparison_run(
-        run_id="wf-malformed-counts",
-        engine="walk_forward",
-        status="completed",
-        created_at="",
-        config_path="config.yaml",
-        report_path="walk_forward_report.json",
-        log_paths=(),
-        config=config,
-        report=malformed_counts,
-    )
-    assert malformed_count_run.fold_evidence is not None
-    assert malformed_count_run.fold_evidence.fold_count is None
-    assert malformed_count_run.fold_evidence.valid_fold_count is None
+    for invalid_count in (True, -1):
+        malformed_counts = deepcopy(report)
+        malformed_counts["num_folds"] = invalid_count
+        malformed_counts["aggregate_metrics"]["valid_folds_information_ratio"] = invalid_count  # type: ignore[index]
+        malformed_count_run = build_comparison_run(
+            run_id="wf-malformed-counts",
+            engine="walk_forward",
+            status="completed",
+            created_at="",
+            config_path="config.yaml",
+            report_path="walk_forward_report.json",
+            log_paths=(),
+            config=config,
+            report=malformed_counts,
+        )
+        assert malformed_count_run.fold_evidence is not None
+        assert malformed_count_run.fold_evidence.fold_count is None
+        assert malformed_count_run.fold_evidence.valid_fold_count is None
 
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]
