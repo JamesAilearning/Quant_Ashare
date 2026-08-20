@@ -505,12 +505,80 @@ class HelpersRuntimeTests(unittest.TestCase):
             found = list_recommendation_artifacts(root)
         self.assertEqual([d for d, _ in found], ["2026-07-03", "2026-07-01"])
 
-    def test_empty_artifact_state_stops_bare_module_import_cleanly(self) -> None:
+    def test_empty_artifact_state_stops_in_streamlit_without_hiding_errors(
+            self) -> None:
+        """The runner's stop signal, not SystemExit, owns empty-state flow.
+
+        The harness executes the page's actual empty-state AST with the
+        control-flow signal that Streamlit raises for ``st.stop``.  A
+        hand-written ``SystemExit`` made a bare Python import succeed before
+        later module errors could run.  The isolated page smoke below executes
+        the complete Streamlit module without contaminating this test process
+        (codex P2 on #457).
+        """
+        import ast
+        import subprocess
+        import sys
+        from unittest.mock import Mock
+
+        class _StreamlitStop(Exception):
+            pass
+
+        class _StreamlitHarness:
+            def stop(self) -> None:
+                raise _StreamlitStop()
+
         source = _PAGE.read_text(encoding="utf-8")
         empty_start = source.index("if not _artifacts:")
         empty_section = source[empty_start : source.index("_date_options =", empty_start)]
         self.assertIn("st.stop()", empty_section)
-        self.assertIn("raise SystemExit", empty_section)
+        self.assertIn("暂无日度信号工件", empty_section)
+        self.assertNotIn("raise SystemExit", empty_section)
+
+        page_tree = ast.parse(source, filename=str(_PAGE))
+        empty_state = next(
+            node for node in page_tree.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "_artifacts"
+        )
+        render_empty = Mock()
+        namespace = {
+            "_artifacts": [],
+            "render_empty_state": render_empty,
+            "st": _StreamlitHarness(),
+        }
+        with self.assertRaises(_StreamlitStop):
+            exec(
+                compile(
+                    ast.Module(body=[empty_state], type_ignores=[]),
+                    str(_PAGE),
+                    "exec",
+                ),
+                namespace,
+            )
+        render_empty.assert_called_once()
+
+        smoke = (
+            "from streamlit.testing.v1 import AppTest\n"
+            f"app = AppTest.from_file({str(_PAGE)!r})\n"
+            "app.run(timeout=30)\n"
+            "assert not app.exception, app.exception\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", smoke],
+            cwd=_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            "Streamlit 页面烟测失败：" + result.stderr,
+        )
 
     def test_banner_meta_is_promotion_sidecar_only_no_fallthrough(self) -> None:
         # codex P2 on #330: a trainer sidecar must NOT stand in for a missing

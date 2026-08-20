@@ -217,10 +217,6 @@ if not _artifacts:
         "请先运行 scripts/daily_recommend.py(本页只渲染落盘工件,不代跑)。",
     )
     st.stop()
-    # ``st.stop`` raises inside Streamlit, but is a no-op during the required
-    # bare-module import smoke test.  Do not let that test fall through into a
-    # nonexistent selectbox value and mask later import-time regressions.
-    raise SystemExit
 
 _date_options = [item[0] for item in _artifacts]
 _session_state = cast(MutableMapping[str, object], st.session_state)
