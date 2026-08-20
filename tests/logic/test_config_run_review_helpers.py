@@ -7,6 +7,7 @@ import unittest
 from web.operator_ui.pages._config_run_helpers import (
     build_config_review_sections,
     config_preset_differences,
+    effective_preset_for_review,
     unsupported_prefill_keys,
 )
 
@@ -46,6 +47,29 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
         emitted = {"mode": "walk_forward", "ensemble_window": 3}
 
         self.assertEqual(config_preset_differences(emitted, dict(emitted)), ())
+
+    def test_effective_preset_matches_generated_fields_and_omits_local_paths(self) -> None:
+        emitted = {
+            "mode": "pipeline",
+            "provider_uri": "D:/machine-a/provider",
+            "namechange_path": "D:/machine-a/namechange.csv",
+            "train_start": "2022-01-01",
+            "train_end": "2024-12-31",
+            "topk": 50,
+            "commission_rate": 0.0005,
+        }
+        raw_preset = {"mode": "pipeline", "topk": 50}
+
+        effective = effective_preset_for_review(
+            emitted,
+            raw_preset,
+            normalization_defaults={"commission_rate": 0.0005},
+        )
+
+        assert effective is not None
+        self.assertEqual(config_preset_differences(emitted, effective), ())
+        self.assertNotIn("provider_uri", effective)
+        self.assertNotIn("namechange_path", effective)
 
     def test_unavailable_preset_is_not_reported_as_a_match(self) -> None:
         self.assertIsNone(config_preset_differences({"mode": "pipeline"}, None))

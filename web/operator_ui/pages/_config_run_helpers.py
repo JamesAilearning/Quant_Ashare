@@ -103,6 +103,11 @@ _CONFIG_REVIEW_SECTION_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+# Presets intentionally travel between machines, while these values describe
+# the local installation that will execute a run. They are therefore excluded
+# both when a preset is saved and when a launch preview is compared with one.
+_MACHINE_LOCAL_PRESET_KEYS = frozenset({"provider_uri", "namechange_path"})
+
 
 def build_config_review_sections(
     emitted_config: Mapping[str, Any],
@@ -150,14 +155,24 @@ def config_preset_differences(
     if preset_config is None:
         return None
 
-    ordered_keys = list(emitted_config)
-    ordered_keys.extend(sorted(set(preset_config) - set(emitted_config)))
+    emitted_portable = {
+        key: value
+        for key, value in emitted_config.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    }
+    preset_portable = {
+        key: value
+        for key, value in preset_config.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    }
+    ordered_keys = list(emitted_portable)
+    ordered_keys.extend(sorted(set(preset_portable) - set(emitted_portable)))
     differences: list[ConfigPresetDifference] = []
     for key in ordered_keys:
-        emitted_present = key in emitted_config
-        preset_present = key in preset_config
-        emitted_value = emitted_config.get(key)
-        preset_value = preset_config.get(key)
+        emitted_present = key in emitted_portable
+        preset_present = key in preset_portable
+        emitted_value = emitted_portable.get(key)
+        preset_value = preset_portable.get(key)
         if (
             emitted_present
             and preset_present
@@ -174,6 +189,43 @@ def config_preset_differences(
             )
         )
     return tuple(differences)
+
+
+def effective_preset_for_review(
+    emitted_config: Mapping[str, Any],
+    preset_config: Mapping[str, Any] | None,
+    *,
+    normalization_defaults: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Build the preset state the form would effectively submit.
+
+    Built-in and older saved presets deliberately omit dynamic form values such
+    as data windows, and portable presets must never retain machine-local
+    paths. Start with the exact emitted portable fields, then apply the same
+    missing-field normalization used when a preset is selected, followed by
+    the explicit preset values. This makes an empty difference an attainable,
+    meaningful result without inventing a provider path or date window.
+    """
+
+    if preset_config is None:
+        return None
+
+    effective = {
+        key: value
+        for key, value in emitted_config.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    }
+    effective.update(
+        (key, value)
+        for key, value in normalization_defaults.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    )
+    effective.update(
+        (key, value)
+        for key, value in preset_config.items()
+        if key not in _MACHINE_LOCAL_PRESET_KEYS
+    )
+    return effective
 
 
 def unsupported_prefill_keys(

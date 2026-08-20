@@ -140,6 +140,8 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn('"④ 高级设置 · 算力", expanded=False', source)
         self.assertIn("build_config_review_sections(preview_config)", source)
         self.assertIn("config_preset_differences(", source)
+        self.assertIn("effective_preset_for_review(", source)
+        self.assertIn("normalization_defaults=_RESET_FIELD_DEFAULTS", source)
         self.assertIn("unsupported_prefill_keys(", source)
         self.assertIn("启动研究运行", source)
         self.assertIn("不会发布模型、修改 production serving", source)

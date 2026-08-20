@@ -59,6 +59,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
+    effective_preset_for_review,
     unsupported_prefill_keys,
 )
 from web.operator_ui.training_guards import (
@@ -981,7 +982,11 @@ with form_col:
         if _selected_preset != CUSTOM_PRESET_NAME
         else None
     )
-    _review_preset = _review_preset or None
+    _review_preset = effective_preset_for_review(
+        preview_config,
+        _review_preset or None,
+        normalization_defaults=_RESET_FIELD_DEFAULTS,
+    )
     _review_sections = build_config_review_sections(preview_config)
     _preset_differences = config_preset_differences(
         preview_config, _review_preset,
