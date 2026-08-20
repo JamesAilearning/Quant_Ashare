@@ -59,8 +59,8 @@ _DEFAULT_TREE = _REPO_ROOT / "output"
 _PRUNE_LOCK_TIMEOUT = 30.0
 
 
-def _read_lines(catalog: Path) -> tuple[list[str], bool]:
-    """按**字节忠实**地读出索引的每一行,外加「文件末尾有没有换行」。
+def _read_rows(catalog: Path) -> list[str]:
+    """按**字节忠实**地读出索引的每一行 —— **每行连同它自己的行尾**。
 
     两处不可逆的归一化都出在读这一步(codex #453),所以一起收在这里:
 
@@ -77,21 +77,28 @@ def _read_lines(catalog: Path) -> tuple[list[str], bool]:
     模式在 Windows 上会把换行译成 CRLF)。保留它,重写时拼回去正好还原原字节;
     换成「读时归一化、写时再译回」的老做法,一份混合行尾的文件会被悄悄改写成
     单一行尾。
+
+    **行尾跟着行走,不做整文件级的标志。** 曾经用过一个「文件末尾有没有换行」
+    的开关,在分桶之后统一施加 —— 那在末行没有行尾**且末行被丢弃**时两头都错:
+    保留下来的那批被抹掉最后一个换行,而旁车里那条无行尾的记录反被补上一个,
+    「原样留证」当场失真(codex #453)。分区是逐行的,行尾也必须是逐行的。
+
+    空文件返回**零行**,而不是一行空串 —— 否则一份刚建出来或被截断的零字节
+    索引会被报成「总行数 1」(codex #453)。这里不需要特判:``"".split`` 给出
+    ``[""]``,前半段为空、末段是假值不追加,一般逻辑本就得零行。曾经加过一个
+    ``if not raw: return []``,变异测试证明它是死代码,已删。
     """
     raw = catalog.read_bytes().decode("utf-8", errors="surrogateescape")
-    trailing_newline = raw.endswith("\n")
-    lines = raw.split("\n")
-    if trailing_newline:
-        lines.pop()            # 末尾那个换行不是一行
-    return lines, trailing_newline
+    chunks = raw.split("\n")
+    rows = [chunk + "\n" for chunk in chunks[:-1]]
+    if chunks[-1]:
+        rows.append(chunks[-1])          # 末行没有行尾,原样留着
+    return rows
 
 
-def _encode_lines(lines: list[str], trailing_newline: bool) -> bytes:
-    """与 :func:`_read_lines` 成对:拼回去正好是原来的字节。"""
-    body = "\n".join(lines)
-    if trailing_newline and lines:
-        body += "\n"
-    return body.encode("utf-8", errors="surrogateescape")
+def _encode_rows(rows: list[str]) -> bytes:
+    """与 :func:`_read_rows` 成对:行尾已在行里,直接拼回去就是原字节。"""
+    return "".join(rows).encode("utf-8", errors="surrogateescape")
 
 
 class Classified(NamedTuple):
@@ -108,8 +115,6 @@ class Classified(NamedTuple):
     dropped_records: list[dict[str, Any]]
     verified_in_tree: int
     unclassified: int
-    #: 原文件末尾有没有换行。重写时照原样还原,不替操作人补一个。
-    trailing_newline: bool
 
 
 def classify(
@@ -131,8 +136,7 @@ def classify(
     dropped_records: list[dict[str, Any]] = []
     verified = 0
     unclassified = 0
-    lines, trailing_newline = _read_lines(catalog)
-    for line in lines:
+    for line in _read_rows(catalog):
         if not line.strip():
             # 空行也**保留**。它既不在 keep 也不在 drop 的话,一次 --prune 就把
             # 它从活索引里抹掉了,而旁车留证里没有它——「移除的行留得住」这条
@@ -163,8 +167,7 @@ def classify(
         else:
             dropped.append(line)
             dropped_records.append(record)
-    return Classified(retained, dropped, dropped_records, verified, unclassified,
-                      trailing_newline)
+    return Classified(retained, dropped, dropped_records, verified, unclassified)
 
 
 def report(result: Classified) -> None:
@@ -327,8 +330,8 @@ def main(argv: list[str] | None = None) -> int:
             return 6
         # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
         # 按字节写回,与 `_read_lines` 成对 —— 保住行尾与不可解码的字节。
-        sidecar.write_bytes(_encode_lines(drop, True))
-        staged.write_bytes(_encode_lines(keep, result.trailing_newline))
+        sidecar.write_bytes(_encode_rows(drop))
+        staged.write_bytes(_encode_rows(keep))
 
         # 走到这里索引还会变,只剩一种可能:有个不遵守这把锁的写入者。现有的
         # 写入侧不会——它等不到锁就放弃追加而不是绕过——所以这是给「将来某个

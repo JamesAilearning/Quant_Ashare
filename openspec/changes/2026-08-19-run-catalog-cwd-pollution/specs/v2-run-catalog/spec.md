@@ -291,6 +291,15 @@ rewrite unchanged — measured on this operator's catalog, all 3560 rows end
 CRLF, and normalising on read while translating back on write silently
 rewrites a mixed-ending file.
 
+Each row's terminator SHALL travel with that row, not as one file-level
+flag applied after partitioning. When the last row has no terminator and
+that row is the one removed, a file-level flag is wrong at both ends: the
+retained set loses the newline that ended its last row, while the sidecar
+gains one on a row that never had it — and the sidecar is the copy that
+claims to be verbatim. An empty catalog SHALL yield zero rows rather than
+one blank one, so a freshly created or truncated file is not reported as
+having a row.
+
 Lines the tool cannot interpret SHALL be retained, including blank
 separator lines and valid JSON that is not a record object (`null`,
 arrays, scalars). A blank line that is in neither the retained nor the
@@ -415,6 +424,20 @@ refuse to prune a catalog that has more than one name.
 - **GIVEN** a catalog line containing an undecodable byte
 - **WHEN** the tool classifies the catalog
 - **THEN** the scan completes and that line is retained unclassified
+
+#### Scenario: the last row has no terminator and is removed
+
+- **GIVEN** a catalog whose final row lacks a newline and lies outside the
+  tree
+- **WHEN** the tool prunes it
+- **THEN** the retained rows keep their bytes, and the sidecar holds the
+  removed row without adding a terminator
+
+#### Scenario: a zero-byte catalog
+
+- **GIVEN** a catalog of zero bytes
+- **WHEN** the tool classifies it
+- **THEN** it reports no rows at all
 
 #### Scenario: a catalog written with CRLF endings
 

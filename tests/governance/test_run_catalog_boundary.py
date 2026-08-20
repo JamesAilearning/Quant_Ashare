@@ -598,7 +598,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             _append_catalog_line(catalog, "{ this is not json")
             result = classify(catalog, tree, tree.parent)
-            self.assertIn("{ this is not json", result.retained)
+            self.assertIn("{ this is not json" + _LF, result.retained)
             self.assertEqual(len(result.dropped), 2)
 
     def test_valid_json_that_is_not_a_record_is_kept_not_crashed_on(self) -> None:
@@ -611,8 +611,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             _append_catalog_line(catalog, "null")
             _append_catalog_line(catalog, "[1, 2]")
             result = classify(catalog, tree, tree.parent)
-            self.assertIn("null", result.retained)
-            self.assertIn("[1, 2]", result.retained)
+            self.assertIn("null" + _LF, result.retained)
+            self.assertIn("[1, 2]" + _LF, result.retained)
             self.assertEqual(len(result.dropped), 2)
             self.assertEqual(main(self._argv(catalog, tree)), 0)
 
@@ -886,7 +886,7 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             _append_catalog_line(catalog, row)
 
             result = classify(catalog, tree, tree.parent)
-            self.assertIn(row, result.retained, "一条合法记录被切碎了")
+            self.assertIn(row + _LF, result.retained, "一条合法记录被切碎了")
             self.assertEqual(
                 result.verified_in_tree, 2,
                 "被切碎的碎片进了「看不懂」桶，而不是算作一条树内记录")
@@ -948,6 +948,50 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                 result.verified_in_tree, 2,
                 "工具把一条控制台打得开的历史行判成了残骸")
             self.assertEqual(len(result.dropped), 2)
+
+    def test_an_unterminated_last_row_keeps_every_byte_where_it_was(self) -> None:
+        """行尾属于**行**，不是整个文件的一个开关。
+
+        末行没有行尾、而且**末行正好被丢弃**时，一个「文件末尾有没有换行」的
+        文件级标志两头都会错：保留下来的那批被抹掉最后一个换行，而旁车里那条
+        无行尾的记录反被补上一个 —— 「原样留证」当场失真（codex #453）。
+        """
+        from scripts.prune_run_catalog import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            keep_row = json.dumps(
+                {"engine": "walk_forward", "output_dir": str(tree / "wf" / "keep")})
+            drop_row = json.dumps(
+                {"engine": "pipeline", "output_dir": "C:/Temp/tmpdead"})
+            # 末行**没有**行尾，且它是要被丢弃的那条。
+            catalog.write_bytes(
+                (keep_row + _LF + drop_row).encode("utf-8"))
+
+            self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
+
+            self.assertEqual(
+                catalog.read_bytes(), (keep_row + _LF).encode("utf-8"),
+                "保留下来那行的行尾被动过了")
+            sidecar = next(catalog.parent.glob("_index.pruned-*.jsonl"))
+            self.assertEqual(
+                sidecar.read_bytes(), drop_row.encode("utf-8"),
+                "「原样留证」给无行尾的那条补了个换行")
+
+    def test_a_zero_byte_catalog_has_zero_rows(self) -> None:
+        # `"".split(chr(10))` 会给出 `[""]`，于是一份刚建出来或被截断的零字节
+        # 索引被报成「总行数 1」—— 而这份报告正是操作人按下 --prune 的依据。
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "output"
+            (tree / "runs").mkdir(parents=True)
+            catalog = tree / "runs" / "_index.jsonl"
+            catalog.write_bytes(b"")
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(
+                (len(result.retained), len(result.dropped), result.unclassified),
+                (0, 0, 0), "零字节索引被算出了行")
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。
