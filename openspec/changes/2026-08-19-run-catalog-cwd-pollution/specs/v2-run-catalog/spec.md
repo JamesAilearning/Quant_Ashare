@@ -300,6 +300,14 @@ claims to be verbatim. An empty catalog SHALL yield zero rows rather than
 one blank one, so a freshly created or truncated file is not reported as
 having a row.
 
+A row carrying bytes that could not be decoded SHALL stay unclassified
+whatever its JSON says. A bad byte inside an otherwise valid JSON string
+still parses — the reversible decoding hides it as a lone surrogate — so
+classifying on `output_dir` would count a row nobody can read as verified,
+and would **remove** the out-of-tree variant. Detecting it is a total test,
+not a character list: a row that cannot be re-encoded as UTF-8 carries
+bytes we never read.
+
 Lines the tool cannot interpret SHALL be retained, including blank
 separator lines and valid JSON that is not a record object (`null`,
 arrays, scalars). A blank line that is in neither the retained nor the
@@ -432,6 +440,13 @@ refuse to prune a catalog that has more than one name.
 - **WHEN** the tool prunes it
 - **THEN** the retained rows keep their bytes, and the sidecar holds the
   removed row without adding a terminator
+
+#### Scenario: an undecodable byte inside valid JSON
+
+- **GIVEN** a row whose JSON parses but contains a byte that was not
+  decodable
+- **WHEN** the tool classifies the catalog
+- **THEN** the row is unclassified and is never removed
 
 #### Scenario: a zero-byte catalog
 

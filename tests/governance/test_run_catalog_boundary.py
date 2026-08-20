@@ -993,6 +993,105 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                 (len(result.retained), len(result.dropped), result.unclassified),
                 (0, 0, 0), "零字节索引被算出了行")
 
+    def test_an_undecodable_byte_inside_valid_json_stays_unclassified(self) -> None:
+        """坏字节落在 JSON 字符串**内部**时，语法仍然合法。
+
+        `surrogateescape` 把它藏成孤立代理项，`json.loads` 照样成功 —— 于是一条
+        读不懂的记录会被按 `output_dir` 判成「树内」或「可清理」，后者会被**真的
+        删掉**。实测（修前）：树内 2 / 未验证 0 / 可清理 1，而应当是 1 / 2 / 0
+        （codex #453）。
+
+        这与规格里「无法解码的行应保持未分类」直接冲突 —— 之前只在坏字节正好
+        破坏了 JSON 语法时才做到。
+        """
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            inside = str(tree / "wf" / "keep").replace(chr(92), "/")
+            with open(catalog, "ab") as fh:
+                for target in (inside, "C:/Temp/tmpdead"):
+                    fh.write(b'{"engine":"' + bytes([0xFF]) + b'","output_dir":"'
+                             + target.encode("utf-8") + b'"}' + _LF.encode("utf-8"))
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(
+                (result.verified_in_tree, result.unclassified, len(result.dropped)),
+                (1, 2, 2),
+                "含坏字节的行被按 output_dir 分了类 —— 树外那条会被真的删掉")
+
+    def test_pruning_never_alters_a_byte_it_did_not_remove(self) -> None:
+        """**整条缝的往返性质**，不是又一个点用例。
+
+        最近三轮的问题（行尾归一化、文件级换行标志、孤立代理项）都出在这条读写
+        缝上，而每次都是靠一个新的点用例才发现。所以这里改成盯**性质**：对一组
+        对抗性索引，`--prune` 之后
+
+            活索引 == 原字节里删掉「被移除的那些行」，一个字节不多不少
+            旁车   == 那些被移除的行，原样
+
+        这条性质把行尾、编码、末行有无换行、空行全都一次覆盖住；上面那些点用例
+        任何一条失守，它都会红。
+        """
+        from scripts.prune_run_catalog import classify, main
+
+        u2028_row = json.dumps(
+            {"engine": "pipeline", "note": "a" + chr(0x2028) + "b",
+             "output_dir": "PLACEHOLDER"}, ensure_ascii=False)
+        for newline in (_LF, _CRLF):
+            for terminated in (True, False):
+                with self.subTest(行尾=repr(newline), 末行有行尾=terminated), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    catalog, tree = self._catalog_with(Path(tmp))
+                    inside = str(tree / "wf" / "keep").replace(chr(92), "/")
+                    rows = [
+                        json.dumps({"engine": "walk_forward",
+                                    "output_dir": inside}),
+                        "",                                   # 空行
+                        "null",                               # 合法但非记录
+                        "{ 读不懂的一行",                       # 坏 JSON
+                        u2028_row.replace("PLACEHOLDER", inside),
+                        json.dumps({"engine": "pipeline",
+                                    "output_dir": "C:/Temp/tmpdead"}),
+                    ]
+                    eol = newline.encode("utf-8")
+                    parts = [row.encode("utf-8") + eol for row in rows]
+                    # 末行是「坏字节藏在合法 JSON 里」那条，只能按字节拼；
+                    # `terminated` 控制的正是**它**有没有行尾。
+                    parts.append(b'{"engine":"' + bytes([0xFF])
+                                 + b'","output_dir":"C:/Temp/tmpdead2"}'
+                                 + (eol if terminated else b""))
+                    original = b"".join(parts)
+                    catalog.write_bytes(original)
+
+                    result = classify(catalog, tree, tree.parent)
+                    self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
+
+                    # 独立推导的一条：读不懂的行**不许被移除**。
+                    # 上面那条「没移除的字节一个不改」是拿 `result.dropped` 反推
+                    # 期望的，工具若错删一行，期望会跟着一起动 —— 性质就空转了
+                    # （实测：变异「不再检测孤立代理项」时它确实抓不到）。
+                    for row in result.dropped:
+                        try:
+                            row.encode("utf-8")
+                        except UnicodeEncodeError:
+                            self.fail(f"移除了一条含未解码字节的行：{row[:40]!r}")
+
+                    expected = original
+                    for row in result.dropped:
+                        raw = row.encode("utf-8", errors="surrogateescape")
+                        self.assertIn(raw, expected, "被移除的行不在原文件里")
+                        expected = expected.replace(raw, b"", 1)
+                    self.assertEqual(
+                        catalog.read_bytes(), expected,
+                        "重写改动了它并没有移除的字节")
+
+                    sidecar = next(catalog.parent.glob("_index.pruned-*.jsonl"))
+                    self.assertEqual(
+                        sidecar.read_bytes(),
+                        "".join(result.dropped).encode(
+                            "utf-8", errors="surrogateescape"),
+                        "留证不是被移除那些行的原样")
+
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。
         import scripts.prune_run_catalog as tool

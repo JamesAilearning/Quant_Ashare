@@ -145,6 +145,20 @@ def classify(
             unclassified += 1
             continue
         try:
+            line.encode("utf-8")
+        except UnicodeEncodeError:
+            # 这一行里有**没能解码的字节**(`surrogateescape` 把它们藏成了孤立
+            # 代理项)。坏字节若正好落在 JSON 字符串内部,语法仍然合法、
+            # `json.loads` 照样成功 —— 于是一条读不懂的记录会被按 `output_dir`
+            # 判成「树内」或「可清理」,后者会被真的删掉(codex #453 实测:
+            # 树内 2 / 未验证 0 / 可清理 1,而应当是 1 / 2 / 0)。
+            #
+            # 判据是完备的,不是逐个字符枚举:一行**编不回 UTF-8**,就说明它
+            # 带着我们没读懂的字节,按「看不懂就不动」处理。
+            retained.append(line)
+            unclassified += 1
+            continue
+        try:
             record = json.loads(line)
         except json.JSONDecodeError:
             # 读不懂的行**保留**。判据只针对能证明是残骸的那些;看不懂就不动,
