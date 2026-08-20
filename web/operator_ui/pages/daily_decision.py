@@ -79,8 +79,7 @@ def _render_review_progress(progress: DailyReviewProgress) -> None:
     """Render journal-derived human-review coverage without execution claims."""
     st.subheader("人工审阅进度")
     if not progress.candidate_count:
-        st.info("当前有效信号没有候选，未生成审阅完成度。")
-        return
+        st.info("当前有效信号没有候选；各项人工审阅统计均为 0。")
     coverage_cols = st.columns(3)
     coverage_cols[0].metric("候选", progress.candidate_count)
     coverage_cols[1].metric("已审阅", progress.reviewed_count)

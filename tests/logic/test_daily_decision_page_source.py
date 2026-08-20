@@ -580,6 +580,75 @@ class HelpersRuntimeTests(unittest.TestCase):
             "Streamlit 页面烟测失败：" + result.stderr,
         )
 
+    def test_empty_candidate_review_progress_renders_zero_metrics(self) -> None:
+        """An empty valid signal still exposes every review-progress metric."""
+        import ast
+
+        from web.operator_ui.pages._daily_review_progress_helpers import (
+            DailyReviewProgress,
+        )
+
+        class _Column:
+            def __init__(self) -> None:
+                self.metrics: list[tuple[str, int]] = []
+
+            def metric(self, label: str, value: int) -> None:
+                self.metrics.append((label, value))
+
+        class _StreamlitHarness:
+            def __init__(self) -> None:
+                self.infos: list[str] = []
+                self.columns_created: list[_Column] = []
+
+            def subheader(self, _label: str) -> None:
+                pass
+
+            def info(self, message: str) -> None:
+                self.infos.append(message)
+
+            def columns(self, count: int) -> list[_Column]:
+                columns = [_Column() for _ in range(count)]
+                self.columns_created.extend(columns)
+                return columns
+
+            def caption(self, _message: str) -> None:
+                pass
+
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"), filename=str(_PAGE))
+        renderer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_review_progress"
+        )
+        harness = _StreamlitHarness()
+        namespace = {"st": harness, "DailyReviewProgress": DailyReviewProgress}
+        exec(
+            compile(ast.Module(body=[renderer], type_ignores=[]), str(_PAGE), "exec"),
+            namespace,
+        )
+        namespace["_render_review_progress"](
+            DailyReviewProgress(
+                trade_date="2026-08-20",
+                candidates=(),
+                candidate_count=0,
+                reviewed_count=0,
+                unreviewed_count=0,
+                adopt_count=0,
+                reject_count=0,
+                watch_count=0,
+                latest_reviewed_at=None,
+            )
+        )
+
+        self.assertEqual(
+            [metric for column in harness.columns_created for metric in column.metrics],
+            [
+                ("候选", 0), ("已审阅", 0), ("未审阅", 0),
+                ("人工采纳", 0), ("人工拒绝", 0), ("人工观望", 0),
+            ],
+        )
+        self.assertEqual(harness.infos, ["当前有效信号没有候选；各项人工审阅统计均为 0。"])
+
     def test_banner_meta_is_promotion_sidecar_only_no_fallthrough(self) -> None:
         # codex P2 on #330: a trainer sidecar must NOT stand in for a missing
         # promotion meta — the banner reports absence loudly instead.
