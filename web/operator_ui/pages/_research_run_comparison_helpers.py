@@ -363,6 +363,10 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
     values = {key: _required_text(runtime.get(key)) for key in required}
     if any(value is None for value in values.values()):
         return None
+    if values["region"] not in {"cn", "us"}:
+        return None
+    if values["data_adjust_mode"] not in SUPPORTED_ADJUST_MODES:
+        return None
     return json.dumps(values, sort_keys=True, ensure_ascii=False)
 
 
@@ -379,7 +383,7 @@ def _st_mask_identity(provenance: Mapping[str, Any]) -> str | None:
     if not isinstance(sha256, str):
         return None
     normalized = sha256.strip().lower()
-    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+    if len(normalized) != 16 or any(char not in "0123456789abcdef" for char in normalized):
         return None
     return normalized
 
@@ -599,6 +603,17 @@ def parse_selected_run_ids(raw: str) -> tuple[str, ...]:
     return tuple(part for part in raw.split(",") if part)
 
 
+def duplicate_run_ids(run_ids: Iterable[str]) -> tuple[str, ...]:
+    """Return repeated canonical IDs in first-repeat order for URL blocking."""
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for run_id in run_ids:
+        if run_id in seen and run_id not in duplicates:
+            duplicates.append(run_id)
+        seen.add(run_id)
+    return tuple(duplicates)
+
+
 def _catalog_dir_key(run_dir: str) -> str:
     """Use the same canonical directory key as the results views."""
     return canonical_dir_key(run_dir) or os.path.normcase(
@@ -663,6 +678,7 @@ __all__ = [
     "SelectableCatalog",
     "assess_comparability",
     "build_comparison_run",
+    "duplicate_run_ids",
     "information_ratio",
     "parse_selected_run_ids",
     "selectable_catalog",

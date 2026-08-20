@@ -20,6 +20,7 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     SelectableCatalog,
     assess_comparability,
     build_comparison_run,
+    duplicate_run_ids,
     parse_selected_run_ids,
     selectable_catalog,
 )
@@ -212,13 +213,20 @@ resolved_requested = tuple(
     for run_id in requested
     if run_id not in unknown_requested
 )
-default_ids = list(dict.fromkeys(resolved_requested))
+duplicate_resolved = duplicate_run_ids(resolved_requested)
 if unknown_requested:
     st.error(
         "以下 URL 运行 ID 当前不在可选目录中，无法按请求的完整选择进行对比："
         + "、".join(unknown_requested)
     )
     st.stop()
+if duplicate_resolved:
+    st.error(
+        "以下 URL 运行 ID 指向同一份当前工件，无法按请求的完整选择进行对比："
+        + "、".join(duplicate_resolved)
+    )
+    st.stop()
+default_ids = list(resolved_requested)
 
 selected_ids = st.multiselect(
     "选择 2–5 个历史研究运行",

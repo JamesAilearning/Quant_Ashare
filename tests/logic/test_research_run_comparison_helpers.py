@@ -6,6 +6,7 @@ from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
     assess_comparability,
     build_comparison_run,
+    duplicate_run_ids,
     parse_selected_run_ids,
     selectable_catalog,
     selectable_catalog_rows,
@@ -29,7 +30,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                     "benchmark_code": "SH000300TR",
                     "signal_to_execution_lag": 1,
                     "st_mask": {
-                        "namechange_sha256": "a" * 64,
+                        "namechange_sha256": "a" * 16,
                     },
                     "adjust_mode": "pre_adjusted",
                     "exchange_config": {
@@ -152,7 +153,7 @@ def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None
     first = _pipeline_run("run-a")
     changed = _pipeline_report()
     provenance = changed["backtest"]["provenance"]["config"]  # type: ignore[index]
-    provenance["st_mask"]["namechange_sha256"] = "b" * 64  # type: ignore[index]
+    provenance["st_mask"]["namechange_sha256"] = "b" * 16  # type: ignore[index]
     second = _pipeline_run("run-b", report=changed)
 
     result = assess_comparability((first, second))
@@ -173,6 +174,22 @@ def test_missing_runtime_provenance_is_visible_and_blocks_comparison() -> None:
     assert result.eligible is False
     assert any("数据来源 / 运行时快照" in issue.message for issue in incomplete.issues)
     assert any("run-incomplete" in reason for reason in result.reasons)
+
+
+def test_malformed_runtime_provenance_values_block_controlled_ranking() -> None:
+    complete = _pipeline_run("run-complete")
+
+    for field, value in (("region", "mars"), ("data_adjust_mode", "unknown")):
+        malformed_report = _pipeline_report()
+        runtime = malformed_report["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+        runtime[field] = value  # type: ignore[index]
+        result = assess_comparability(
+            (complete, _pipeline_run("run-malformed", report=malformed_report))
+        )
+
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("数据来源 / 运行时快照" in reason for reason in result.reasons)
 
 
 def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> None:
@@ -376,6 +393,21 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
 
     assert [job.run_id for job in catalog.rows] == ["ui-run"]
     assert catalog.run_id_alias == {"cli-run": "ui-run"}
+
+
+def test_alias_collapsed_run_ids_are_reported_as_duplicates() -> None:
+    catalog = selectable_catalog(
+        (
+            JobSummary("ui-run", "pipeline", "completed", "ui", "output/runs/shared"),
+            JobSummary("cli-run", "pipeline", "completed", "cli", "output/runs/shared"),
+        )
+    )
+    resolved = tuple(
+        catalog.run_id_alias.get(run_id, run_id)
+        for run_id in ("ui-run", "cli-run")
+    )
+
+    assert duplicate_run_ids(resolved) == ("ui-run",)
 
 
 def test_parse_selected_ids_preserves_full_order_after_url_validation() -> None:

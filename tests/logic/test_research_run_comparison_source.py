@@ -43,6 +43,16 @@ def test_unknown_url_run_ids_block_comparison_without_rewriting_the_request() ->
     assert "st.stop()" in unknown_block
 
 
+def test_alias_collapsed_url_run_ids_block_comparison_without_rewriting() -> None:
+    source = Path("web/operator_ui/pages/research_run_comparison.py").read_text(encoding="utf-8")
+
+    duplicate_block = source[
+        source.index("if duplicate_resolved:") : source.index("selected_ids =")
+    ]
+    assert "指向同一份当前工件" in duplicate_block
+    assert "st.stop()" in duplicate_block
+
+
 def test_research_navigation_exposes_comparison_workbench() -> None:
     app_source = Path("web/operator_ui/app.py").read_text(encoding="utf-8")
     workbench_source = Path("web/operator_ui/pages/today_workbench.py").read_text(encoding="utf-8")
