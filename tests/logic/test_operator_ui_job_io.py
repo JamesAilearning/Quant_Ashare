@@ -679,7 +679,9 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             index_path = Path(directory) / "_index.jsonl"
             index_path.write_text(
-                '{"run_id": "valid", "completed_at": "2026-08-20T10:00:00+08:00"}\n'
+                '{"run_id": "valid", "engine": "pipeline", '
+                '"status": "ok", "completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/valid"}\n'
                 "not-json\n"
                 "[]\n",
                 encoding="utf-8",
@@ -689,6 +691,24 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(
                     [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
                 )
+
+    def test_schema_invalid_catalog_objects_are_counted_as_malformed(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "missing-required-fields"}\n'
+                '{"run_id": "", "engine": "pipeline", "status": "ok", '
+                '"completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/blank-id"}\n',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 2)
+                self.assertEqual(job_io._load_cli_entries(), [])
 
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):

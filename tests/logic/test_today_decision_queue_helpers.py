@@ -141,6 +141,17 @@ def test_malformed_job_timestamp_creates_a_visible_verification_blocker(
     assert verification.destination == "jobs"
 
 
+@pytest.mark.parametrize("status", ("unknown", "future_status", ""))
+def test_unrecognized_job_status_creates_a_visible_verification_blocker(
+    status: str,
+) -> None:
+    items = _queue(jobs=(_job("unverifiable", status),))
+
+    verification = next(item for item in items if item.source_key == "job:unverifiable:status")
+    assert verification.kind == "blocker"
+    assert verification.destination == "jobs"
+
+
 def test_exception_link_keeps_its_real_filter_status() -> None:
     items = _queue(jobs=(_job("partial", "partial"),))
 

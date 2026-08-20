@@ -194,11 +194,23 @@ def _read_cli_entries_with_diagnostics() -> tuple[list[dict[str, Any]], int]:
             if not isinstance(record, dict):
                 malformed_count += 1
                 continue
+            if not _is_valid_cli_catalog_record(record):
+                malformed_count += 1
+                continue
             record["_cli_source"] = True
             entries.append(record)
     return (
         sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True),
         malformed_count,
+    )
+
+
+def _is_valid_cli_catalog_record(record: Mapping[str, Any]) -> bool:
+    """Accept only the required, producer-written CLI catalog fields."""
+    required = ("run_id", "engine", "status", "completed_at", "output_dir")
+    return all(
+        isinstance(record.get(field), str) and record[field].strip()
+        for field in required
     )
 
 

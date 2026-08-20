@@ -20,6 +20,8 @@ _ATTENTION_STATUSES = frozenset(
     {"failed", "partial", "stop_failed", "stopped", "cancelled"}
 )
 _ACTIVE_STATUSES = frozenset({"queued", "pending", "running"})
+_COMPLETED_STATUSES = frozenset({"completed"})
+_KNOWN_JOB_STATUSES = _ATTENTION_STATUSES | _ACTIVE_STATUSES | _COMPLETED_STATUSES
 _PAGE_BY_DESTINATION = {
     "daily_decision": "pages/daily_decision.py",
     "jobs": "pages/jobs.py",
@@ -226,7 +228,13 @@ def build_today_decision_queue(
                     f"作业 {job.run_id} 的目录时间格式无效或缺少时区：{timestamp}",
                     source_time=timestamp, destination="jobs",
                 ))
-            if job.status in _ATTENTION_STATUSES:
+            if job.status not in _KNOWN_JOB_STATUSES:
+                items.append(_item(
+                    "blocker", f"job:{job.run_id}:status", "作业状态需要核验",
+                    f"作业 {job.run_id} 的状态未被当前工作台识别：{job.status or '未记录'}。",
+                    source_time=timestamp, destination="jobs",
+                ))
+            elif job.status in _ATTENTION_STATUSES:
                 detail = job.error_message or job.key_metric_value or job.status
                 # ``cancelled`` is a legacy catalog value that the Jobs page
                 # deliberately does not expose as a selectable URL filter.
