@@ -499,6 +499,11 @@ def provenance_is_verified(verdict: str) -> bool:
     return verdict in {VERDICT_MATCHES_INCUMBENT, VERDICT_SINGLE_SHA_OK}
 
 
+def review_progress_is_available(*, verdict: str, artifact_contract_valid: bool) -> bool:
+    """Whether provenance and artifact shape both support review projection."""
+    return artifact_contract_valid and provenance_is_verified(verdict)
+
+
 def classify_provenance(
     *,
     incumbent_kind: str,

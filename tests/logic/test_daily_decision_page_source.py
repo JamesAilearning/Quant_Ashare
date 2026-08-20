@@ -1175,7 +1175,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
         names = {n for n in dir(h) if n.startswith("VERDICT_")}
         self.assertEqual(names - {"VERDICT_SINGLE_SHA_OK"}, set(self.seg))
 
-    def test_only_verified_provenance_allows_review_progress_projection(self) -> None:
+    def test_only_verified_and_contract_valid_artifacts_allow_review_progress_projection(self) -> None:
         from web.operator_ui.pages import _daily_decision_helpers as helpers
 
         verdicts = {
@@ -1187,16 +1187,22 @@ class ProvenanceRenderingTests(unittest.TestCase):
             {
                 verdict
                 for verdict in verdicts
-                if helpers.provenance_is_verified(verdict)
+                if helpers.review_progress_is_available(
+                    verdict=verdict, artifact_contract_valid=True
+                )
             },
             {helpers.VERDICT_MATCHES_INCUMBENT, helpers.VERDICT_SINGLE_SHA_OK},
         )
+        assert helpers.review_progress_is_available(
+            verdict=helpers.VERDICT_MATCHES_INCUMBENT, artifact_contract_valid=False,
+        ) is False
         review_start = self.page.index("with _review_summary_slot:")
         review_section = self.page[
             review_start
             : self.page.index("with _candidate_table_slot:", review_start)
         ]
-        self.assertIn("if not provenance_is_verified(_verdict):", review_section)
+        self.assertIn("if not review_progress_is_available(", review_section)
+        self.assertIn("artifact_contract_valid=_artifact_contract_valid", review_section)
         self.assertIn("_review_progress = None", review_section)
 
     def test_each_branch_says_its_own_words(self) -> None:

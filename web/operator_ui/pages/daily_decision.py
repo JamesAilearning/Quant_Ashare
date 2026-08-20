@@ -60,8 +60,8 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_promotion_meta,
     load_trainer_sidecar_sha,
     picks_table_rows,
-    provenance_is_verified,
     provenance_verdict,
+    review_progress_is_available,
     resolve_incumbent,
     resolve_model_path,
 )
@@ -400,7 +400,8 @@ st.caption(
 # 缺 entry_date 的工件不得走这条路:那样会渲染出「entry — 是已收盘会话」
 # ——把一份**违约的**数据当成可信引导来背书(codex #443 r2)。
 _entry_date = _payload.get("entry_date")
-if not isinstance(_entry_date, str) or not _entry_date.strip():
+_artifact_contract_valid = isinstance(_entry_date, str) and bool(_entry_date.strip())
+if not _artifact_contract_valid:
     st.error(
         "⚠ 工件缺少 `entry_date`(或为空/非字符串)——**工件契约被违反**,"
         "本页拒绝据此给出任何入场时点结论。请核查产出该工件的那次运行"
@@ -549,8 +550,13 @@ with _review_summary_slot:
             f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
             f"文件:{_journal_file})。以下仅统计有效记录，审阅完整性需要核验。"
         )
-    if not provenance_is_verified(_verdict):
-        st.info("当前工件的来源尚未核验；不显示人工审阅完成度或候选审阅标签。")
+    if not review_progress_is_available(
+        verdict=_verdict, artifact_contract_valid=_artifact_contract_valid,
+    ):
+        if not _artifact_contract_valid:
+            st.info("当前工件契约未通过；不显示人工审阅完成度或候选审阅标签。")
+        else:
+            st.info("当前工件的来源尚未核验；不显示人工审阅完成度或候选审阅标签。")
         _review_progress = None
     elif _hold.is_hold:
         st.info("HOLD 日不显示人工审阅完成度；该工件不构成入场决策。")
