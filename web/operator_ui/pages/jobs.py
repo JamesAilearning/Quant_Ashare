@@ -36,6 +36,7 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
+    count_malformed_cli_entries,
     count_cli_rows_outside_output_tree,
     count_malformed_ui_job_entries,
     jobs_eligible_for_cleanup,
@@ -470,6 +471,16 @@ if _malformed_ui:
     st.warning(
         f"另有 **{_malformed_ui}** 个 UI 作业记录未列出：其 `job.json` 不可读或"
         "不符合生命周期契约。请修复或移除损坏工件后再据此核验作业目录。"
+    )
+
+# CLI catalog parsing also keeps valid entries visible when a sibling line is
+# malformed.  Disclose the omitted entries before an empty-state exit so this
+# page is not mistaken for a complete run record.
+_malformed_cli = count_malformed_cli_entries()
+if _malformed_cli:
+    st.warning(
+        f"另有 **{_malformed_cli}** 条 CLI 目录索引记录未列出：其内容不可读或"
+        "不符合运行目录索引契约。请修复索引后再据此核验 CLI 运行记录。"
     )
 
 # ---------------------------------------------------------------------------
