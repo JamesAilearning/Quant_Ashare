@@ -124,19 +124,35 @@ against a restatement of its rule. Hand-derived lists of "which spellings
 count" are what produced six separate defects of this class in this change;
 asking the real reader closes the class instead of enumerating it.
 
+The invariant SHALL be that the reader resolves the stored spelling to the
+**same directory the run wrote to**, not merely that the reader lists the
+row. Listing is the weaker question and it misses the case that matters: a
+row the console happily lists but opens one directory over shows another
+run's results under this run's name.
+
 #### Scenario: a run directory named through a third spelling
 
 - **GIVEN** a run directory reached through a junction that resolves into
   the output tree
 - **WHEN** the record is appended
-- **THEN** the record is appended and the stored `output_dir` is one the
-  console lists
+- **THEN** the record is appended, and the console resolves the stored
+  `output_dir` to that same directory
 
 ### Requirement: The boundary SHALL judge the exact string the producer used
 
 The check SHALL NOT normalise the recorded `output_dir` before examining
 it. Whitespace may be stripped to decide whether a value was given at all,
 but the stripped form SHALL NOT be what gets parsed as a path.
+
+Whitespace at either end SHALL disqualify the value outright, because such
+a path cannot name one directory unambiguously: whether the whitespace
+belongs to the name depends on who reads it. The console strips it and
+would open the neighbouring directory; measured on this operator's Windows
+box, `mkdir("r1 ")` creates `r1`, so the record is wrong from the start,
+while on POSIX it really is a different directory. Either way the row
+cannot identify the run, and the run's artifacts are untouched by
+declining to record it. A value that is only whitespace still counts as
+absent rather than as such a name.
 
 Leading whitespace is a valid filename character — on POSIX by
 definition, and measured on this operator's Windows box a directory named
@@ -151,6 +167,12 @@ would then offer an unrelated in-tree directory under that run's name.
 
 - **GIVEN** a run whose `output_dir` is `" output/run"`, launched from the
   repository root
+- **WHEN** the record is appended to the default catalog
+- **THEN** nothing is appended
+
+#### Scenario: an output directory whose name ends with a space
+
+- **GIVEN** a run whose `output_dir` is `"output/run "`, inside the tree
 - **WHEN** the record is appended to the default catalog
 - **THEN** nothing is appended
 
@@ -356,6 +378,12 @@ refuse to prune a catalog that has more than one name.
 - **GIVEN** a prune that writes records into a file it just created
 - **WHEN** that content is written
 - **THEN** the file already carries the catalog's mode
+
+#### Scenario: a run that cannot allocate its files
+
+- **GIVEN** every sidecar name for this second already taken
+- **WHEN** the tool prunes
+- **THEN** nothing is written and no partly-created file is left behind
 
 #### Scenario: a sidecar name already taken
 

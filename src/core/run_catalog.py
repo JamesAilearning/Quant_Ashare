@@ -282,6 +282,23 @@ def append_run_record(
         # 相对路径按**生产者的 CWD** 解析:产物就在那里。
         launch_dir = Path.cwd()
         text = str(record.get("output_dir") or "")
+
+        if text.strip() and text != text.strip():
+            # 两端带空白的路径**指认不了一个目录**:这段空白算不算名字的一部分,
+            # 取决于谁在读。控制台会 strip 掉它、于是去开另一个目录(POSIX 上那
+            # 确实是另一个目录);本机 Windows 更干脆——建目录时就把尾部空白吃掉
+            # 了,`mkdir("r1 ")` 建出来的是 `r1`,记录从一开始就名不副实。
+            #
+            # 无论哪种,这一行都无法无歧义地指认这次运行,所以不收。产物本身
+            # 一动不动,少的只是一条索引记录(codex #453)。
+            _logger.warning(
+                "Run catalog append SKIPPED: output_dir %r carries whitespace "
+                "at its edges, so it cannot name one directory unambiguously — "
+                "whether that whitespace belongs to the name depends on who "
+                "reads it. The run's artifacts are untouched.", text,
+            )
+            return
+
         reason = catalog_boundary_verdict(
             text, tree=_DEFAULT_OUTPUT_TREE, relative_base=launch_dir)
         if reason is not None:

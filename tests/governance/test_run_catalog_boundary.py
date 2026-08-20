@@ -158,6 +158,34 @@ class OutOfTreeRunsAreNotCatalogued(_SandboxedDefaults):
                 _line_count(catalog), 0,
                 "判据 strip 掉了前导空格，于是拿树内那个无辜目录当成了它的产物")
 
+    def test_trailing_whitespace_makes_the_row_unaddressable(self) -> None:
+        """两端带空白的路径指认不了一个目录 —— 那段空白算不算名字，取决于谁在读。
+
+        这条与前导空格那条不同：`output/wf/r1 ` **仍然在树内**，边界判据放行，
+        所以要靠单独一条规则挡住。实测两侧的分歧（本机 Windows 11）：
+
+        - `os.path.normpath("output/wf/r1 ")` 保留尾空格
+        - 控制台 `anchored_run_dir` 会 strip 掉它，于是去开隔壁的 `output/wf/r1`
+        - 而 Windows 建目录时**直接把尾空格吃掉**：`mkdir("r1 ")` 建出来的是
+          `r1`，记录从一开始就名不副实（POSIX 上则确实是另一个目录）
+
+        无论哪种，这一行都无法无歧义地指认这次运行。产物一动不动，少的只是一条
+        索引记录（codex #453）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / "output"
+            (tree / "runs").mkdir(parents=True)
+            (tree / "wf" / "r1").mkdir(parents=True)
+            catalog = tree / "runs" / "_index.jsonl"
+            with self._sandbox(tree, catalog), _chdir(root):
+                append_run_record(build_record(
+                    engine="walk_forward", status="ok",
+                    output_dir="output/wf/r1 "))
+            self.assertEqual(
+                _line_count(catalog), 0,
+                "收下了一行控制台会开错门的记录")
+
     def test_a_whitespace_only_output_dir_is_refused_as_missing(self) -> None:
         # 反面：全空白仍然算「没给」，不该被当成一个名字叫空格的目录。
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,8 +329,16 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
 
     def _assert_writer_and_reader_agree(
         self, root: Path, tree: Path, catalog: Path, output_dir: str,
+        actual_dir: Path,
     ) -> None:
-        """写入侧收下这一行 ⟹ 读侧列得出它。"""
+        """写入侧收下这一行 ⟹ 读侧**开出来的正是产物所在的那个目录**。
+
+        这条断言曾经只问「读侧列不列得出」，而那不够锐：一行尾部带空格的
+        `output/wf/r1 ` 读侧照样「列得出」，只是它 strip 之后开的是隔壁的
+        `output/wf/r1` —— 列得出、开错门（codex #453）。所以现在问的是**身份**，
+        不是可见性。``actual_dir`` 由各用例按建目录时的事实传进来，是地面真相，
+        不是对写入侧规则的转述。
+        """
         from web.operator_ui import _path_guard, job_io
 
         with self._sandbox(tree, catalog):
@@ -319,10 +355,16 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
                 mock.patch.object(_path_guard, "_ALLOWED_ROOTS", None), \
                 mock.patch.object(job_io, "_ROOT_KEYS_CACHE", None):
             listable = job_io.run_dir_is_inspectable(stored)
+            opened = job_io.anchored_run_dir(stored)
         self.assertTrue(
             listable,
             f"写入侧收了 {output_dir!r}、存成 {stored!r}，读侧却列不出来 —— "
             "索引里多了一行控制台永远打不开的记录",
+        )
+        self.assertEqual(
+            opened.resolve(), actual_dir.resolve(),
+            f"写入侧收了 {output_dir!r}、存成 {stored!r}，读侧却会去开 "
+            f"{opened} —— 而产物其实在 {actual_dir}",
         )
 
     def test_the_ordinary_spellings_round_trip(self) -> None:
@@ -339,7 +381,8 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
                 (tree / "wf" / "r1").mkdir(parents=True)
                 with _chdir(root):
                     self._assert_writer_and_reader_agree(
-                        root, tree, tree / "runs" / "_index.jsonl", make(tree))
+                        root, tree, tree / "runs" / "_index.jsonl", make(tree),
+                        tree / "wf" / "r1")
 
     def test_an_alias_spelling_is_stored_in_a_form_the_reader_accepts(self) -> None:
         # 第三种拼写：产物目录经联接指向 output 树内。
@@ -353,7 +396,7 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
                 self.skipTest("这个环境造不出目录链接（需要权限）")
             self._assert_writer_and_reader_agree(
                 root, tree, tree / "runs" / "_index.jsonl",
-                str(alias / "wf" / "r1"))
+                str(alias / "wf" / "r1"), alias / "wf" / "r1")
 
     def test_a_linked_tree_recorded_by_its_target_round_trips(self) -> None:
         # 镜像情形：**output 树自己**是联接，而运行记的是解析后的目标路径。
@@ -370,7 +413,7 @@ class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
                 self.skipTest("这个环境造不出目录链接（需要权限）")
             self._assert_writer_and_reader_agree(
                 root, tree, tree / "runs" / "_index.jsonl",
-                str(real / "wf" / "r1"))
+                str(real / "wf" / "r1"), real / "wf" / "r1")
 
 
 class ExplicitCatalogIsTheEscapeHatch(unittest.TestCase):
@@ -774,6 +817,40 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                     f"{name} 在设好权限之前就被写入了内容 —— "
                     "那段窗口里它是按 umask 敞开的",
                 )
+
+    def test_a_failed_allocation_leaves_nothing_behind(self) -> None:
+        # 旁车名占满、而暂存件名还空着时：旁车分配失败、暂存件已经建出来了。
+        # 失败分支若只收拾旁车，盘上就会留下一个空的 `_index.jsonl.tmp-*`，
+        # 而我们刚刚宣称「什么都没动」（codex #453）。
+        import scripts.prune_run_catalog as tool
+
+        class _FixedClock:
+            @staticmethod
+            def now() -> Any:
+                class _T:
+                    @staticmethod
+                    def strftime(_fmt: str) -> str:
+                        return "20260820-000000"
+                return _T()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            before_text = catalog.read_text(encoding="utf-8")
+            stamp = "20260820-000000"
+            for serial in range(1, 100):
+                suffix = "" if serial == 1 else f"-{serial}"
+                catalog.with_name(
+                    f"{catalog.stem}.pruned-{stamp}{suffix}.jsonl"
+                ).write_text("占位\n", encoding="utf-8")
+
+            with mock.patch.object(tool, "datetime", _FixedClock):
+                self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 6)
+
+            self.assertEqual(catalog.read_text(encoding="utf-8"), before_text)
+            leftovers = sorted(
+                p.name for p in catalog.parent.glob(f"{catalog.name}.tmp-*"))
+            self.assertEqual(
+                leftovers, [], f"宣称什么都没动，却留下了 {leftovers}")
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。

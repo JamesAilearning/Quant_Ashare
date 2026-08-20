@@ -277,8 +277,11 @@ def main(argv: list[str] | None = None) -> int:
             lambda n: f"{catalog.name}.tmp-{stamp}{_serial_suffix(n)}",
             mode)
         if sidecar is None or staged is None:
-            if sidecar is not None:
-                sidecar.unlink(missing_ok=True)
+            # 两个都要收拾:只清理其中一个的话,另一个会以空文件的形式留在盘上,
+            # 而我们刚刚宣称「什么都没动」(codex #453)。
+            for leftover in (sidecar, staged):
+                if leftover is not None:
+                    leftover.unlink(missing_ok=True)
             print(
                 "\n同一秒里已有 99 个同名文件,再造就要覆盖别人的东西了 —— "
                 "**没有清理任何东西**。", file=sys.stderr)
