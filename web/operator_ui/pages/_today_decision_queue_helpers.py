@@ -95,17 +95,23 @@ def _item(
     )
 
 
-def _source_timestamp(value: str) -> float:
-    """Normalize only timezone-aware source timestamps for queue ordering."""
+def _parse_source_time(value: str) -> datetime | None:
+    """Parse an aware source timestamp without treating an invalid one as absent."""
     if not value:
-        return float("-inf")
+        return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return float("-inf")
+        return None
     if parsed.tzinfo is None:
-        return float("-inf")
-    return parsed.astimezone(timezone.utc).timestamp()
+        return None
+    return parsed
+
+
+def _source_timestamp(value: str) -> float:
+    """Normalize only timezone-aware source timestamps for queue ordering."""
+    parsed = _parse_source_time(value)
+    return parsed.astimezone(timezone.utc).timestamp() if parsed else float("-inf")
 
 
 def queue_page_link(item: TodayQueueItem) -> tuple[str, Mapping[str, str] | None]:
@@ -214,6 +220,12 @@ def build_today_decision_queue(
     else:
         for job in jobs:
             timestamp = job.finished_at or job.started_at or job.created_at
+            if timestamp and _parse_source_time(timestamp) is None:
+                items.append(_item(
+                    "blocker", f"job:{job.run_id}:timestamp", "作业时间需要核验",
+                    f"作业 {job.run_id} 的目录时间格式无效或缺少时区：{timestamp}",
+                    source_time=timestamp, destination="jobs",
+                ))
             if job.status in _ATTENTION_STATUSES:
                 detail = job.error_message or job.key_metric_value or job.status
                 # ``cancelled`` is a legacy catalog value that the Jobs page

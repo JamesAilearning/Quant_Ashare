@@ -130,6 +130,17 @@ def test_queue_normalises_aware_timestamps_before_ordering() -> None:
     ]
 
 
+@pytest.mark.parametrize("timestamp", ("not-a-timestamp", "2026-08-19T09:00:00"))
+def test_malformed_job_timestamp_creates_a_visible_verification_blocker(
+    timestamp: str,
+) -> None:
+    items = _queue(jobs=(_job("unverifiable", "running", finished_at=timestamp),))
+
+    verification = next(item for item in items if item.source_key == "job:unverifiable:timestamp")
+    assert verification.kind == "blocker"
+    assert verification.destination == "jobs"
+
+
 def test_exception_link_keeps_its_real_filter_status() -> None:
     items = _queue(jobs=(_job("partial", "partial"),))
 
