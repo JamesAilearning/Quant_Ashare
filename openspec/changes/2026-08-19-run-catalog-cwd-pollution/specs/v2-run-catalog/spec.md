@@ -225,7 +225,14 @@ inside the tree, so it is classified as debris rather than crashing the
 scan the tool exists to complete over foreign data.
 
 Every file the tool creates beside the catalog SHALL carry the catalog's
-access mode — the sidecar holds the removed records, the staged file holds
+access mode **before any content is written into it**. Setting the mode
+after filling the file leaves a window in which other local users can read
+the records, and an interruption before the later `chmod` leaves the wide
+copy on disk permanently. Ordering is part of the rule, so creation and
+mode SHALL happen in one place rather than being repeated at each site —
+repeating them is how the two sites came to disagree.
+
+The mode requirement covers every file created — the sidecar holds the removed records, the staged file holds
 the retained ones, and both are as sensitive as the catalog itself. The
 lock file holds no rows, but takes the same mode so that the guard needs
 no table of exceptions: a hand-kept list of "which files matter" is how
@@ -315,6 +322,12 @@ refuse to prune a catalog that has more than one name.
 - **WHEN** the tool prunes it
 - **THEN** the catalog keeps that mode afterwards, and every file the run
   leaves beside it carries that mode too
+
+#### Scenario: content written into a freshly created file
+
+- **GIVEN** a prune that writes records into a file it just created
+- **WHEN** that content is written
+- **THEN** the file already carries the catalog's mode
 
 #### Scenario: a sidecar name already taken
 

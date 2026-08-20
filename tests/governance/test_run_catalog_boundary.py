@@ -702,6 +702,44 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                 f"这些新文件没按索引的权限造：{sorted(left_behind - chmodded)}",
             )
 
+    def test_no_file_receives_content_before_it_carries_the_mode(self) -> None:
+        # 上一轮我给两个建文件点各写了一套，于是顺序分叉：旁车是「建→chmod→
+        # 写」，暂存件是「写→稍后 chmod」。那段窗口里同机其他用户读得到保留下
+        # 来的记录；进程若在补 chmod 前中断，宽权限的副本还会永久留在盘上。
+        #
+        # 这条守卫两侧都从结构推导：**谁**被写入内容，来自实际观察到的
+        # `Path.write_text` 调用（不是手写清单）；**顺序**来自事件序列。
+        # 以后谁再加一个带内容的文件而顺序写反，这里就红。
+        import scripts.prune_run_catalog as tool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            events: list[tuple[str, str]] = []
+            real_chmod = os.chmod
+            real_write_text = Path.write_text
+
+            def rec_chmod(path: Any, mode: int, *a: Any, **kw: Any) -> None:
+                events.append(("chmod", os.path.basename(str(path))))
+                real_chmod(path, mode, *a, **kw)
+
+            def rec_write(self: Path, data: str, *a: Any, **kw: Any) -> int:
+                events.append(("write", self.name))
+                return real_write_text(self, data, *a, **kw)
+
+            with mock.patch("os.chmod", rec_chmod), \
+                    mock.patch.object(Path, "write_text", rec_write):
+                self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
+
+            written = [name for op, name in events if op == "write"]
+            self.assertTrue(written, "这次清理一个文件都没写，用例是空的")
+            for name in dict.fromkeys(written):
+                first_write = events.index(("write", name))
+                self.assertIn(
+                    ("chmod", name), events[:first_write],
+                    f"{name} 在设好权限之前就被写入了内容 —— "
+                    "那段窗口里它是按 umask 敞开的",
+                )
+
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。
         import scripts.prune_run_catalog as tool

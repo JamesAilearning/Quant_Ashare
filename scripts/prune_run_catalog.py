@@ -35,6 +35,7 @@ import os
 import stat
 import sys
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -154,22 +155,23 @@ def _fingerprint(catalog: Path) -> tuple[int, int]:
     return (info.st_size, info.st_mtime_ns)
 
 
-def _create_sidecar(catalog: Path, stamp: str, mode: int) -> Path | None:
-    """独占创建旁车文件;创建不出来返回 ``None``。
+def _create_beside_catalog(
+    catalog: Path, name_for: Callable[[int], str], mode: int,
+) -> Path | None:
+    """在索引旁边独占创建一个**空**文件,建完立刻按 ``mode`` 设权限。
 
-    同一秒里跑两次清理(或时钟重复),会派生出同名旁车,而 ``write_text`` 会
-    **静默截断**前一次的留证 —— 本工具的全部承诺就是「移除的行留得住」,
-    覆盖掉它等于把承诺反过来做(codex #453)。所以用 ``"x"`` 独占创建,撞名就
-    换序号,而不是照写。
+    本工具造带内容的文件只走这一条路。两个建文件点各写一套,正是它们的顺序
+    分叉的原因:旁车当初是「建→chmod→写」,暂存件却是「写→稍后 chmod」——
+    那段窗口里同机其他用户读得到保留下来的记录,而进程若在补 chmod 前中断,
+    那份宽权限的副本还会永久留在盘上(codex #453)。**顺序是判据的一部分**,
+    所以把它焊在一个函数里。
 
-    ``mode`` 是索引本身的权限。旁车装的正是被移除的那些记录 —— 内容与索引同
-    等敏感,却按进程 umask 创建(常见 0644),于是一份 0600 的索引旁边会躺着一份
-    人人可读的留证。
+    独占创建(``"x"``)则是另一条:同一秒里两次清理会派生同名文件,``write_text``
+    会**静默截断**前一次的留证 —— 而本工具的全部承诺就是「移除的行留得住」。
+    撞名换序号,而不是照写。
     """
     for serial in range(1, 100):
-        suffix = "" if serial == 1 else f"-{serial}"
-        candidate = catalog.with_name(
-            f"{catalog.stem}.pruned-{stamp}{suffix}.jsonl")
+        candidate = catalog.with_name(name_for(serial))
         try:
             with open(candidate, "x", encoding="utf-8"):
                 pass
@@ -178,6 +180,10 @@ def _create_sidecar(catalog: Path, stamp: str, mode: int) -> Path | None:
         os.chmod(candidate, mode)
         return candidate
     return None
+
+
+def _serial_suffix(serial: int) -> str:
+    return "" if serial == 1 else f"-{serial}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,18 +266,25 @@ def main(argv: list[str] | None = None) -> int:
         os.chmod(catalog_lock_path(catalog), mode)
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        created = _create_sidecar(catalog, stamp, mode)
-        if created is None:
-            print(
-                "\n同一秒里已有 99 份旁车留证,再造就要覆盖别人的证据了 —— "
-                "**没有清理任何东西**。", file=sys.stderr)
-            return 6
-        sidecar = created
-        # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
-        sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
+        sidecar = _create_beside_catalog(
+            catalog,
+            lambda n: f"{catalog.stem}.pruned-{stamp}{_serial_suffix(n)}.jsonl",
+            mode)
         # 经临时文件原子替换:中途失败留下的是完整旧索引,不是半截文件。
         # 暂存件与旁车都落在规范路径旁边,于是 ``os.replace`` 必定同盘。
-        staged = catalog.with_name(f"{catalog.name}.tmp-{stamp}")
+        staged = _create_beside_catalog(
+            catalog,
+            lambda n: f"{catalog.name}.tmp-{stamp}{_serial_suffix(n)}",
+            mode)
+        if sidecar is None or staged is None:
+            if sidecar is not None:
+                sidecar.unlink(missing_ok=True)
+            print(
+                "\n同一秒里已有 99 个同名文件,再造就要覆盖别人的东西了 —— "
+                "**没有清理任何东西**。", file=sys.stderr)
+            return 6
+        # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
+        sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
         staged.write_text(("\n".join(keep) + "\n") if keep else "", encoding="utf-8")
 
         # 走到这里索引还会变,只剩一种可能:有个不遵守这把锁的写入者。现有的
@@ -285,10 +298,9 @@ def main(argv: list[str] | None = None) -> int:
                 "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
             return 3
 
-        # ``write_text`` 按进程 umask 造暂存件(常见 0644),``os.replace`` 会把
-        # 这个更宽松的权限一并换到活索引上 —— 一份 0600 的索引跑完 --prune 就
-        # 对同机其他用户敞开了(codex #453)。替换前把原文件的模式抄过去。
-        os.chmod(staged, mode)
+        # 暂存件在**创建时**就已按索引权限设好(见 `_create_beside_catalog`),
+        # 所以这里不需要再 chmod 一次 —— 权限只在一个地方定。否则
+        # ``os.replace`` 会把暂存件按 umask 得到的 0644 换到活索引上。
         os.replace(staged, catalog)
 
     print(f"\n已移除 {len(drop)} 行,原样留证于:\n  {sidecar}")
