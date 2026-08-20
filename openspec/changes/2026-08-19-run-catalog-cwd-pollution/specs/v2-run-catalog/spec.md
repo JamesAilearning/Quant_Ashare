@@ -178,6 +178,27 @@ that is not a record object (`null`, arrays, scalars). Such a value SHALL
 NOT abort the report — the criterion applies only to rows provably
 identifiable as debris; anything else is the operator's data.
 
+Nor SHALL a row whose `output_dir` cannot name a file at all abort it. A
+string containing an embedded NUL makes `Path.resolve()` raise
+`ValueError` — not `OSError` — and an uncaught one ends even the
+report-only pass. A string that cannot name a file is certainly not
+inside the tree, so it is classified as debris rather than crashing the
+scan the tool exists to complete over foreign data.
+
+Rewriting by replacement SHALL preserve what it replaces beyond the rows
+themselves. `Path.write_text` creates the staged file under the process
+umask, and `os.replace` carries that mode onto the live catalog, so a
+catalog kept at `0600` would be widened to `0644` by a maintenance run;
+the tool SHALL copy the catalog's access mode onto the staged file before
+replacing. Ownership is **not** preserved and cannot be without
+privileges — the tool is meant to be run by the catalog's owner.
+
+Evidence SHALL never be overwritten by later evidence. Two prunes within
+one wall-clock second derive the same sidecar name, and writing it would
+silently truncate the first run's copy — the exact promise the sidecar
+exists to keep. The tool SHALL create the sidecar exclusively and take a
+fresh name on collision.
+
 The identity a lock is taken on, and the target the tool replaces, SHALL
 be the catalog's canonical path rather than the string a caller supplied.
 Mutual exclusion only holds if both sides compute the same lock, so
@@ -228,3 +249,22 @@ refuse to prune a catalog that has more than one name.
 - **GIVEN** a catalog line containing `null`
 - **WHEN** the tool classifies the catalog
 - **THEN** the line is retained and the report completes
+
+#### Scenario: an `output_dir` that cannot name a file
+
+- **GIVEN** a row whose `output_dir` contains an embedded NUL
+- **WHEN** the tool classifies the catalog
+- **THEN** the scan completes and that row counts as debris
+
+#### Scenario: a catalog kept at a restrictive mode
+
+- **GIVEN** a catalog readable only by its owner
+- **WHEN** the tool prunes it
+- **THEN** the catalog keeps that mode afterwards
+
+#### Scenario: a sidecar name already taken
+
+- **GIVEN** an existing sidecar for this second
+- **WHEN** the tool prunes
+- **THEN** the existing file is untouched and the new evidence takes a
+  fresh name

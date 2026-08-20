@@ -17,12 +17,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -480,6 +482,74 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             self.assertEqual(catalog.read_text(encoding="utf-8"), before)
             self.assertEqual(
                 list(catalog.parent.glob("_index.pruned-*.jsonl")), [])
+
+    def test_an_unusable_path_string_does_not_abort_the_scan(self) -> None:
+        # 内嵌 NUL 的串让 `Path.resolve()` 抛 ValueError（不是 OSError）。不接住
+        # 它，一条畸形记录就能让**只报数模式**整个中断 —— 而这工具存在的意义
+        # 正是容忍畸形/外来数据。
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            with open(catalog, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(
+                    {"engine": "pipeline", "output_dir": chr(0) + "foo"}) + "\n")
+            keep, drop, _ = classify(catalog, tree, tree.parent)
+            self.assertEqual(len(keep), 1)
+            self.assertEqual(len(drop), 3, "畸形行既没被算进去，也没让扫描中断")
+
+    def test_the_sidecar_never_overwrites_earlier_evidence(self) -> None:
+        # 同一秒里跑两次清理（或时钟重复）会派生同名旁车，`write_text` 会静默
+        # 截断前一次的留证 —— 本工具的全部承诺就是「移除的行留得住」。
+        import scripts.prune_run_catalog as tool
+
+        class _FixedClock:
+            @staticmethod
+            def now() -> Any:
+                class _T:
+                    @staticmethod
+                    def strftime(_fmt: str) -> str:
+                        return "20260820-000000"
+                return _T()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            earlier = catalog.with_name("_index.pruned-20260820-000000.jsonl")
+            earlier.write_text("先前那次的留证\n", encoding="utf-8")
+            with mock.patch.object(tool, "datetime", _FixedClock):
+                self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
+            self.assertEqual(
+                earlier.read_text(encoding="utf-8"), "先前那次的留证\n",
+                "覆盖掉了先前那次的留证")
+            second = catalog.with_name("_index.pruned-20260820-000000-2.jsonl")
+            self.assertEqual(_line_count(second), 2, "这次的留证没落在新名字上")
+
+    def test_replacement_carries_over_the_catalogs_access_mode(self) -> None:
+        # `write_text` 按 umask 造暂存件（常见 0644），`os.replace` 会把这个更
+        # 宽松的权限换到活索引上 —— 一份 0600 的索引跑完 --prune 就对同机其他
+        # 用户敞开了。
+        #
+        # 真行为断言只在 POSIX 成立（Windows 的 chmod 只管只读位），所以这里
+        # 断言的是「替换前把原文件的模式抄给了暂存件」——平台无关，于是本机也
+        # 测得到。skip 的测试等于没测。
+        import scripts.prune_run_catalog as tool
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            expected = stat.S_IMODE(os.stat(catalog).st_mode)
+            seen: list[tuple[str, int]] = []
+            real_chmod = os.chmod
+
+            def recording(path: Any, mode: int, *a: Any, **kw: Any) -> None:
+                seen.append((str(path), mode))
+                real_chmod(path, mode, *a, **kw)
+
+            with mock.patch("os.chmod", recording):
+                self.assertEqual(tool.main(self._argv(catalog, tree, "--prune")), 0)
+            staged_chmods = [m for p, m in seen if ".tmp-" in p]
+            self.assertEqual(
+                staged_chmods, [expected],
+                "替换前没有把原索引的权限抄给暂存件")
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。

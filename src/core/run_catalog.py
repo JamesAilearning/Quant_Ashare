@@ -57,7 +57,11 @@ def _is_inside(child: Path, root: Path) -> bool:
     try:
         child_resolved = child.resolve()
         root_resolved = root.resolve()
-    except OSError:                       # pragma: no cover - 路径异常
+    except (OSError, ValueError):
+        # ``ValueError`` 是路径串本身非法(例如内嵌 NUL:`resolve()` 抛
+        # "embedded null character in path")。不接住它,一条畸形记录就能让
+        # **只报数模式**也整个中断——而这工具存在的意义正是容忍畸形/外来数据
+        # (codex #453)。一个连文件都命名不了的串,当然也不在树内。
         return False
     try:
         Path(os.path.normcase(str(child_resolved))).relative_to(

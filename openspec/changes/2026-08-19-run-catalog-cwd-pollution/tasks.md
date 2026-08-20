@@ -143,3 +143,31 @@ D 旁车不再先写                      抓到   1 failed, 12 passed
 L 起初**本机测不到**：唯一覆盖它的是那条要符号链接的用例，在 Windows 上 skip。
 skip 的测试等于没测，所以补了一条平台无关的行为用例（让规范化返回另一个真实
 文件，被清理的必须是它）——之后 L 才被抓到。
+
+## 第六轮（codex 两条 P2 + 一条 P3，无 P1）
+
+```
+全量 tests/logic + tests/governance   4435 passed / 31 skipped / 1285 subtests（3:58）
+操作人真实索引 3560 → 3560，一行没长；分类始终 树内 105 (2.9%) / 树外 3455 (97.1%)
+守卫 24 → 27 条
+
+四条新变异全部抓到（每条先断言变异确实落进文件）
+  O 判据不再接 ValueError     抓到  -> ...unusable_path_string_does_not_abort_the_scan
+  P 旁车退回直接覆盖          抓到  -> ...sidecar_never_overwrites_earlier_evidence
+  Q 独占创建改成普通创建      抓到  -> ...sidecar_never_overwrites_earlier_evidence
+  R 替换前不抄权限            抓到  -> ...replacement_carries_over_the_catalogs_access_mode
+```
+
+三条修的分别是：`resolve()` 对非法串抛的是 `ValueError` 而非 `OSError`（只报数
+模式会整个中断）；`os.replace` 会把暂存件按 umask 得到的 0644 换到活索引上
+（0600 的索引跑完 --prune 就敞开了）；同一秒两次清理派生同名旁车会静默截断前
+一次的留证。
+
+**趋势判读（checkpoint）**：P1 数逐轮 3 → 2 → 2 → 1 → 0。前四轮九条 P1 里六条
+同属「行为由路径拼写或位置决定」，写成规格不变式后**本轮零复发**。本轮三条各
+属不同类，共同点是「替换式重写没保住被替换对象的属性」，已按**类**写进规格
+（并写明所有权不在保全范围内、也无法在无特权下保全），而不是逐条打补丁。
+
+权限保全那条的真行为断言只在 POSIX 成立（Windows 的 chmod 只管只读位），所以
+另配了一条**平台无关**的断言（替换前把原索引的模式抄给暂存件），否则它在本机
+只会 skip —— skip 的测试等于没测，这个教训本轮又用上一次。

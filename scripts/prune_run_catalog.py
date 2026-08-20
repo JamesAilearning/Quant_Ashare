@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import sys
 from collections import Counter
 from datetime import datetime
@@ -117,8 +118,29 @@ def report(keep: list[str], drop: list[str], drop_records: list[dict[str, Any]])
 
 
 def _fingerprint(catalog: Path) -> tuple[int, int]:
-    stat = catalog.stat()
-    return (stat.st_size, stat.st_mtime_ns)
+    info = catalog.stat()
+    return (info.st_size, info.st_mtime_ns)
+
+
+def _create_sidecar(catalog: Path, stamp: str) -> Path | None:
+    """独占创建旁车文件;创建不出来返回 ``None``。
+
+    同一秒里跑两次清理(或时钟重复),会派生出同名旁车,而 ``write_text`` 会
+    **静默截断**前一次的留证 —— 本工具的全部承诺就是「移除的行留得住」,
+    覆盖掉它等于把承诺反过来做(codex #453)。所以用 ``"x"`` 独占创建,撞名就
+    换序号,而不是照写。
+    """
+    for serial in range(1, 100):
+        suffix = "" if serial == 1 else f"-{serial}"
+        candidate = catalog.with_name(
+            f"{catalog.stem}.pruned-{stamp}{suffix}.jsonl")
+        try:
+            with open(candidate, "x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            continue
+        return candidate
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -195,7 +217,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        sidecar = catalog.with_name(f"{catalog.stem}.pruned-{stamp}.jsonl")
+        created = _create_sidecar(catalog, stamp)
+        if created is None:
+            print(
+                "\n同一秒里已有 99 份旁车留证,再造就要覆盖别人的证据了 —— "
+                "**没有清理任何东西**。", file=sys.stderr)
+            return 6
+        sidecar = created
         # 先落证据再改原文件:反过来的话,写旁车失败就等于静默删除。
         sidecar.write_text("\n".join(drop) + "\n", encoding="utf-8")
         # 经临时文件原子替换:中途失败留下的是完整旧索引,不是半截文件。
@@ -214,6 +242,10 @@ def main(argv: list[str] | None = None) -> int:
                 "**没有清理任何东西**。等运行结束后重跑本脚本。", file=sys.stderr)
             return 3
 
+        # ``write_text`` 按进程 umask 造暂存件(常见 0644),``os.replace`` 会把
+        # 这个更宽松的权限一并换到活索引上 —— 一份 0600 的索引跑完 --prune 就
+        # 对同机其他用户敞开了(codex #453)。替换前把原文件的模式抄过去。
+        os.chmod(staged, stat.S_IMODE(os.stat(catalog).st_mode))
         os.replace(staged, catalog)
 
     print(f"\n已移除 {len(drop)} 行,原样留证于:\n  {sidecar}")
