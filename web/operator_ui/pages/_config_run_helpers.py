@@ -118,6 +118,23 @@ def portable_config_for_preset_review(config: Mapping[str, Any]) -> dict[str, An
     }
 
 
+def explicitly_applied_preset_name(
+    applied_preset: Any,
+    *,
+    custom_preset_name: str,
+) -> str:
+    """Return a review baseline only when an operator explicitly applied it.
+
+    Field matching may label a rerun prefill as Default or Smoke even though
+    the operator did not select a preset in this session. That inferred label
+    must not become a comparison baseline: it would manufacture omitted
+    dynamic fields from the prefilled payload and falsely report no changes.
+    """
+    if isinstance(applied_preset, str) and applied_preset.strip():
+        return applied_preset
+    return custom_preset_name
+
+
 def build_config_review_sections(
     emitted_config: Mapping[str, Any],
 ) -> tuple[ConfigReviewSection, ...]:

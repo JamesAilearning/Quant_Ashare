@@ -59,6 +59,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
+    explicitly_applied_preset_name,
     portable_config_for_preset_review,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
@@ -335,6 +336,11 @@ if PREFILL_CONFIG:
     st.info(f"已从上一次运行 {source_job} 预填配置。启动前请核对参数。")
     prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
+        # A rerun prefill is not a preset selection. Clear any prior review
+        # identity/snapshot before the automatic field matching below may label
+        # it Default or Smoke.
+        st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
+        st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
         if PREFILL_CONFIG.get("provider_uri"):
             st.session_state["cr_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])
         for k, v in PREFILL_CONFIG.items():
@@ -987,8 +993,9 @@ with form_col:
     )
 
     _selected_preset = str(st.session_state.get("cr_preset", "Default"))
-    _review_preset_name = str(
-        st.session_state.get(_REVIEW_PRESET_NAME_STATE, _selected_preset),
+    _review_preset_name = explicitly_applied_preset_name(
+        st.session_state.get(_REVIEW_PRESET_NAME_STATE),
+        custom_preset_name=CUSTOM_PRESET_NAME,
     )
     _review_preset_config = (
         _load_preset(_review_preset_name)

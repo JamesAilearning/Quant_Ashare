@@ -8,6 +8,7 @@ from web.operator_ui.pages._config_run_helpers import (
     build_config_review_sections,
     config_preset_differences,
     effective_preset_for_review,
+    explicitly_applied_preset_name,
     portable_config_for_preset_review,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
@@ -15,6 +16,16 @@ from web.operator_ui.pages._config_run_helpers import (
 
 
 class ConfigRunReviewHelperTests(unittest.TestCase):
+    def test_review_baseline_requires_an_explicitly_applied_preset(self) -> None:
+        self.assertEqual(
+            explicitly_applied_preset_name(None, custom_preset_name="Custom"),
+            "Custom",
+        )
+        self.assertEqual(
+            explicitly_applied_preset_name("Default", custom_preset_name="Custom"),
+            "Default",
+        )
+
     def test_review_keeps_every_emitted_field_in_a_stable_section(self) -> None:
         emitted = {
             "mode": "pipeline",

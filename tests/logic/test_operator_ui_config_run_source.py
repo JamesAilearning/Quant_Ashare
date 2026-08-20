@@ -90,6 +90,13 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("yaml.safe_load", source)
         self.assertIn('cr_provider_uri', source)
         self.assertIn("prefill_config_applied_token", source)
+        self.assertIn(
+            "st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)", source
+        )
+        self.assertIn(
+            "st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)", source
+        )
+        self.assertIn("explicitly_applied_preset_name(", source)
 
     def test_config_page_has_preset_system(self) -> None:
         source = Path("web/operator_ui/pages/config_run.py").read_text(encoding="utf-8")
