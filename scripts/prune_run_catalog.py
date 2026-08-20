@@ -37,7 +37,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -57,10 +57,26 @@ _DEFAULT_TREE = _REPO_ROOT / "output"
 _PRUNE_LOCK_TIMEOUT = 30.0
 
 
+class Classified(NamedTuple):
+    """分类结果。``retained`` 按**原顺序**,重写索引时直接写回它。
+
+    保留的行分两种,报数时必须分开算:一种是**产物确实验证过在树内**,另一种是
+    「看不懂所以不动」(空行、坏 JSON、合法但非记录的值)。混作一谈的话,一份
+    全是 `null` 的索引会报成「100% 在树内」——而这份报告正是操作人按下
+    ``--prune`` 的依据(codex #453)。
+    """
+
+    retained: list[str]
+    dropped: list[str]
+    dropped_records: list[dict[str, Any]]
+    verified_in_tree: int
+    unclassified: int
+
+
 def classify(
     catalog: Path, tree: Path, relative_base: Path,
-) -> tuple[list[str], list[str], list[dict[str, Any]]]:
-    """``(树内行, 树外行, 树外行的解析结果)``。原始文本原样保留,不重排。
+) -> Classified:
+    """把索引的每一行分到三个桶里。原始文本原样保留,不重排。
 
     ``relative_base`` 是相对路径的锚,**由调用方点名传进来**,绝不从 ``tree``
     反推。本脚本是事后另起的进程,拿不到历史行当年的 CWD,只能沿用控制台读侧
@@ -71,47 +87,62 @@ def classify(
     合法的相对行就会被锚到别名旁边而判成残骸(codex #453)。这是同一个病的
     第三次复发 —— **从路径的拼写或位置推导语义**。
     """
-    keep: list[str] = []
-    drop: list[str] = []
-    drop_records: list[dict[str, Any]] = []
+    retained: list[str] = []
+    dropped: list[str] = []
+    dropped_records: list[dict[str, Any]] = []
+    verified = 0
+    unclassified = 0
     for line in catalog.read_text(encoding="utf-8").splitlines():
         if not line.strip():
+            # 空行也**保留**。它既不在 keep 也不在 drop 的话,一次 --prune 就把
+            # 它从活索引里抹掉了,而旁车留证里没有它——「移除的行留得住」这条
+            # 承诺就破了(codex #453)。
+            retained.append(line)
+            unclassified += 1
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
             # 读不懂的行**保留**。判据只针对能证明是残骸的那些;看不懂就不动,
             # 那是别人的数据。
-            keep.append(line)
+            retained.append(line)
+            unclassified += 1
             continue
         if not isinstance(record, dict):
             # `null` / `123` / `[...]` 都是合法 JSON 但不是记录。以前这里直接
             # `.get()`,于是连只报数模式都会抛 AttributeError 中断(codex #453)。
             # 同样按「看不懂就不动」处理。
-            keep.append(line)
+            retained.append(line)
+            unclassified += 1
             continue
         if catalog_boundary_verdict(
                 str(record.get("output_dir") or ""),
                 tree=tree, relative_base=relative_base) is None:
-            keep.append(line)
+            retained.append(line)
+            verified += 1
         else:
-            drop.append(line)
-            drop_records.append(record)
-    return keep, drop, drop_records
+            dropped.append(line)
+            dropped_records.append(record)
+    return Classified(retained, dropped, dropped_records, verified, unclassified)
 
 
-def report(keep: list[str], drop: list[str], drop_records: list[dict[str, Any]]) -> None:
-    total = len(keep) + len(drop)
+def report(result: Classified) -> None:
+    total = len(result.retained) + len(result.dropped)
     print(f"索引总行数 {total}")
     if not total:
         return
-    print(f"  产物在 output 树内   {len(keep):6d}  = {len(keep)/total*100:5.1f}%")
-    print(f"  产物在树外(可清理)   {len(drop):6d}  = {len(drop)/total*100:5.1f}%")
-    if not drop_records:
+    dropped = len(result.dropped)
+    print(f"  产物在 output 树内   {result.verified_in_tree:6d}"
+          f"  = {result.verified_in_tree/total*100:5.1f}%")
+    print(f"  保留但未验证         {result.unclassified:6d}"
+          f"  = {result.unclassified/total*100:5.1f}%   (空行/读不懂/非记录)")
+    print(f"  产物在树外(可清理)   {dropped:6d}  = {dropped/total*100:5.1f}%")
+    if not result.dropped_records:
         return
-    engines = Counter(str(r.get("engine")) for r in drop_records)
+    engines = Counter(str(r.get("engine")) for r in result.dropped_records)
     print("  树外行按引擎:", dict(engines))
-    dirs = Counter(str(r.get("output_dir") or "(空)") for r in drop_records)
+    dirs = Counter(str(r.get("output_dir") or "(空)")
+                   for r in result.dropped_records)
     print(f"  树外行涉及 {len(dirs)} 个独立目录,出现最多的:")
     for path, count in dirs.most_common(4):
         print(f"    {count:5d} 次  {path[:70]}")
@@ -175,14 +206,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  (你传的是 {args.catalog},上面是它的规范路径)")
     print(f"边界(树内即保留):{args.tree}")
     print(f"相对路径锚在    :{args.relative_base}")
-    keep, drop, drop_records = classify(
-        catalog, args.tree, args.relative_base)
-    report(keep, drop, drop_records)
+    result = classify(catalog, args.tree, args.relative_base)
+    report(result)
 
     if not args.prune:
         print("\n(只报数模式。加 --prune 才会动文件。)")
         return 0
-    if not drop:
+    if not result.dropped:
         print("\n没有可清理的行。")
         return 0
 
@@ -210,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             return 5
 
         before = _fingerprint(catalog)
-        keep, drop, drop_records = classify(
-            catalog, args.tree, args.relative_base)
+        result = classify(catalog, args.tree, args.relative_base)
+        keep, drop = result.retained, result.dropped
         if not drop:
             print("\n没有可清理的行。")
             return 0

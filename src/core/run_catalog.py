@@ -100,6 +100,26 @@ def _same_path(left: Path, right: Path) -> bool:
     return os.path.normcase(str(left)) == os.path.normcase(str(right))
 
 
+def _is_lexically_inside(child: Path, root: Path) -> bool:
+    """纯词法的包含判定 —— 与控制台读侧那条**逐行热路径**同一种算术。
+
+    读侧不能每行 ``resolve()``(实测 3527 行要 771 ms/次渲染),所以它只认两种
+    拼写:树自身的写法,和树 ``resolve()`` 后的写法。**第三种**拼写(再套一层
+    联接、8.3 短名、第二个符号链接)会被它搁置——那是它刻意选的安全方向。
+
+    于是写入侧必须**存一个读侧认得的拼写**:光是「resolve 之后在树内」就放行、
+    却把别名原样存进去,索引里就会多出「控制台永远列不出来」的行,正是本
+    change 要挡的那种污染(codex #453)。
+    """
+    try:
+        Path(os.path.normcase(os.path.normpath(str(child)))).relative_to(
+            Path(os.path.normcase(os.path.normpath(str(root))))
+        )
+    except ValueError:
+        return False
+    return True
+
+
 def catalog_boundary_verdict(
     output_dir: str, *, tree: Path, relative_base: Path,
 ) -> str | None:
@@ -262,10 +282,18 @@ def append_run_record(
         # 分歧时才改存绝对路径,免得记录指向一个不存在的目录。
         anchored = anchor_output_dir(text, relative_base=launch_dir)
         as_read = anchor_output_dir(text, relative_base=_REPO_ROOT)
-        if anchored is not None and as_read is not None and not _same_path(
+        stored: str | None = None
+        if anchored is not None and not _is_lexically_inside(
+                anchored, _DEFAULT_OUTPUT_TREE):
+            # 只靠 resolve 才判进树内的第三种拼写。存 resolve 后的写法——那是
+            # 读侧认得的两种根拼写之一,于是「写入侧接受」蕴含「读侧列得出」。
+            stored = str(anchored.resolve())
+        elif anchored is not None and as_read is not None and not _same_path(
                 anchored, as_read):
+            stored = str(anchored)
+        if stored is not None:
             record = dict(record)
-            record["output_dir"] = str(anchored)
+            record["output_dir"] = stored
 
     dest.parent.mkdir(parents=True, exist_ok=True)
 

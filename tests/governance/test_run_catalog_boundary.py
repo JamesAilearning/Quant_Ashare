@@ -251,6 +251,49 @@ class InTreeRunsStillGetCatalogued(_SandboxedDefaults):
                 "同一目录的另一种拼写被判成树外 —— 合法运行全军覆没")
 
 
+class EveryAcceptedRowIsListableByTheConsole(_SandboxedDefaults):
+    """**端到端不变式**：写入侧接受一行 ⟹ 读侧列得出它。
+
+    这是本 change 反复栽跟头那个病的收口。前面几轮我一直在**手推**「哪些拼写
+    算数」——推一条，codex 找出第七种拼写；再推一条，又一种。这次不推了：测试
+    直接问真正的读侧（`job_io.run_dir_is_inspectable`）认不认。
+
+    为什么会漏：写入侧判包含时**两侧都 resolve**，于是「第三种拼写」（再套一层
+    联接、8.3 短名）也算在树内；而读侧是**逐行热路径**，只能纯词法，只认树自身
+    和树 resolve 后这两种拼写，第三种一律搁置。两边判据不同 ⟹ 索引里会出现
+    「控制台永远列不出来的行」，正是本 change 要挡的污染。
+    """
+
+    def test_an_alias_spelling_is_stored_in_a_form_the_reader_accepts(self) -> None:
+        from web.operator_ui import _path_guard, job_io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / "output"
+            (tree / "runs").mkdir(parents=True)
+            (tree / "wf" / "r1").mkdir(parents=True)
+            alias = root / "alias"          # 第三种拼写：联接到 output 树
+            if not _link(alias, tree):
+                self.skipTest("这个环境造不出目录链接（需要权限）")
+            catalog = tree / "runs" / "_index.jsonl"
+            with self._sandbox(tree, catalog):
+                append_run_record(build_record(
+                    engine="walk_forward", status="ok",
+                    output_dir=str(alias / "wf" / "r1")))
+            self.assertEqual(_line_count(catalog), 1, "别名拼写被误拒了")
+
+            stored = str(_rows(catalog)[0]["output_dir"])
+            with mock.patch.object(_path_guard, "PROJECT_ROOT", root), \
+                    mock.patch.object(_path_guard, "_ALLOWED_ROOTS", None), \
+                    mock.patch.object(job_io, "_ROOT_KEYS_CACHE", None):
+                listable = job_io.run_dir_is_inspectable(stored)
+            self.assertTrue(
+                listable,
+                f"写入侧收了它，读侧却列不出来：{stored!r} —— "
+                "索引里多了一行控制台永远打不开的记录",
+            )
+
+
 class ExplicitCatalogIsTheEscapeHatch(unittest.TestCase):
     def test_an_explicit_catalog_path_is_not_second_guessed(self) -> None:
         # 传 catalog_path 本身就是「我知道我在做什么」。不设边界的代价是清楚的：
@@ -382,8 +425,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(
                     {"engine": "walk_forward", "output_dir": "output/wf/keep"}) + "\n")
-            keep, drop, _ = classify(catalog, tree, tree.parent)
-            self.assertEqual(len(keep), 2, "相对路径的合法行被判成了残骸")
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(result.verified_in_tree, 2, "相对路径的合法行被判成了残骸")
 
     def test_the_relative_anchor_does_not_follow_the_tree_spelling(self) -> None:
         # `--tree` 经别名/联接指向 output 树时，用 `tree.parent` 当锚会把合法的
@@ -403,9 +446,9 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog.write_text(json.dumps(
                 {"engine": "walk_forward", "output_dir": "output/wf/keep"}) + "\n",
                 encoding="utf-8")
-            keep, drop, _ = classify(catalog, alias, root)
+            result = classify(catalog, alias, root)
             self.assertEqual(
-                (len(keep), len(drop)), (1, 0),
+                (result.verified_in_tree, len(result.dropped)), (1, 0),
                 "--tree 走别名时，合法的相对行被判成了残骸")
 
     def test_unparseable_lines_are_kept_not_dropped(self) -> None:
@@ -416,9 +459,9 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write("{ this is not json\n")
-            keep, drop, _ = classify(catalog, tree, tree.parent)
-            self.assertIn("{ this is not json", keep)
-            self.assertEqual(len(drop), 2)
+            result = classify(catalog, tree, tree.parent)
+            self.assertIn("{ this is not json", result.retained)
+            self.assertEqual(len(result.dropped), 2)
 
     def test_valid_json_that_is_not_a_record_is_kept_not_crashed_on(self) -> None:
         # `null` / 数组都是合法 JSON。以前这里直接 `.get()`，于是连只报数模式
@@ -429,10 +472,10 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             catalog, tree = self._catalog_with(Path(tmp))
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write("null\n[1, 2]\n")
-            keep, drop, _ = classify(catalog, tree, tree.parent)
-            self.assertIn("null", keep)
-            self.assertIn("[1, 2]", keep)
-            self.assertEqual(len(drop), 2)
+            result = classify(catalog, tree, tree.parent)
+            self.assertIn("null", result.retained)
+            self.assertIn("[1, 2]", result.retained)
+            self.assertEqual(len(result.dropped), 2)
             self.assertEqual(main(self._argv(catalog, tree)), 0)
 
     def test_prune_through_a_symlink_rewrites_the_real_catalog(self) -> None:
@@ -494,9 +537,9 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             with open(catalog, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(
                     {"engine": "pipeline", "output_dir": chr(0) + "foo"}) + "\n")
-            keep, drop, _ = classify(catalog, tree, tree.parent)
-            self.assertEqual(len(keep), 1)
-            self.assertEqual(len(drop), 3, "畸形行既没被算进去，也没让扫描中断")
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(result.verified_in_tree, 1)
+            self.assertEqual(len(result.dropped), 3, "畸形行既没被算进去，也没让扫描中断")
 
     def test_the_sidecar_never_overwrites_earlier_evidence(self) -> None:
         # 同一秒里跑两次清理（或时钟重复）会派生同名旁车，`write_text` 会静默
@@ -550,6 +593,38 @@ class PruneToolPreservesEvidence(unittest.TestCase):
             self.assertEqual(
                 staged_chmods, [expected],
                 "替换前没有把原索引的权限抄给暂存件")
+
+    def test_retained_unknown_rows_are_not_counted_as_verified(self) -> None:
+        # 「保留」有两种：产物确实验证过在树内，和「看不懂所以不动」。混作一谈
+        # 的话，一份全是 `null` 的索引会报成「100% 在树内」—— 而这份报告正是
+        # 操作人按下 --prune 的依据。
+        from scripts.prune_run_catalog import classify
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "output"
+            (tree / "runs").mkdir(parents=True)
+            catalog = tree / "runs" / "_index.jsonl"
+            catalog.write_text("null\nnull\n", encoding="utf-8")
+            result = classify(catalog, tree, tree.parent)
+            self.assertEqual(len(result.retained), 2)
+            self.assertEqual(
+                result.verified_in_tree, 0,
+                "一条产物路径都没验证过，却报成「在树内」")
+            self.assertEqual(result.unclassified, 2)
+
+    def test_blank_lines_survive_a_prune(self) -> None:
+        # 空行既不在保留集也不在丢弃集的话，一次 --prune 就把它从活索引里抹掉，
+        # 而旁车留证里没有它 —— 「移除的行留得住」这条承诺就破了。
+        from scripts.prune_run_catalog import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog, tree = self._catalog_with(Path(tmp))
+            body = catalog.read_text(encoding="utf-8").splitlines()
+            catalog.write_text(
+                body[0] + "\n\n" + "\n".join(body[1:]) + "\n", encoding="utf-8")
+            self.assertEqual(main(self._argv(catalog, tree, "--prune")), 0)
+            after = catalog.read_text(encoding="utf-8").splitlines()
+            self.assertIn("", after, "空行被静默删掉了，旁车里也没有它")
 
     def test_prune_refuses_when_it_cannot_take_the_lock(self) -> None:
         # 拿不到锁 = 有运行正在写。宁可不动手。

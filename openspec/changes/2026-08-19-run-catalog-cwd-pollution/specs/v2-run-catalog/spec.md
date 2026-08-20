@@ -102,6 +102,36 @@ how it is spelled.
 - **WHEN** the record is appended
 - **THEN** the record is appended
 
+### Requirement: Every row the writer accepts is listable by the reader
+
+The writer SHALL store a spelling the reader is guaranteed to accept, and
+SHALL NOT record an alias merely because resolution proved it inside the
+tree. Accepting a run and then recording a spelling the console sets
+aside is the same pollution this change exists to stop — a row that can
+never be opened.
+
+The two sides SHALL NOT be expected to share one predicate here. The
+reader filters **per row on every render** (3527 rows cost 771 ms when it
+resolved), so it is purely lexical and recognises exactly two spellings of
+the tree: the tree's own and its resolved target. The writer runs once per
+run and can afford to resolve, so it accepts a **third** spelling — another
+junction, an 8.3 short name, a second symlink. Where the writer accepts by
+resolution alone, it SHALL store the resolved path, which lies under one of
+the two spellings the reader knows.
+
+This invariant SHALL be verified against the reader itself rather than
+against a restatement of its rule. Hand-derived lists of "which spellings
+count" are what produced six separate defects of this class in this change;
+asking the real reader closes the class instead of enumerating it.
+
+#### Scenario: a run directory named through a third spelling
+
+- **GIVEN** a run directory reached through a junction that resolves into
+  the output tree
+- **WHEN** the record is appended
+- **THEN** the record is appended and the stored `output_dir` is one the
+  console lists
+
 ### Requirement: A relative output directory SHALL be read against the producer's launch directory
 
 The writer SHALL resolve a relative `output_dir` against the process
@@ -173,8 +203,17 @@ start of the critical section before replacing it. With no bypass path
 this is a belt against a future writer that does not honour the lock, not
 protection for a designed one.
 
-Lines the tool cannot interpret SHALL be retained, including valid JSON
-that is not a record object (`null`, arrays, scalars). Such a value SHALL
+Lines the tool cannot interpret SHALL be retained, including blank
+separator lines and valid JSON that is not a record object (`null`,
+arrays, scalars). A blank line that is in neither the retained nor the
+removed set would be deleted by a prune without appearing in the sidecar,
+breaking the evidence promise for a line the tool never classified.
+
+Retained lines SHALL be reported in two groups: those whose artifacts were
+**verified** inside the tree, and those retained only because the tool
+could not interpret them. Counting them together makes a catalog of
+nothing but `null` report as 100% in-tree — and this report is what the
+operator decides `--prune` on. Such a value SHALL
 NOT abort the report — the criterion applies only to rows provably
 identifiable as debris; anything else is the operator's data.
 
@@ -248,7 +287,14 @@ refuse to prune a catalog that has more than one name.
 
 - **GIVEN** a catalog line containing `null`
 - **WHEN** the tool classifies the catalog
-- **THEN** the line is retained and the report completes
+- **THEN** the line is retained, counted as unclassified rather than
+  verified, and the report completes
+
+#### Scenario: a blank separator line
+
+- **GIVEN** a catalog containing a blank line
+- **WHEN** the tool prunes
+- **THEN** the blank line is still in the catalog afterwards
 
 #### Scenario: an `output_dir` that cannot name a file
 
