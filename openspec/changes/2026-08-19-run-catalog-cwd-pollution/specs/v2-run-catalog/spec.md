@@ -132,6 +132,34 @@ asking the real reader closes the class instead of enumerating it.
 - **THEN** the record is appended and the stored `output_dir` is one the
   console lists
 
+### Requirement: The boundary SHALL judge the exact string the producer used
+
+The check SHALL NOT normalise the recorded `output_dir` before examining
+it. Whitespace may be stripped to decide whether a value was given at all,
+but the stripped form SHALL NOT be what gets parsed as a path.
+
+Leading whitespace is a valid filename character — on POSIX by
+definition, and measured on this operator's Windows box a directory named
+`" output"` is creatable — and the engines hand `config.output_dir` to
+`Path` verbatim. A check that strips first therefore examines a different
+directory than the one the run wrote to: artifacts at `<repo>/ output/run`
+lie outside the tree, while the stripped `<repo>/output/run` lies inside
+and is accepted. The original string is what gets stored, so the console
+would then offer an unrelated in-tree directory under that run's name.
+
+#### Scenario: an output directory whose name begins with a space
+
+- **GIVEN** a run whose `output_dir` is `" output/run"`, launched from the
+  repository root
+- **WHEN** the record is appended to the default catalog
+- **THEN** nothing is appended
+
+#### Scenario: an output directory that is only whitespace
+
+- **GIVEN** a run whose `output_dir` is `"   "`
+- **WHEN** the record is appended
+- **THEN** nothing is appended, as for a missing value
+
 ### Requirement: A relative output directory SHALL be read against the producer's launch directory
 
 The writer SHALL resolve a relative `output_dir` against the process

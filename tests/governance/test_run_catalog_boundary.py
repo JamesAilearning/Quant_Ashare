@@ -121,7 +121,7 @@ class DefaultPathIsAnchored(unittest.TestCase):
         self.assertEqual(_DEFAULT_OUTPUT_TREE, _PROJECT_ROOT / "output")
 
 
-class OutOfTreeRunsAreNotCatalogued(unittest.TestCase):
+class OutOfTreeRunsAreNotCatalogued(_SandboxedDefaults):
     """这条是本 change 的核心：测试不得污染操作人的真实索引。"""
 
     def test_a_temp_output_dir_does_not_touch_the_real_catalog(self) -> None:
@@ -134,6 +134,41 @@ class OutOfTreeRunsAreNotCatalogued(unittest.TestCase):
             _line_count(_DEFAULT_CATALOG_PATH), before,
             "跑测试往真实索引写了行 —— 这正是 3455 行残骸的来源",
         )
+
+    def test_a_leading_space_is_a_real_directory_name_not_noise(self) -> None:
+        # 前导空格是合法的文件名字符（POSIX 如此；本机 Windows 实测也能造出名为
+        # `" output"` 的目录）。引擎把 `config.output_dir` 原样交给 `Path`，所以
+        # `" output/wf/r1"` 的产物真在 `<root>/ output/wf/r1` —— 树外。
+        #
+        # 判据若先 strip 再解析，看的就不是生产者用的那个串：它会去看
+        # `<root>/output/wf/r1` 并放行，而原串照旧存进索引，控制台随后指向一个
+        # 毫不相干的、树内的目录。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / "output"
+            (tree / "runs").mkdir(parents=True)
+            (tree / "wf" / "r1").mkdir(parents=True)      # 树内的「无辜」目录
+            (root / " output" / "wf" / "r1").mkdir(parents=True)  # 产物真正的家
+            catalog = tree / "runs" / "_index.jsonl"
+            with self._sandbox(tree, catalog), _chdir(root):
+                append_run_record(build_record(
+                    engine="walk_forward", status="ok",
+                    output_dir=" output/wf/r1"))
+            self.assertEqual(
+                _line_count(catalog), 0,
+                "判据 strip 掉了前导空格，于是拿树内那个无辜目录当成了它的产物")
+
+    def test_a_whitespace_only_output_dir_is_refused_as_missing(self) -> None:
+        # 反面：全空白仍然算「没给」，不该被当成一个名字叫空格的目录。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / "output"
+            (tree / "runs").mkdir(parents=True)
+            catalog = tree / "runs" / "_index.jsonl"
+            with self._sandbox(tree, catalog), _chdir(root):
+                append_run_record(build_record(
+                    engine="pipeline", status="ok", output_dir="   "))
+            self.assertEqual(_line_count(catalog), 0)
 
     def test_a_missing_output_dir_is_also_refused(self) -> None:
         before = _line_count(_DEFAULT_CATALOG_PATH)

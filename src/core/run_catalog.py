@@ -87,8 +87,16 @@ def anchor_output_dir(output_dir: str, *, relative_base: Path) -> Path | None:
       读侧那条约定(相对 = 相对仓库根)。它的判据本来就是「控制台永远打不开的
       行」,与控制台同约定才自洽。
     """
-    text = str(output_dir or "").strip()
-    if not text:
+    text = str(output_dir or "")
+    if not text.strip():
+        # 只拿 strip 判「是不是空的」,**绝不拿 strip 后的串去解析**。
+        #
+        # 前导空格是合法的文件名字符(POSIX 如此,本机 Windows 实测也能造出名为
+        # `" output"` 的目录),而引擎是把 `config.output_dir` 原样交给 `Path`
+        # 的。判据一旦 strip,看的就不是生产者用的那个串了:`" output/run"` 的
+        # 产物真在 `<repo>/ output/run`(树外),判据却去看 `<repo>/output/run`
+        # 并放行 —— 而原串照旧存进索引,控制台随后会指向一个毫不相干的、树内的
+        # 目录(codex #453)。判据必须判**生产者用的那个字符串**。
         return None
     target = Path(text)
     if not target.is_absolute():
