@@ -1004,7 +1004,12 @@ with form_col:
         normalization_defaults=_RESET_FIELD_DEFAULTS,
         snapshot=_review_snapshot,
     )
-    if _review_preset is not None and _review_snapshot is None:
+    if _review_preset is None:
+        # An unavailable preset must not leave an old baseline behind.  If the
+        # same name later becomes readable again, rebuild from its current
+        # contents instead of comparing against a stale session snapshot.
+        st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
+    elif _review_snapshot is None:
         st.session_state[_REVIEW_PRESET_SNAPSHOT_STATE] = dict(_review_preset)
     _review_sections = build_config_review_sections(preview_config)
     _preset_differences = config_preset_differences(

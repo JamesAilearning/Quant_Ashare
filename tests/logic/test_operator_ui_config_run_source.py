@@ -146,6 +146,10 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("_REVIEW_PRESET_SNAPSHOT_STATE", source)
         self.assertIn("st.session_state[_REVIEW_PRESET_NAME_STATE] = preset_name", source)
         self.assertIn("snapshot=_review_snapshot", source)
+        self.assertIn("if _review_preset is None:", source)
+        self.assertIn(
+            "st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)", source
+        )
         self.assertIn("复核基线", source)
         self.assertIn("unsupported_prefill_keys(", source)
         self.assertIn("启动研究运行", source)
