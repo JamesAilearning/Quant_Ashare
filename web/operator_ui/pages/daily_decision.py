@@ -60,6 +60,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_promotion_meta,
     load_trainer_sidecar_sha,
     picks_table_rows,
+    provenance_is_verified,
     provenance_verdict,
     resolve_incumbent,
     resolve_model_path,
@@ -548,7 +549,10 @@ with _review_summary_slot:
             f"⚠ 决策日志含 {_journal.malformed_count} 行坏行(已跳过未入账;"
             f"文件:{_journal_file})。以下仅统计有效记录，审阅完整性需要核验。"
         )
-    if _hold.is_hold:
+    if not provenance_is_verified(_verdict):
+        st.info("当前工件的来源尚未核验；不显示人工审阅完成度或候选审阅标签。")
+        _review_progress = None
+    elif _hold.is_hold:
         st.info("HOLD 日不显示人工审阅完成度；该工件不构成入场决策。")
         _review_progress = None
     else:

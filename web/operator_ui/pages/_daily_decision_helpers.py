@@ -494,6 +494,11 @@ VERDICT_SINGLE_SHA_UNKNOWN = "single_sha_unknown"
 VERDICT_SINGLE_SHA_OK = "single_sha_ok"
 
 
+def provenance_is_verified(verdict: str) -> bool:
+    """Whether an artifact's source is confirmed for review projections."""
+    return verdict in {VERDICT_MATCHES_INCUMBENT, VERDICT_SINGLE_SHA_OK}
+
+
 def classify_provenance(
     *,
     incumbent_kind: str,

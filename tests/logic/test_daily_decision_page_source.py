@@ -1175,6 +1175,30 @@ class ProvenanceRenderingTests(unittest.TestCase):
         names = {n for n in dir(h) if n.startswith("VERDICT_")}
         self.assertEqual(names - {"VERDICT_SINGLE_SHA_OK"}, set(self.seg))
 
+    def test_only_verified_provenance_allows_review_progress_projection(self) -> None:
+        from web.operator_ui.pages import _daily_decision_helpers as helpers
+
+        verdicts = {
+            value
+            for name, value in vars(helpers).items()
+            if name.startswith("VERDICT_")
+        }
+        self.assertEqual(
+            {
+                verdict
+                for verdict in verdicts
+                if helpers.provenance_is_verified(verdict)
+            },
+            {helpers.VERDICT_MATCHES_INCUMBENT, helpers.VERDICT_SINGLE_SHA_OK},
+        )
+        review_start = self.page.index("with _review_summary_slot:")
+        review_section = self.page[
+            review_start
+            : self.page.index("with _candidate_table_slot:", review_start)
+        ]
+        self.assertIn("if not provenance_is_verified(_verdict):", review_section)
+        self.assertIn("_review_progress = None", review_section)
+
     def test_each_branch_says_its_own_words(self) -> None:
         # ...and only its own: a phrase that also appears next door would let
         # a gutted branch pass on the neighbour's text.
