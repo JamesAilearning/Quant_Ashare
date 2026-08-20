@@ -134,7 +134,10 @@ def _finite_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError:
+            return None
         return number if math.isfinite(number) else None
     return None
 
@@ -174,13 +177,20 @@ def _date_window(value: Any) -> str | None:
         start, end = (date.fromisoformat(part) for part in parts)
     except ValueError:
         return None
-    if start > end:
+    if start >= end:
         return None
     return f"{start.isoformat()} ~ {end.isoformat()}"
 
 
 def _positive_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return int(value)
+
+
+def _non_boolean_int(value: Any) -> int | None:
+    """Return producer-recorded count evidence without accepting ``bool``."""
+    if isinstance(value, bool) or not isinstance(value, int):
         return None
     return int(value)
 
@@ -527,8 +537,8 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence:
     folds = tuple(item for item in raw_folds if isinstance(item, Mapping)) if isinstance(raw_folds, list) else ()
     valid_count = aggregate.get("valid_folds_information_ratio")
     return FoldEvidence(
-        fold_count=(int(report["num_folds"]) if isinstance(report.get("num_folds"), int) else None),
-        valid_fold_count=(int(valid_count) if isinstance(valid_count, int) else None),
+        fold_count=_non_boolean_int(report.get("num_folds")),
+        valid_fold_count=_non_boolean_int(valid_count),
         mean_information_ratio=_finite_float(aggregate.get("mean_information_ratio")),
         std_information_ratio=_finite_float(aggregate.get("std_information_ratio")),
         worst_drawdown=_finite_float(aggregate.get("worst_drawdown")),

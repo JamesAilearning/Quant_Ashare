@@ -146,6 +146,7 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
     for key, value in (
         ("instruments", False),
         ("train_period", "not a period"),
+        ("train_period", "2023-01-01 ~ 2023-01-01"),
         ("valid_period", ["2023-01-01", "2023-06-30"]),
         ("test_period", "2023-12-31 ~ 2023-07-01"),
     ):
@@ -179,6 +180,17 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
     assert result.eligible is False
     assert result.ranked_run_ids == ()
     assert any("交易所与成本模型不一致" in reason for reason in result.reasons)
+
+
+def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:
+    report = _pipeline_report()
+    risk = report["risk_analysis"]["excess_return_with_cost"]  # type: ignore[index]
+    risk["information_ratio"] = 10 ** 10000  # type: ignore[index]
+
+    run = _pipeline_run("huge-information-ratio", report=report)
+
+    metric = next(item for item in run.metrics if "信息比率" in item.label)
+    assert metric.value is None
 
 
 def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None:
@@ -327,6 +339,24 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert any(metric.value == 0.35 for metric in run.metrics if "信息比率" in metric.label)
     assert run.data_provenance_source is None
     assert any("数据来源 / 运行时快照" in issue.message for issue in run.issues)
+
+    malformed_counts = deepcopy(report)
+    malformed_counts["num_folds"] = True
+    malformed_counts["aggregate_metrics"]["valid_folds_information_ratio"] = False  # type: ignore[index]
+    malformed_count_run = build_comparison_run(
+        run_id="wf-malformed-counts",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=malformed_counts,
+    )
+    assert malformed_count_run.fold_evidence is not None
+    assert malformed_count_run.fold_evidence.fold_count is None
+    assert malformed_count_run.fold_evidence.valid_fold_count is None
 
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]
