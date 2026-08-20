@@ -22,6 +22,9 @@ def test_comparison_page_is_read_only_and_uses_guarded_catalog_artifacts() -> No
     assert 'st.query_params["run_ids"]' in source
     assert "max_selections=5" in source
     assert 'query_params={"run_id": run.run_id}' in source
+    assert '("logs", "pipeline.log")' in source
+    assert '("logs", "stdout.log")' in source
+    assert '("logs", "stderr.log")' in source
     assert "JobManager.start" not in source
     assert "st.switch_page" not in source
 

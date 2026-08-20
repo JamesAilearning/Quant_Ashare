@@ -23,7 +23,15 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
     selectable_catalog_rows,
 )
 
-_LOG_NAMES = ("stdout.log", "stderr.log", "runner_stdout.log", "runner_stderr.log")
+_LOG_PATHS = (
+    ("stdout.log",),
+    ("stderr.log",),
+    ("runner_stdout.log",),
+    ("runner_stderr.log",),
+    ("logs", "pipeline.log"),
+    ("logs", "stdout.log"),
+    ("logs", "stderr.log"),
+)
 
 
 def _artifact_issue(prefix: str, issue: object) -> ComparisonIssue:
@@ -119,7 +127,11 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
     )
     config = _read_config(config_path, issues)
     report = _read_report(report_path, issues)
-    log_paths = tuple(str(run_dir / name) for name in _LOG_NAMES if (run_dir / name).is_file())
+    log_paths = tuple(
+        str(run_dir.joinpath(*parts))
+        for parts in _LOG_PATHS
+        if run_dir.joinpath(*parts).is_file()
+    )
     return build_comparison_run(
         run_id=job.run_id,
         engine=engine,

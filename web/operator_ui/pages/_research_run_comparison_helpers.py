@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui.job_io import JobSummary, fold_catalog_by_dir
 
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -248,6 +249,19 @@ def _walk_forward_metrics(report: Mapping[str, Any]) -> tuple[ReportMetric, ...]
     )
 
 
+def _effective_metric_status(report: Mapping[str, Any]) -> str | None:
+    """Return the producer-recorded status, letting declared purpose downgrade it."""
+    metric_status = _stable_value(report.get("metric_status"))
+    metrics_purpose = _stable_value(report.get("metrics_purpose"))
+    if (
+        metric_status == OFFICIAL_METRIC_STATUS
+        and metrics_purpose is not None
+        and metrics_purpose != OFFICIAL_METRIC_STATUS
+    ):
+        return metrics_purpose
+    return metric_status
+
+
 def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence:
     aggregate = _mapping(report.get("aggregate_metrics"))
     raw_folds = report.get("folds")
@@ -318,7 +332,7 @@ def build_comparison_run(
         log_paths=tuple(log_paths),
         contract=contract,
         metrics=metrics,
-        metric_status=_stable_value(report.get("metric_status")),
+        metric_status=_effective_metric_status(report),
         model_identity=_stable_value(model_source.get("model_type")),
         config_identity=_stable_value(_nested(report, "backtest", "provenance", "config_fingerprint")),
         # Version is deliberately unavailable until a producer writes one.  A
@@ -359,6 +373,11 @@ def assess_comparability(runs: Iterable[ComparisonRun]) -> ComparabilityResult:
             ))
 
     for run in selected:
+        if run.metric_status != OFFICIAL_METRIC_STATUS:
+            status = run.metric_status or "未标注"
+            reasons.append(
+                f"{run.run_id}：指标状态为 {status}，不可作为可排序的正式指标证据。"
+            )
         if information_ratio(run) is None:
             reasons.append(f"{run.run_id}：现有报告未提供可排序的信息比率。")
 

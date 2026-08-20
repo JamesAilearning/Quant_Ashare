@@ -108,6 +108,27 @@ def test_missing_runtime_provenance_is_visible_and_blocks_comparison() -> None:
     assert any("run-incomplete" in reason for reason in result.reasons)
 
 
+def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> None:
+    official = _pipeline_run("official")
+    predictions_only_report = _pipeline_report()
+    predictions_only_report["metric_status"] = "predictions_only_non_canonical"
+    unstamped_report = _pipeline_report()
+    del unstamped_report["metric_status"]
+    purpose_downgraded_report = _pipeline_report()
+    purpose_downgraded_report["metrics_purpose"] = "predictions_only"
+
+    for run in (
+        _pipeline_run("predictions-only", report=predictions_only_report),
+        _pipeline_run("unstamped", report=unstamped_report),
+        _pipeline_run("purpose-downgraded", report=purpose_downgraded_report),
+    ):
+        result = assess_comparability((official, run))
+
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("指标状态" in reason for reason in result.reasons)
+
+
 def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalculation() -> None:
     config = {
         "provider_uri": "data/qlib_cn",
