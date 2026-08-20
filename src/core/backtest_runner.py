@@ -50,6 +50,7 @@ from src.core.risk_constraints import (
     RiskConstraintError,
     RiskConstraintMode,
 )
+from src.data._feature_dataset_cache import read_bundle_tag
 from src.data.st_history import (
     StHistoryError,
     assert_covers,
@@ -1976,6 +1977,11 @@ class BacktestRunner:
                 "provider_uri": runtime_config.provider_uri,
                 "region": runtime_config.region,
                 "data_adjust_mode": runtime_config.data_adjust_mode,
+                # A mutable provider path alone cannot identify the data that
+                # produced official metrics.  Use the same content tag as the
+                # feature-cache and walk-forward resume boundaries; ``unknown``
+                # remains explicit unavailable evidence for readers.
+                "bundle_identity": read_bundle_tag(runtime_config.provider_uri),
             }
             if runtime_config is not None
             else {}

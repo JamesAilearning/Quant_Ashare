@@ -323,8 +323,11 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
 # "4-positions-attestation" added ``positions_sha256`` — the producer
 # stamps a content digest of the PERSISTED positions bytes so downstream
 # certification can bind the series to the fold report
-# (2026-07-17-csi800-cadence-campaign DP-5, #373 codex r10 prerequisite).
-FOLD_REPORT_SCHEMA_VERSION = "4-positions-attestation"
+# (2026-07-17-csi800-cadence-campaign DP-5, #373 codex r10 prerequisite);
+# "5-bundle-identity-provenance" requires the BacktestRunner runtime's
+# immutable bundle tag, so AUTO resume cannot mix old folds with the new
+# data-provenance contract.
+FOLD_REPORT_SCHEMA_VERSION = "5-bundle-identity-provenance"
 
 
 def _ic_series_to_map(series: Any) -> dict[str, float]:

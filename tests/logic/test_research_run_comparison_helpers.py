@@ -55,6 +55,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                         "provider_uri": "data/qlib_cn",
                         "region": "cn",
                         "data_adjust_mode": "pre_adjusted",
+                        "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
                     },
                 },
             },
@@ -246,7 +247,11 @@ def test_missing_runtime_provenance_is_visible_and_blocks_comparison() -> None:
 def test_malformed_runtime_provenance_values_block_controlled_ranking() -> None:
     complete = _pipeline_run("run-complete")
 
-    for field, value in (("region", "mars"), ("data_adjust_mode", "unknown")):
+    for field, value in (
+        ("region", "mars"),
+        ("data_adjust_mode", "unknown"),
+        ("bundle_identity", "tushare:not-a-date@not-a-timestamp"),
+    ):
         malformed_report = _pipeline_report()
         runtime = malformed_report["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
         runtime[field] = value  # type: ignore[index]
@@ -257,6 +262,28 @@ def test_malformed_runtime_provenance_values_block_controlled_ranking() -> None:
         assert result.eligible is False
         assert result.ranked_run_ids == ()
         assert any("数据来源 / 运行时快照" in reason for reason in result.reasons)
+
+
+def test_missing_or_changed_bundle_identity_blocks_controlled_ranking() -> None:
+    complete = _pipeline_run("run-complete")
+    missing_identity = _pipeline_report()
+    runtime = missing_identity["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    del runtime["bundle_identity"]  # type: ignore[index]
+
+    missing_result = assess_comparability(
+        (complete, _pipeline_run("run-missing-bundle", report=missing_identity))
+    )
+    assert missing_result.eligible is False
+    assert any("数据来源 / 运行时快照" in reason for reason in missing_result.reasons)
+
+    changed_identity = _pipeline_report()
+    changed_runtime = changed_identity["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    changed_runtime["bundle_identity"] = "2026-08-20@sha256:" + "c" * 64  # type: ignore[index]
+    changed_result = assess_comparability(
+        (complete, _pipeline_run("run-changed-bundle", report=changed_identity))
+    )
+    assert changed_result.eligible is False
+    assert any("数据来源 / 运行时快照不一致" in reason for reason in changed_result.reasons)
 
 
 def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> None:

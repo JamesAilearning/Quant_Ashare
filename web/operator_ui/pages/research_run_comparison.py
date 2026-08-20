@@ -157,12 +157,20 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
             issues=(ComparisonIssue("unsafe_run_dir", f"运行目录在可读边界外：{exc}"),),
         )
 
-    config_path = run_dir / "config.yaml"
     report_path = run_dir / (
         "pipeline_report.json" if engine == "pipeline" else "walk_forward_report.json"
     )
-    config = _read_config(config_path, issues)
     report = _read_report(report_path, issues)
+    if engine == "pipeline":
+        config_path = run_dir / "config.yaml"
+        config = _read_config(config_path, issues)
+        config_reference = str(config_path)
+    else:
+        # WalkForwardEngine persists its complete producer config inside the
+        # aggregate report rather than in ``output_dir/config.yaml``.  Reading
+        # a made-up sibling path would mark every genuine CLI run invalid.
+        config = {}
+        config_reference = f"{report_path}#config"
     run_log_paths = tuple(
         str(run_dir.joinpath(*parts))
         for parts in _LOG_PATHS
@@ -174,7 +182,7 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
         engine=engine,
         status=job.status,
         created_at=job.created_at or job.finished_at,
-        config_path=str(config_path),
+        config_path=config_reference,
         report_path=str(report_path),
         log_paths=log_paths,
         config=config,

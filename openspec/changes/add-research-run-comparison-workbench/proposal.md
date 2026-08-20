@@ -15,6 +15,9 @@ contract, provenance, and exact source pages visible in one place.
   and exact links to Results, Walk-Forward, configuration, and logs.
 - Treat missing, invalid, or unconfirmable metadata as a comparison block;
   never compute replacement metrics or promote a research result to serving.
+- Stamp the existing canonical bundle-content identity into new backtest
+  provenance, and version walk-forward folds so resumed runs cannot mix
+  pre-identity evidence with current evidence.
 
 ## Capabilities
 
@@ -32,6 +35,7 @@ None.
 - Affected UI: one comparison page, a pure read-model helper, and the research
   navigation entry.
 - Affected inputs: existing job catalog rows and existing pipeline/
-  walk-forward report artifacts only.
+  walk-forward report artifacts, plus additive provenance on newly written
+  canonical backtest artifacts.
 - No run launch, cancellation, configuration mutation, metrics calculation,
   production-serving change, or trading execution behavior changes.

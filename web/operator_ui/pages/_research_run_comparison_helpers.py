@@ -423,13 +423,47 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
     """Return a producer-recorded runtime snapshot, never a YAML substitute."""
     if not runtime:
         return None
-    required = ("provider_uri", "region", "data_adjust_mode")
+    required = ("provider_uri", "region", "data_adjust_mode", "bundle_identity")
     values = {key: _required_text(runtime.get(key)) for key in required}
     if any(value is None for value in values.values()):
         return None
     if values["region"] not in {"cn", "us"}:
         return None
     if values["data_adjust_mode"] not in SUPPORTED_ADJUST_MODES:
+        return None
+    bundle_identity = values["bundle_identity"]
+    assert bundle_identity is not None
+    if bundle_identity == "unknown" or "_calendar_unreadable_" in bundle_identity:
+        return None
+    bundle_prefix, separator, bundle_revision = bundle_identity.partition("@")
+    if not separator or not bundle_revision:
+        return None
+    if bundle_prefix.startswith("tushare:"):
+        # Tushare manifests use their publish timestamp as the immutable
+        # revision component; coverage can legitimately be absent, but an
+        # arbitrary string must never become comparison provenance.
+        coverage = bundle_prefix.removeprefix("tushare:")
+        if coverage:
+            try:
+                date.fromisoformat(coverage)
+            except ValueError:
+                return None
+        try:
+            snapshot = datetime.fromisoformat(bundle_revision.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if snapshot.tzinfo is None:
+            return None
+        return json.dumps(values, sort_keys=True, ensure_ascii=False)
+    try:
+        date.fromisoformat(bundle_prefix)
+    except ValueError:
+        return None
+    if (
+        not bundle_revision.startswith("sha256:")
+        or len(bundle_revision) != len("sha256:") + 64
+        or any(character not in "0123456789abcdef" for character in bundle_revision[7:])
+    ):
         return None
     return json.dumps(values, sort_keys=True, ensure_ascii=False)
 

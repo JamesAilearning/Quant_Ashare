@@ -1639,6 +1639,9 @@ class ProvenanceFingerprintTests(unittest.TestCase):
         with patch(
             "src.core.backtest_runner.get_canonical_qlib_config",
             return_value=runtime_cfg,
+        ), patch(
+            "src.core.backtest_runner.read_bundle_tag",
+            return_value="2026-08-20@sha256:" + "a" * 64,
         ):
             prov = BacktestRunner._build_provenance(
                 self._make_request(), topk=50, n_drop=5,
@@ -1653,6 +1656,33 @@ class ProvenanceFingerprintTests(unittest.TestCase):
         self.assertEqual(prov["config"]["runtime"]["region"], "cn")
         self.assertEqual(
             prov["config"]["runtime"]["data_adjust_mode"], ADJUST_MODE_PRE,
+        )
+        self.assertEqual(
+            prov["config"]["runtime"]["bundle_identity"],
+            "2026-08-20@sha256:" + "a" * 64,
+        )
+
+    def test_fingerprint_changes_when_a_bundle_is_reingested_at_the_same_path(self) -> None:
+        runtime = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config", return_value=runtime
+        ), patch(
+            "src.core.backtest_runner.read_bundle_tag",
+            side_effect=(
+                "2026-08-20@sha256:" + "a" * 64,
+                "2026-08-20@sha256:" + "b" * 64,
+            ),
+        ):
+            before = BacktestRunner._build_provenance(self._make_request(), topk=50, n_drop=5)
+            after = BacktestRunner._build_provenance(self._make_request(), topk=50, n_drop=5)
+
+        self.assertNotEqual(before["config_fingerprint"], after["config_fingerprint"])
+        self.assertNotEqual(
+            before["config"]["runtime"]["bundle_identity"],
+            after["config"]["runtime"]["bundle_identity"],
         )
 
     def test_fingerprint_changes_with_provider_uri(self) -> None:

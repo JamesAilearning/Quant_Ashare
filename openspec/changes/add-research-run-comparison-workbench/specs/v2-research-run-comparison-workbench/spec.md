@@ -26,10 +26,10 @@ not launch, cancel, mutate, delete, or otherwise operate on a run.
 Before assigning a controlled research ordering, the workbench SHALL compare
 the selected runs' universe, training/validation/testing windows, benchmark,
 signal-to-execution lag, canonical cost/exchange controls, and data
-provenance.  A missing, malformed, or unequal required value SHALL block the
-ordering and identify the affected field and run ID.  The workbench SHALL NOT
-invent a missing value, recompute metrics, or call a non-comparable selection
-equivalent.
+provenance including the producer-recorded immutable bundle-content identity.
+A missing, malformed, or unequal required value SHALL block the ordering and
+identify the affected field and run ID.  The workbench SHALL NOT invent a
+missing value, recompute metrics, or call a non-comparable selection equivalent.
 
 #### Scenario: Equal complete contracts permit an ordering
 
@@ -44,6 +44,13 @@ equivalent.
 - **WHEN** one selected run has no canonical runtime provenance in its report
 - **THEN** the page labels that value unavailable with its reason
 - **AND** blocks metric ordering for the whole selection
+
+#### Scenario: A provider path has no immutable bundle identity
+
+- **WHEN** a selected run records only a mutable provider URI or an unavailable
+  bundle-content identity
+- **THEN** the page labels data provenance unavailable
+- **AND** blocks metric ordering rather than treating the path as data identity
 
 ### Requirement: Present existing evidence and precise read-only references
 
