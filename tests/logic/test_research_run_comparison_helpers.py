@@ -27,6 +27,9 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                 "config": {
                     "benchmark_code": "SH000300TR",
                     "signal_to_execution_lag": 1,
+                    "st_mask": {
+                        "namechange_sha256": "a" * 64,
+                    },
                     "adjust_mode": "pre_adjusted",
                     "exchange_config": {
                         "execution_price_kind": "close",
@@ -93,6 +96,34 @@ def test_mismatched_execution_lag_blocks_controlled_ranking() -> None:
     assert result.eligible is False
     assert result.ranked_run_ids == ()
     assert any("信号至成交滞后不一致" in reason for reason in result.reasons)
+
+
+def test_malformed_execution_lag_blocks_controlled_ranking() -> None:
+    complete = _pipeline_run("run-complete")
+
+    for invalid_lag in (0, False, "1"):
+        malformed = _pipeline_report()
+        provenance = malformed["backtest"]["provenance"]["config"]  # type: ignore[index]
+        provenance["signal_to_execution_lag"] = invalid_lag  # type: ignore[index]
+        result = assess_comparability((complete, _pipeline_run("run-malformed", report=malformed)))
+
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("信号至成交滞后" in reason for reason in result.reasons)
+
+
+def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None:
+    first = _pipeline_run("run-a")
+    changed = _pipeline_report()
+    provenance = changed["backtest"]["provenance"]["config"]  # type: ignore[index]
+    provenance["st_mask"]["namechange_sha256"] = "b" * 64  # type: ignore[index]
+    second = _pipeline_run("run-b", report=changed)
+
+    result = assess_comparability((first, second))
+
+    assert result.eligible is False
+    assert result.ranked_run_ids == ()
+    assert any("ST 掩码输入内容不一致" in reason for reason in result.reasons)
 
 
 def test_missing_runtime_provenance_is_visible_and_blocks_comparison() -> None:

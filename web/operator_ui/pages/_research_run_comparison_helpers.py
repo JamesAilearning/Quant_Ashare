@@ -26,6 +26,7 @@ CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("benchmark", "回测基准"),
     ("execution_lag", "信号至成交滞后"),
     ("exchange_cost", "交易所与成本模型"),
+    ("st_mask_identity", "ST 掩码输入内容"),
     ("data_provenance", "数据来源 / 运行时快照"),
 )
 
@@ -187,6 +188,24 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
     return _stable_value({key: runtime[key] for key in required})
 
 
+def _execution_lag(value: Any) -> str | None:
+    """Accept only the canonical total signal-to-fill delay (an int >= 1)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return str(value)
+
+
+def _st_mask_identity(provenance: Mapping[str, Any]) -> str | None:
+    """Return the recorded ST-input content hash, never its mutable path."""
+    sha256 = _mapping(provenance.get("st_mask")).get("namechange_sha256")
+    if not isinstance(sha256, str):
+        return None
+    normalized = sha256.strip().lower()
+    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+        return None
+    return normalized
+
+
 def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     report_config = _mapping(report.get("config"))
     provenance = _mapping(_nested(report, "backtest", "provenance", "config"))
@@ -198,8 +217,9 @@ def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
         "validation_window": _window_from_pipeline(report_config, "valid_period"),
         "testing_window": _window_from_pipeline(report_config, "test_period"),
         "benchmark": _stable_value(provenance.get("benchmark_code")),
-        "execution_lag": _stable_value(provenance.get("signal_to_execution_lag")),
+        "execution_lag": _execution_lag(provenance.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_request(provenance),
+        "st_mask_identity": _st_mask_identity(provenance),
         "data_provenance": _data_provenance(runtime),
     }
 
@@ -216,8 +236,12 @@ def _walk_forward_contract(
         "validation_window": _window_from_walk_forward(source, "valid"),
         "testing_window": _stable_value(report.get("test_window_coverage")),
         "benchmark": _stable_value(source.get("benchmark_code")),
-        "execution_lag": _stable_value(source.get("signal_to_execution_lag")),
+        "execution_lag": _execution_lag(source.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_config(source),
+        # Fold reports already record their ST-mask hashes, but the aggregate
+        # walk-forward artifact does not expose one run-level identity yet.
+        # Keep it unavailable rather than inferring from config.yaml.
+        "st_mask_identity": None,
         # Existing walk-forward reports do not record the initialized qlib
         # runtime.  A config.yaml declaration is not evidence of the runtime
         # used, so ordering must remain blocked until a producer emits it.
