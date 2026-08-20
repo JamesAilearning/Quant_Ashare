@@ -44,6 +44,8 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
         self.assertIn("all_jobs = tuple(load_all_jobs_read_only())", source)
         self.assertIn("summarise_operations(all_jobs)", source)
         self.assertIn("count_malformed_cli_entries", source)
+        self.assertIn("count_malformed_ui_job_entries", source)
+        self.assertIn("count_cli_rows_outside_output_tree", source)
         self.assertNotIn("from web.operator_ui.job_io import load_all_jobs\n", source)
 
     def test_success_handoff_requires_a_published_dated_artifact(self) -> None:

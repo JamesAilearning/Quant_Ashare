@@ -711,6 +711,28 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(job_io._load_cli_entries(), [])
 
 
+class UiJobDiagnosticsTests(unittest.TestCase):
+    def test_schema_invalid_ui_job_artifacts_are_counted_as_malformed(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "invalid-empty").mkdir()
+            (root / "invalid-empty" / "job.json").write_text("{}", encoding="utf-8")
+            (root / "invalid-list").mkdir()
+            (root / "invalid-list" / "job.json").write_text("[]", encoding="utf-8")
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 2)
+
+
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
     """write_job_json(only_if_status=...) is the atomic guard that prevents a
     UI-side stop/reconcile from clobbering a status job_runner wrote first."""

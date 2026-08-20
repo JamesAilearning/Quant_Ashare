@@ -220,6 +220,40 @@ def count_malformed_cli_entries() -> int:
     return malformed_count
 
 
+def count_malformed_ui_job_entries() -> int:
+    """Count unreadable or schema-invalid UI lifecycle artifacts.
+
+    ``_load_ui_jobs`` intentionally keeps its historical best-effort listing
+    behaviour for the Jobs page.  Read-only health surfaces need the omitted
+    entries to be observable instead of treating a partial UI catalog as
+    healthy, so they call this diagnostic alongside the listing.
+    """
+    if not _JOB_ROOT.is_dir():
+        return 0
+    malformed_count = 0
+    for job_dir in _JOB_ROOT.iterdir():
+        if not job_dir.is_dir():
+            continue
+        path = job_dir / "job.json"
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            malformed_count += 1
+            continue
+        if not isinstance(loaded, Mapping) or not _is_valid_ui_job_record(loaded):
+            malformed_count += 1
+    return malformed_count
+
+
+def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
+    """Accept the minimum lifecycle fields written by ``JobManager.start``."""
+    required = ("job_id", "mode", "status", "created_at")
+    return all(
+        isinstance(record.get(field), str) and record[field].strip()
+        for field in required
+    )
+
+
 #: ``load_all_jobs`` 每次取多少行。只是步长,不是上限——它会一直翻到
 #: ``total`` 为止。
 _PAGE_STRIDE = 1000

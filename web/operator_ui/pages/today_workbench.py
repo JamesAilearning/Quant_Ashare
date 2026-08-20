@@ -21,7 +21,12 @@ from web.operator_ui.incumbent import (
     resolve_model_path,
     unusable_path_reason,
 )
-from web.operator_ui.job_io import count_malformed_cli_entries, load_all_jobs_read_only
+from web.operator_ui.job_io import (
+    count_cli_rows_outside_output_tree,
+    count_malformed_cli_entries,
+    count_malformed_ui_job_entries,
+    load_all_jobs_read_only,
+)
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
     list_recommendation_artifacts,
@@ -327,6 +332,9 @@ jobs_error: str | None = None
 try:
     all_jobs = tuple(load_all_jobs_read_only())
     operations = summarise_operations(all_jobs)
+    malformed_cli_entries = count_malformed_cli_entries()
+    malformed_ui_entries = count_malformed_ui_job_entries()
+    outside_output_entries = count_cli_rows_outside_output_tree()
 except (OSError, RuntimeError, ValueError) as exc:
     jobs_error = f"作业目录无法汇总：{type(exc).__name__}: {exc}"
     _render_card(
@@ -336,12 +344,21 @@ except (OSError, RuntimeError, ValueError) as exc:
         color="negative",
     )
 else:
-    malformed_cli_entries = count_malformed_cli_entries()
+    job_verification_reasons: list[str] = []
     if malformed_cli_entries:
-        jobs_error = (
-            f"作业目录含 {malformed_cli_entries} 行损坏的 CLI 索引记录；"
-            "当前作业状态需要核验。"
+        job_verification_reasons.append(
+            f"作业目录含 {malformed_cli_entries} 行损坏的 CLI 索引记录"
         )
+    if malformed_ui_entries:
+        job_verification_reasons.append(
+            f"作业目录含 {malformed_ui_entries} 个无法读取或结构无效的 UI 作业记录"
+        )
+    if outside_output_entries:
+        job_verification_reasons.append(
+            f"另有 {outside_output_entries} 行 CLI 记录的产物目录在可读边界外"
+        )
+    if job_verification_reasons:
+        jobs_error = "；".join(job_verification_reasons) + "；当前作业状态需要核验。"
         _render_card("当前运行或异常", "需要核验", jobs_error, color="negative")
     elif operations.kind == "running":
         _render_card(
