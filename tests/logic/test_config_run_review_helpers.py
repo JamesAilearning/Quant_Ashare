@@ -102,6 +102,25 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
         self.assertEqual(differences[0].preset_value, 50)
         self.assertEqual(differences[1].preset_value, "2022-01-01")
 
+    def test_unreadable_preset_invalidates_a_saved_review_snapshot(self) -> None:
+        emitted = {"mode": "pipeline", "topk": 30}
+
+        baseline = snapshot_preset_for_review(
+            {"mode": "pipeline", "topk": 50},
+            {"mode": "pipeline", "topk": 50},
+            normalization_defaults={},
+            snapshot=None,
+        )
+
+        self.assertIsNone(
+            snapshot_preset_for_review(
+                emitted,
+                None,
+                normalization_defaults={},
+                snapshot=baseline,
+            )
+        )
+
     def test_unavailable_preset_is_not_reported_as_a_match(self) -> None:
         self.assertIsNone(config_preset_differences({"mode": "pipeline"}, None))
 

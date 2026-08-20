@@ -244,6 +244,8 @@ def snapshot_preset_for_review(
     ``snapshot`` for that explicitly applied preset.
     """
 
+    if preset_config is None:
+        return None
     if snapshot is not None:
         return dict(snapshot)
     return effective_preset_for_review(
