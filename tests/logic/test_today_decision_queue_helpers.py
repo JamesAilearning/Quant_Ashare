@@ -55,10 +55,10 @@ def test_multiple_distinct_exceptions_are_not_hidden_by_higher_priority_signal_b
     )
 
     assert [item.source_key for item in items] == [
-        "signal:verification", "job:failed-b", "job:failed-a", "serving:identity",
+        "signal:verification", "job:failed-b", "job:failed-a", "serving:identity", "update:missing",
     ]
     assert queue_counts(items) == {
-        "blocker": 1, "attention": 2, "in_progress": 0, "review": 0, "information": 1,
+        "blocker": 1, "attention": 2, "in_progress": 0, "review": 0, "information": 2,
     }
 
 
@@ -200,6 +200,23 @@ def test_provider_mismatch_remains_a_blocker_even_when_update_is_terminal() -> N
     mismatch = next(item for item in items if item.source_key == "update:provider-mismatch")
     assert mismatch.kind == "blocker"
     assert mismatch.title == "数据更新来源不匹配"
+
+
+def test_missing_update_status_is_visible_as_an_information_item() -> None:
+    items = _queue(update_kind="missing")
+
+    missing = next(item for item in items if item.source_key == "update:missing")
+    assert missing.kind == "information"
+    assert missing.destination == "run_center"
+
+
+@pytest.mark.parametrize("kind", ("unresolvable", "unsupported"))
+def test_unverifiable_serving_identity_creates_a_blocker(kind: str) -> None:
+    items = _queue(incumbent_kind=kind, incumbent_detail="serving manifest unreadable")
+
+    identity = next(item for item in items if item.source_key == "serving:identity")
+    assert identity.kind == "blocker"
+    assert identity.title == "服务身份需要核验"
 
 
 def test_duplicate_source_key_keeps_its_newest_evidence_regardless_of_input_order() -> None:

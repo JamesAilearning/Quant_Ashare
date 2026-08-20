@@ -710,6 +710,23 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
                 self.assertEqual(job_io.count_malformed_cli_entries(), 2)
                 self.assertEqual(job_io._load_cli_entries(), [])
 
+    def test_cli_catalog_rejects_an_unknown_engine(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "unknown-engine", "engine": "pipline", "status": "ok", '
+                '"completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/unknown-engine"}\n',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 1)
+                self.assertEqual(job_io._load_cli_entries(), [])
+
 
 class UiJobDiagnosticsTests(unittest.TestCase):
     def test_ui_diagnostic_accepts_legacy_started_at_and_counts_invalid_artifacts(self) -> None:

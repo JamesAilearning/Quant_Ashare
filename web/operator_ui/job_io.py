@@ -213,9 +213,13 @@ def _read_cli_entries_with_diagnostics() -> tuple[list[dict[str, Any]], int]:
 def _is_valid_cli_catalog_record(record: Mapping[str, Any]) -> bool:
     """Accept only the required, producer-written CLI catalog fields."""
     required = ("run_id", "engine", "status", "completed_at", "output_dir")
-    return all(
-        isinstance(record.get(field), str) and record[field].strip()
-        for field in required
+    return (
+        isinstance(record.get("engine"), str)
+        and record["engine"] in {"pipeline", "walk_forward"}
+        and all(
+            isinstance(record.get(field), str) and record[field].strip()
+            for field in required
+        )
     )
 
 

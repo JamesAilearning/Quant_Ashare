@@ -209,6 +209,12 @@ def build_today_decision_queue(
             "blocker", "update:corrupt", "数据更新状态需要核验", update_detail,
             source_time=update_time, destination="run_center",
         ))
+    elif update_kind == "missing":
+        items.append(_item(
+            "information", "update:missing", "尚无数据更新记录",
+            "当前数据包尚未生成更新状态记录。",
+            destination="run_center",
+        ))
     elif update_kind == "running":
         if update_running_class == "fresh":
             items.append(_item(
@@ -302,10 +308,16 @@ def build_today_decision_queue(
             context=review.artifact_date,
         ))
 
-    items.append(_item(
-        "information", "serving:identity", "服务身份仅供核对", incumbent_detail,
-        destination="ops_cockpit", context=incumbent_kind,
-    ))
+    if incumbent_kind in {"single", "ensemble"}:
+        items.append(_item(
+            "information", "serving:identity", "服务身份仅供核对", incumbent_detail,
+            destination="ops_cockpit", context=incumbent_kind,
+        ))
+    else:
+        items.append(_item(
+            "blocker", "serving:identity", "服务身份需要核验", incumbent_detail,
+            destination="ops_cockpit", context=incumbent_kind,
+        ))
     unique: dict[str, TodayQueueItem] = {}
     for item in items:
         current = unique.get(item.source_key)
