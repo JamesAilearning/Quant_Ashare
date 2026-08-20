@@ -63,6 +63,23 @@ def test_partial_current_records_keep_action_counts_and_latest_time() -> None:
     assert [state.action for state in progress.candidates] == ["adopt", "watch", None]
 
 
+def test_latest_reviewed_time_uses_chronology_not_iso_string_order() -> None:
+    progress = summarise_daily_review_progress(
+        _DATE,
+        ("SH600000", "SZ000001"),
+        {
+            (_DATE, "SH600000"): _entry(
+                "SH600000", decided_at="20260819T090000+08:00"
+            ),
+            (_DATE, "SZ000001"): _entry(
+                "SZ000001", decided_at="2026-08-19T10:00:00+08:00"
+            ),
+        },
+    )
+
+    assert progress.latest_reviewed_at == "2026-08-19T10:00:00+08:00"
+
+
 def test_all_current_candidates_are_counted_once_from_the_effective_view() -> None:
     progress = summarise_daily_review_progress(
         _DATE,

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
-from web.operator_ui.decision_journal import ACTIONS, DecisionEntry
+from web.operator_ui.decision_journal import ACTIONS, DecisionEntry, _parse_decided_at
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,7 @@ def summarise_daily_review_progress(
 
     states: list[CandidateReviewState] = []
     action_counts = {action: 0 for action in ACTIONS}
-    reviewed_times: list[str] = []
+    reviewed_times: list[tuple[datetime, str]] = []
     for code in codes:
         entry = effective_decisions.get((trade_date, code))
         if entry is None:
@@ -84,8 +85,11 @@ def summarise_daily_review_progress(
             or not entry.decided_at
         ):
             raise ValueError("有效决策记录与当前候选键不一致，无法计算审阅进度。")
+        decided_at = _parse_decided_at(entry.decided_at)
+        if decided_at is None:
+            raise ValueError("有效决策记录的审阅时间无效，无法计算审阅进度。")
         action_counts[entry.action] += 1
-        reviewed_times.append(entry.decided_at)
+        reviewed_times.append((decided_at, entry.decided_at))
         states.append(CandidateReviewState(
             code=code,
             action=entry.action,
@@ -103,7 +107,11 @@ def summarise_daily_review_progress(
         adopt_count=action_counts["adopt"],
         reject_count=action_counts["reject"],
         watch_count=action_counts["watch"],
-        latest_reviewed_at=max(reviewed_times, default=None),
+        latest_reviewed_at=(
+            max(reviewed_times, key=lambda item: item[0])[1]
+            if reviewed_times
+            else None
+        ),
     )
 
 
