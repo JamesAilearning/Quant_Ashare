@@ -537,10 +537,14 @@ def _effective_metric_status(report: Mapping[str, Any]) -> str | None:
     return metric_status
 
 
-def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence:
+def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     aggregate = _mapping(report.get("aggregate_metrics"))
     raw_folds = report.get("folds")
-    folds = tuple(item for item in raw_folds if isinstance(item, Mapping)) if isinstance(raw_folds, list) else ()
+    if not isinstance(raw_folds, list) or any(
+        not isinstance(item, Mapping) for item in raw_folds
+    ):
+        return None
+    folds = tuple(raw_folds)
     valid_count = aggregate.get("valid_folds_information_ratio")
     return FoldEvidence(
         fold_count=_non_boolean_int(report.get("num_folds")),
@@ -581,6 +585,13 @@ def build_comparison_run(
         contract = _walk_forward_contract(report, config)
         metrics = _walk_forward_metrics(report)
         fold_evidence = _walk_forward_evidence(report)
+        if fold_evidence is None:
+            collected_issues.append(
+                ComparisonIssue(
+                    "invalid_fold_evidence",
+                    "逐折稳定性证据结构无效，无法按既有工件展示。",
+                )
+            )
 
     for key, label in CONTRACT_FIELDS:
         if not contract.get(key):

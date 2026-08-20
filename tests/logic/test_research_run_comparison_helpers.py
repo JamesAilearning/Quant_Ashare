@@ -373,6 +373,22 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
         assert malformed_count_run.fold_evidence.fold_count is None
         assert malformed_count_run.fold_evidence.valid_fold_count is None
 
+    malformed_folds = deepcopy(report)
+    malformed_folds["folds"] = [{"fold_index": 0}, "not-a-fold"]
+    malformed_fold_run = build_comparison_run(
+        run_id="wf-malformed-folds",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=malformed_folds,
+    )
+    assert malformed_fold_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in malformed_fold_run.issues)
+
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]
     different_schedule = build_comparison_run(
