@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
@@ -92,6 +93,19 @@ def _item(
         destination=destination,
         context=context,
     )
+
+
+def _source_timestamp(value: str) -> float:
+    """Normalize only timezone-aware source timestamps for queue ordering."""
+    if not value:
+        return float("-inf")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return float("-inf")
+    if parsed.tzinfo is None:
+        return float("-inf")
+    return parsed.astimezone(timezone.utc).timestamp()
 
 
 def queue_page_link(item: TodayQueueItem) -> tuple[str, Mapping[str, str] | None]:
@@ -250,11 +264,18 @@ def build_today_decision_queue(
     unique: dict[str, TodayQueueItem] = {}
     for item in items:
         current = unique.get(item.source_key)
-        if current is None or item.source_time >= current.source_time:
+        if current is None or _source_timestamp(item.source_time) >= _source_timestamp(
+            current.source_time
+        ):
             unique[item.source_key] = item
-    by_key = sorted(unique.values(), key=lambda item: item.source_key)
-    by_time = sorted(by_key, key=lambda item: item.source_time, reverse=True)
-    return tuple(sorted(by_time, key=lambda item: _PRIORITY[item.kind]))
+    return tuple(sorted(
+        unique.values(),
+        key=lambda item: (
+            _PRIORITY[item.kind],
+            -_source_timestamp(item.source_time),
+            item.source_key,
+        ),
+    ))
 
 
 def queue_counts(items: Iterable[TodayQueueItem]) -> Mapping[str, int]:

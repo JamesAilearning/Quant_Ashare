@@ -174,18 +174,38 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
 
 def _load_cli_entries() -> list[dict[str, Any]]:
     """Return raw dicts for every CLI catalog entry."""
+    entries, _ = _read_cli_entries_with_diagnostics()
+    return entries
+
+
+def _read_cli_entries_with_diagnostics() -> tuple[list[dict[str, Any]], int]:
+    """Read CLI catalog rows and count malformed lines without hiding them."""
     if not _RUNS_INDEX.is_file():
-        return []
+        return [], 0
     entries: list[dict[str, Any]] = []
+    malformed_count = 0
     with open(_RUNS_INDEX, encoding="utf-8") as f:
         for line in f:
             try:
                 record = json.loads(line)
-                record["_cli_source"] = True
-                entries.append(record)
             except json.JSONDecodeError:
+                malformed_count += 1
                 continue
-    return sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True)
+            if not isinstance(record, dict):
+                malformed_count += 1
+                continue
+            record["_cli_source"] = True
+            entries.append(record)
+    return (
+        sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True),
+        malformed_count,
+    )
+
+
+def count_malformed_cli_entries() -> int:
+    """Return malformed CLI catalog lines for read-only verification surfaces."""
+    _, malformed_count = _read_cli_entries_with_diagnostics()
+    return malformed_count
 
 
 #: ``load_all_jobs`` 每次取多少行。只是步长,不是上限——它会一直翻到

@@ -40,11 +40,10 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
 
     def test_workbench_uses_the_non_mutating_job_reader(self) -> None:
         source = _PAGE.read_text(encoding="utf-8")
-        self.assertIn(
-            "from web.operator_ui.job_io import load_all_jobs_read_only", source
-        )
+        self.assertIn("load_all_jobs_read_only", source)
         self.assertIn("all_jobs = tuple(load_all_jobs_read_only())", source)
         self.assertIn("summarise_operations(all_jobs)", source)
+        self.assertIn("count_malformed_cli_entries", source)
         self.assertNotIn("from web.operator_ui.job_io import load_all_jobs\n", source)
 
     def test_success_handoff_requires_a_published_dated_artifact(self) -> None:

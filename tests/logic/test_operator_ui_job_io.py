@@ -670,6 +670,27 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         self.assertEqual(on_disk, original)
 
 
+class CliCatalogDiagnosticsTests(unittest.TestCase):
+    def test_malformed_catalog_lines_are_counted_without_hiding_valid_rows(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "valid", "completed_at": "2026-08-20T10:00:00+08:00"}\n'
+                "not-json\n"
+                "[]\n",
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 2)
+                self.assertEqual(
+                    [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
+                )
+
+
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
     """write_job_json(only_if_status=...) is the atomic guard that prevents a
     UI-side stop/reconcile from clobbering a status job_runner wrote first."""

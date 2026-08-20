@@ -21,7 +21,7 @@ from web.operator_ui.incumbent import (
     resolve_model_path,
     unusable_path_reason,
 )
-from web.operator_ui.job_io import load_all_jobs_read_only
+from web.operator_ui.job_io import count_malformed_cli_entries, load_all_jobs_read_only
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
     list_recommendation_artifacts,
@@ -336,7 +336,14 @@ except (OSError, RuntimeError, ValueError) as exc:
         color="negative",
     )
 else:
-    if operations.kind == "running":
+    malformed_cli_entries = count_malformed_cli_entries()
+    if malformed_cli_entries:
+        jobs_error = (
+            f"作业目录含 {malformed_cli_entries} 行损坏的 CLI 索引记录；"
+            "当前作业状态需要核验。"
+        )
+        _render_card("当前运行或异常", "需要核验", jobs_error, color="negative")
+    elif operations.kind == "running":
         _render_card(
             "当前运行或异常",
             "有作业运行中",

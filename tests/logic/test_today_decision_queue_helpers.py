@@ -98,6 +98,15 @@ def test_journal_or_candidate_shape_problem_blocks_fake_zero_review_count() -> N
         review_progress("2026-08-19", ("SH600000", "SH600000"), {})
 
 
+def test_malformed_job_catalog_blocks_a_partial_catalog_from_looking_healthy() -> None:
+    items = _queue(jobs_error="作业目录含 1 行损坏的 CLI 索引记录。")
+
+    assert any(
+        item.source_key == "jobs:verification" and item.kind == "blocker"
+        for item in items
+    )
+
+
 def test_stable_order_uses_newest_timestamp_within_same_queue_kind() -> None:
     items = _queue(jobs=(
         _job("old", "running", finished_at="2026-08-19T08:00:00+08:00"),
@@ -105,6 +114,20 @@ def test_stable_order_uses_newest_timestamp_within_same_queue_kind() -> None:
     ))
 
     assert [item.source_key for item in items if item.kind == "in_progress"] == ["job:new", "job:old"]
+
+
+def test_queue_normalises_aware_timestamps_before_ordering() -> None:
+    items = _queue(
+        update_kind="running",
+        update_detail="update in progress",
+        update_time="2026-08-19T09:00:00+08:00",
+        update_running_class="fresh",
+        jobs=(_job("later-utc", "running", finished_at="2026-08-19T02:00:00+00:00"),),
+    )
+
+    assert [item.source_key for item in items if item.kind == "in_progress"] == [
+        "job:later-utc", "update:running",
+    ]
 
 
 def test_exception_link_keeps_its_real_filter_status() -> None:
