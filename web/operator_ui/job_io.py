@@ -12,6 +12,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from web.operator_ui._path_guard import PROJECT_ROOT, allowed_output_roots
 from web.operator_ui.formatting import to_cn_date
 
@@ -96,6 +98,7 @@ _JOB_ROOT = Path(__file__).resolve().parents[2] / "output" / "operator_ui" / "jo
 _RUNS_INDEX = (
     Path(__file__).resolve().parents[2] / "output" / "runs" / "_index.jsonl"
 )
+_UI_JOB_MODES = frozenset({"pipeline", "walk_forward", "tushare_provider"})
 
 
 @dataclass
@@ -273,7 +276,9 @@ def count_malformed_ui_job_entries() -> int:
 
 def _ui_job_config_is_normalisable(record: Mapping[str, Any]) -> bool:
     """Reject nested config shapes that would crash UI job normalisation."""
-    config = record.get("config")
+    config, yaml_is_valid = _effective_ui_job_config(record)
+    if not yaml_is_valid:
+        return False
     if not isinstance(config, Mapping):
         return True
     instruments = config.get("instruments")
@@ -282,8 +287,20 @@ def _ui_job_config_is_normalisable(record: Mapping[str, Any]) -> bool:
     )
 
 
+def _effective_ui_job_config(record: Mapping[str, Any]) -> tuple[Any, bool]:
+    """Return the exact config shape consumed by UI normalisation."""
+    config = record.get("config")
+    config_yaml = record.get("config_yaml")
+    if isinstance(config, str) and isinstance(config_yaml, str):
+        try:
+            return yaml.safe_load(config_yaml), True
+        except yaml.YAMLError:
+            return config, False
+    return config, True
+
+
 def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
-    """Accept the minimum lifecycle fields written by ``JobManager.start``."""
+    """Accept producer lifecycle fields, including retired readable modes."""
     required = ("job_id", "mode", "status")
     has_lifecycle_timestamp = any(
         isinstance(record.get(field), str) and record[field].strip()
@@ -291,7 +308,7 @@ def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
     )
     return (
         isinstance(record.get("mode"), str)
-        and record["mode"] in {"pipeline", "walk_forward"}
+        and record["mode"] in _UI_JOB_MODES
         and has_lifecycle_timestamp
         and all(
             isinstance(record.get(field), str) and record[field].strip()
@@ -403,13 +420,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
             or str(progress.get("label") or "失败")
         )
 
-    config = raw.get("config")
-    if isinstance(raw.get("config_yaml"), str):
-        try:
-            import yaml
-            config = yaml.safe_load(raw["config_yaml"]) if isinstance(config, str) else config
-        except Exception:
-            pass
+    config, _yaml_is_valid = _effective_ui_job_config(raw)
 
     cfg_summary: dict[str, str] = {}
     if isinstance(config, dict):

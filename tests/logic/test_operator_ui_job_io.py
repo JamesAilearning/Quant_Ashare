@@ -852,12 +852,39 @@ class UiJobDiagnosticsTests(unittest.TestCase):
                 '"created_at":"2026-08-20T10:00:00+08:00"}',
                 encoding="utf-8",
             )
+            (root / "invalid-config-yaml").mkdir()
+            (root / "invalid-config-yaml" / "job.json").write_text(
+                '{"job_id":"invalid-config-yaml","mode":"pipeline",'
+                '"status":"pending","created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":"legacy","config_yaml":"instruments:\\n  - 1"}',
+                encoding="utf-8",
+            )
             with patch.object(job_io, "_JOB_ROOT", root):
                 with patch("web.operator_ui.progress.build_job_progress", return_value={}):
                     rows = job_io._load_ui_jobs(reconcile_zombies=False)
-                self.assertEqual(job_io.count_malformed_ui_job_entries(), 2)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 3)
 
         self.assertEqual([row["job_id"] for row in rows], ["valid"])
+
+    def test_ui_loader_preserves_retired_provider_lifecycle_records(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "retired-provider").mkdir()
+            (root / "retired-provider" / "job.json").write_text(
+                '{"job_id":"retired-provider","mode":"tushare_provider",'
+                '"status":"completed","created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 0)
+
+        self.assertEqual([row["job_id"] for row in rows], ["retired-provider"])
 
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
