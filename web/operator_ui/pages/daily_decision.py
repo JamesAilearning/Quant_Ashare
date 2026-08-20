@@ -51,6 +51,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_UNKNOWN,
     VERDICT_V1_UNKNOWN,
     anchored_to_repo,
+    artifact_schema_is_supported,
     artifact_kind_of,
     artifact_meta_status,
     banner_status,
@@ -216,6 +217,10 @@ if not _artifacts:
         "请先运行 scripts/daily_recommend.py(本页只渲染落盘工件,不代跑)。",
     )
     st.stop()
+    # ``st.stop`` raises inside Streamlit, but is a no-op during the required
+    # bare-module import smoke test.  Do not let that test fall through into a
+    # nonexistent selectbox value and mask later import-time regressions.
+    raise SystemExit
 
 _date_options = [item[0] for item in _artifacts]
 _session_state = cast(MutableMapping[str, object], st.session_state)
@@ -400,8 +405,10 @@ st.caption(
 # 缺 entry_date 的工件不得走这条路:那样会渲染出「entry — 是已收盘会话」
 # ——把一份**违约的**数据当成可信引导来背书(codex #443 r2)。
 _entry_date = _payload.get("entry_date")
-_artifact_contract_valid = isinstance(_entry_date, str) and bool(_entry_date.strip())
-if not _artifact_contract_valid:
+_entry_date_is_valid = isinstance(_entry_date, str) and bool(_entry_date.strip())
+_artifact_schema_supported = artifact_schema_is_supported(_payload)
+_artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported
+if not _entry_date_is_valid:
     st.error(
         "⚠ 工件缺少 `entry_date`(或为空/非字符串)——**工件契约被违反**,"
         "本页拒绝据此给出任何入场时点结论。请核查产出该工件的那次运行"
@@ -414,6 +421,11 @@ else:
         "因此**不要读成「明早开盘按市价买入」**——它是该会话收盘口径的"
         "目标持仓;实际下单如何向它靠拢由操作人的执行约定决定(观察期正在"
         "记录这段偏离)。**是否构成入场指令**看上方再平衡/HOLD 披露。"
+    )
+if not _artifact_schema_supported:
+    st.error(
+        "⚠ 工件 `artifact_schema_version` 缺失、格式错误或不受当前页面支持——"
+        "**工件契约被违反**，不显示人工审阅完成度或候选审阅标签。"
     )
 # 成本参照列的读法。滑点数值与常量同源派生——写死「20 bps」会在认证
 # profile 挪动时和列名/所减数字对不上(codex #443 r1)。

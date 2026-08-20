@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Final
-
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
+    SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
     VERDICT_MATCHES_INCUMBENT,
     VERDICT_SINGLE_SHA_OK,
     artifact_meta_status,
@@ -25,12 +24,6 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
-
-# ``src.inference.daily_recommend`` is deliberately not imported here: opening
-# this read-only Streamlit helper must not pull qlib-bound inference imports
-# into the UI process. The producer's named value is pinned by a source test.
-SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
-
 
 @dataclass(frozen=True)
 class DailySignalSummary:

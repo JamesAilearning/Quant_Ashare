@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from scripts.eval_profiles import EVAL_PROFILES
 from web.operator_ui._path_guard import output_path
@@ -52,6 +52,22 @@ from web.operator_ui.incumbent import (
 from web.operator_ui.incumbent import (
     unusable_path_reason as unusable_path_reason,
 )
+
+
+# The inference producer currently writes this exact artifact schema.  Keep the
+# read-only pages on one contract boundary instead of letting each page accept
+# a different version vocabulary.
+SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+
+
+def artifact_schema_is_supported(payload: dict[str, Any]) -> bool:
+    """Whether a persisted recommendation artifact has the supported schema."""
+    version = payload.get("artifact_schema_version")
+    return (
+        not isinstance(version, bool)
+        and isinstance(version, int)
+        and version == SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION
+    )
 
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").

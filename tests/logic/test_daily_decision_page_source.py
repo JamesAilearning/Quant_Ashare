@@ -505,6 +505,13 @@ class HelpersRuntimeTests(unittest.TestCase):
             found = list_recommendation_artifacts(root)
         self.assertEqual([d for d, _ in found], ["2026-07-03", "2026-07-01"])
 
+    def test_empty_artifact_state_stops_bare_module_import_cleanly(self) -> None:
+        source = _PAGE.read_text(encoding="utf-8")
+        empty_start = source.index("if not _artifacts:")
+        empty_section = source[empty_start : source.index("_date_options =", empty_start)]
+        self.assertIn("st.stop()", empty_section)
+        self.assertIn("raise SystemExit", empty_section)
+
     def test_banner_meta_is_promotion_sidecar_only_no_fallthrough(self) -> None:
         # codex P2 on #330: a trainer sidecar must NOT stand in for a missing
         # promotion meta — the banner reports absence loudly instead.
@@ -1196,6 +1203,20 @@ class ProvenanceRenderingTests(unittest.TestCase):
         assert helpers.review_progress_is_available(
             verdict=helpers.VERDICT_MATCHES_INCUMBENT, artifact_contract_valid=False,
         ) is False
+        for payload in (
+            {},
+            {"artifact_schema_version": False},
+            {"artifact_schema_version": "2"},
+            {"artifact_schema_version": 1},
+            {"artifact_schema_version": 3},
+        ):
+            with self.subTest(payload=payload):
+                assert helpers.artifact_schema_is_supported(payload) is False
+                assert helpers.review_progress_is_available(
+                    verdict=helpers.VERDICT_MATCHES_INCUMBENT,
+                    artifact_contract_valid=helpers.artifact_schema_is_supported(payload),
+                ) is False
+        assert helpers.artifact_schema_is_supported({"artifact_schema_version": 2})
         review_start = self.page.index("with _review_summary_slot:")
         review_section = self.page[
             review_start
