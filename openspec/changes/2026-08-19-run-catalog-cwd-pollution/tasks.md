@@ -397,3 +397,26 @@ Windows 上翻译过）。老做法「读时归一化、写时再译回」在同
 **第一版性质测试有个空转，如实记**：期望值是拿 `result.dropped` 反推的，工具若
 错删一行，期望会跟着一起动 —— 实测变异 AK 时它确实**抓不到**。补上第三条
 （独立推导：读不懂的行不许被移除）之后，三条变异**性质测试单独就能全抓到**。
+
+## 第十五轮（codex 一条 P2，仍无 P1）
+
+```
+守卫 46 条（性质测试的对抗矩阵 +2 种形态）
+  AN 只接 JSONDecodeError（原状）     抓到 | 只跑性质测试 抓到
+  AO 只接 ValueError（codex 的建议）  抓到 | 只跑性质测试 抓到
+```
+
+**实证两点，第二点决定了修法**：
+
+1. 超长整数（>4300 位）抛 `ValueError`，不是 `JSONDecodeError`
+2. **深嵌套数组抛 `RecursionError`，连 `ValueError` 都不是** —— 按 codex 建议只接
+   parser-limit 的 `ValueError`，下一轮还会回来（变异 AO 实测：性质测试照样红）
+
+所以判据取「解析器放弃了」这件事本身：那个 `try` 只裹**一次** `json.loads`，
+没有我们自己的逻辑在里面可被掩盖，`KeyboardInterrupt`/`SystemExit` 是
+`BaseException` 照样穿得过去 —— 放宽在这里是安全且完备的，逐个补异常类型才是
+补一个漏一个。
+
+**追溯**：这处 `except json.JSONDecodeError` 来自本 PR 的**第一个提交**
+`36c6e9b`，不是最近三轮引入的 —— 与第 13/14 轮那两条（我自己新代码的返工）
+性质不同。

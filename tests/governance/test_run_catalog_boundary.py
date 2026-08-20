@@ -1049,6 +1049,8 @@ class PruneToolPreservesEvidence(unittest.TestCase):
                         "",                                   # 空行
                         "null",                               # 合法但非记录
                         "{ 读不懂的一行",                       # 坏 JSON
+                        "1" * 5000,          # 语法合法，但超过整数位数上限
+                        "[" * 2000 + "]" * 2000,   # 语法合法，但深到爆栈
                         u2028_row.replace("PLACEHOLDER", inside),
                         json.dumps({"engine": "pipeline",
                                     "output_dir": "C:/Temp/tmpdead"}),

@@ -160,9 +160,20 @@ def classify(
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except Exception:  # noqa: BLE001 — 见下,这里的「宽」是判据的一部分
             # 读不懂的行**保留**。判据只针对能证明是残骸的那些;看不懂就不动,
             # 那是别人的数据。
+            #
+            # 接得宽是刻意的。只接 ``JSONDecodeError`` 会漏掉解析器的其它放弃
+            # 方式,而每一种都会让**只报数模式**整个中断(实测):
+            #   超长整数(>4300 位)  -> ValueError,不是 JSONDecodeError
+            #   深嵌套数组          -> RecursionError,连 ValueError 都不是
+            # 逐个补类型就是枚举,补一个漏一个;这里要的是「解析器放弃了」这件
+            # 事本身(codex #453)。
+            #
+            # 放宽在这里安全:``try`` 只裹**一次** ``json.loads``,没有我们自己的
+            # 逻辑在里面可被掩盖;``KeyboardInterrupt`` / ``SystemExit`` 是
+            # ``BaseException``,照样能穿过去。
             retained.append(line)
             unclassified += 1
             continue

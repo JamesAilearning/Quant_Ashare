@@ -308,6 +308,15 @@ and would **remove** the out-of-tree variant. Detecting it is a total test,
 not a character list: a row that cannot be re-encoded as UTF-8 carries
 bytes we never read.
 
+No single row SHALL be able to abort the scan, whatever shape its content
+takes. The criterion is that the parser gave up, not which exception it
+chose: a number beyond the interpreter's digit limit raises a plain
+`ValueError`, and a deeply nested array raises `RecursionError`, which is
+not even a `ValueError` — naming exception types one at a time is the
+enumeration this change keeps having to undo. Catching broadly is safe at
+this seam because the guarded block is a single parse call with none of
+our own logic inside it.
+
 Lines the tool cannot interpret SHALL be retained, including blank
 separator lines and valid JSON that is not a record object (`null`,
 arrays, scalars). A blank line that is in neither the retained nor the
@@ -440,6 +449,13 @@ refuse to prune a catalog that has more than one name.
 - **WHEN** the tool prunes it
 - **THEN** the retained rows keep their bytes, and the sidecar holds the
   removed row without adding a terminator
+
+#### Scenario: content that defeats the parser
+
+- **GIVEN** a row that is a number too long to convert, or an array nested
+  past the recursion limit
+- **WHEN** the tool classifies the catalog
+- **THEN** the scan completes and the row is retained unclassified
 
 #### Scenario: an undecodable byte inside valid JSON
 
