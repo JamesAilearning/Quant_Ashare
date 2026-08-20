@@ -886,6 +886,21 @@ class UiJobDiagnosticsTests(unittest.TestCase):
 
         self.assertEqual([row["job_id"] for row in rows], ["retired-provider"])
 
+    def test_stop_failure_uses_its_recorded_attempt_timestamp(self) -> None:
+        from web.operator_ui import job_io
+
+        summary = job_io._normalise_ui_job(
+            {
+                "job_id": "stop-failure",
+                "mode": "pipeline",
+                "status": "stop_failed",
+                "created_at": "2026-08-20T10:00:00+08:00",
+                "stop_failed_at": "2026-08-20T10:05:00+08:00",
+            }
+        )
+
+        self.assertEqual(summary.finished_at, "2026-08-20T10:05:00+08:00")
+
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
     """write_job_json(only_if_status=...) is the atomic guard that prevents a

@@ -86,11 +86,18 @@ def _qp_write(key: str, value: str) -> None:
 
 
 def _seed_session_from_url(keys: list[str]) -> None:
-    """On first render of this page, copy URL params into widget-bound keys."""
+    """Consume each changed URL value once into its widget-bound state."""
     for k in keys:
         sk = f"jobs_{k}"
-        if sk not in st.session_state:
-            st.session_state[sk] = _qp_read(k)
+        url_state_key = f"jobs_last_url_{k}"
+        url_value = _qp_read(k)
+        # Streamlit preserves this page's widget state when navigating away and
+        # back.  Remembering the last consumed URL value lets a queue link
+        # replace stale page-local state, while a user changing the selectbox
+        # on this page is not overwritten before _qp_write mirrors it to URL.
+        if sk not in st.session_state or st.session_state.get(url_state_key) != url_value:
+            st.session_state[sk] = url_value
+        st.session_state[url_state_key] = url_value
 
 
 _seed_session_from_url(list(_DEFAULTS.keys()))

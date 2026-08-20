@@ -22,6 +22,9 @@ _ATTENTION_STATUSES = frozenset(
 _ACTIVE_STATUSES = frozenset({"queued", "pending", "running"})
 _COMPLETED_STATUSES = frozenset({"completed"})
 _KNOWN_JOB_STATUSES = _ATTENTION_STATUSES | _ACTIVE_STATUSES | _COMPLETED_STATUSES
+_UI_TERMINAL_STATUSES_REQUIRING_END = frozenset(
+    {"completed", "failed", "partial", "stopped", "cancelled"}
+)
 _PAGE_BY_DESTINATION = {
     "daily_decision": "pages/daily_decision.py",
     "jobs": "pages/jobs.py",
@@ -257,6 +260,17 @@ def build_today_decision_queue(
             destination="jobs",
         ))
     for job in jobs:
+        if (
+            job.source == "ui"
+            and job.status in _UI_TERMINAL_STATUSES_REQUIRING_END
+            and _parse_source_time(job.finished_at) is None
+        ):
+            items.append(_item(
+                "blocker", f"job:{job.run_id}:terminal-timestamp", "作业完成时间需要核验",
+                f"作业 {job.run_id} 已记录为终态 {job.status}，但未记录带时区的完成时间。",
+                source_time=job.finished_at, destination="jobs",
+            ))
+            continue
         timestamp = job.finished_at or job.started_at or job.created_at
         if timestamp and _parse_source_time(timestamp) is None:
             items.append(_item(

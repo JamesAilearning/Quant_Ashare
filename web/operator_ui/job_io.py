@@ -384,7 +384,10 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     # stamped (PR-K) so in-flight legacy jobs still sort/filter correctly.
     created = str(raw.get("created_at") or raw.get("started_at") or "")
     started = str(raw.get("started_at") or "")
-    finished = str(raw.get("ended_at") or "")
+    # ``stop_failed`` intentionally has no ``ended_at``: the stop attempt
+    # itself records ``stop_failed_at`` and leaves the job runnable.  Surface
+    # that producer timestamp without treating it as a completed lifecycle.
+    finished = str(raw.get("ended_at") or raw.get("stop_failed_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
 
     key_label, key_value = "", ""

@@ -172,6 +172,24 @@ def test_malformed_job_timestamp_creates_a_visible_verification_blocker(
     assert verification.destination == "jobs"
 
 
+@pytest.mark.parametrize("status", ("completed", "failed", "stopped"))
+def test_ui_terminal_job_without_completion_timestamp_blocks_the_queue(status: str) -> None:
+    items = _queue(jobs=(_job("incomplete-terminal", status),))
+
+    verification = next(
+        item for item in items if item.source_key == "job:incomplete-terminal:terminal-timestamp"
+    )
+    assert verification.kind == "blocker"
+    assert not any(item.source_key == "job:incomplete-terminal" for item in items)
+
+
+def test_stop_failure_remains_an_attention_item_without_an_end_timestamp() -> None:
+    items = _queue(jobs=(_job("stop-failure", "stop_failed"),))
+
+    job = next(item for item in items if item.source_key == "job:stop-failure")
+    assert job.kind == "attention"
+
+
 @pytest.mark.parametrize("status", ("unknown", "future_status", ""))
 def test_unrecognized_job_status_creates_a_visible_verification_blocker(
     status: str,
@@ -184,7 +202,9 @@ def test_unrecognized_job_status_creates_a_visible_verification_blocker(
 
 
 def test_exception_link_keeps_its_real_filter_status() -> None:
-    items = _queue(jobs=(_job("partial", "partial"),))
+    items = _queue(
+        jobs=(_job("partial", "partial", finished_at="2026-08-19T10:00:00+08:00"),)
+    )
 
     job = next(item for item in items if item.source_key == "job:partial")
     assert queue_page_link(job) == ("pages/jobs.py", {"status": "partial"})
