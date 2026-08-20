@@ -247,8 +247,12 @@ def count_malformed_ui_job_entries() -> int:
 
 def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
     """Accept the minimum lifecycle fields written by ``JobManager.start``."""
-    required = ("job_id", "mode", "status", "created_at")
-    return all(
+    required = ("job_id", "mode", "status")
+    has_lifecycle_timestamp = any(
+        isinstance(record.get(field), str) and record[field].strip()
+        for field in ("created_at", "started_at")
+    )
+    return has_lifecycle_timestamp and all(
         isinstance(record.get(field), str) and record[field].strip()
         for field in required
     )

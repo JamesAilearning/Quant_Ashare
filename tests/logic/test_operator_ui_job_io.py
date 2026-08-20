@@ -712,7 +712,7 @@ class CliCatalogDiagnosticsTests(unittest.TestCase):
 
 
 class UiJobDiagnosticsTests(unittest.TestCase):
-    def test_schema_invalid_ui_job_artifacts_are_counted_as_malformed(self) -> None:
+    def test_ui_diagnostic_accepts_legacy_started_at_and_counts_invalid_artifacts(self) -> None:
         import tempfile
 
         from web.operator_ui import job_io
@@ -727,6 +727,12 @@ class UiJobDiagnosticsTests(unittest.TestCase):
             (root / "valid" / "job.json").write_text(
                 '{"job_id":"valid","mode":"pipeline","status":"pending",'
                 '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "legacy-valid").mkdir()
+            (root / "legacy-valid" / "job.json").write_text(
+                '{"job_id":"legacy-valid","mode":"pipeline","status":"pending",'
+                '"started_at":"2026-08-19T10:00:00+08:00"}',
                 encoding="utf-8",
             )
             with patch.object(job_io, "_JOB_ROOT", root):
