@@ -107,6 +107,16 @@ def test_malformed_job_catalog_blocks_a_partial_catalog_from_looking_healthy() -
     )
 
 
+def test_job_catalog_verification_keeps_valid_job_exceptions_visible() -> None:
+    items = _queue(
+        jobs_error="作业目录含 1 行损坏的 CLI 索引记录。",
+        jobs=(_job("failed", "failed", finished_at="2026-08-19T10:00:00+08:00"),),
+    )
+
+    assert any(item.source_key == "jobs:verification" for item in items)
+    assert any(item.source_key == "job:failed" for item in items)
+
+
 def test_stable_order_uses_newest_timestamp_within_same_queue_kind() -> None:
     items = _queue(jobs=(
         _job("old", "running", finished_at="2026-08-19T08:00:00+08:00"),
@@ -128,6 +138,27 @@ def test_queue_normalises_aware_timestamps_before_ordering() -> None:
     assert [item.source_key for item in items if item.kind == "in_progress"] == [
         "job:later-utc", "update:running",
     ]
+
+
+def test_valid_artifact_dates_sort_as_source_times_within_blockers() -> None:
+    items = _queue(
+        signal=DailySignalSummary("needs_verification", "signal needs review", as_of_date="2026-08-19"),
+        jobs=(_job("older", "future_status", finished_at="2026-08-18T23:00:00+00:00"),),
+    )
+
+    blockers = [item.source_key for item in items if item.kind == "blocker"]
+    assert blockers.index("signal:verification") < blockers.index("job:older:status")
+
+
+@pytest.mark.parametrize("timestamp", ("not-a-timestamp", "2026-08-19T09:00:00"))
+def test_malformed_terminal_update_timestamp_creates_a_visible_verification_blocker(
+    timestamp: str,
+) -> None:
+    items = _queue(update_kind="finished", update_time=timestamp)
+
+    verification = next(item for item in items if item.source_key == "update:timestamp")
+    assert verification.kind == "blocker"
+    assert verification.destination == "run_center"
 
 
 @pytest.mark.parametrize("timestamp", ("not-a-timestamp", "2026-08-19T09:00:00"))

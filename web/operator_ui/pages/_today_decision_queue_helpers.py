@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
@@ -110,10 +110,30 @@ def _parse_source_time(value: str) -> datetime | None:
     return parsed
 
 
+def _parse_artifact_date(value: str) -> date | None:
+    """Parse the validated ``YYYY-MM-DD`` dates written by daily artifacts."""
+    if len(value) != 10:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _source_timestamp(value: str) -> float:
-    """Normalize only timezone-aware source timestamps for queue ordering."""
+    """Normalize source timestamps and validated artifact dates for ordering."""
     parsed = _parse_source_time(value)
-    return parsed.astimezone(timezone.utc).timestamp() if parsed else float("-inf")
+    if parsed:
+        return parsed.astimezone(timezone.utc).timestamp()
+    artifact_date = _parse_artifact_date(value)
+    if artifact_date:
+        return datetime(
+            artifact_date.year,
+            artifact_date.month,
+            artifact_date.day,
+            tzinfo=timezone.utc,
+        ).timestamp()
+    return float("-inf")
 
 
 def queue_page_link(item: TodayQueueItem) -> tuple[str, Mapping[str, str] | None]:
@@ -178,6 +198,12 @@ def build_today_decision_queue(
             "blocker", "update:provider-mismatch", "数据更新来源不匹配", update_detail,
             source_time=update_time, destination="run_center",
         ))
+    elif update_kind in {"finished", "running"} and _parse_source_time(update_time) is None:
+        items.append(_item(
+            "blocker", "update:timestamp", "数据更新时间需要核验",
+            f"数据更新状态的时间格式无效或缺少时区：{update_time or '未记录'}",
+            source_time=update_time, destination="run_center",
+        ))
     elif update_kind == "corrupt":
         items.append(_item(
             "blocker", "update:corrupt", "数据更新状态需要核验", update_detail,
@@ -219,38 +245,37 @@ def build_today_decision_queue(
             "blocker", "jobs:verification", "作业目录需要核验", jobs_error,
             destination="jobs",
         ))
-    else:
-        for job in jobs:
-            timestamp = job.finished_at or job.started_at or job.created_at
-            if timestamp and _parse_source_time(timestamp) is None:
-                items.append(_item(
-                    "blocker", f"job:{job.run_id}:timestamp", "作业时间需要核验",
-                    f"作业 {job.run_id} 的目录时间格式无效或缺少时区：{timestamp}",
-                    source_time=timestamp, destination="jobs",
-                ))
-            if job.status not in _KNOWN_JOB_STATUSES:
-                items.append(_item(
-                    "blocker", f"job:{job.run_id}:status", "作业状态需要核验",
-                    f"作业 {job.run_id} 的状态未被当前工作台识别：{job.status or '未记录'}。",
-                    source_time=timestamp, destination="jobs",
-                ))
-            elif job.status in _ATTENTION_STATUSES:
-                detail = job.error_message or job.key_metric_value or job.status
-                # ``cancelled`` is a legacy catalog value that the Jobs page
-                # deliberately does not expose as a selectable URL filter.
-                # Do not attach a context that its validator would silently
-                # discard; the unfiltered list is the honest destination.
-                status_context = None if job.status == "cancelled" else job.status
-                items.append(_item(
-                    "attention", f"job:{job.run_id}", f"作业需要关注：{job.type}", detail,
-                    source_time=timestamp, destination="jobs", context=status_context,
-                ))
-            elif job.status in _ACTIVE_STATUSES:
-                detail = job.key_metric_value or job.status
-                items.append(_item(
-                    "in_progress", f"job:{job.run_id}", f"作业进行中：{job.type}", detail,
-                    source_time=timestamp, destination="jobs", context=job.status,
-                ))
+    for job in jobs:
+        timestamp = job.finished_at or job.started_at or job.created_at
+        if timestamp and _parse_source_time(timestamp) is None:
+            items.append(_item(
+                "blocker", f"job:{job.run_id}:timestamp", "作业时间需要核验",
+                f"作业 {job.run_id} 的目录时间格式无效或缺少时区：{timestamp}",
+                source_time=timestamp, destination="jobs",
+            ))
+        if job.status not in _KNOWN_JOB_STATUSES:
+            items.append(_item(
+                "blocker", f"job:{job.run_id}:status", "作业状态需要核验",
+                f"作业 {job.run_id} 的状态未被当前工作台识别：{job.status or '未记录'}。",
+                source_time=timestamp, destination="jobs",
+            ))
+        elif job.status in _ATTENTION_STATUSES:
+            detail = job.error_message or job.key_metric_value or job.status
+            # ``cancelled`` is a legacy catalog value that the Jobs page
+            # deliberately does not expose as a selectable URL filter.
+            # Do not attach a context that its validator would silently
+            # discard; the unfiltered list is the honest destination.
+            status_context = None if job.status == "cancelled" else job.status
+            items.append(_item(
+                "attention", f"job:{job.run_id}", f"作业需要关注：{job.type}", detail,
+                source_time=timestamp, destination="jobs", context=status_context,
+            ))
+        elif job.status in _ACTIVE_STATUSES:
+            detail = job.key_metric_value or job.status
+            items.append(_item(
+                "in_progress", f"job:{job.run_id}", f"作业进行中：{job.type}", detail,
+                source_time=timestamp, destination="jobs", context=job.status,
+            ))
 
     if review_error:
         items.append(_item(
