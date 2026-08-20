@@ -36,7 +36,9 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                         "limit_threshold": 0.095,
                         "cost_model": {
                             "commission_rate": 0.0005,
-                            "stamp_tax_schedule": [{"start": "2008-09-19", "rate": 0.001}],
+                            "stamp_tax_schedule": [
+                                {"effective_from": "2008-09-19", "bps": 10.0}
+                            ],
                             "slippage_bps": 5.0,
                             "min_cost": 5.0,
                         },
@@ -110,6 +112,39 @@ def test_malformed_execution_lag_blocks_controlled_ranking() -> None:
         assert result.eligible is False
         assert result.ranked_run_ids == ()
         assert any("信号至成交滞后" in reason for reason in result.reasons)
+
+
+def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
+    complete = _pipeline_run("run-complete")
+
+    for key, value in (
+        ("instruments", False),
+        ("train_period", "not a period"),
+        ("valid_period", ["2023-01-01", "2023-06-30"]),
+        ("test_period", "2023-12-31 ~ 2023-07-01"),
+    ):
+        malformed = _pipeline_report()
+        malformed["config"][key] = value  # type: ignore[index]
+        result = assess_comparability((complete, _pipeline_run("run-malformed", report=malformed)))
+
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+
+    malformed_benchmark = _pipeline_report()
+    provenance = malformed_benchmark["backtest"]["provenance"]["config"]  # type: ignore[index]
+    provenance["benchmark_code"] = {"code": "SH000300TR"}  # type: ignore[index]
+    result = assess_comparability((complete, _pipeline_run("run-malformed-benchmark", report=malformed_benchmark)))
+
+    assert result.eligible is False
+    assert result.ranked_run_ids == ()
+
+    malformed_cost = _pipeline_report()
+    cost_model = malformed_cost["backtest"]["provenance"]["config"]["exchange_config"]["cost_model"]  # type: ignore[index]
+    cost_model["commission_rate"] = False  # type: ignore[index]
+    result = assess_comparability((complete, _pipeline_run("run-malformed-cost", report=malformed_cost)))
+
+    assert result.eligible is False
+    assert result.ranked_run_ids == ()
 
 
 def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None:

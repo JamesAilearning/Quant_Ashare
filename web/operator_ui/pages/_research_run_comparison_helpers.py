@@ -12,9 +12,17 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
-from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
+from src.core.canonical_backtest_contract import (
+    COMMISSION_RATE_MAX,
+    OFFICIAL_METRIC_STATUS,
+    SLIPPAGE_BPS_MAX,
+    STAMP_TAX_BPS_MAX,
+    SUPPORTED_ADJUST_MODES,
+    SUPPORTED_EXECUTION_PRICE_KINDS,
+)
 from web.operator_ui.job_io import JobSummary, fold_catalog_by_dir
 
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -129,34 +137,185 @@ def _stable_value(value: Any) -> str | None:
     return str(value)
 
 
+def _required_text(value: Any) -> str | None:
+    """Accept the non-empty string fields written by both run producers."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _date_window(value: Any) -> str | None:
+    """Validate the producer's ``YYYY-MM-DD ~ YYYY-MM-DD`` period format."""
+    text = _required_text(value)
+    if text is None:
+        return None
+    parts = [part.strip() for part in text.split("~", maxsplit=1)]
+    if len(parts) != 2:
+        return None
+    try:
+        start, end = (date.fromisoformat(part) for part in parts)
+    except ValueError:
+        return None
+    if start > end:
+        return None
+    return f"{start.isoformat()} ~ {end.isoformat()}"
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def _window_from_pipeline(config: Mapping[str, Any], key: str) -> str | None:
-    return _stable_value(config.get(key))
+    return _date_window(config.get(key))
 
 
 def _window_from_walk_forward(config: Mapping[str, Any], kind: str) -> str | None:
-    start = _stable_value(config.get("overall_start"))
-    end = _stable_value(config.get("overall_end"))
-    months = _stable_value(config.get(f"{kind}_months"))
+    start = _required_text(config.get("overall_start"))
+    end = _required_text(config.get("overall_end"))
+    months = _positive_int(config.get(f"{kind}_months"))
     if not (start and end and months):
         return None
-    return f"{start} ~ {end}; {kind}_months={months}"
+    period = _date_window(f"{start} ~ {end}")
+    if period is None:
+        return None
+    return f"{period}; {kind}_months={months}"
+
+
+def _test_window_coverage(value: Any) -> str | None:
+    """Accept only the aggregate coverage schema emitted by the WF producer."""
+    coverage = _mapping(value)
+    numeric_keys = (
+        "gap_count",
+        "max_gap_days",
+        "overlap_count",
+        "max_overlap_days",
+        "max_overlap_depth",
+    )
+    if coverage.get("mode") not in {"none", "continuous", "gapped", "overlapping", "mixed"}:
+        return None
+    if any(
+        isinstance(coverage.get(key), bool)
+        or not isinstance(coverage.get(key), int)
+        or coverage[key] < 0
+        for key in numeric_keys
+    ):
+        return None
+    return json.dumps(
+        {"mode": coverage["mode"], **{key: coverage[key] for key in numeric_keys}},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def _bounded_number(value: Any, *, lower: float, upper: float | None = None) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < lower or (upper is not None and number > upper):
+        return None
+    return number
+
+
+def _stamp_tax_schedule_identity(value: Any) -> list[dict[str, float | str]] | str | None:
+    """Validate the serialized canonical stamp-tax schedule before comparing it."""
+    if value is None:
+        # ``None`` is the explicit producer-configured request for the
+        # canonical CN default.  It is distinguishable from an absent key at
+        # the caller and must not be silently treated as missing evidence.
+        return "canonical_default"
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    entries: list[dict[str, float | str]] = []
+    previous: date | None = None
+    for item in value:
+        if not isinstance(item, Mapping):
+            return None
+        effective_from = _required_text(item.get("effective_from"))
+        bps = _bounded_number(item.get("bps"), lower=0.0, upper=STAMP_TAX_BPS_MAX)
+        if effective_from is None or bps is None:
+            return None
+        try:
+            schedule_date = date.fromisoformat(effective_from)
+        except ValueError:
+            return None
+        if previous is not None and schedule_date <= previous:
+            return None
+        previous = schedule_date
+        entries.append({"effective_from": schedule_date.isoformat(), "bps": bps})
+    return entries
+
+
+def _exchange_cost_identity(
+    *,
+    execution_price_kind: Any,
+    commission_rate: Any,
+    stamp_tax_schedule: Any,
+    slippage_bps: Any,
+    min_cost: Any,
+    limit_threshold: Any,
+    adjust_mode: Any,
+) -> str | None:
+    """Validate only producer-compatible canonical exchange/cost controls."""
+    execution = _required_text(execution_price_kind)
+    adjust = _required_text(adjust_mode)
+    commission = _bounded_number(commission_rate, lower=0.0, upper=COMMISSION_RATE_MAX)
+    slippage = _bounded_number(slippage_bps, lower=0.0, upper=SLIPPAGE_BPS_MAX)
+    minimum = _bounded_number(min_cost, lower=0.0)
+    limit = _bounded_number(limit_threshold, lower=0.0, upper=0.25)
+    schedule = _stamp_tax_schedule_identity(stamp_tax_schedule)
+    if (
+        execution not in SUPPORTED_EXECUTION_PRICE_KINDS
+        or adjust not in SUPPORTED_ADJUST_MODES
+        or commission is None
+        or slippage is None
+        or minimum is None
+        or limit is None
+        or limit == 0.0
+        or schedule is None
+    ):
+        return None
+    return json.dumps(
+        {
+            "execution_price_kind": execution,
+            "commission_rate": commission,
+            "stamp_tax_schedule": schedule,
+            "slippage_bps": slippage,
+            "min_cost": minimum,
+            "limit_threshold": limit,
+            "adjust_mode": adjust,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
 
 
 def _exchange_cost_from_request(request: Mapping[str, Any]) -> str | None:
     exchange = _mapping(request.get("exchange_config"))
     cost = _mapping(exchange.get("cost_model"))
-    value = {
-        "execution_price_kind": exchange.get("execution_price_kind"),
-        "commission_rate": cost.get("commission_rate"),
-        "stamp_tax_schedule": cost.get("stamp_tax_schedule"),
-        "slippage_bps": cost.get("slippage_bps"),
-        "min_cost": cost.get("min_cost"),
-        "limit_threshold": exchange.get("limit_threshold"),
-        "adjust_mode": request.get("adjust_mode"),
-    }
-    if any(item is None for item in value.values()):
+    if (
+        any(
+            key not in exchange
+            for key in ("execution_price_kind", "limit_threshold", "cost_model")
+        )
+        or any(
+            key not in cost
+            for key in ("commission_rate", "stamp_tax_schedule", "slippage_bps", "min_cost")
+        )
+        or "adjust_mode" not in request
+    ):
         return None
-    return _stable_value(value)
+    return _exchange_cost_identity(
+        execution_price_kind=exchange.get("execution_price_kind"),
+        commission_rate=cost.get("commission_rate"),
+        stamp_tax_schedule=cost.get("stamp_tax_schedule"),
+        slippage_bps=cost.get("slippage_bps"),
+        min_cost=cost.get("min_cost"),
+        limit_threshold=exchange.get("limit_threshold"),
+        adjust_mode=request.get("adjust_mode"),
+    )
 
 
 def _exchange_cost_from_config(config: Mapping[str, Any]) -> str | None:
@@ -169,13 +328,17 @@ def _exchange_cost_from_config(config: Mapping[str, Any]) -> str | None:
         "limit_threshold",
         "adjust_mode",
     )
-    # ``stamp_tax_schedule: null`` is an explicit, producer-recorded default
-    # that the canonical request resolves deterministically.  Its *absence*
-    # is what leaves the comparison unconfirmable.
     if any(key not in config for key in keys):
         return None
-    value = {key: config[key] for key in keys}
-    return _stable_value(value)
+    return _exchange_cost_identity(
+        execution_price_kind=config.get("execution_price_kind"),
+        commission_rate=config.get("commission_rate"),
+        stamp_tax_schedule=config.get("stamp_tax_schedule"),
+        slippage_bps=config.get("slippage_bps"),
+        min_cost=config.get("min_cost"),
+        limit_threshold=config.get("limit_threshold"),
+        adjust_mode=config.get("adjust_mode"),
+    )
 
 
 def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
@@ -183,9 +346,10 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
     if not runtime:
         return None
     required = ("provider_uri", "region", "data_adjust_mode")
-    if any(not runtime.get(key) for key in required):
+    values = {key: _required_text(runtime.get(key)) for key in required}
+    if any(value is None for value in values.values()):
         return None
-    return _stable_value({key: runtime[key] for key in required})
+    return json.dumps(values, sort_keys=True, ensure_ascii=False)
 
 
 def _execution_lag(value: Any) -> str | None:
@@ -212,11 +376,11 @@ def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     runtime = _mapping(provenance.get("runtime"))
     return {
         "engine": "pipeline",
-        "universe": _stable_value(report_config.get("instruments")),
+        "universe": _required_text(report_config.get("instruments")),
         "training_window": _window_from_pipeline(report_config, "train_period"),
         "validation_window": _window_from_pipeline(report_config, "valid_period"),
         "testing_window": _window_from_pipeline(report_config, "test_period"),
-        "benchmark": _stable_value(provenance.get("benchmark_code")),
+        "benchmark": _required_text(provenance.get("benchmark_code")),
         "execution_lag": _execution_lag(provenance.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_request(provenance),
         "st_mask_identity": _st_mask_identity(provenance),
@@ -231,11 +395,11 @@ def _walk_forward_contract(
     source = report_config if report_config else config
     return {
         "engine": "walk_forward",
-        "universe": _stable_value(source.get("instruments")),
+        "universe": _required_text(source.get("instruments")),
         "training_window": _window_from_walk_forward(source, "train"),
         "validation_window": _window_from_walk_forward(source, "valid"),
-        "testing_window": _stable_value(report.get("test_window_coverage")),
-        "benchmark": _stable_value(source.get("benchmark_code")),
+        "testing_window": _test_window_coverage(report.get("test_window_coverage")),
+        "benchmark": _required_text(source.get("benchmark_code")),
         "execution_lag": _execution_lag(source.get("signal_to_execution_lag")),
         "exchange_cost": _exchange_cost_from_config(source),
         # Fold reports already record their ST-mask hashes, but the aggregate

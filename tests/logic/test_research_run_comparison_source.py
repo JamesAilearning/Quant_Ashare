@@ -25,6 +25,11 @@ def test_comparison_page_is_read_only_and_uses_guarded_catalog_artifacts() -> No
     assert '("logs", "pipeline.log")' in source
     assert '("logs", "stdout.log")' in source
     assert '("logs", "stderr.log")' in source
+    assert '_UI_JOB_LOG_ROOT' in source
+    assert 'if job.source != "ui":' in source
+    assert 'guard_output_path(job_dir)' in source
+    assert '("runner_stdout.log",)' in source
+    assert '("runner_stderr.log",)' in source
     assert "JobManager.start" not in source
     assert "st.switch_page" not in source
 

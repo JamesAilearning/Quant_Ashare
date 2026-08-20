@@ -32,6 +32,15 @@ _LOG_PATHS = (
     ("logs", "stdout.log"),
     ("logs", "stderr.log"),
 )
+_UI_JOB_LOG_ROOT = (
+    Path(__file__).resolve().parents[2] / "output" / "operator_ui" / "jobs"
+)
+_UI_JOB_LOG_PATHS = (
+    ("stdout.log",),
+    ("stderr.log",),
+    ("runner_stdout.log",),
+    ("runner_stderr.log",),
+)
 
 
 def _artifact_issue(prefix: str, issue: object) -> ComparisonIssue:
@@ -70,6 +79,22 @@ def _read_report(path: Path, issues: list[ComparisonIssue]) -> Mapping[str, obje
         issues.append(ComparisonIssue("missing_report", f"{path.name} 缺失，无法读取现有指标。"))
         return {}
     return result.value if isinstance(result.value, Mapping) else {}
+
+
+def _ui_job_log_paths(job: JobSummary) -> tuple[str, ...]:
+    """Return guarded runner logs for a UI-launched run when they exist."""
+    if job.source != "ui":
+        return ()
+    job_dir = _UI_JOB_LOG_ROOT / job.run_id
+    try:
+        guard_output_path(job_dir)
+    except ValueError:
+        return ()
+    return tuple(
+        str(job_dir.joinpath(*parts))
+        for parts in _UI_JOB_LOG_PATHS
+        if job_dir.joinpath(*parts).is_file()
+    )
 
 
 def _load_comparison_run(job: JobSummary) -> ComparisonRun:
@@ -127,11 +152,12 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
     )
     config = _read_config(config_path, issues)
     report = _read_report(report_path, issues)
-    log_paths = tuple(
+    run_log_paths = tuple(
         str(run_dir.joinpath(*parts))
         for parts in _LOG_PATHS
         if run_dir.joinpath(*parts).is_file()
     )
+    log_paths = tuple(dict.fromkeys((*run_log_paths, *_ui_job_log_paths(job))))
     return build_comparison_run(
         run_id=job.run_id,
         engine=engine,
