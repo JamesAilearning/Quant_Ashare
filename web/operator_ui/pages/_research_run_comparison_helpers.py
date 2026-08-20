@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from src.core.canonical_backtest_contract import (
@@ -40,6 +41,7 @@ CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("testing_window", "测试窗口"),
     ("benchmark", "回测基准"),
     ("execution_lag", "信号至成交滞后"),
+    ("execution_semantics_provenance", "执行时序与涨跌停语义指纹"),
     ("exchange_cost", "交易所与成本模型"),
     ("st_mask_identity", "ST 掩码输入内容"),
     ("data_provenance", "数据来源 / 运行时快照"),
@@ -180,7 +182,7 @@ def _date_window(value: Any) -> str | None:
 def _positive_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return None
-    return value
+    return int(value)
 
 
 def _window_from_pipeline(config: Mapping[str, Any], key: str) -> str | None:
@@ -281,6 +283,7 @@ def _exchange_cost_identity(
     stamp_tax_schedule: Any,
     slippage_bps: Any,
     min_cost: Any,
+    init_cash: Any,
     limit_threshold: Any,
     adjust_mode: Any,
 ) -> str | None:
@@ -290,6 +293,7 @@ def _exchange_cost_identity(
     commission = _bounded_number(commission_rate, lower=0.0, upper=COMMISSION_RATE_MAX)
     slippage = _bounded_number(slippage_bps, lower=0.0, upper=SLIPPAGE_BPS_MAX)
     minimum = _bounded_number(min_cost, lower=0.0)
+    initial_cash = _bounded_number(init_cash, lower=0.0)
     limit = _bounded_number(limit_threshold, lower=0.0, upper=0.25)
     schedule = _stamp_tax_schedule_identity(stamp_tax_schedule)
     if (
@@ -298,6 +302,8 @@ def _exchange_cost_identity(
         or commission is None
         or slippage is None
         or minimum is None
+        or initial_cash is None
+        or initial_cash == 0.0
         or limit is None
         or limit == 0.0
         or schedule is None
@@ -310,6 +316,7 @@ def _exchange_cost_identity(
             "stamp_tax_schedule": schedule,
             "slippage_bps": slippage,
             "min_cost": minimum,
+            "init_cash": initial_cash,
             "limit_threshold": limit,
             "adjust_mode": adjust,
         },
@@ -321,6 +328,7 @@ def _exchange_cost_identity(
 def _exchange_cost_from_request(request: Mapping[str, Any]) -> str | None:
     exchange = _mapping(request.get("exchange_config"))
     cost = _mapping(exchange.get("cost_model"))
+    account = _mapping(request.get("account_config"))
     if (
         any(
             key not in exchange
@@ -331,6 +339,7 @@ def _exchange_cost_from_request(request: Mapping[str, Any]) -> str | None:
             for key in ("commission_rate", "stamp_tax_schedule", "slippage_bps", "min_cost")
         )
         or "adjust_mode" not in request
+        or "init_cash" not in account
     ):
         return None
     return _exchange_cost_identity(
@@ -339,6 +348,7 @@ def _exchange_cost_from_request(request: Mapping[str, Any]) -> str | None:
         stamp_tax_schedule=cost.get("stamp_tax_schedule"),
         slippage_bps=cost.get("slippage_bps"),
         min_cost=cost.get("min_cost"),
+        init_cash=account.get("init_cash"),
         limit_threshold=exchange.get("limit_threshold"),
         adjust_mode=request.get("adjust_mode"),
     )
@@ -351,6 +361,7 @@ def _exchange_cost_from_config(config: Mapping[str, Any]) -> str | None:
         "stamp_tax_schedule",
         "slippage_bps",
         "min_cost",
+        "init_cash",
         "limit_threshold",
         "adjust_mode",
     )
@@ -362,6 +373,7 @@ def _exchange_cost_from_config(config: Mapping[str, Any]) -> str | None:
         stamp_tax_schedule=config.get("stamp_tax_schedule"),
         slippage_bps=config.get("slippage_bps"),
         min_cost=config.get("min_cost"),
+        init_cash=config.get("init_cash"),
         limit_threshold=config.get("limit_threshold"),
         adjust_mode=config.get("adjust_mode"),
     )
@@ -400,9 +412,31 @@ def _st_mask_identity(provenance: Mapping[str, Any]) -> str | None:
     return normalized
 
 
+def _execution_semantics_provenance(provenance: Mapping[str, Any]) -> str | None:
+    """Return the explicit version labels written by the canonical backtest."""
+    execution = _required_text(provenance.get("execution_timing_semantics"))
+    price_limit = _required_text(provenance.get("price_limit_semantics"))
+    if (
+        execution is None
+        or price_limit is None
+        or re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", execution) is None
+        or re.fullmatch(r"[a-z][a-z0-9_]*_v[1-9][0-9]*", price_limit) is None
+    ):
+        return None
+    return json.dumps(
+        {
+            "execution_timing_semantics": execution,
+            "price_limit_semantics": price_limit,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
 def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     report_config = _mapping(report.get("config"))
-    provenance = _mapping(_nested(report, "backtest", "provenance", "config"))
+    backtest_provenance = _mapping(_nested(report, "backtest", "provenance"))
+    provenance = _mapping(backtest_provenance.get("config"))
     runtime = _mapping(provenance.get("runtime"))
     return {
         "engine": "pipeline",
@@ -412,6 +446,9 @@ def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
         "testing_window": _window_from_pipeline(report_config, "test_period"),
         "benchmark": _required_text(provenance.get("benchmark_code")),
         "execution_lag": _execution_lag(provenance.get("signal_to_execution_lag")),
+        "execution_semantics_provenance": _execution_semantics_provenance(
+            backtest_provenance
+        ),
         "exchange_cost": _exchange_cost_from_request(provenance),
         "st_mask_identity": _st_mask_identity(provenance),
         "data_provenance": _data_provenance(runtime),
@@ -431,6 +468,10 @@ def _walk_forward_contract(
         "testing_window": _test_window_coverage(source, report.get("test_window_coverage")),
         "benchmark": _required_text(source.get("benchmark_code")),
         "execution_lag": _execution_lag(source.get("signal_to_execution_lag")),
+        # Current aggregate artifacts do not record a semantics-bound runtime
+        # fingerprint.  Do not infer it from config.yaml; ordering remains
+        # unavailable until a producer writes the evidence.
+        "execution_semantics_provenance": None,
         "exchange_cost": _exchange_cost_from_config(source),
         # Fold reports already record their ST-mask hashes, but the aggregate
         # walk-forward artifact does not expose one run-level identity yet.
@@ -647,14 +688,58 @@ def _catalog_dir_key(run_dir: str) -> str:
     )
 
 
-def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
-    """Return current rows, preferring a UI record for a shared artifact dir.
+def _parse_recorded_instant(value: str) -> datetime | None:
+    """Read the timezone-aware ISO timestamps written by job/catalog producers."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
-    A UI launch writes both its lifecycle record and a CLI catalog row for the
-    same artifacts.  The UI record owns the selector because it preserves the
-    corresponding UI job logs; the CLI run ID remains a URL alias to that
-    owner.  Older CLI records for a reused artifact directory remain excluded
-    by :func:`fold_catalog_by_dir` rather than being silently aliased.
+
+def _row_recency(row: JobSummary) -> datetime:
+    """Use recorded completion first; absent/malformed time cannot win ownership."""
+    for value in (row.finished_at, row.created_at, row.started_at):
+        parsed = _parse_recorded_instant(value)
+        if parsed is not None:
+            return parsed
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _ui_cli_share_execution(ui_job: JobSummary, cli_job: JobSummary) -> bool:
+    """Prove a CLI row was emitted during this UI job's own execution window."""
+    if (
+        ui_job.source != "ui"
+        or cli_job.source != "cli"
+        or ui_job.type != cli_job.type
+        or _catalog_dir_key(ui_job.run_dir) != _catalog_dir_key(cli_job.run_dir)
+    ):
+        return False
+    ui_started = _parse_recorded_instant(ui_job.started_at)
+    ui_finished = _parse_recorded_instant(ui_job.finished_at)
+    cli_started = _parse_recorded_instant(cli_job.started_at)
+    cli_finished = _parse_recorded_instant(cli_job.finished_at or cli_job.created_at)
+    return (
+        ui_started is not None
+        and ui_finished is not None
+        and cli_started is not None
+        and cli_finished is not None
+        and ui_started <= cli_started <= cli_finished <= ui_finished
+    )
+
+
+def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
+    """Return one current owner per artifact dir and only proven UI/CLI aliases.
+
+    A shared directory alone is not a mirror relationship: an operator can
+    later point an independent CLI run at a former UI output directory.  A UI
+    row owns a CLI row only when the catalog's complete execution interval is
+    recorded inside that UI job's lifecycle.  Otherwise the newest record owns
+    the current artifacts, preserving exact-run traceability.
     """
     allowed_types = {"pipeline", "walk_forward"}
     relevant = tuple(
@@ -662,31 +747,38 @@ def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
         for row in rows
         if row.type in allowed_types and row.run_id and row.run_dir
     )
-    selected: list[JobSummary] = []
-    owners: dict[tuple[str, str], JobSummary] = {}
-
-    # Match results.py / walk_forward.py: UI records own their shared
-    # directory, regardless of the combined catalog timestamp ordering.
+    grouped: dict[tuple[str, str], list[JobSummary]] = {}
     for job in relevant:
-        if job.source != "ui":
-            continue
         key = (job.type, _catalog_dir_key(job.run_dir))
-        if key not in owners:
-            owners[key] = job
-            selected.append(job)
+        grouped.setdefault(key, []).append(job)
 
+    selected: list[JobSummary] = []
     aliases: dict[str, str] = {}
-    cli_rows = (job for job in relevant if job.source == "cli")
-    for job in fold_catalog_by_dir(cli_rows).newest:
-        key = (job.type, _catalog_dir_key(job.run_dir))
-        owner = owners.get(key)
-        if owner is None:
-            owners[key] = job
-            selected.append(job)
+    for group in grouped.values():
+        ui_rows = [job for job in group if job.source == "ui"]
+        cli_rows = sorted(
+            (job for job in group if job.source == "cli"),
+            key=_row_recency,
+            reverse=True,
+        )
+        current_cli = next(iter(fold_catalog_by_dir(cli_rows).newest), None)
+        mirrored_ui = (
+            [job for job in ui_rows if _ui_cli_share_execution(job, current_cli)]
+            if current_cli is not None
+            else []
+        )
+        if mirrored_ui and current_cli is not None:
+            owner = max(mirrored_ui, key=_row_recency)
+            aliases[current_cli.run_id] = owner.run_id
         else:
-            aliases[job.run_id] = owner.run_id
+            candidates = [*ui_rows, *([current_cli] if current_cli is not None else [])]
+            owner = max(candidates, key=_row_recency)
+        selected.append(owner)
 
-    return SelectableCatalog(rows=tuple(selected), run_id_alias=aliases)
+    return SelectableCatalog(
+        rows=tuple(sorted(selected, key=_row_recency, reverse=True)),
+        run_id_alias=aliases,
+    )
 
 
 def selectable_catalog_rows(rows: Iterable[JobSummary]) -> tuple[JobSummary, ...]:

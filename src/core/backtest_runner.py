@@ -2003,6 +2003,13 @@ class BacktestRunner:
             # adjust_mode side by side without re-deriving from the
             # fingerprint alone.
             "config": {**request_dict, **strategy_dict, "runtime": runtime_dict},
+            # Preserve the version labels alongside the fingerprint.  A
+            # fingerprint proves a complete config changed, but a historical
+            # report cannot otherwise establish which fill semantics produced
+            # its metrics.  Both pipeline and walk-forward folds consume this
+            # shared provenance surface.
+            "execution_timing_semantics": EXECUTION_TIMING_SEMANTICS,
+            "price_limit_semantics": PRICE_LIMIT_SEMANTICS,
             "config_fingerprint": fingerprint,
             "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         }

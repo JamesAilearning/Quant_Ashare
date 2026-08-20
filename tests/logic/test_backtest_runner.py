@@ -1505,6 +1505,8 @@ class BacktestRunnerE2ETests(unittest.TestCase):
         self.assertIn("excess_return_with_cost", output.risk_analysis)
         self.assertIn("return", output.return_series)
         self.assertIn("config_fingerprint", output.provenance)
+        self.assertEqual(output.provenance["execution_timing_semantics"], "lag_total_v2")
+        self.assertEqual(output.provenance["price_limit_semantics"], "close_expr_v1")
         self.assertGreater(output.report["total_days"], 0)
 
 

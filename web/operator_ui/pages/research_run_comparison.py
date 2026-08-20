@@ -256,7 +256,7 @@ else:
     st.warning("当前选择不可直接排名；以下是需要核验或保持差异的原因。")
     for reason in decision.reasons:
         st.markdown(f"- {reason}")
-    rank_map: dict[str, int] = {}
+    rank_map = {}
 
 st.subheader("实验合同核验")
 contract_rows: list[dict[str, str]] = []

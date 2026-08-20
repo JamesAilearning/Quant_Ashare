@@ -27,10 +27,13 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
         },
         "backtest": {
             "provenance": {
-                "config_fingerprint": "contract-1",
+                "config_fingerprint": "c" * 16,
+                "execution_timing_semantics": "lag_total_v2",
+                "price_limit_semantics": "close_expr_v1",
                 "config": {
                     "benchmark_code": "SH000300TR",
                     "signal_to_execution_lag": 1,
+                    "account_config": {"init_cash": 100_000_000.0},
                     "st_mask": {
                         "namechange_sha256": "a" * 16,
                     },
@@ -104,6 +107,25 @@ def test_mismatched_execution_lag_blocks_controlled_ranking() -> None:
     assert any("信号至成交滞后不一致" in reason for reason in result.reasons)
 
 
+def test_explicit_execution_semantics_are_required_for_ranking() -> None:
+    first = _pipeline_run("run-a")
+    changed = _pipeline_report()
+    changed["backtest"]["provenance"]["price_limit_semantics"] = "close_expr_v2"  # type: ignore[index]
+    second = _pipeline_run("run-b", report=changed)
+
+    result = assess_comparability((first, second))
+
+    assert result.eligible is False
+    assert any("执行时序与涨跌停语义指纹不一致" in reason for reason in result.reasons)
+
+    legacy = _pipeline_report()
+    del legacy["backtest"]["provenance"]["execution_timing_semantics"]  # type: ignore[index]
+    del legacy["backtest"]["provenance"]["price_limit_semantics"]  # type: ignore[index]
+    legacy_result = assess_comparability((first, _pipeline_run("legacy", report=legacy)))
+    assert legacy_result.eligible is False
+    assert any("执行时序与涨跌停语义指纹" in reason for reason in legacy_result.reasons)
+
+
 def test_malformed_execution_lag_blocks_controlled_ranking() -> None:
     complete = _pipeline_run("run-complete")
 
@@ -149,6 +171,14 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
 
     assert result.eligible is False
     assert result.ranked_run_ids == ()
+
+    different_cash = _pipeline_report()
+    different_cash["backtest"]["provenance"]["config"]["account_config"]["init_cash"] = 10_000_000.0  # type: ignore[index]
+    result = assess_comparability((complete, _pipeline_run("run-different-cash", report=different_cash)))
+
+    assert result.eligible is False
+    assert result.ranked_run_ids == ()
+    assert any("交易所与成本模型不一致" in reason for reason in result.reasons)
 
 
 def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None:
@@ -255,6 +285,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             "stamp_tax_schedule": None,
             "slippage_bps": 5.0,
             "min_cost": 5.0,
+            "init_cash": 100_000_000.0,
             "limit_threshold": 0.095,
             "adjust_mode": "pre_adjusted",
             "model_type": "LGBModel",
@@ -334,6 +365,7 @@ def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
             "stamp_tax_schedule": None,
             "slippage_bps": 5.0,
             "min_cost": 5.0,
+            "init_cash": 100_000_000.0,
             "limit_threshold": 0.095,
             "adjust_mode": "pre_adjusted",
         },
@@ -412,8 +444,8 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
         "ui",
         "output/runs/shared",
         "2026-08-20T09:00:00+08:00",
-        "",
-        "",
+        "2026-08-20T09:00:00+08:00",
+        "2026-08-20T10:01:00+08:00",
         None,
         "",
         "",
@@ -426,8 +458,8 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
         "cli",
         "output/runs/shared",
         "2026-08-20T10:00:00+08:00",
-        "",
-        "",
+        "2026-08-20T09:01:00+08:00",
+        "2026-08-20T10:00:00+08:00",
         None,
         "",
         "",
@@ -440,11 +472,37 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
     assert catalog.run_id_alias == {"cli-run": "ui-run"}
 
 
+def test_selectable_catalog_keeps_newer_independent_cli_run_for_reused_directory() -> None:
+    ui_job = JobSummary(
+        "ui-run", "walk_forward", "completed", "ui", "output/runs/shared",
+        "2026-08-20T09:00:00+08:00", "2026-08-20T09:00:00+08:00",
+        "2026-08-20T09:10:00+08:00",
+    )
+    later_cli = JobSummary(
+        "cli-later", "walk_forward", "completed", "cli", "output/runs/shared",
+        "2026-08-20T10:05:00+08:00", "2026-08-20T10:00:00+08:00",
+        "2026-08-20T10:05:00+08:00",
+    )
+
+    catalog = selectable_catalog((ui_job, later_cli))
+
+    assert [job.run_id for job in catalog.rows] == ["cli-later"]
+    assert catalog.run_id_alias == {}
+
+
 def test_alias_collapsed_run_ids_are_reported_as_duplicates() -> None:
     catalog = selectable_catalog(
         (
-            JobSummary("ui-run", "pipeline", "completed", "ui", "output/runs/shared"),
-            JobSummary("cli-run", "pipeline", "completed", "cli", "output/runs/shared"),
+            JobSummary(
+                "ui-run", "pipeline", "completed", "ui", "output/runs/shared",
+                "2026-08-20T09:00:00+08:00", "2026-08-20T09:00:00+08:00",
+                "2026-08-20T10:01:00+08:00",
+            ),
+            JobSummary(
+                "cli-run", "pipeline", "completed", "cli", "output/runs/shared",
+                "2026-08-20T10:00:00+08:00", "2026-08-20T09:01:00+08:00",
+                "2026-08-20T10:00:00+08:00",
+            ),
         )
     )
     resolved = tuple(

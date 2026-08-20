@@ -574,6 +574,7 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         source="cli",
         run_dir=str(raw.get("output_dir") or ""),
         created_at=created,
+        started_at=str(raw.get("started_at") or ""),
         finished_at=created,
         duration_seconds=dur,
         key_metric_label=key_label,
