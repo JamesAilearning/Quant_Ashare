@@ -8,6 +8,7 @@
 - [x] 1.6 Pin Pipeline bundle identities before feature construction, preserve that pair in backtest provenance, and reject provider changes before report publication.
 - [x] 1.7 Normalize pipeline runtime values and default stamp-tax schedules before cross-checking complete configuration artifacts against report provenance.
 - [x] 1.8 Treat corrupt resumed-fold provenance as unavailable and verify reported valid-IR counts against producer-required fold evidence.
+- [x] 1.9 Require positive, sequential walk-forward fold evidence and agreement among all official pipeline path projections.
 
 ## 2. Read-only workbench page
 

@@ -18,6 +18,41 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
 
 
 def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
+    backtest_provenance: dict[str, object] = {
+        "config_fingerprint": "c" * 16,
+        "execution_timing_semantics": "lag_total_v2",
+        "price_limit_semantics": "close_expr_v1",
+        "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
+        "config": {
+            "benchmark_code": "SH000300TR",
+            "signal_to_execution_lag": 1,
+            "account_config": {"init_cash": 100_000_000.0},
+            "st_mask": {
+                "namechange_sha256": "a" * 16,
+            },
+            "adjust_mode": "pre_adjusted",
+            "exchange_config": {
+                "execution_price_kind": "close",
+                "limit_threshold": 0.095,
+                "cost_model": {
+                    "commission_rate": 0.0005,
+                    "stamp_tax_schedule": [
+                        {"effective_from": "2008-09-19", "bps": 10.0},
+                        {"effective_from": "2023-08-28", "bps": 5.0},
+                    ],
+                    "slippage_bps": 5.0,
+                    "min_cost": 5.0,
+                },
+            },
+            "runtime": {
+                "provider_uri": "data/qlib_cn",
+                "region": "cn",
+                "data_adjust_mode": "pre_adjusted",
+                "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
+                "bundle_build_identity": "fetch-integrity@2026-08-20T00:00:00+00:00",
+            },
+        },
+    }
     return {
         "metric_status": "official",
         "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
@@ -28,42 +63,17 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
             "test_period": "2023-07-01 ~ 2023-12-31",
             "model_type": "LGBModel",
         },
-        "backtest": {
-            "provenance": {
-                "config_fingerprint": "c" * 16,
-                "execution_timing_semantics": "lag_total_v2",
-                "price_limit_semantics": "close_expr_v1",
-                "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
-                "config": {
-                    "benchmark_code": "SH000300TR",
-                    "signal_to_execution_lag": 1,
-                    "account_config": {"init_cash": 100_000_000.0},
-                    "st_mask": {
-                        "namechange_sha256": "a" * 16,
-                    },
-                    "adjust_mode": "pre_adjusted",
-                    "exchange_config": {
-                        "execution_price_kind": "close",
-                        "limit_threshold": 0.095,
-                        "cost_model": {
-                            "commission_rate": 0.0005,
-                            "stamp_tax_schedule": [
-                                {"effective_from": "2008-09-19", "bps": 10.0},
-                                {"effective_from": "2023-08-28", "bps": 5.0},
-                            ],
-                            "slippage_bps": 5.0,
-                            "min_cost": 5.0,
-                        },
-                    },
-                    "runtime": {
-                        "provider_uri": "data/qlib_cn",
-                        "region": "cn",
-                        "data_adjust_mode": "pre_adjusted",
-                        "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
-                        "bundle_build_identity": "fetch-integrity@2026-08-20T00:00:00+00:00",
-                    },
-                },
-            },
+        "backtest": {"provenance": backtest_provenance},
+        "comparison_provenance": {
+            "status": "consistent",
+            "execution_timing_semantics": backtest_provenance[
+                "execution_timing_semantics"
+            ],
+            "price_limit_semantics": backtest_provenance["price_limit_semantics"],
+            "official_backtest_path": backtest_provenance[
+                "official_backtest_path"
+            ],
+            "config": deepcopy(backtest_provenance["config"]),
         },
         "risk_analysis": {
             "excess_return_with_cost": {
@@ -387,12 +397,25 @@ def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> N
 def test_official_pipeline_metrics_require_the_canonical_backtest_path() -> None:
     official = _pipeline_run("official")
 
-    for path in (None, "custom.backtest.path"):
+    for path_location, path in (
+        ("official_backtest_path", None),
+        ("official_backtest_path", "custom.backtest.path"),
+        ("nested", None),
+        ("nested", "custom.backtest.path"),
+        ("projected", None),
+        ("projected", "custom.backtest.path"),
+    ):
         report = _pipeline_report()
-        if path is None:
-            del report["official_backtest_path"]
+        if path_location == "official_backtest_path":
+            target = report
+        elif path_location == "nested":
+            target = report["backtest"]["provenance"]  # type: ignore[index]
         else:
-            report["official_backtest_path"] = path
+            target = report["comparison_provenance"]  # type: ignore[index]
+        if path is None:
+            del target["official_backtest_path"]  # type: ignore[index]
+        else:
+            target["official_backtest_path"] = path  # type: ignore[index]
         result = assess_comparability((official, _pipeline_run("unverified", report=report)))
 
         assert result.eligible is False
@@ -648,6 +671,24 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     )
     assert inconsistent_valid_count_run.fold_evidence is None
     assert any(issue.code == "invalid_fold_evidence" for issue in inconsistent_valid_count_run.issues)
+
+    zero_folds = deepcopy(report)
+    zero_folds["num_folds"] = 0
+    zero_folds["folds"] = []
+    zero_folds["aggregate_metrics"]["valid_folds_information_ratio"] = 0  # type: ignore[index]
+    zero_folds_run = build_comparison_run(
+        run_id="wf-zero-folds",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=zero_folds,
+    )
+    assert zero_folds_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in zero_folds_run.issues)
 
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]

@@ -655,6 +655,8 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     if (
         fold_count is None
         or valid_count is None
+        or fold_count < 1
+        or valid_count < 0
         or fold_count != len(folds)
         or valid_count > fold_count
     ):
@@ -677,7 +679,10 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
         if _finite_float(information_ratio) is None:
             return None
         valid_information_ratio_count += 1
-    if valid_count != valid_information_ratio_count:
+    if (
+        seen_fold_indices != set(range(fold_count))
+        or valid_count != valid_information_ratio_count
+    ):
         return None
     return FoldEvidence(
         fold_count=fold_count,
@@ -894,17 +899,31 @@ def build_comparison_run(
         collected_issues.append(ComparisonIssue("missing_report", "报告工件不可用，无法核验现有指标。"))
 
     metric_status = _effective_metric_status(report)
-    canonical_path = (
-        _required_text(report.get("official_backtest_path"))
-        if engine == "pipeline"
-        else _required_text(
-            _mapping(report.get("comparison_provenance")).get(
-                "official_backtest_path"
-            )
+    comparison_provenance = _mapping(report.get("comparison_provenance"))
+    if engine == "pipeline":
+        top_level_path = _required_text(report.get("official_backtest_path"))
+        nested_path = _required_text(
+            _nested(report, "backtest", "provenance", "official_backtest_path")
         )
-        if engine == "walk_forward"
-        else None
-    )
+        projected_path = _required_text(
+            comparison_provenance.get("official_backtest_path")
+        )
+        canonical_path = (
+            CANONICAL_OFFICIAL_BACKTEST_PATH
+            if (
+                comparison_provenance.get("status") == "consistent"
+                and top_level_path == CANONICAL_OFFICIAL_BACKTEST_PATH
+                and nested_path == CANONICAL_OFFICIAL_BACKTEST_PATH
+                and projected_path == CANONICAL_OFFICIAL_BACKTEST_PATH
+            )
+            else None
+        )
+    elif engine == "walk_forward":
+        canonical_path = _required_text(
+            comparison_provenance.get("official_backtest_path")
+        )
+    else:
+        canonical_path = None
     if (
         engine in {"pipeline", "walk_forward"}
         and metric_status == OFFICIAL_METRIC_STATUS

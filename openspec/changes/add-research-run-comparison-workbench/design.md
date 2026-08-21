@@ -90,7 +90,9 @@ For pipeline rows, the read model also compares each complete resolved
 backtest fields. Runtime provider paths and regions are compared after the
 canonical runtime normalizes them; a source-level `null` stamp-tax schedule is
 resolved to the canonical default and compared with the producer-written
-expanded request. A mismatch blocks ordering; configuration files are display
+expanded request. For official metrics, the top-level, nested backtest, and
+comparison-projection canonical paths must also agree. A mismatch blocks
+ordering; configuration files are display
 references only when they can be tied to the report that supplied the metrics.
 
 ### Controlled ordering

@@ -116,16 +116,16 @@ read-only configuration and log references.
 #### Scenario: A selected walk-forward run has fold evidence
 
 - **WHEN** a selected run has a valid `walk_forward_report.json` with fold
-  records whose declared `num_folds` equals the fold-record count and whose
-  valid-fold count equals the listed finite `information_ratio` values
+  records whose declared positive `num_folds` equals the fold-record count
+  and whose valid-fold count equals the listed finite `information_ratio` values
 - **THEN** the page displays its existing aggregate metrics and fold stability
   evidence without calculating replacement fold metrics
 
 #### Scenario: Fold counts contradict the listed records
 
 - **WHEN** a walk-forward report declares a fold count different from its fold
-  list length, a valid-fold count different from its listed finite IR values,
-  or a fold row omits its index or information-ratio field
+  list length, a zero fold count, a valid-fold count different from its listed
+  finite IR values, or a fold row omits its index or information-ratio field
 - **THEN** the page marks fold stability evidence invalid
 - **AND** does not display the contradictory counts as evidence
 
@@ -152,6 +152,14 @@ read-only configuration and log references.
 - **THEN** the page marks the artifact pair as inconsistent evidence
 - **AND** blocks controlled ordering instead of showing the configuration as
   the source of the reported metrics
+
+#### Scenario: Official pipeline path projections disagree
+
+- **WHEN** a pipeline report labels metrics official but its top-level,
+  `backtest.provenance`, and `comparison_provenance` canonical paths are
+  missing, non-canonical, or unequal
+- **THEN** the page marks the metric path unverified
+- **AND** blocks controlled ordering
 
 #### Scenario: Pipeline artifacts use equivalent runtime spellings
 
