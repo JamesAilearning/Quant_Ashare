@@ -20,6 +20,7 @@ from src.core._canonical_request import (
     build_canonical_request,
     resolve_risk_constraints,
 )
+from src.core._comparison_provenance import resolve_backtest_comparison_provenance
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -172,13 +173,15 @@ class WalkForwardEngine:
         # so cache and resume invalidate in lockstep on a re-ingest. Best-effort:
         # "unknown" when the bundle carries no _fetch_integrity identity, which
         # leaves the fingerprint unchanged (no forced re-run on legacy bundles).
-        bundle_identity = cls._resolve_bundle_identity()
+        bundle_identity, bundle_build_identity = cls._resolve_bundle_identities()
 
         # Resume policy — default AUTO (resume any matching manifest).
         # See src/core/walk_forward/_resume.py for the contract.
         effective_resume_mode = resume_mode if resume_mode is not None else ResumeMode.AUTO
         config_fingerprint = compute_config_fingerprint(
-            config, bundle_identity=bundle_identity,
+            config,
+            bundle_identity=bundle_identity,
+            bundle_build_identity=bundle_build_identity,
         )
         discovered_manifests = FoldManifest.discover(output_dir)
 
@@ -234,6 +237,15 @@ class WalkForwardEngine:
         fold_provenances: list[dict[str, Any] | None] = []
 
         for i, (train_s, train_e, valid_s, valid_e, test_s, test_e) in enumerate(windows):
+            # The resume fingerprint protects the NEXT invocation.  Re-read
+            # both immutable identities at this fold boundary as well: a
+            # provider rebuild while this invocation is running would otherwise
+            # let one aggregate mix feature/backtest bytes from two bundles
+            # while every manifest keeps the run-start identity.
+            cls._assert_bundle_identities_unchanged(
+                expected_bundle_identity=bundle_identity,
+                expected_bundle_build_identity=bundle_build_identity,
+            )
             decision = decide_fold(
                 fold_index=i,
                 train_period=f"{train_s} ~ {train_e}",
@@ -317,6 +329,15 @@ class WalkForwardEngine:
                 )
                 fold_failed = True
 
+            # This deliberately sits outside the per-fold recovery branch.
+            # A changed provider is not an ordinary fold failure that can be
+            # represented by NaN: continuing would publish an aggregate whose
+            # folds may have consumed different bundle generations.
+            cls._assert_bundle_identities_unchanged(
+                expected_bundle_identity=bundle_identity,
+                expected_bundle_build_identity=bundle_build_identity,
+            )
+
             # Stamp timing on the fold AFTER both the success and the
             # NaN-placeholder branches so failing folds still get
             # attributed wall-clock time. Use ``dataclasses.replace``
@@ -375,6 +396,7 @@ class WalkForwardEngine:
                             else None
                         ),
                         bundle_identity=bundle_identity,
+                        bundle_build_identity=bundle_build_identity,
                         git_provenance=git_provenance,  # the code that produced THIS fold
                     )
                     manifest.save(output_dir)
@@ -428,12 +450,19 @@ class WalkForwardEngine:
                 "in one invocation for a provenance-clean comparison run."
             )
         aggregate_path = output_dir / "walk_forward_report.json"
+        comparison_provenance = resolve_backtest_comparison_provenance(
+            [
+                cls._read_fold_backtest_provenance_for_comparison(fold.report_path)
+                for fold in folds
+            ]
+        )
         write_aggregate_report(
             path=aggregate_path,
             config=config,
             folds=folds,
             aggregate_metrics=aggregate,
             git_provenance=resolved_provenance,  # resolved across folds, run-start based
+            comparison_provenance=comparison_provenance,
         )
         _logger.info("Aggregate report: %s", aggregate_path)
 
@@ -480,7 +509,11 @@ class WalkForwardEngine:
             # FULLY best-effort: an optional catalog-path failure — including an
             # import error in run_catalog or its deps — must never prevent
             # importing or running the engine. (codex P2 on #255.)
-            from src.core.run_catalog import append_run_record, build_record
+            from src.core.run_catalog import (
+                append_run_record,
+                build_record,
+                operator_ui_job_id_from_environment,
+            )
 
             has_any_nan = any(
                 math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
@@ -504,6 +537,7 @@ class WalkForwardEngine:
                 metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
+                operator_ui_job_id=operator_ui_job_id_from_environment(),
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,
@@ -808,7 +842,7 @@ class WalkForwardEngine:
         the CLI strips that top-level key into QlibRuntimeConfig, so
         reading it off the config object always yields None in real
         runs and the coverage stamp would silently never be read.
-        Resolution therefore mirrors _resolve_bundle_identity: the
+        Resolution therefore mirrors _resolve_bundle_identities: the
         SAME canonical source the feature-cache key uses. None only
         when the canonical runtime is not initialized (unit tests
         injecting a calendar directly), where the weekday fallback
@@ -822,24 +856,81 @@ class WalkForwardEngine:
         return canonical.provider_uri if canonical else None
 
     @staticmethod
-    def _resolve_bundle_identity() -> str:
-        """Resolve the bundle content tag for the resume fingerprint (PR-G+I).
+    def _resolve_bundle_identities() -> tuple[str, str]:
+        """Resolve calendar and rebuild identities for the resume fingerprint.
 
-        Mirrors the feature-cache key's resolution EXACTLY (provider_uri from the
-        canonical qlib config, then ``read_bundle_tag``) so the cache key and the
-        resume fingerprint derive identity from the same source and invalidate
-        together. Best-effort: returns ``"unknown"`` when the canonical config or
-        the bundle identity is unavailable. Isolated behind a method so tests can
-        patch it without standing up a bundle.
+        The calendar tag mirrors the feature-cache key.  The second identity is
+        the producer-written rebuild stamp, which catches a new feature or
+        instrument build that leaves the calendar unchanged.  Both are
+        best-effort: unavailable evidence is returned as ``"unknown"`` and is
+        never fabricated from mutable filesystem metadata.
         """
-        from src.data._feature_dataset_cache import read_bundle_tag
+        from src.data._feature_dataset_cache import (
+            read_bundle_build_identity,
+            read_bundle_tag,
+        )
         try:
             from src.core.qlib_runtime import get_canonical_qlib_config
             canonical = get_canonical_qlib_config()
             bundle_uri = canonical.provider_uri if canonical else None
         except Exception:  # noqa: BLE001 — best-effort, mirrors feature builder
             bundle_uri = None
-        return read_bundle_tag(bundle_uri)
+        return read_bundle_tag(bundle_uri), read_bundle_build_identity(bundle_uri)
+
+    @classmethod
+    def _assert_bundle_identities_unchanged(
+        cls,
+        *,
+        expected_bundle_identity: str,
+        expected_bundle_build_identity: str,
+    ) -> None:
+        """Stop before aggregate publication when the provider rebuilds mid-run."""
+        observed_bundle_identity, observed_bundle_build_identity = (
+            cls._resolve_bundle_identities()
+        )
+        if (
+            observed_bundle_identity != expected_bundle_identity
+            or observed_bundle_build_identity != expected_bundle_build_identity
+        ):
+            raise WalkForwardError(
+                "Walk-forward bundle identity changed during this run: "
+                f"expected calendar={expected_bundle_identity!r}, "
+                f"build={expected_bundle_build_identity!r}; observed "
+                f"calendar={observed_bundle_identity!r}, "
+                f"build={observed_bundle_build_identity!r}. Refusing to mix "
+                "folds from different bundle generations; restart the run."
+            )
+
+    @staticmethod
+    def _read_fold_backtest_provenance_for_comparison(
+        report_path: str | None,
+    ) -> Mapping[str, Any] | None:
+        """Read persisted fold evidence without making aggregation depend on it.
+
+        A missing/corrupt report leaves the numerical walk-forward report
+        available, but its comparison provenance becomes explicitly
+        unavailable.  The research workbench then blocks ordering rather than
+        inventing evidence from the current configuration.
+        """
+        if not report_path:
+            return None  # fallback-ok: unavailable evidence must block comparison, not the completed numeric report
+        try:
+            report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _logger.warning(
+                "Fold report %s is unavailable for comparison provenance; "
+                "the aggregate report will remain non-comparable.",
+                report_path,
+                exc_info=True,
+            )
+            return None  # fallback-ok: unavailable evidence must block comparison, not the completed numeric report
+        if not isinstance(report, Mapping):
+            return None
+        backtest = report.get("backtest")
+        if not isinstance(backtest, Mapping):
+            return None
+        provenance = backtest.get("provenance")
+        return provenance if isinstance(provenance, Mapping) else None
 
     @classmethod
     def _traded_predictions_for_fold(

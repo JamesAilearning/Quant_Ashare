@@ -484,11 +484,12 @@ with daily_col:
     st.page_link("pages/daily_decision.py", label="日度信号与人工决策")
 with research_col:
     st.markdown("**研究与验证**")
-    st.caption("启动研究配置，查看作业、单次结果与滚动验证。")
+    st.caption("启动研究配置，查看作业、单次结果、滚动验证与研究运行对比。")
     st.page_link("pages/config_run.py", label="配置运行")
     st.page_link("pages/jobs.py", label="作业")
     st.page_link("pages/results.py", label="结果")
     st.page_link("pages/walk_forward.py", label="滚动验证")
+    st.page_link("pages/research_run_comparison.py", label="研究运行对比")
 with governance_col:
     st.markdown("**生产治理**")
     st.caption("核对服务身份、认证与生产数据包健康。")

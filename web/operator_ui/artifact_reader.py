@@ -69,7 +69,7 @@ def read_json_artifact(path: Path | None, *, artifact_name: str | None = None) -
         return ArtifactReadResult({})
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         return ArtifactReadResult({}, _issue(path, artifact_name, exc))
     if not isinstance(loaded, dict):
         return ArtifactReadResult(

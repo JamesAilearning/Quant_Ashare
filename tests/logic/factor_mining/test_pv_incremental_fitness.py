@@ -16,6 +16,7 @@ import pickle
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -747,7 +748,8 @@ class MinerBaselineLoadingTests(unittest.TestCase):
 class BaselineExporterTests(unittest.TestCase):
     @classmethod
     def _fold_manifests(cls, run_dir: Path, indices, bundle_hash: str,
-                        *, config=None, commit: str = "a" * 40):
+                        *, bundle_build_identity: str | None = None,
+                        config=None, commit: str = "a" * 40):
         """Write fold manifests carrying the authoritative
         config_fingerprint — the digest that folds the RUN-TIME bundle
         identity in (PR-G+I), which the exporter re-derives to prove
@@ -763,7 +765,8 @@ class BaselineExporterTests(unittest.TestCase):
         fp = compute_config_fingerprint(
             WalkForwardConfig(**{k: v for k, v in raw.items()
                                  if k in valid}),
-            bundle_identity=bundle_hash)
+            bundle_identity=bundle_hash,
+            bundle_build_identity=bundle_build_identity)
         for i in indices:
             report_path = run_dir / f"fold_{i:02d}_report.json"
             test_period = ""
@@ -785,7 +788,7 @@ class BaselineExporterTests(unittest.TestCase):
 
     @staticmethod
     def _bundle(tmp: Path, *, start="2018-01-02", end="2026-08-03",
-                calendar_extra: str = ""):
+                calendar_extra: str = "", built_at: datetime | None = None):
         """A self-contained MINIMAL PIT bundle: integrity stamp plus a
         real ``calendars/day.txt``, because ``read_bundle_tag``
         RECOMPUTES the content hash from the live calendar (codex #401
@@ -803,7 +806,8 @@ class BaselineExporterTests(unittest.TestCase):
             identity=BundleIdentity(
                 tail_date=end, content_hash="sha256:" + "0" * 64,
                 instrument_count=800, calendar_start=start,
-                calendar_end=end))
+                calendar_end=end),
+            now=built_at)
         return tmp
 
     @staticmethod
@@ -813,6 +817,12 @@ class BaselineExporterTests(unittest.TestCase):
         caught)."""
         from src.data._feature_dataset_cache import read_bundle_tag
         return read_bundle_tag(str(bundle_dir))
+
+    @staticmethod
+    def _bundle_build_identity(bundle_dir: Path) -> str:
+        """Return the producer stamp the expanded engine fingerprint uses."""
+        from src.data._feature_dataset_cache import read_bundle_build_identity
+        return read_bundle_build_identity(str(bundle_dir))
 
     @staticmethod
     def _fold(run_dir: Path, index: int, start: str, end: str, *,
@@ -1189,8 +1199,10 @@ class BaselineExporterTests(unittest.TestCase):
             self._agg(run_dir, n_folds=2)
             out = Path(d) / "out"
             bundle = self._bundle(Path(d) / "bundle")
-            self._fold_manifests(run_dir, [0, 1],
-                                 self._bundle_tag(bundle))
+            self._fold_manifests(
+                run_dir, [0, 1], self._bundle_tag(bundle),
+                bundle_build_identity=self._bundle_build_identity(bundle),
+            )
             rc = bx.main(["--run-dir", str(run_dir),
                           "--out-dir", str(out),
                           "--provider-uri", str(bundle)])
@@ -1272,15 +1284,53 @@ class BaselineExporterTests(unittest.TestCase):
             tag_a = self._bundle_tag(bundle_a)
             tag_b = self._bundle_tag(bundle_b)
             self.assertNotEqual(tag_a, tag_b)
-            self._fold_manifests(run_dir, [0], tag_a)   # run used A
+            build_id_a = self._bundle_build_identity(bundle_a)
+            self._fold_manifests(
+                run_dir, [0], tag_a, bundle_build_identity=build_id_a,
+            )  # run used A
             self.assertEqual(2, bx.main(
                 ["--run-dir", str(run_dir), "--out-dir", str(Path(d) / "o"),
                  "--provider-uri", str(bundle_b)]))
             # The bundle the run actually read passes the same path.
             ok = bx.verify_bundle_matches_run(
-                run_dir, self._PRESET, {"bundle_tag": tag_a},
+                run_dir, self._PRESET,
+                {"bundle_tag": tag_a, "bundle_build_identity": build_id_a},
                 fold_indices=[0])
             self.assertRegex(ok, r"^[0-9a-f]{16}$")
+
+    def test_same_calendar_rebuild_refused_by_run_fingerprint(self) -> None:
+        """A corrected publish must not certify an older fold generation."""
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = Path(d) / "run"
+            run_dir.mkdir()
+            self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
+            self._agg(run_dir, n_folds=1)
+            bundle_a = self._bundle(
+                Path(d) / "bundle_a",
+                built_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+            bundle_b = self._bundle(
+                Path(d) / "bundle_b",
+                built_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+            )
+            tag_a = self._bundle_tag(bundle_a)
+            tag_b = self._bundle_tag(bundle_b)
+            build_id_a = self._bundle_build_identity(bundle_a)
+            build_id_b = self._bundle_build_identity(bundle_b)
+            self.assertEqual(tag_a, tag_b)
+            self.assertNotEqual(build_id_a, build_id_b)
+            self._fold_manifests(
+                run_dir, [0], tag_a, bundle_build_identity=build_id_a,
+            )
+
+            # Before fix: exporter recomputed only the calendar tag and
+            # certified B as A's run-time bundle. After fix, its build stamp
+            # makes the expected fingerprint differ and the export refuses.
+            self.assertEqual(2, bx.main([
+                "--run-dir", str(run_dir),
+                "--out-dir", str(Path(d) / "out"),
+                "--provider-uri", str(bundle_b),
+            ]))
 
     def test_cross_commit_manifests_refused(self) -> None:
         # codex #401 r18: the aggregate from clean commit A with
@@ -1294,10 +1344,15 @@ class BaselineExporterTests(unittest.TestCase):
             self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
             bundle = self._bundle(Path(d) / "bundle")
             tag = self._bundle_tag(bundle)
-            self._fold_manifests(run_dir, [0], tag, commit="b" * 40)
+            build_id = self._bundle_build_identity(bundle)
+            self._fold_manifests(
+                run_dir, [0], tag, bundle_build_identity=build_id,
+                commit="b" * 40,
+            )
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0], run_commit="a" * 40)
             self.assertIn("different commit", str(ctx.exception))
             # A dirty-tree fold refuses too.
@@ -1308,7 +1363,8 @@ class BaselineExporterTests(unittest.TestCase):
             mpath.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0], run_commit="a" * 40)
             self.assertIn("dirty", str(ctx.exception))
             # Matching clean commit passes.
@@ -1316,7 +1372,8 @@ class BaselineExporterTests(unittest.TestCase):
             mpath.write_text(json.dumps(payload), encoding="utf-8")
             self.assertRegex(
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0], run_commit="a" * 40),
                 r"^[0-9a-f]{16}$")
 
@@ -1330,7 +1387,10 @@ class BaselineExporterTests(unittest.TestCase):
             self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
             bundle = self._bundle(Path(d) / "bundle")
             tag = self._bundle_tag(bundle)
-            self._fold_manifests(run_dir, [0], tag)
+            build_id = self._bundle_build_identity(bundle)
+            self._fold_manifests(
+                run_dir, [0], tag, bundle_build_identity=build_id,
+            )
             mpath = run_dir / "fold_00_manifest.json"
             good = json.loads(mpath.read_text(encoding="utf-8"))
             # (a) abbreviated manifest (no artifact paths at all)
@@ -1340,7 +1400,8 @@ class BaselineExporterTests(unittest.TestCase):
                 encoding="utf-8")
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0])
             self.assertIn("report_path", str(ctx.exception))
             # (a2) paths present but no test_period at all
@@ -1349,7 +1410,8 @@ class BaselineExporterTests(unittest.TestCase):
             mpath.write_text(json.dumps(no_window), encoding="utf-8")
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0])
             self.assertIn("test_period", str(ctx.exception))
             # (b) manifest describing a DIFFERENT fold's window
@@ -1357,7 +1419,8 @@ class BaselineExporterTests(unittest.TestCase):
             mpath.write_text(json.dumps(drifted), encoding="utf-8")
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
-                    run_dir, self._PRESET, {"bundle_tag": tag},
+                    run_dir, self._PRESET,
+                    {"bundle_tag": tag, "bundle_build_identity": build_id},
                     fold_indices=[0])
             self.assertIn("different run", str(ctx.exception))
 
@@ -1400,11 +1463,18 @@ class BaselineExporterTests(unittest.TestCase):
             self._fold(run_dir, 0, "2023-01-02", "2023-03-31")
             self._fold(run_dir, 1, "2023-04-03", "2023-06-30")
             bundle = self._bundle(Path(d) / "bundle")
-            self._fold_manifests(run_dir, [0], self._bundle_tag(bundle))
+            bundle_tag = self._bundle_tag(bundle)
+            build_id = self._bundle_build_identity(bundle)
+            self._fold_manifests(
+                run_dir, [0], bundle_tag, bundle_build_identity=build_id,
+            )
             with self.assertRaises(bx.PVBaselineError) as ctx:
                 bx.verify_bundle_matches_run(
                     run_dir, self._PRESET,
-                    {"bundle_tag": self._bundle_tag(bundle)},
+                    {
+                        "bundle_tag": bundle_tag,
+                        "bundle_build_identity": build_id,
+                    },
                     fold_indices=[0, 1])
             self.assertIn("aggregate", str(ctx.exception))
 

@@ -79,6 +79,7 @@ def build_aggregate_report(
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
     git_provenance: Mapping[str, Any] | None = None,
+    comparison_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the aggregate JSON report dict.
 
@@ -96,12 +97,21 @@ def build_aggregate_report(
       the run, for the run-comparison pre-registration gate (both ``None``
       when the caller does not supply ``git_provenance`` — e.g. a synthetic
       report — or when git is unavailable). Purely additive.
+    - ``comparison_provenance``: the canonical-backtest execution/runtime
+      evidence resolved across all per-fold reports.  It is ``consistent``
+      only when each fold wrote the same values; ``mixed`` and ``unavailable``
+      intentionally block research-run ordering.
     """
     gp = git_provenance or {}
     return {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "git_commit": gp.get("commit"),
         "git_dirty": gp.get("dirty"),
+        "comparison_provenance": (
+            dict(comparison_provenance)
+            if comparison_provenance is not None
+            else {"status": "unavailable"}
+        ),
         "config": asdict(config),
         "folds": [
             {
@@ -162,6 +172,7 @@ def write_aggregate_report(
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
     git_provenance: Mapping[str, Any] | None = None,
+    comparison_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Build and persist the aggregate JSON report.
 
@@ -182,6 +193,7 @@ def write_aggregate_report(
     report = build_aggregate_report(
         config=config, folds=folds, aggregate_metrics=aggregate_metrics,
         git_provenance=git_provenance,
+        comparison_provenance=comparison_provenance,
     )
     sanitised = _sanitize_for_json(report)
     with open(path, "w", encoding="utf-8") as f:
@@ -323,8 +335,12 @@ def _max_overlap_depth(periods: list[tuple[date, date]]) -> int:
 # "4-positions-attestation" added ``positions_sha256`` — the producer
 # stamps a content digest of the PERSISTED positions bytes so downstream
 # certification can bind the series to the fold report
-# (2026-07-17-csi800-cadence-campaign DP-5, #373 codex r10 prerequisite).
-FOLD_REPORT_SCHEMA_VERSION = "4-positions-attestation"
+# (2026-07-17-csi800-cadence-campaign DP-5, #373 codex r10 prerequisite);
+# "6-bundle-build-identity-provenance" requires the BacktestRunner runtime's
+# producer-written rebuild identity in addition to the cheap calendar tag, so
+# AUTO resume cannot mix folds from corrected feature/instrument bytes under an
+# unchanged calendar.
+FOLD_REPORT_SCHEMA_VERSION = "6-bundle-build-identity-provenance"
 
 
 def _ic_series_to_map(series: Any) -> dict[str, float]:

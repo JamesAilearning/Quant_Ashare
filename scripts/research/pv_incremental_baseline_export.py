@@ -150,7 +150,8 @@ def bind_source_bundle(provider_uri: str,
     sidecar rather than glossed:
 
     * the bundle's fetch-integrity identity (content hash, calendar
-      span, tail date, instrument count) is recorded;
+      span, tail date, instrument count) and producer-written rebuild
+      identity are recorded;
     * it is CROSS-CHECKED against the exported rows — a bundle whose
       calendar cannot contain the baseline's dates provably did not
       produce them, and refuses.
@@ -165,7 +166,10 @@ def bind_source_bundle(provider_uri: str,
     function records the identity and rules out calendar-incompatible
     bundles up front.
     """
-    from src.data._feature_dataset_cache import read_bundle_tag
+    from src.data._feature_dataset_cache import (
+        read_bundle_build_identity,
+        read_bundle_tag,
+    )
     from src.data.pit.bundle_integrity import read_bundle_integrity
 
     bundle_dir = Path(provider_uri)
@@ -210,9 +214,16 @@ def bind_source_bundle(provider_uri: str,
             f"bundle {bundle_dir} has an unreadable calendar "
             "(content hash cannot be recomputed) — its identity is "
             "unverifiable; refusing.")
+    build_identity = read_bundle_build_identity(str(bundle_dir))
+    if not build_identity or build_identity == "unknown":
+        raise PVBaselineError(
+            f"bundle {bundle_dir} yields no rebuild identity "
+            f"({build_identity!r}) — its build generation cannot be "
+            "bound to the run; refusing.")
     return {
         "provider_uri": str(bundle_dir),
         "bundle_tag": tag,
+        "bundle_build_identity": build_identity,
         "content_hash": ident.content_hash,
         "tail_date": ident.tail_date,
         "calendar_start": ident.calendar_start,
@@ -269,9 +280,9 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
     """Prove the supplied bundle is the one the RUN read.
 
     Each fold manifest stores ``config_fingerprint``, which folds the
-    run-time bundle content identity into its digest (PR-G+I). Rebuild
+    run-time calendar and rebuild identities into its digest. Rebuild
     that fingerprint from the materialized config plus the SUPPLIED
-    bundle's identity: equality means this bundle produced the run;
+    bundle's identities: equality means this bundle produced the run;
     inequality means a different bundle (or vintage) did, however
     calendar-compatible it looks (codex #401 r14).
 
@@ -381,6 +392,7 @@ def verify_bundle_matches_run(run_dir: Path, preset_path: Path,
     expected = compute_config_fingerprint(
         WalkForwardConfig(**{k: v for k, v in raw.items() if k in valid}),
         bundle_identity=bundle["bundle_tag"],
+        bundle_build_identity=bundle["bundle_build_identity"],
     )
     actual = str(recorded.pop())
     if expected != actual:
@@ -936,16 +948,12 @@ def main(argv: list[str] | None = None) -> int:
             fold_indices=[f["fold_index"] for f in folds],
             run_commit=provenance["source_git"])
         bundle["binding_strength"] = (
-            "verified_against_run:calendar_identity — the fold "
-            "manifests' config_fingerprint folds the run-time bundle "
-            "TAG, and it matches this config + this bundle. That tag "
-            "is calendar-only by construction (BundleIdentity."
-            "content_hash is a sha256 over calendars/day.txt and is "
-            "explicitly NOT a full-bin guarantee), so a same-calendar "
-            "bin correction is NOT distinguished by this check. "
-            "full_content below fingerprints the whole bundle for "
-            "future audits; it cannot retroactively verify this run, "
-            "which never recorded one."
+            "verified_against_run:calendar_and_rebuild_identity — the fold "
+            "manifests' config_fingerprint folds the run-time calendar TAG "
+            "and producer-written rebuild identity, both of which match "
+            "this config + bundle. The rebuild identity detects a complete "
+            "same-calendar republish but is not a full-bin content digest; "
+            "full_content below records that stronger audit evidence."
         )
 
         out_dir = Path(args.out_dir)

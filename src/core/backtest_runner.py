@@ -50,6 +50,7 @@ from src.core.risk_constraints import (
     RiskConstraintError,
     RiskConstraintMode,
 )
+from src.data._feature_dataset_cache import read_bundle_build_identity, read_bundle_tag
 from src.data.st_history import (
     StHistoryError,
     assert_covers,
@@ -142,6 +143,8 @@ class BacktestRunner:
         rebalance_anchor: str = "fold_phase",
         universe_hint: str | None = None,
         metrics_purpose: str = "official",
+        bundle_identity: str | None = None,
+        bundle_build_identity: str | None = None,
     ) -> CanonicalBacktestOutput:
         # validate_input() enforces benchmark_code is non-empty as of the
         # contract level — no redundant check needed here.
@@ -169,6 +172,22 @@ class BacktestRunner:
             raise BacktestRunnerError(
                 "BacktestRunner.run: metrics_purpose must be 'official' "
                 f"or 'predictions_only'; got {metrics_purpose!r}.")
+        if (bundle_identity is None) != (bundle_build_identity is None):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: bundle_identity and "
+                "bundle_build_identity must be supplied together so runtime "
+                "provenance cannot mix a captured and a late-read value."
+            )
+        if bundle_identity is not None and (
+            not isinstance(bundle_identity, str)
+            or not bundle_identity.strip()
+            or not isinstance(bundle_build_identity, str)
+            or not bundle_build_identity.strip()
+        ):
+            raise BacktestRunnerError(
+                "BacktestRunner.run: captured bundle identities must be "
+                "non-empty strings."
+            )
         if (risk_constraints is not None
                 and risk_constraints.mode is RiskConstraintMode.WARN_AND_CLIP
                 and metrics_purpose != "predictions_only"):
@@ -1160,6 +1179,8 @@ class BacktestRunner:
             # an extra key there fails veto 4 on every new fold and
             # blocks promotion. The purpose is not a calibration value.
             metrics_purpose=metrics_purpose,
+            bundle_identity=bundle_identity,
+            bundle_build_identity=bundle_build_identity,
         )
 
         return CanonicalBacktestOutput(
@@ -1918,6 +1939,8 @@ class BacktestRunner:
         rebalance: Mapping[str, Any] | None = None,
         risk_constraints: Mapping[str, Any] | None = None,
         metrics_purpose: str = "official",
+        bundle_identity: str | None = None,
+        bundle_build_identity: str | None = None,
     ) -> Mapping[str, Any]:
         """Build a provenance record covering the full request + strategy
         params *plus* the qlib runtime config the metrics depend on.
@@ -1930,10 +1953,12 @@ class BacktestRunner:
         tool diff'ing two run reports could not tell the difference
         between "true regression" and "switched data bundle".
 
-        We now also hash the live qlib runtime config — the
+        We now also hash the qlib runtime config — the
         ``runtime.data_adjust_mode`` / ``runtime.provider_uri`` /
         ``runtime.region`` triple — into the same JSON blob so the
-        fingerprint changes whenever any of those change.
+        fingerprint changes whenever any of those change. Pipeline callers
+        additionally pass the identities captured before feature construction;
+        direct callers retain the local read at output construction.
         """
         # Strategy params not captured by CanonicalBacktestInput. ``st_mask``
         # (Codex P2 on #223): the namechange path + content hash change the
@@ -1976,6 +2001,25 @@ class BacktestRunner:
                 "provider_uri": runtime_config.provider_uri,
                 "region": runtime_config.region,
                 "data_adjust_mode": runtime_config.data_adjust_mode,
+                # A mutable provider path alone cannot identify the data that
+                # produced official metrics.  Use the same content tag as the
+                # feature-cache and walk-forward resume boundaries; ``unknown``
+                # remains explicit unavailable evidence for readers.
+                "bundle_identity": (
+                    bundle_identity
+                    if bundle_identity is not None
+                    else read_bundle_tag(runtime_config.provider_uri)
+                ),
+                # The calendar tag above is deliberately cheap and therefore
+                # cannot see a corrected feature/instrument bin under an
+                # unchanged calendar.  Bind the producer-written build stamp
+                # as well: it changes on every complete rebuild without a
+                # per-fold full-bundle scan.
+                "bundle_build_identity": (
+                    bundle_build_identity
+                    if bundle_build_identity is not None
+                    else read_bundle_build_identity(runtime_config.provider_uri)
+                ),
             }
             if runtime_config is not None
             else {}
@@ -2003,6 +2047,13 @@ class BacktestRunner:
             # adjust_mode side by side without re-deriving from the
             # fingerprint alone.
             "config": {**request_dict, **strategy_dict, "runtime": runtime_dict},
+            # Preserve the version labels alongside the fingerprint.  A
+            # fingerprint proves a complete config changed, but a historical
+            # report cannot otherwise establish which fill semantics produced
+            # its metrics.  Both pipeline and walk-forward folds consume this
+            # shared provenance surface.
+            "execution_timing_semantics": EXECUTION_TIMING_SEMANTICS,
+            "price_limit_semantics": PRICE_LIMIT_SEMANTICS,
             "config_fingerprint": fingerprint,
             "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         }

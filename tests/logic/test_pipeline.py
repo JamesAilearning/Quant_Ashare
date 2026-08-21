@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -763,7 +765,7 @@ class ReportGitProvenanceTests(unittest.TestCase):
             path = Path(td) / "pipeline_report.json"
             self._write_minimal_report(path)
             pl = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("git_commit", "git_dirty"):
+        for key in ("git_commit", "git_dirty", "comparison_provenance"):
             self.assertIn(key, wf)
             self.assertIn(key, pl)
 
@@ -887,6 +889,66 @@ class JsonSanitizationTests(unittest.TestCase):
         decoded = json.loads(encoded)
         self.assertIsNone(decoded["factor_analysis"]["top_factors"][0]["ir"])
         self.assertEqual(decoded["factor_analysis"]["top_factors"][1]["ir"], 1.5)
+
+
+class PipelineBundleIdentityBoundaryTests(unittest.TestCase):
+    def test_run_refuses_a_rebuild_after_feature_construction(self) -> None:
+        """A changed provider cannot produce a pipeline report for stale features."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = PipelineConfig(
+                provider_uri=tmp,
+                output_dir=tmp,
+                run_factor_analysis=False,
+                run_attribution=False,
+            )
+            with patch(
+                "src.core.pipeline.provider_uri_guard_message", return_value=None,
+            ), patch(
+                "src.core.pipeline.capture_git_provenance",
+                return_value={"commit": "a" * 40, "dirty": False},
+            ), patch.dict(
+                Pipeline.run.__globals__,
+                {"init_qlib_canonical": lambda _config: None},
+            ), patch(
+                "src.core.pit_wiring.build_pit_provider", return_value=None,
+            ), patch.object(
+                Pipeline,
+                "_resolve_bundle_identities",
+                side_effect=(
+                    ("calendar-a", "build-a"),  # before feature build
+                    ("calendar-a", "build-a"),  # before backtest
+                    ("calendar-a", "build-b"),  # after backtest
+                ),
+            ), patch(
+                "src.core.pipeline.FeatureDatasetBuilder.build",
+                return_value=SimpleNamespace(
+                    train_shape=(1, 1), valid_shape=(1, 1),
+                    test_shape=(1, 1), dataset=object(),
+                ),
+            ), patch(
+                "src.core.pipeline.ModelTrainer.train_and_predict",
+                return_value=SimpleNamespace(
+                    prediction_shape=(1,), predictions=object(),
+                    model_artifact_path=str(Path(tmp) / "model.pkl"),
+                ),
+            ), patch(
+                "src.core.pipeline.SignalAnalyzer.analyze",
+                return_value=SimpleNamespace(),
+            ), patch(
+                "src.core.pipeline.SignalAnalyzer.print_report",
+            ), patch(
+                "src.core.pipeline.BacktestRunner.run",
+                return_value=SimpleNamespace(),
+            ) as run_backtest:
+                with self.assertRaisesRegex(PipelineError, "bundle identity changed"):
+                    Pipeline.run(config)
+
+        self.assertEqual(
+            run_backtest.call_args.kwargs["bundle_identity"], "calendar-a",
+        )
+        self.assertEqual(
+            run_backtest.call_args.kwargs["bundle_build_identity"], "build-a",
+        )
 
 
 from tests.e2e_guard import skip_unless_e2e

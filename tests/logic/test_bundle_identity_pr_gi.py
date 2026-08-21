@@ -11,11 +11,16 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.core.walk_forward import WalkForwardConfig
 from src.core.walk_forward._resume import compute_config_fingerprint
-from src.data._feature_dataset_cache import _LEGACY_BUNDLE_TAG, read_bundle_tag
+from src.data._feature_dataset_cache import (
+    _LEGACY_BUNDLE_TAG,
+    read_bundle_build_identity,
+    read_bundle_tag,
+)
 from src.data.bundle_manifest import (
     BundleManifestError,
     BundleStaleError,
@@ -114,12 +119,70 @@ class ReadBundleTagTests(unittest.TestCase):
             self.assertEqual(read_bundle_tag(str(d)), _LEGACY_BUNDLE_TAG)
 
 
+class ReadBundleBuildIdentityTests(unittest.TestCase):
+    def test_fetch_integrity_build_stamp_is_the_rebuild_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            write_bundle_integrity(
+                d,
+                built_from_holey_fetch=False,
+                now=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            )
+            self.assertEqual(
+                read_bundle_build_identity(d),
+                "fetch-integrity@2026-08-20T00:00:00+00:00",
+            )
+
+    def test_tushare_snapshot_is_the_fallback_rebuild_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "tushare_provider_manifest.json").write_text(
+                json.dumps({"snapshot_at": "2026-08-20T00:00:00Z"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                read_bundle_build_identity(d),
+                "tushare-manifest@2026-08-20T00:00:00Z",
+            )
+
+    def test_corrupt_integrity_stamp_does_not_fall_back_to_legacy_manifest(self) -> None:
+        # Before the fix, the broad catch in read_bundle_build_identity hid the
+        # corrupt canonical stamp and accepted this legacy rebuild timestamp.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "_fetch_integrity.json").write_text(
+                '{"schema_version": 999}', encoding="utf-8",
+            )
+            (d / "bundle_manifest.json").write_text(
+                json.dumps({"built_at": "2026-08-20T00:00:00+00:00"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(BundleIntegrityError):
+                read_bundle_build_identity(d)
+
+
 class ResumeFingerprintTests(unittest.TestCase):
     def test_real_identity_changes_fingerprint(self) -> None:
         cfg = _make_config()
         base = compute_config_fingerprint(cfg)
         with_id = compute_config_fingerprint(cfg, bundle_identity="2025-12-31@sha256:abc")
         self.assertNotEqual(base, with_id)
+
+    def test_rebuild_identity_changes_fingerprint_with_same_calendar_tag(self) -> None:
+        cfg = _make_config()
+        tag = "2025-12-31@sha256:abc"
+        before = compute_config_fingerprint(
+            cfg,
+            bundle_identity=tag,
+            bundle_build_identity="fetch-integrity@2026-08-20T00:00:00+00:00",
+        )
+        after = compute_config_fingerprint(
+            cfg,
+            bundle_identity=tag,
+            bundle_build_identity="fetch-integrity@2026-08-21T00:00:00+00:00",
+        )
+        self.assertNotEqual(before, after)
 
     def test_report_schema_version_changes_fingerprint(self) -> None:
         # add-run-comparison-methodology / codex P1 on #310: a fold-report SCHEMA bump

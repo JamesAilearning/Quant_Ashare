@@ -300,8 +300,9 @@ class FeatureDatasetBuilder:
             behaviour.
         cache_dir
             Optional directory for the feature-dataset pickle cache.
-            When set, the builder hashes the config (plus the qlib
-            provider's bundle tag, when available) and looks for a
+            When set, the builder hashes the config plus the qlib provider's
+            calendar tag and producer-written rebuild identity, when
+            available, and looks for a
             cached ``FeatureDatasetResult`` before rebuilding. On
             cache miss, the freshly-built result is pickled to the
             directory. Cache failures (corrupt blob, disk full,
@@ -328,6 +329,7 @@ class FeatureDatasetBuilder:
                 from src.data._feature_dataset_cache import (  # noqa: PLC0415
                     cache_get,
                     compute_cache_key,
+                    read_bundle_build_identity,
                     read_bundle_tag,
                 )
                 # Resolve the handler's cache identity. A handler
@@ -351,8 +353,11 @@ class FeatureDatasetBuilder:
                     # the normal build path below.
                     cache_active = False
                 else:
-                    # bundle_tag derivation is best-effort — read_bundle_tag
-                    # returns "unknown" when no manifest exists.
+                    # Bundle identity derivation is best-effort — both readers
+                    # return "unknown" when no producer stamp exists. The
+                    # rebuild identity supplements the cheap calendar tag so a
+                    # corrected bin under the same calendar cannot hit stale
+                    # cached features.
                     try:
                         from src.core.qlib_runtime import (  # noqa: PLC0415
                             get_canonical_qlib_config,
@@ -364,9 +369,11 @@ class FeatureDatasetBuilder:
                     except Exception:  # noqa: BLE001
                         bundle_uri = None
                     bundle_tag = read_bundle_tag(bundle_uri)
+                    bundle_build_identity = read_bundle_build_identity(bundle_uri)
                     cache_key = compute_cache_key(
                         config,
                         bundle_tag=bundle_tag,
+                        bundle_build_identity=bundle_build_identity,
                         handler_identity=handler_identity,
                     )
                     cached = cache_get(cache_dir, cache_key)

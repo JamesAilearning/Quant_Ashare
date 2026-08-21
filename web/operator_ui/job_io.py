@@ -121,6 +121,12 @@ class JobSummary:
     key_metric_value: str = ""
     config_summary: dict[str, str] = field(default_factory=dict)
     error_message: str = ""
+    #: Producer-recorded UI job ID on a CLI catalog row, when that CLI process
+    #: was launched by the operator UI. Empty means the relationship is absent.
+    operator_ui_job_id: str = ""
+    #: Producer-recorded configuration fingerprint from a catalog row. It is
+    #: display provenance only; empty means the source did not record one.
+    config_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -137,6 +143,8 @@ class JobSummary:
             "key_metric_value": self.key_metric_value,
             "config_summary": self.config_summary,
             "error_message": self.error_message,
+            "operator_ui_job_id": self.operator_ui_job_id,
+            "config_fingerprint": self.config_fingerprint,
         }
 
 
@@ -435,6 +443,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
             cfg_summary["model"] = str(model)
 
     error_msg = str(raw.get("stop_error") or raw.get("error") or "")
+    raw_config_fingerprint = raw.get("config_fingerprint")
 
     return JobSummary(
         # ``run_id`` is the canonical full id used for routing (st.switch_page
@@ -455,6 +464,11 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
         key_metric_value=key_value,
         config_summary=cfg_summary,
         error_message=error_msg,
+        config_fingerprint=(
+            raw_config_fingerprint.strip()
+            if isinstance(raw_config_fingerprint, str)
+            else ""
+        ),
     )
 
 
@@ -693,6 +707,8 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         key_value = "✓"
 
     cfg_summary: dict[str, str] = {}
+    raw_operator_ui_job_id = raw.get("operator_ui_job_id")
+    raw_config_fingerprint = raw.get("config_fingerprint")
     return JobSummary(
         run_id=run_id,
         type=etype,
@@ -700,11 +716,22 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         source="cli",
         run_dir=str(raw.get("output_dir") or ""),
         created_at=created,
+        started_at=str(raw.get("started_at") or ""),
         finished_at=created,
         duration_seconds=dur,
         key_metric_label=key_label,
         key_metric_value=key_value,
         config_summary=cfg_summary,
+        operator_ui_job_id=(
+            raw_operator_ui_job_id.strip()
+            if isinstance(raw_operator_ui_job_id, str)
+            else ""
+        ),
+        config_fingerprint=(
+            raw_config_fingerprint.strip()
+            if isinstance(raw_config_fingerprint, str)
+            else ""
+        ),
     )
 
 

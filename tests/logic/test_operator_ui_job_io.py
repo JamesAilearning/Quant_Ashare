@@ -175,6 +175,32 @@ class NormaliseJobIdLengthTests(unittest.TestCase):
         result = _normalise_cli_entry(raw)
         self.assertEqual(result.run_id, long_id)
 
+    def test_cli_entry_keeps_producer_recorded_ui_job_identity(self) -> None:
+        from web.operator_ui.job_io import _normalise_cli_entry
+
+        result = _normalise_cli_entry({
+            "run_id": "pipeline-cli",
+            "engine": "pipeline",
+            "operator_ui_job_id": "pipeline_20260821_010203_a1b2c3d4",
+        })
+
+        self.assertEqual(
+            result.operator_ui_job_id,
+            "pipeline_20260821_010203_a1b2c3d4",
+        )
+
+    def test_cli_entry_keeps_producer_recorded_config_fingerprint(self) -> None:
+        from web.operator_ui.job_io import _normalise_cli_entry
+
+        result = _normalise_cli_entry({
+            "run_id": "walk-forward-cli",
+            "engine": "walk_forward",
+            "config_fingerprint": "  catalog-config-fingerprint  ",
+        })
+
+        assert result.config_fingerprint == "catalog-config-fingerprint"
+        assert result.to_dict()["config_fingerprint"] == "catalog-config-fingerprint"
+
 
 class ExtractFailureDetailTests(unittest.TestCase):
     """Regression tests for ``_extract_failure_detail`` — the helper that

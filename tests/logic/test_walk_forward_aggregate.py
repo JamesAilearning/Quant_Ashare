@@ -25,6 +25,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.core._comparison_provenance import (  # noqa: E402
+    resolve_backtest_comparison_provenance,
+)
 from src.core.git_provenance import capture_git_provenance  # noqa: E402
 from src.core.walk_forward._types import WalkForwardFold  # noqa: E402
 from src.core.walk_forward.aggregate import (  # noqa: E402
@@ -381,6 +384,16 @@ class BuildAggregateReportTests(unittest.TestCase):
         self.assertIsNone(report["git_commit"])
         self.assertIsNone(report["git_dirty"])
 
+    def test_comparison_provenance_is_passed_through_to_aggregate_report(self):
+        provenance = {"status": "consistent", "config": {"runtime": {}}}
+        report = build_aggregate_report(
+            config=WalkForwardConfig(output_dir="output/wf"),
+            folds=[_make_fold(0)],
+            aggregate_metrics={},
+            comparison_provenance=provenance,
+        )
+        self.assertEqual(report["comparison_provenance"], provenance)
+
     def test_capture_git_provenance_shape_never_raises(self):
         # runs in the repo (commit is a sha) or outside one (None); either way the shape is
         # {'commit': str|None, 'dirty': bool|None} and it never raises.
@@ -436,6 +449,123 @@ class BuildAggregateReportTests(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["git_commit"], "deadbeef")
         self.assertIs(data["git_dirty"], False)
+
+
+class ResolveFoldComparisonProvenanceTests(unittest.TestCase):
+    @staticmethod
+    def _fold_report(*, bundle_build_identity: str = "fetch-integrity@2026-08-20T00:00:00+00:00") -> dict:
+        return {
+            "backtest": {
+                "provenance": {
+                    "execution_timing_semantics": "lag_total_v2",
+                    "price_limit_semantics": "close_expr_v1",
+                    "official_backtest_path": "qlib_native_canonical_v1",
+                    "config": {
+                        "benchmark_code": "SH000300TR",
+                        "signal_to_execution_lag": 1,
+                        "account_config": {"init_cash": 100_000_000.0},
+                        "st_mask": {"namechange_sha256": "a" * 16},
+                        "adjust_mode": "pre_adjusted",
+                        "exchange_config": {
+                            "execution_price_kind": "close",
+                            "limit_threshold": 0.095,
+                            "cost_model": {
+                                "commission_rate": 0.0005,
+                                "stamp_tax_schedule": None,
+                                "slippage_bps": 5.0,
+                                "min_cost": 5.0,
+                            },
+                        },
+                        "runtime": {
+                            "provider_uri": "data/qlib_cn",
+                            "region": "cn",
+                            "data_adjust_mode": "pre_adjusted",
+                            "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
+                            "bundle_build_identity": bundle_build_identity,
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_matching_fold_evidence_is_published(self):
+        provenance = resolve_backtest_comparison_provenance(
+            [
+                self._fold_report()["backtest"]["provenance"],
+                self._fold_report()["backtest"]["provenance"],
+            ]
+        )
+
+        self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(provenance["official_backtest_path"], "qlib_native_canonical_v1")
+        self.assertEqual(
+            provenance["config"]["runtime"]["bundle_build_identity"],
+            "fetch-integrity@2026-08-20T00:00:00+00:00",
+        )
+
+    def test_fold_specific_st_mask_counts_do_not_make_inputs_mixed(self):
+        first = self._fold_report()["backtest"]["provenance"]
+        second = self._fold_report()["backtest"]["provenance"]
+        first["config"]["st_mask"].update({  # type: ignore[index]
+            "namechange_path": "data/namechanges.parquet",
+            "n_st_masked": 3,
+        })
+        second["config"]["st_mask"].update({  # type: ignore[index]
+            "namechange_path": "data/namechanges.parquet",
+            "n_st_masked": 11,
+        })
+
+        provenance = resolve_backtest_comparison_provenance([first, second])
+
+        self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(
+            provenance["config"]["st_mask"],
+            {
+                "namechange_path": "data/namechanges.parquet",
+                "namechange_sha256": "a" * 16,
+            },
+        )
+
+    def test_st_mask_input_change_remains_mixed_across_folds(self):
+        first = self._fold_report()["backtest"]["provenance"]
+        second = self._fold_report()["backtest"]["provenance"]
+        second["config"]["st_mask"]["namechange_sha256"] = "c" * 16  # type: ignore[index]
+
+        provenance = resolve_backtest_comparison_provenance([first, second])
+
+        self.assertEqual(provenance, {"status": "mixed"})
+
+    def test_mixed_fold_evidence_is_not_collapsed_to_an_arbitrary_value(self):
+        provenance = resolve_backtest_comparison_provenance(
+            [
+                self._fold_report()["backtest"]["provenance"],
+                self._fold_report(bundle_build_identity=(
+                    "fetch-integrity@2026-08-21T00:00:00+00:00"
+                ))["backtest"]["provenance"],
+            ]
+        )
+
+        self.assertEqual(provenance, {"status": "mixed"})
+
+    def test_noncanonical_fold_path_makes_aggregate_evidence_mixed(self):
+        noncanonical = self._fold_report()["backtest"]["provenance"]
+        noncanonical["official_backtest_path"] = "custom.backtest.path"
+
+        provenance = resolve_backtest_comparison_provenance(
+            [self._fold_report()["backtest"]["provenance"], noncanonical]
+        )
+
+        self.assertEqual(provenance, {"status": "mixed"})
+
+    def test_missing_fold_canonical_path_makes_evidence_unavailable(self):
+        missing_path = self._fold_report()["backtest"]["provenance"]
+        del missing_path["official_backtest_path"]
+
+        provenance = resolve_backtest_comparison_provenance(
+            [self._fold_report()["backtest"]["provenance"], missing_path]
+        )
+
+        self.assertEqual(provenance, {"status": "unavailable"})
 
 
 # ---------------------------------------------------------------------------
