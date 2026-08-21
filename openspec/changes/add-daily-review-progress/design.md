@@ -40,9 +40,11 @@ The existing page continues to validate the artifact, `picks`, strict ISO
 projection.  The read-only page has no trading-calendar substrate, so the
 producer remains responsible for the exact next-session lookup; the page still
 requires a parseable entry date strictly later than the as-of date before it
-can present the entry-session guidance.  A HOLD artifact keeps its
-existing form block and does not render a completion summary or candidate
-review labels.  Malformed journal lines, including rows with a blank or
+can present the entry-session guidance.  Today Workbench applies that same
+shared timing check before classifying an artifact as reviewable, so its queue
+cannot advertise progress for a signal the detailed page must withhold.  A HOLD
+artifact keeps its existing form block and does not render a completion summary
+or candidate review labels.  Malformed journal lines, including rows with a blank or
 non-string human reason, remain excluded by `read_journal()` at the persisted-data boundary;
 the page shows its existing warning and labels counts as valid-record-only,
 never as evidence of execution.

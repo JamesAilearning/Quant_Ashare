@@ -11,6 +11,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
     VERDICT_MATCHES_INCUMBENT,
     VERDICT_SINGLE_SHA_OK,
+    artifact_entry_timing_is_valid,
     artifact_meta_status,
     hold_state,
     picks_table_rows,
@@ -80,6 +81,13 @@ def summarise_daily_signal(
             "needs_verification",
             "工件缺少有效 entry_date，无法确认信号时点。",
             as_of_date=as_of_date,
+        )
+    if not artifact_entry_timing_is_valid(payload):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件 entry_date 必须是晚于 as_of_date 的严格 ISO 日期，无法确认信号时点。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
         )
 
     schema_version = payload.get("artifact_schema_version")

@@ -11,6 +11,7 @@
 - [x] 2.3 Replace Today Workbench's duplicate count helper with the shared read model.
 - [x] 2.4 Keep the readable journal audit available when candidate identifiers prevent an exact review projection.
 - [x] 2.5 Require strict, forward artifact entry-date evidence before certifying entry-session guidance or rendering review progress.
+- [x] 2.6 Apply the shared entry-date validation before Today Workbench classifies a signal as reviewable.
 
 ## 3. Verification
 
