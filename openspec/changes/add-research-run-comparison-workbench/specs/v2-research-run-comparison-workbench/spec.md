@@ -87,6 +87,14 @@ An off declaration carrying an ST path or digest SHALL be unavailable evidence.
 - **AND** the workbench blocks controlled ordering rather than selecting an
   arbitrary fold's value
 
+#### Scenario: Fold-specific ST masking outcomes differ
+
+- **WHEN** every fold records the same ST input path and content digest but
+  different `n_st_masked` outcome counts
+- **THEN** the aggregate comparison provenance remains consistent and
+  contains only the stable ST input identity
+- **AND** a path or digest difference between folds remains mixed evidence
+
 #### Scenario: A walk-forward aggregate lacks a canonical path across folds
 
 - **WHEN** an aggregate declares official metrics but its persisted fold

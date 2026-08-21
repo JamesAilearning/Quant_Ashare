@@ -15,6 +15,29 @@ _COMPARISON_PROVENANCE_CONFIG_FIELDS = (
     "exchange_config",
     "runtime",
 )
+_ST_MASK_INPUT_FIELDS = ("namechange_path", "namechange_sha256")
+_ST_MASK_PROVENANCE_FIELDS = frozenset((*_ST_MASK_INPUT_FIELDS, "n_st_masked"))
+
+
+def _comparison_st_mask_identity(value: Any) -> dict[str, Any] | None:
+    """Project stable ST inputs while excluding a fold-specific outcome count.
+
+    ``BacktestRunner`` records ``n_st_masked`` beside the path and digest for
+    auditability. That number describes the fold's prediction dates, not the
+    ST input artifact, so it cannot determine whether folds share comparison
+    semantics. Unknown future fields fail closed rather than being silently
+    treated as either an input or an outcome.
+    """
+    if not isinstance(value, Mapping) or not set(value).issubset(
+        _ST_MASK_PROVENANCE_FIELDS
+    ):
+        return None
+    identity = {
+        field: value[field]
+        for field in _ST_MASK_INPUT_FIELDS
+        if field in value
+    }
+    return identity or None
 
 
 def _comparison_provenance_candidate(
@@ -33,6 +56,9 @@ def _comparison_provenance_candidate(
     if not isinstance(config, Mapping) or any(
         field not in config for field in _COMPARISON_PROVENANCE_CONFIG_FIELDS
     ):
+        return None
+    st_mask_identity = _comparison_st_mask_identity(config.get("st_mask"))
+    if st_mask_identity is None:
         return None
     if any(
         field not in backtest_provenance
@@ -54,7 +80,7 @@ def _comparison_provenance_candidate(
         # official-looking walk-forward rank bypass the canonical runtime.
         "official_backtest_path": backtest_provenance["official_backtest_path"],
         "config": {
-            field: config[field]
+            field: st_mask_identity if field == "st_mask" else config[field]
             for field in _COMPARISON_PROVENANCE_CONFIG_FIELDS
         },
     }

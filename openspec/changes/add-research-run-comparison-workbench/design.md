@@ -54,6 +54,11 @@ producer-expanded schedule; a disagreement or missing report-side expansion
 blocks ordering.  Likewise, every shared field must appear in folded
 provenance, including an explicit null ST-mask path for a disabled input; an
 omission is inconsistent evidence, not an invitation to infer equality.
+The projection includes only the ST input path and digest: each fold's
+`n_st_masked` is an outcome count that naturally changes with the fold window,
+so it must not turn stable input evidence into a mixed comparison contract.
+An unknown ST-provenance field makes comparison evidence unavailable rather
+than being silently classified as stable.
 The selected catalog row's producer-written `config_fingerprint` is carried
 through only as a read-only configuration identity for display because the
 walk-forward aggregate has no corresponding top-level backtest-provenance

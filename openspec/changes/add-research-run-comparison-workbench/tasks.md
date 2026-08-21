@@ -14,6 +14,7 @@
 - [x] 1.12 Validate each aggregate walk-forward configuration as the exact producer `WalkForwardConfig` artifact and cross-check it against folded comparison provenance before admitting a comparison contract.
 - [x] 1.13 Preserve an explicit ST-off experiment identity while requiring ST-on content hashes, and verify recorded aggregate IR mean/std against finite fold evidence without substituting a recomputed metric.
 - [x] 1.14 Carry a walk-forward catalog configuration fingerprint to the read-only configuration-identity display without using it as comparison-contract evidence.
+- [x] 1.15 Project only stable ST-mask input identity across walk-forward folds, excluding fold-specific outcome counts.
 
 ## 2. Read-only workbench page
 

@@ -503,6 +503,38 @@ class ResolveFoldComparisonProvenanceTests(unittest.TestCase):
             "fetch-integrity@2026-08-20T00:00:00+00:00",
         )
 
+    def test_fold_specific_st_mask_counts_do_not_make_inputs_mixed(self):
+        first = self._fold_report()["backtest"]["provenance"]
+        second = self._fold_report()["backtest"]["provenance"]
+        first["config"]["st_mask"].update({  # type: ignore[index]
+            "namechange_path": "data/namechanges.parquet",
+            "n_st_masked": 3,
+        })
+        second["config"]["st_mask"].update({  # type: ignore[index]
+            "namechange_path": "data/namechanges.parquet",
+            "n_st_masked": 11,
+        })
+
+        provenance = resolve_backtest_comparison_provenance([first, second])
+
+        self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(
+            provenance["config"]["st_mask"],
+            {
+                "namechange_path": "data/namechanges.parquet",
+                "namechange_sha256": "a" * 16,
+            },
+        )
+
+    def test_st_mask_input_change_remains_mixed_across_folds(self):
+        first = self._fold_report()["backtest"]["provenance"]
+        second = self._fold_report()["backtest"]["provenance"]
+        second["config"]["st_mask"]["namechange_sha256"] = "c" * 16  # type: ignore[index]
+
+        provenance = resolve_backtest_comparison_provenance([first, second])
+
+        self.assertEqual(provenance, {"status": "mixed"})
+
     def test_mixed_fold_evidence_is_not_collapsed_to_an_arbitrary_value(self):
         provenance = resolve_backtest_comparison_provenance(
             [
