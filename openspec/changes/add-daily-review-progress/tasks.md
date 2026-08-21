@@ -2,7 +2,7 @@
 
 - [x] 1.1 Define a pure effective-review projection and stable candidate-state model.
 - [x] 1.2 Reject missing or duplicate candidate identifiers; exclude mismatched journal keys.
-- [x] 1.3 Cover no, partial, full, corrected, mismatched, malformed-boundary, and HOLD cases.
+- [x] 1.3 Cover no, partial, full, corrected, mismatched, blank-reason malformed-boundary, and HOLD cases.
 
 ## 2. Page integration
 

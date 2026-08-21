@@ -43,3 +43,10 @@ training, serving, or trading-execution code.
 - **WHEN** the journal reader reports malformed rows
 - **THEN** the page retains a visible verification warning
 - **AND** any progress count includes only valid effective records
+
+#### Scenario: A journal row has no human reason
+
+- **WHEN** a persisted journal row has an empty or whitespace-only reason
+- **THEN** the journal reader counts it as malformed before building its
+  effective view
+- **AND** valid rows continue to appear in the audit and review-progress view

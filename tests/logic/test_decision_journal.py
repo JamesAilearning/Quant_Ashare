@@ -113,6 +113,32 @@ class T2TornLineToleranceTests(unittest.TestCase):
             self.assertEqual(len(result.entries), 1)
             self.assertEqual(result.malformed_count, 1)
 
+    def test_blank_reason_row_is_malformed_without_hiding_valid_history(self) -> None:
+        # before fix: the blank row entered ``effective`` and made the review
+        # projection fail; after fix: it is counted as malformed while the
+        # valid record remains visible to both the audit and progress readers.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            append_decision(_entry(nonce="n-valid"), journal_dir=tmp)
+            blank_reason_row = {
+                "journal_version": 1, "trade_date": "2026-07-03",
+                "code": "SZ000001", "action": "reject", "reason": "  ",
+                "rank": 1, "score": 0.1, "model_id": "m",
+                "decided_at": "2026-07-03T19:00:00+08:00", "nonce": "n-blank",
+            }
+            with journal_path(tmp).open("ab") as fh:
+                fh.write(_json.dumps(blank_reason_row).encode("utf-8") + b"\n")
+            result = read_journal(journal_dir=tmp)
+
+        self.assertEqual(len(result.entries), 1)
+        self.assertEqual(result.malformed_count, 1)
+        self.assertEqual(
+            result.effective[("2026-07-03", "SH600000")].nonce,
+            "n-valid",
+        )
+        self.assertNotIn(("2026-07-03", "SZ000001"), result.effective)
+
     def test_append_after_unterminated_tail_quarantines_fragment(self) -> None:
         # codex P1 on #330: appending directly after a newline-less torn tail
         # would FUSE the new entry onto the fragment — one combined malformed

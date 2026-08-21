@@ -372,6 +372,13 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
         return None
     if entry.action not in ACTIONS:
         return None
+    # Keep the reader boundary symmetric with ``make_entry``: a manually
+    # edited/legacy row whose reason is blank is not a valid human decision.
+    # Counting it as effective would make the review projection fail after
+    # the reader had already claimed the row was valid, hiding all otherwise
+    # valid audit history behind a page-level error.
+    if not entry.reason.strip():
+        return None
     if not entry.nonce.strip():
         return None
     if _parse_decided_at(entry.decided_at) is None:
