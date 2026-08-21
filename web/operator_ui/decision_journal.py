@@ -324,10 +324,11 @@ def _parse_decided_at(value: str) -> datetime | None:
     inconsistently (codex P2 on #330). Shared by the writer (make_entry) and
     the reader (_parse_line): one check point, symmetric boundaries.
     """
-    # Python 3.11 added direct support for an ISO basic-format date
-    # (``YYYYMMDDT...``), whereas the supported 3.10 runtime rejects it.
-    # Normalize only that date portion before parsing so valid persisted rows
-    # have identical writer/reader semantics across the CI matrix.
+    # Python 3.11 added direct support for ISO basic-format date/time portions
+    # (``YYYYMMDDTHHMMSS...``), whereas the supported 3.10 runtime rejects
+    # them. Normalize the basic date and complete ``HHMMSS`` time portions
+    # before parsing so valid persisted rows have identical writer/reader
+    # semantics across the CI matrix.
     if (
         isinstance(value, str)
         and len(value) >= 9
@@ -335,6 +336,13 @@ def _parse_decided_at(value: str) -> datetime | None:
         and value[8] == "T"
     ):
         value = f"{value[:4]}-{value[4:6]}-{value[6:8]}{value[8:]}"
+    if (
+        isinstance(value, str)
+        and len(value) >= 17
+        and value[10] == "T"
+        and value[11:17].isdigit()
+    ):
+        value = f"{value[:13]}:{value[13:15]}:{value[15:17]}{value[17:]}"
     try:
         parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
