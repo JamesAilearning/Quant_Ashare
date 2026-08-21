@@ -248,6 +248,19 @@ class T4ClockAndTimezoneTests(unittest.TestCase):
         with self.assertRaisesRegex(DecisionJournalError, "tz-aware"):
             _entry(decided_at="2026-07-03T18:30:00")  # naive -> refused
 
+    def test_basic_iso_date_timestamp_is_supported_by_write_and_read(self) -> None:
+        # Python 3.10 does not parse this ISO basic-date spelling directly,
+        # unlike newer Python versions.  The journal contract accepts it
+        # consistently at both its writer and persisted-data boundaries.
+        decided_at = "20260703T18:30:00+08:00"
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = _entry(decided_at=decided_at)
+            self.assertTrue(append_decision(entry, journal_dir=tmp))
+            result = read_journal(journal_dir=tmp)
+
+        self.assertEqual(result.malformed_count, 0)
+        self.assertEqual(result.effective[("2026-07-03", "SH600000")].decided_at, decided_at)
+
     def test_non_cn_offset_rejected_write_and_read(self) -> None:
         # codex P2 on #330: the contract pins +08:00 rows. Another offset must
         # be refused by the writer AND counted malformed by the reader —

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
