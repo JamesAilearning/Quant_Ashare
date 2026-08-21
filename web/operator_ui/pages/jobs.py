@@ -37,6 +37,8 @@ from web.operator_ui.formatting import (
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
     count_cli_rows_outside_output_tree,
+    count_malformed_cli_entries,
+    count_malformed_ui_job_entries,
     jobs_eligible_for_cleanup,
     list_all_jobs,
     load_all_jobs,
@@ -83,15 +85,51 @@ def _qp_write(key: str, value: str) -> None:
         st.query_params[key] = value
 
 
-def _seed_session_from_url(keys: list[str]) -> None:
-    """On first render of this page, copy URL params into widget-bound keys."""
+def _handoff_token() -> str:
+    """Return a validated navigation token, or an empty direct-URL sentinel."""
+    raw = st.query_params.get("handoff")
+    if raw is None:
+        return ""
+    return _sanitize_qp("handoff", raw, default="")
+
+
+def _seed_session_from_url(
+    keys: list[str],
+    *,
+    handoff_token: str = "",
+    handoff_keys: frozenset[str] = frozenset(),
+) -> None:
+    """Consume URL filters once, including a distinct cross-page handoff."""
     for k in keys:
         sk = f"jobs_{k}"
-        if sk not in st.session_state:
-            st.session_state[sk] = _qp_read(k)
+        url_state_key = f"jobs_last_url_{k}"
+        handoff_state_key = f"jobs_last_handoff_{k}"
+        url_value = _qp_read(k)
+        # Streamlit preserves this page's widget state when navigating away and
+        # back.  Remembering the last consumed URL value lets a queue link
+        # replace stale page-local state, while a user changing the selectbox
+        # on this page is not overwritten before _qp_write mirrors it to URL.
+        if (
+            k in handoff_keys
+            and handoff_token
+            and st.session_state.get(handoff_state_key) != handoff_token
+        ):
+            # A queue link can request the same status as the URL left by an
+            # earlier visit.  The token identifies this navigation, so it
+            # must supersede stale widget state exactly once; later reruns
+            # retain any on-page widget choice until that is mirrored to URL.
+            st.session_state[sk] = url_value
+            st.session_state[handoff_state_key] = handoff_token
+        elif sk not in st.session_state or st.session_state.get(url_state_key) != url_value:
+            st.session_state[sk] = url_value
+        st.session_state[url_state_key] = url_value
 
 
-_seed_session_from_url(list(_DEFAULTS.keys()))
+_seed_session_from_url(
+    list(_DEFAULTS.keys()),
+    handoff_token=_handoff_token(),
+    handoff_keys=frozenset({"status"}),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +496,27 @@ if _set_aside:
         "之外(多为测试运行写到临时目录,现已不存在),本页读不到也打不开。"
         "根因是运行目录索引的默认路径按当前工作目录解析——测试与真实运行"
         "共用了同一份索引。"
+    )
+
+# The shared UI-job loader deliberately keeps valid records available when a
+# sibling lifecycle artifact is unreadable or schema-invalid.  The Jobs page
+# must disclose that partial catalog before either empty-state exit, otherwise
+# an operator could mistake the remaining rows for complete evidence.
+_malformed_ui = count_malformed_ui_job_entries()
+if _malformed_ui:
+    st.warning(
+        f"另有 **{_malformed_ui}** 个 UI 作业记录未列出：其 `job.json` 不可读或"
+        "不符合生命周期契约。请修复或移除损坏工件后再据此核验作业目录。"
+    )
+
+# CLI catalog parsing also keeps valid entries visible when a sibling line is
+# malformed.  Disclose the omitted entries before an empty-state exit so this
+# page is not mistaken for a complete run record.
+_malformed_cli = count_malformed_cli_entries()
+if _malformed_cli:
+    st.warning(
+        f"另有 **{_malformed_cli}** 条 CLI 目录索引记录未列出：其内容不可读或"
+        "不符合运行目录索引契约。请修复索引后再据此核验 CLI 运行记录。"
     )
 
 # ---------------------------------------------------------------------------

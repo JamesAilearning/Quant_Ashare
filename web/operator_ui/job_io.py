@@ -12,6 +12,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from web.operator_ui._path_guard import PROJECT_ROOT, allowed_output_roots
 from web.operator_ui.formatting import to_cn_date
 
@@ -96,6 +98,7 @@ _JOB_ROOT = Path(__file__).resolve().parents[2] / "output" / "operator_ui" / "jo
 _RUNS_INDEX = (
     Path(__file__).resolve().parents[2] / "output" / "runs" / "_index.jsonl"
 )
+_UI_JOB_MODES = frozenset({"pipeline", "walk_forward", "tushare_provider"})
 
 
 @dataclass
@@ -161,8 +164,21 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
     for job_dir in sorted(_JOB_ROOT.iterdir(), reverse=True):
         if not job_dir.is_dir():
             continue
-        data = read_job_json(job_dir)
+        try:
+            data = read_job_json(job_dir)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # The health diagnostic reports this artifact separately.  The
+            # listing must still expose every other readable lifecycle record.
+            continue
         if not data:
+            continue
+        if (
+            not _is_valid_ui_job_record(data)
+            or not _ui_job_config_is_normalisable(data)
+        ):
+            # A readable lifecycle record may still contain nested values that
+            # the normaliser cannot safely present.  It is counted by the
+            # health diagnostic; keep the remaining valid jobs visible.
             continue
         if reconcile is not None:
             data = reconcile(job_dir, data)
@@ -174,18 +190,131 @@ def _load_ui_jobs(*, reconcile_zombies: bool = True) -> list[dict[str, Any]]:
 
 def _load_cli_entries() -> list[dict[str, Any]]:
     """Return raw dicts for every CLI catalog entry."""
+    entries, _ = _read_cli_entries_with_diagnostics()
+    return entries
+
+
+def _read_cli_entries_with_diagnostics() -> tuple[list[dict[str, Any]], int]:
+    """Read CLI catalog rows and count malformed lines without hiding them."""
     if not _RUNS_INDEX.is_file():
-        return []
+        return [], 0
     entries: list[dict[str, Any]] = []
-    with open(_RUNS_INDEX, encoding="utf-8") as f:
-        for line in f:
+    malformed_count = 0
+    with _RUNS_INDEX.open("rb") as f:
+        for raw_line in f:
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError:
+                malformed_count += 1
+                continue
             try:
                 record = json.loads(line)
-                record["_cli_source"] = True
-                entries.append(record)
             except json.JSONDecodeError:
+                malformed_count += 1
                 continue
-    return sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True)
+            if not isinstance(record, dict):
+                malformed_count += 1
+                continue
+            if not _is_valid_cli_catalog_record(record):
+                malformed_count += 1
+                continue
+            record["_cli_source"] = True
+            entries.append(record)
+    return (
+        sorted(entries, key=lambda e: str(e.get("completed_at") or ""), reverse=True),
+        malformed_count,
+    )
+
+
+def _is_valid_cli_catalog_record(record: Mapping[str, Any]) -> bool:
+    """Accept only the required, producer-written CLI catalog fields."""
+    required = ("run_id", "engine", "status", "completed_at", "output_dir")
+    return (
+        isinstance(record.get("engine"), str)
+        and record["engine"] in {"pipeline", "walk_forward"}
+        and all(
+            isinstance(record.get(field), str) and record[field].strip()
+            for field in required
+        )
+    )
+
+
+def count_malformed_cli_entries() -> int:
+    """Return malformed CLI catalog lines for read-only verification surfaces."""
+    _, malformed_count = _read_cli_entries_with_diagnostics()
+    return malformed_count
+
+
+def count_malformed_ui_job_entries() -> int:
+    """Count unreadable or schema-invalid UI lifecycle artifacts.
+
+    ``_load_ui_jobs`` intentionally keeps its historical best-effort listing
+    behaviour for the Jobs page.  Read-only health surfaces need the omitted
+    entries to be observable instead of treating a partial UI catalog as
+    healthy, so they call this diagnostic alongside the listing.
+    """
+    if not _JOB_ROOT.is_dir():
+        return 0
+    malformed_count = 0
+    for job_dir in _JOB_ROOT.iterdir():
+        if not job_dir.is_dir():
+            continue
+        path = job_dir / "job.json"
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            malformed_count += 1
+            continue
+        if (
+            not isinstance(loaded, Mapping)
+            or not _is_valid_ui_job_record(loaded)
+            or not _ui_job_config_is_normalisable(loaded)
+        ):
+            malformed_count += 1
+    return malformed_count
+
+
+def _ui_job_config_is_normalisable(record: Mapping[str, Any]) -> bool:
+    """Reject nested config shapes that would crash UI job normalisation."""
+    config, yaml_is_valid = _effective_ui_job_config(record)
+    if not yaml_is_valid:
+        return False
+    if not isinstance(config, Mapping):
+        return True
+    instruments = config.get("instruments")
+    return not isinstance(instruments, list) or all(
+        isinstance(instrument, str) for instrument in instruments
+    )
+
+
+def _effective_ui_job_config(record: Mapping[str, Any]) -> tuple[Any, bool]:
+    """Return the exact config shape consumed by UI normalisation."""
+    config = record.get("config")
+    config_yaml = record.get("config_yaml")
+    if isinstance(config, str) and isinstance(config_yaml, str):
+        try:
+            return yaml.safe_load(config_yaml), True
+        except yaml.YAMLError:
+            return config, False
+    return config, True
+
+
+def _is_valid_ui_job_record(record: Mapping[str, Any]) -> bool:
+    """Accept producer lifecycle fields, including retired readable modes."""
+    required = ("job_id", "mode", "status")
+    has_lifecycle_timestamp = any(
+        isinstance(record.get(field), str) and record[field].strip()
+        for field in ("created_at", "started_at")
+    )
+    return (
+        isinstance(record.get("mode"), str)
+        and record["mode"] in _UI_JOB_MODES
+        and has_lifecycle_timestamp
+        and all(
+            isinstance(record.get(field), str) and record[field].strip()
+            for field in required
+        )
+    )
 
 
 #: ``load_all_jobs`` 每次取多少行。只是步长,不是上限——它会一直翻到
@@ -255,7 +384,10 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
     # stamped (PR-K) so in-flight legacy jobs still sort/filter correctly.
     created = str(raw.get("created_at") or raw.get("started_at") or "")
     started = str(raw.get("started_at") or "")
-    finished = str(raw.get("ended_at") or "")
+    # ``stop_failed`` intentionally has no ``ended_at``: the stop attempt
+    # itself records ``stop_failed_at`` and leaves the job runnable.  Surface
+    # that producer timestamp without treating it as a completed lifecycle.
+    finished = str(raw.get("ended_at") or raw.get("stop_failed_at") or "")
     dur = raw.get("duration_seconds") if isinstance(raw.get("duration_seconds"), (int, float)) else None
 
     key_label, key_value = "", ""
@@ -291,13 +423,7 @@ def _normalise_ui_job(raw: dict[str, Any]) -> JobSummary:
             or str(progress.get("label") or "失败")
         )
 
-    config = raw.get("config")
-    if isinstance(raw.get("config_yaml"), str):
-        try:
-            import yaml
-            config = yaml.safe_load(raw["config_yaml"]) if isinstance(config, str) else config
-        except Exception:
-            pass
+    config, _yaml_is_valid = _effective_ui_job_config(raw)
 
     cfg_summary: dict[str, str] = {}
     if isinstance(config, dict):

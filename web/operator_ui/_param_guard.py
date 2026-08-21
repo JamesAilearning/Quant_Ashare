@@ -66,6 +66,10 @@ _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,200}$")
 
 # Page: positive integer ≤ ~9-digits so int() can't blow up.
 _PAGE_RE = re.compile(r"^[1-9]\d{0,9}$")
+# One-shot Jobs handoff token.  It is intentionally opaque and carries no
+# filter value itself; a fresh token tells the target page that this is a new
+# navigation even when its requested status equals the prior URL status.
+_HANDOFF_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +126,7 @@ _VALIDATORS: dict[str, Callable[[str], str | None]] = {
     "page": _regex(_PAGE_RE),
     "autorefresh": _enum(_AUTOREFRESH_ALLOWED),
     "run_id": _regex(_RUN_ID_RE),
+    "handoff": _regex(_HANDOFF_RE),
 }
 
 

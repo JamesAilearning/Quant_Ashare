@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import pytest
+
+from web.operator_ui.job_io import JobSummary
+from web.operator_ui.pages._today_decision_queue_helpers import (
+    build_today_decision_queue,
+    queue_counts,
+    queue_page_link,
+    review_progress,
+)
+from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
+
+
+def _job(run_id: str, status: str, *, finished_at: str = "") -> JobSummary:
+    return JobSummary(
+        run_id=run_id,
+        type="pipeline",
+        status=status,
+        source="ui",
+        finished_at=finished_at,
+        error_message=f"{run_id} failed" if status == "failed" else "",
+    )
+
+
+def _queue(**overrides):
+    values = {
+        "provider_problem": None,
+        "bundle_status": "ok",
+        "bundle_detail": "bundle healthy",
+        "update_kind": "missing",
+        "update_detail": "",
+        "update_time": "",
+        "update_matches_provider": None,
+        "update_running_class": None,
+        "signal": DailySignalSummary("daily", "valid", as_of_date="2026-08-19"),
+        "jobs": (),
+        "jobs_error": None,
+        "review": None,
+        "review_error": None,
+        "incumbent_kind": "single",
+        "incumbent_detail": "serving identity only",
+    }
+    values.update(overrides)
+    return build_today_decision_queue(**values)
+
+
+def test_multiple_distinct_exceptions_are_not_hidden_by_higher_priority_signal_blocker() -> None:
+    items = _queue(
+        signal=DailySignalSummary("needs_verification", "picks invalid", as_of_date="2026-08-19"),
+        jobs=(
+            _job("failed-a", "failed", finished_at="2026-08-19T08:00:00+08:00"),
+            _job("failed-b", "failed", finished_at="2026-08-19T09:00:00+08:00"),
+        ),
+    )
+
+    assert [item.source_key for item in items] == [
+        "signal:verification", "job:failed-b", "job:failed-a", "serving:identity", "update:missing",
+    ]
+    assert queue_counts(items) == {
+        "blocker": 1, "attention": 2, "in_progress": 0, "review": 0, "information": 2,
+    }
+
+
+def test_same_source_key_deduplicates_but_distinct_jobs_remain_visible() -> None:
+    items = _queue(jobs=(
+        _job("same", "failed", finished_at="2026-08-19T10:00:00+08:00"),
+        _job("same", "failed", finished_at="2026-08-19T11:00:00+08:00"),
+        _job("other", "failed", finished_at="2026-08-19T09:00:00+08:00"),
+    ))
+
+    assert [item.source_key for item in items if item.source_key.startswith("job:")] == [
+        "job:same", "job:other",
+    ]
+
+
+def test_valid_signal_with_unreviewed_candidates_creates_dated_review_navigation() -> None:
+    progress = review_progress(
+        "2026-08-19", ("SH600000", "SZ000001"), {("2026-08-19", "SH600000"): object()},
+    )
+    items = _queue(review=progress)
+
+    review = next(item for item in items if item.kind == "review")
+    assert review.context == "2026-08-19"
+    assert review.destination == "daily_decision"
+    assert "1/2" in review.detail
+    assert queue_page_link(review) == (
+        "pages/daily_decision.py", {"as_of": "2026-08-19"}
+    )
+
+
+def test_journal_or_candidate_shape_problem_blocks_fake_zero_review_count() -> None:
+    items = _queue(review_error="决策日志读取失败")
+
+    assert any(item.source_key == "review:verification" and item.kind == "blocker" for item in items)
+    assert not any(item.kind == "review" for item in items)
+    with pytest.raises(ValueError, match="重复"):
+        review_progress("2026-08-19", ("SH600000", "SH600000"), {})
+
+
+def test_malformed_job_catalog_blocks_a_partial_catalog_from_looking_healthy() -> None:
+    items = _queue(jobs_error="作业目录含 1 行损坏的 CLI 索引记录。")
+
+    assert any(
+        item.source_key == "jobs:verification" and item.kind == "blocker"
+        for item in items
+    )
+
+
+def test_job_catalog_verification_keeps_valid_job_exceptions_visible() -> None:
+    items = _queue(
+        jobs_error="作业目录含 1 行损坏的 CLI 索引记录。",
+        jobs=(_job("failed", "failed", finished_at="2026-08-19T10:00:00+08:00"),),
+    )
+
+    assert any(item.source_key == "jobs:verification" for item in items)
+    assert any(item.source_key == "job:failed" for item in items)
+
+
+def test_stable_order_uses_newest_timestamp_within_same_queue_kind() -> None:
+    items = _queue(jobs=(
+        _job("old", "running", finished_at="2026-08-19T08:00:00+08:00"),
+        _job("new", "running", finished_at="2026-08-19T09:00:00+08:00"),
+    ))
+
+    assert [item.source_key for item in items if item.kind == "in_progress"] == ["job:new", "job:old"]
+
+
+def test_queue_normalises_aware_timestamps_before_ordering() -> None:
+    items = _queue(
+        update_kind="running",
+        update_detail="update in progress",
+        update_time="2026-08-19T09:00:00+08:00",
+        update_running_class="fresh",
+        jobs=(_job("later-utc", "running", finished_at="2026-08-19T02:00:00+00:00"),),
+    )
+
+    assert [item.source_key for item in items if item.kind == "in_progress"] == [
+        "job:later-utc", "update:running",
+    ]
+
+
+def test_valid_artifact_dates_sort_as_source_times_within_blockers() -> None:
+    items = _queue(
+        signal=DailySignalSummary("needs_verification", "signal needs review", as_of_date="2026-08-19"),
+        jobs=(_job("older", "future_status", finished_at="2026-08-18T23:00:00+00:00"),),
+    )
+
+    blockers = [item.source_key for item in items if item.kind == "blocker"]
+    assert blockers.index("signal:verification") < blockers.index("job:older:status")
+
+
+@pytest.mark.parametrize("timestamp", ("not-a-timestamp", "2026-08-19T09:00:00"))
+def test_malformed_terminal_update_timestamp_creates_a_visible_verification_blocker(
+    timestamp: str,
+) -> None:
+    items = _queue(update_kind="finished", update_time=timestamp)
+
+    verification = next(item for item in items if item.source_key == "update:timestamp")
+    assert verification.kind == "blocker"
+    assert verification.destination == "run_center"
+
+
+@pytest.mark.parametrize("timestamp", ("not-a-timestamp", "2026-08-19T09:00:00"))
+def test_malformed_job_timestamp_creates_a_visible_verification_blocker(
+    timestamp: str,
+) -> None:
+    items = _queue(jobs=(_job("unverifiable", "running", finished_at=timestamp),))
+
+    verification = next(item for item in items if item.source_key == "job:unverifiable:timestamp")
+    assert verification.kind == "blocker"
+    assert verification.destination == "jobs"
+
+
+@pytest.mark.parametrize("status", ("completed", "failed", "stopped"))
+def test_ui_terminal_job_without_completion_timestamp_blocks_the_queue(status: str) -> None:
+    items = _queue(jobs=(_job("incomplete-terminal", status),))
+
+    verification = next(
+        item for item in items if item.source_key == "job:incomplete-terminal:terminal-timestamp"
+    )
+    assert verification.kind == "blocker"
+    assert not any(item.source_key == "job:incomplete-terminal" for item in items)
+
+
+def test_stop_failure_remains_an_attention_item_without_an_end_timestamp() -> None:
+    items = _queue(jobs=(_job("stop-failure", "stop_failed"),))
+
+    job = next(item for item in items if item.source_key == "job:stop-failure")
+    assert job.kind == "attention"
+
+
+@pytest.mark.parametrize("status", ("unknown", "future_status", ""))
+def test_unrecognized_job_status_creates_a_visible_verification_blocker(
+    status: str,
+) -> None:
+    items = _queue(jobs=(_job("unverifiable", status),))
+
+    verification = next(item for item in items if item.source_key == "job:unverifiable:status")
+    assert verification.kind == "blocker"
+    assert verification.destination == "jobs"
+
+
+def test_exception_link_keeps_its_real_filter_status() -> None:
+    items = _queue(
+        jobs=(_job("partial", "partial", finished_at="2026-08-19T10:00:00+08:00"),)
+    )
+
+    job = next(item for item in items if item.source_key == "job:partial")
+    assert queue_page_link(job) == ("pages/jobs.py", {"status": "partial"})
+
+
+def test_provider_mismatch_remains_a_blocker_even_when_update_is_terminal() -> None:
+    items = _queue(
+        update_kind="finished",
+        update_detail="状态工件属于另一个 provider。",
+        update_matches_provider=False,
+    )
+
+    mismatch = next(item for item in items if item.source_key == "update:provider-mismatch")
+    assert mismatch.kind == "blocker"
+    assert mismatch.title == "数据更新来源不匹配"
+
+
+def test_missing_update_status_is_visible_as_an_information_item() -> None:
+    items = _queue(update_kind="missing")
+
+    missing = next(item for item in items if item.source_key == "update:missing")
+    assert missing.kind == "information"
+    assert missing.destination == "run_center"
+
+
+def test_update_path_error_creates_a_visible_verification_blocker() -> None:
+    items = _queue(
+        update_kind=None,
+        update_detail="更新状态文件不能位于文件系统根目录。",
+    )
+
+    verification = next(item for item in items if item.source_key == "update:verification")
+    assert verification.kind == "blocker"
+    assert verification.destination == "run_center"
+
+
+@pytest.mark.parametrize("kind", ("unresolvable", "unsupported"))
+def test_unverifiable_serving_identity_creates_a_blocker(kind: str) -> None:
+    items = _queue(incumbent_kind=kind, incumbent_detail="serving manifest unreadable")
+
+    identity = next(item for item in items if item.source_key == "serving:identity")
+    assert identity.kind == "blocker"
+    assert identity.title == "服务身份需要核验"
+
+
+def test_duplicate_source_key_keeps_its_newest_evidence_regardless_of_input_order() -> None:
+    items = _queue(jobs=(
+        _job("same", "failed", finished_at="2026-08-19T11:00:00+08:00"),
+        _job("same", "failed", finished_at="2026-08-19T10:00:00+08:00"),
+    ))
+
+    job = next(item for item in items if item.source_key == "job:same")
+    assert job.source_time == "2026-08-19T11:00:00+08:00"

@@ -615,7 +615,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "z"
         job_dir.mkdir(parents=True)
-        write_job_json(job_dir, {"job_id": "z", "status": "running", "pid": 51001})
+        write_job_json(job_dir, {
+            "job_id": "z",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51001,
+        })
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
             # _reconcile_zombie (lazy-imported by _load_ui_jobs) uses
@@ -637,7 +643,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "live"
         job_dir.mkdir(parents=True)
-        write_job_json(job_dir, {"job_id": "live", "status": "running", "pid": 51002})
+        write_job_json(job_dir, {
+            "job_id": "live",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51002,
+        })
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
             with patch("web.operator_ui.job_manager._pid_is_alive", return_value=True):
@@ -654,7 +666,13 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         job_root = Path(tempfile.mkdtemp())
         job_dir = job_root / "read-only"
         job_dir.mkdir(parents=True)
-        original = {"job_id": "read-only", "status": "running", "pid": 51003}
+        original = {
+            "job_id": "read-only",
+            "mode": "pipeline",
+            "status": "running",
+            "created_at": "2026-08-20T10:00:00+08:00",
+            "pid": 51003,
+        }
         write_job_json(job_dir, original)
 
         with patch.object(job_io, "_JOB_ROOT", job_root):
@@ -668,6 +686,220 @@ class LoadUiJobsZombieReconcileTests(unittest.TestCase):
         probe.assert_not_called()
         on_disk = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(on_disk, original)
+
+
+class CliCatalogDiagnosticsTests(unittest.TestCase):
+    def test_malformed_catalog_lines_are_counted_without_hiding_valid_rows(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "valid", "engine": "pipeline", '
+                '"status": "ok", "completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/valid"}\n'
+                "not-json\n"
+                "[]\n",
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 2)
+                self.assertEqual(
+                    [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
+                )
+
+    def test_invalid_utf8_catalog_line_is_counted_without_hiding_valid_rows(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_bytes(
+                b'{"run_id":"valid","engine":"pipeline","status":"ok",'
+                b'"completed_at":"2026-08-20T10:00:00+08:00",'
+                b'"output_dir":"output/runs/valid"}\n'
+                b'\xff\n'
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 1)
+                self.assertEqual(
+                    [item["run_id"] for item in job_io._load_cli_entries()], ["valid"]
+                )
+
+    def test_schema_invalid_catalog_objects_are_counted_as_malformed(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "missing-required-fields"}\n'
+                '{"run_id": "", "engine": "pipeline", "status": "ok", '
+                '"completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/blank-id"}\n',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 2)
+                self.assertEqual(job_io._load_cli_entries(), [])
+
+    def test_cli_catalog_rejects_an_unknown_engine(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "_index.jsonl"
+            index_path.write_text(
+                '{"run_id": "unknown-engine", "engine": "pipline", "status": "ok", '
+                '"completed_at": "2026-08-20T10:00:00+08:00", '
+                '"output_dir": "output/runs/unknown-engine"}\n',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_RUNS_INDEX", index_path):
+                self.assertEqual(job_io.count_malformed_cli_entries(), 1)
+                self.assertEqual(job_io._load_cli_entries(), [])
+
+
+class UiJobDiagnosticsTests(unittest.TestCase):
+    def test_ui_diagnostic_accepts_legacy_started_at_and_counts_invalid_artifacts(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "invalid-empty").mkdir()
+            (root / "invalid-empty" / "job.json").write_text("{}", encoding="utf-8")
+            (root / "invalid-list").mkdir()
+            (root / "invalid-list" / "job.json").write_text("[]", encoding="utf-8")
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "legacy-valid").mkdir()
+            (root / "legacy-valid" / "job.json").write_text(
+                '{"job_id":"legacy-valid","mode":"pipeline","status":"pending",'
+                '"started_at":"2026-08-19T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "invalid-mode").mkdir()
+            (root / "invalid-mode" / "job.json").write_text(
+                '{"job_id":"invalid-mode","mode":"pipline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "invalid-config").mkdir()
+            (root / "invalid-config" / "job.json").write_text(
+                '{"job_id":"invalid-config","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":{"instruments":[1]}}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 4)
+
+    def test_ui_loader_skips_a_malformed_artifact_and_keeps_readable_jobs(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "broken").mkdir()
+            (root / "broken" / "job.json").write_text("{", encoding="utf-8")
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"failed",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+
+        self.assertEqual([row["job_id"] for row in rows], ["valid"])
+
+    def test_ui_loader_skips_non_normalisable_config_and_keeps_readable_jobs(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "invalid-config").mkdir()
+            (root / "invalid-config" / "job.json").write_text(
+                '{"job_id":"invalid-config","mode":"pipeline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":{"instruments":[1]}}',
+                encoding="utf-8",
+            )
+            (root / "valid").mkdir()
+            (root / "valid" / "job.json").write_text(
+                '{"job_id":"valid","mode":"pipeline","status":"failed",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "invalid-mode").mkdir()
+            (root / "invalid-mode" / "job.json").write_text(
+                '{"job_id":"invalid-mode","mode":"pipline","status":"pending",'
+                '"created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            (root / "invalid-config-yaml").mkdir()
+            (root / "invalid-config-yaml" / "job.json").write_text(
+                '{"job_id":"invalid-config-yaml","mode":"pipeline",'
+                '"status":"pending","created_at":"2026-08-20T10:00:00+08:00",'
+                '"config":"legacy","config_yaml":"instruments:\\n  - 1"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 3)
+
+        self.assertEqual([row["job_id"] for row in rows], ["valid"])
+
+    def test_ui_loader_preserves_retired_provider_lifecycle_records(self) -> None:
+        import tempfile
+
+        from web.operator_ui import job_io
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "retired-provider").mkdir()
+            (root / "retired-provider" / "job.json").write_text(
+                '{"job_id":"retired-provider","mode":"tushare_provider",'
+                '"status":"completed","created_at":"2026-08-20T10:00:00+08:00"}',
+                encoding="utf-8",
+            )
+            with patch.object(job_io, "_JOB_ROOT", root):
+                with patch("web.operator_ui.progress.build_job_progress", return_value={}):
+                    rows = job_io._load_ui_jobs(reconcile_zombies=False)
+                self.assertEqual(job_io.count_malformed_ui_job_entries(), 0)
+
+        self.assertEqual([row["job_id"] for row in rows], ["retired-provider"])
+
+    def test_stop_failure_uses_its_recorded_attempt_timestamp(self) -> None:
+        from web.operator_ui import job_io
+
+        summary = job_io._normalise_ui_job(
+            {
+                "job_id": "stop-failure",
+                "mode": "pipeline",
+                "status": "stop_failed",
+                "created_at": "2026-08-20T10:00:00+08:00",
+                "stop_failed_at": "2026-08-20T10:05:00+08:00",
+            }
+        )
+
+        self.assertEqual(summary.finished_at, "2026-08-20T10:05:00+08:00")
 
 
 class WriteJobJsonCompareAndSetTests(unittest.TestCase):
