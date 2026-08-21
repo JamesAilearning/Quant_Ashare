@@ -38,12 +38,19 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, source)
 
+    def test_jobs_queue_link_uses_a_fresh_one_shot_handoff_token(self) -> None:
+        source = _PAGE.read_text(encoding="utf-8")
+        self.assertIn('page == "pages/jobs.py"', source)
+        self.assertIn('"handoff": uuid4().hex', source)
+
     def test_workbench_uses_the_non_mutating_job_reader(self) -> None:
         source = _PAGE.read_text(encoding="utf-8")
-        self.assertIn(
-            "from web.operator_ui.job_io import load_all_jobs_read_only", source
-        )
-        self.assertIn("summarise_operations(load_all_jobs_read_only())", source)
+        self.assertIn("load_all_jobs_read_only", source)
+        self.assertIn("all_jobs = tuple(load_all_jobs_read_only())", source)
+        self.assertIn("summarise_operations(all_jobs)", source)
+        self.assertIn("count_malformed_cli_entries", source)
+        self.assertIn("count_malformed_ui_job_entries", source)
+        self.assertIn("count_cli_rows_outside_output_tree", source)
         self.assertNotIn("from web.operator_ui.job_io import load_all_jobs\n", source)
 
     def test_success_handoff_requires_a_published_dated_artifact(self) -> None:
@@ -69,6 +76,8 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
         prepare_at = source.rindex("prepare_daily_decision_selection")
         selectbox_at = source.index('st.selectbox("交易日(as_of)"')
         self.assertLess(prepare_at, selectbox_at)
+        self.assertIn('st.query_params.get("as_of")', source)
+        self.assertIn('del st.query_params["as_of"]', source)
 
     def test_decision_page_does_not_present_signals_as_orders(self) -> None:
         source = _DECISION.read_text(encoding="utf-8")
