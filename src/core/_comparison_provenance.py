@@ -1,0 +1,85 @@
+"""Canonical-backtest provenance projected into comparison-safe report evidence."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+_COMPARISON_PROVENANCE_CONFIG_FIELDS = (
+    "benchmark_code",
+    "signal_to_execution_lag",
+    "account_config",
+    "st_mask",
+    "adjust_mode",
+    "exchange_config",
+    "runtime",
+)
+
+
+def _comparison_provenance_candidate(
+    backtest_provenance: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Extract stable comparison evidence from one canonical backtest output.
+
+    A canonical request legitimately changes prediction references and
+    evaluation windows for walk-forward folds.  This projection deliberately
+    selects only the producer-recorded fields that establish comparison
+    semantics; it never reconstructs an absent value from engine config.
+    """
+    if backtest_provenance is None:
+        return None
+    config = backtest_provenance.get("config")
+    if not isinstance(config, Mapping) or any(
+        field not in config for field in _COMPARISON_PROVENANCE_CONFIG_FIELDS
+    ):
+        return None
+    if any(
+        field not in backtest_provenance
+        for field in ("execution_timing_semantics", "price_limit_semantics")
+    ):
+        return None
+    return {
+        "execution_timing_semantics": backtest_provenance[
+            "execution_timing_semantics"
+        ],
+        "price_limit_semantics": backtest_provenance["price_limit_semantics"],
+        "config": {
+            field: config[field]
+            for field in _COMPARISON_PROVENANCE_CONFIG_FIELDS
+        },
+    }
+
+
+def resolve_backtest_comparison_provenance(
+    backtest_provenances: Sequence[Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    """Publish only evidence identical across every supplied backtest output.
+
+    A pipeline has one canonical backtest output; a walk-forward report has
+    one per fold.  ``mixed`` means no arbitrary fold is selected, and
+    ``unavailable`` means missing or malformed producer evidence.  Both are
+    deliberate comparison blocks.
+    """
+    candidates = [
+        _comparison_provenance_candidate(backtest_provenance)
+        for backtest_provenance in backtest_provenances
+    ]
+    if not candidates or any(candidate is None for candidate in candidates):
+        return {"status": "unavailable"}
+
+    try:
+        canonical_candidates = {
+            json.dumps(candidate, sort_keys=True, separators=(",", ":"))
+            for candidate in candidates
+        }
+    except (TypeError, ValueError):
+        # The report is evidence.  An unrepresentable value is unavailable
+        # evidence, never a reason to fill a value from current defaults.
+        return {"status": "unavailable"}
+    if len(canonical_candidates) != 1:
+        return {"status": "mixed"}
+    return {
+        "status": "consistent",
+        **json.loads(next(iter(canonical_candidates))),
+    }

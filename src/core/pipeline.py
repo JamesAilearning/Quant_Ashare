@@ -20,6 +20,7 @@ from src.core._canonical_request import (
     build_canonical_request,
     resolve_risk_constraints,
 )
+from src.core._comparison_provenance import resolve_backtest_comparison_provenance
 from src.core._json_utils import _sanitize_for_json, sha256_canonical
 from src.core._shared_validators import (
     validate_attribution_sleeve_grouping,
@@ -954,6 +955,13 @@ class Pipeline:
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
             "git_commit": gp.get("commit"),
             "git_dirty": gp.get("dirty"),
+            # Two engines, one schema: the pipeline has one canonical
+            # backtest output, while walk-forward resolves the same field
+            # across all folds.  Both paths leave malformed provenance
+            # explicit as unavailable rather than reconstructing it.
+            "comparison_provenance": resolve_backtest_comparison_provenance(
+                [backtest_output.provenance]
+            ),
             "metric_status": backtest_output.metric_status,
             # Mirrors walk-forward's top level (codex #406 r4): the
             # verdict and WHY it is that verdict sit together, readable

@@ -763,7 +763,7 @@ class ReportGitProvenanceTests(unittest.TestCase):
             path = Path(td) / "pipeline_report.json"
             self._write_minimal_report(path)
             pl = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("git_commit", "git_dirty"):
+        for key in ("git_commit", "git_dirty", "comparison_provenance"):
             self.assertIn(key, wf)
             self.assertIn(key, pl)
 

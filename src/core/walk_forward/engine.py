@@ -20,6 +20,7 @@ from src.core._canonical_request import (
     build_canonical_request,
     resolve_risk_constraints,
 )
+from src.core._comparison_provenance import resolve_backtest_comparison_provenance
 from src.core.attribution_industry_loader import (
     PURPOSE_ATTRIBUTION,
     IndustryTaxonomyLoadError,
@@ -236,6 +237,15 @@ class WalkForwardEngine:
         fold_provenances: list[dict[str, Any] | None] = []
 
         for i, (train_s, train_e, valid_s, valid_e, test_s, test_e) in enumerate(windows):
+            # The resume fingerprint protects the NEXT invocation.  Re-read
+            # both immutable identities at this fold boundary as well: a
+            # provider rebuild while this invocation is running would otherwise
+            # let one aggregate mix feature/backtest bytes from two bundles
+            # while every manifest keeps the run-start identity.
+            cls._assert_bundle_identities_unchanged(
+                expected_bundle_identity=bundle_identity,
+                expected_bundle_build_identity=bundle_build_identity,
+            )
             decision = decide_fold(
                 fold_index=i,
                 train_period=f"{train_s} ~ {train_e}",
@@ -318,6 +328,15 @@ class WalkForwardEngine:
                     metric_status=FAILED_METRIC_STATUS,
                 )
                 fold_failed = True
+
+            # This deliberately sits outside the per-fold recovery branch.
+            # A changed provider is not an ordinary fold failure that can be
+            # represented by NaN: continuing would publish an aggregate whose
+            # folds may have consumed different bundle generations.
+            cls._assert_bundle_identities_unchanged(
+                expected_bundle_identity=bundle_identity,
+                expected_bundle_build_identity=bundle_build_identity,
+            )
 
             # Stamp timing on the fold AFTER both the success and the
             # NaN-placeholder branches so failing folds still get
@@ -431,12 +450,19 @@ class WalkForwardEngine:
                 "in one invocation for a provenance-clean comparison run."
             )
         aggregate_path = output_dir / "walk_forward_report.json"
+        comparison_provenance = resolve_backtest_comparison_provenance(
+            [
+                cls._read_fold_backtest_provenance_for_comparison(fold.report_path)
+                for fold in folds
+            ]
+        )
         write_aggregate_report(
             path=aggregate_path,
             config=config,
             folds=folds,
             aggregate_metrics=aggregate,
             git_provenance=resolved_provenance,  # resolved across folds, run-start based
+            comparison_provenance=comparison_provenance,
         )
         _logger.info("Aggregate report: %s", aggregate_path)
 
@@ -850,6 +876,61 @@ class WalkForwardEngine:
         except Exception:  # noqa: BLE001 — best-effort, mirrors feature builder
             bundle_uri = None
         return read_bundle_tag(bundle_uri), read_bundle_build_identity(bundle_uri)
+
+    @classmethod
+    def _assert_bundle_identities_unchanged(
+        cls,
+        *,
+        expected_bundle_identity: str,
+        expected_bundle_build_identity: str,
+    ) -> None:
+        """Stop before aggregate publication when the provider rebuilds mid-run."""
+        observed_bundle_identity, observed_bundle_build_identity = (
+            cls._resolve_bundle_identities()
+        )
+        if (
+            observed_bundle_identity != expected_bundle_identity
+            or observed_bundle_build_identity != expected_bundle_build_identity
+        ):
+            raise WalkForwardError(
+                "Walk-forward bundle identity changed during this run: "
+                f"expected calendar={expected_bundle_identity!r}, "
+                f"build={expected_bundle_build_identity!r}; observed "
+                f"calendar={observed_bundle_identity!r}, "
+                f"build={observed_bundle_build_identity!r}. Refusing to mix "
+                "folds from different bundle generations; restart the run."
+            )
+
+    @staticmethod
+    def _read_fold_backtest_provenance_for_comparison(
+        report_path: str | None,
+    ) -> Mapping[str, Any] | None:
+        """Read persisted fold evidence without making aggregation depend on it.
+
+        A missing/corrupt report leaves the numerical walk-forward report
+        available, but its comparison provenance becomes explicitly
+        unavailable.  The research workbench then blocks ordering rather than
+        inventing evidence from the current configuration.
+        """
+        if not report_path:
+            return None  # fallback-ok: unavailable evidence must block comparison, not the completed numeric report
+        try:
+            report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _logger.warning(
+                "Fold report %s is unavailable for comparison provenance; "
+                "the aggregate report will remain non-comparable.",
+                report_path,
+                exc_info=True,
+            )
+            return None  # fallback-ok: unavailable evidence must block comparison, not the completed numeric report
+        if not isinstance(report, Mapping):
+            return None
+        backtest = report.get("backtest")
+        if not isinstance(backtest, Mapping):
+            return None
+        provenance = backtest.get("provenance")
+        return provenance if isinstance(provenance, Mapping) else None
 
     @classmethod
     def _traded_predictions_for_fold(

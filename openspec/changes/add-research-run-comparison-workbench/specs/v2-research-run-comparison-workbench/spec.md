@@ -41,6 +41,11 @@ feature-dataset cache entry.
 A missing, malformed, or unequal required value SHALL block the ordering and
 identify the affected field and run ID.  The workbench SHALL NOT invent a
 missing value, recompute metrics, or call a non-comparable selection equivalent.
+For a walk-forward run, the aggregate report SHALL expose canonical-backtest
+comparison provenance only when every persisted fold report records matching
+execution semantics, ST-mask identity, and runtime/bundle identity.  Missing
+fold evidence or disagreement between folds SHALL remain explicit and SHALL
+block controlled ordering.
 
 #### Scenario: Equal complete contracts permit an ordering
 
@@ -69,6 +74,20 @@ missing value, recompute metrics, or call a non-comparable selection equivalent.
   different producer-recorded bundle rebuild identities
 - **THEN** the page blocks controlled ordering as data-provenance mismatch
 - **AND** never scans all bundle files while reading the comparison page
+
+#### Scenario: Walk-forward folds disagree on canonical provenance
+
+- **WHEN** persisted fold reports in one walk-forward run contain different
+  canonical-backtest comparison provenance
+- **THEN** its aggregate report marks that provenance as mixed
+- **AND** the workbench blocks controlled ordering rather than selecting an
+  arbitrary fold's value
+
+#### Scenario: A bundle changes during a walk-forward run
+
+- **WHEN** either bundle identity changes between walk-forward fold boundaries
+- **THEN** the engine refuses to continue or publish an aggregate report
+- **AND** it directs the operator to restart from one bundle generation
 
 ### Requirement: Present existing evidence and precise read-only references
 

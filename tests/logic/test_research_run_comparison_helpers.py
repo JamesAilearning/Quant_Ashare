@@ -214,6 +214,16 @@ def test_comparison_config_requires_complete_producer_pipeline_shape() -> None:
     assert not _has_complete_pipeline_config_artifact(with_unknown_key)
 
 
+def test_comparison_config_rejects_semantically_invalid_pipeline_values() -> None:
+    complete = asdict(PipelineConfig(provider_uri="data/qlib_cn"))
+
+    equal_train_window = {**complete, "train_end": complete["train_start"]}
+    invalid_execution_lag = {**complete, "signal_to_execution_lag": 0}
+
+    assert not _has_complete_pipeline_config_artifact(equal_train_window)
+    assert not _has_complete_pipeline_config_artifact(invalid_execution_lag)
+
+
 def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:
     report = _pipeline_report()
     risk = report["risk_analysis"]["excess_return_with_cost"]  # type: ignore[index]
@@ -578,6 +588,84 @@ def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
 
     assert result.eligible is False
     assert any("数据来源 / 运行时快照" in reason for reason in result.reasons)
+
+
+def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
+    pipeline_provenance = _pipeline_report()["backtest"]["provenance"]  # type: ignore[index]
+    report = {
+        "metric_status": "official",
+        "num_folds": 1,
+        "config": {
+            "instruments": "csi300",
+            "overall_start": "2020-01-01",
+            "overall_end": "2023-12-31",
+            "train_months": 24,
+            "valid_months": 3,
+            "test_months": 3,
+            "step_months": 3,
+        },
+        "comparison_provenance": {
+            "status": "consistent",
+            "execution_timing_semantics": pipeline_provenance["execution_timing_semantics"],
+            "price_limit_semantics": pipeline_provenance["price_limit_semantics"],
+            "config": pipeline_provenance["config"],
+        },
+        "aggregate_metrics": {
+            "mean_annualized_return": 0.1,
+            "worst_drawdown": -0.12,
+            "mean_information_ratio": 0.35,
+            "std_information_ratio": 0.11,
+            "valid_folds_information_ratio": 1,
+        },
+        "test_window_coverage": {
+            "mode": "continuous",
+            "gap_count": 0,
+            "max_gap_days": 0,
+            "overlap_count": 0,
+            "max_overlap_days": 0,
+            "max_overlap_depth": 0,
+        },
+        "folds": [{"fold_index": 0, "information_ratio": 0.35}],
+    }
+
+    def build(run_id: str):
+        return build_comparison_run(
+            run_id=run_id,
+            engine="walk_forward",
+            status="completed",
+            created_at="",
+            config_path="config.yaml",
+            report_path="walk_forward_report.json",
+            log_paths=(),
+            config={},
+            report=report,
+        )
+
+    first, second = build("wf-a"), build("wf-b")
+    result = assess_comparability((first, second))
+
+    assert result.eligible is True
+    assert first.data_provenance_source == (
+        "walk_forward_report.json:comparison_provenance.config.runtime"
+    )
+
+    mixed_report = deepcopy(report)
+    mixed_report["comparison_provenance"] = {"status": "mixed"}
+    mixed = build_comparison_run(
+        run_id="wf-mixed",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=mixed_report,
+    )
+    mixed_result = assess_comparability((first, mixed))
+
+    assert mixed_result.eligible is False
+    assert any("逐折回测溯源不一致" in reason for reason in mixed_result.reasons)
 
 
 def test_selectable_catalog_folds_superseded_artifact_directories() -> None:

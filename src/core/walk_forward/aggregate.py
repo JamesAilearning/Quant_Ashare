@@ -79,6 +79,7 @@ def build_aggregate_report(
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
     git_provenance: Mapping[str, Any] | None = None,
+    comparison_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the aggregate JSON report dict.
 
@@ -96,12 +97,21 @@ def build_aggregate_report(
       the run, for the run-comparison pre-registration gate (both ``None``
       when the caller does not supply ``git_provenance`` — e.g. a synthetic
       report — or when git is unavailable). Purely additive.
+    - ``comparison_provenance``: the canonical-backtest execution/runtime
+      evidence resolved across all per-fold reports.  It is ``consistent``
+      only when each fold wrote the same values; ``mixed`` and ``unavailable``
+      intentionally block research-run ordering.
     """
     gp = git_provenance or {}
     return {
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
         "git_commit": gp.get("commit"),
         "git_dirty": gp.get("dirty"),
+        "comparison_provenance": (
+            dict(comparison_provenance)
+            if comparison_provenance is not None
+            else {"status": "unavailable"}
+        ),
         "config": asdict(config),
         "folds": [
             {
@@ -162,6 +172,7 @@ def write_aggregate_report(
     folds: list[WalkForwardFold],
     aggregate_metrics: Mapping[str, float],
     git_provenance: Mapping[str, Any] | None = None,
+    comparison_provenance: Mapping[str, Any] | None = None,
 ) -> None:
     """Build and persist the aggregate JSON report.
 
@@ -182,6 +193,7 @@ def write_aggregate_report(
     report = build_aggregate_report(
         config=config, folds=folds, aggregate_metrics=aggregate_metrics,
         git_provenance=git_provenance,
+        comparison_provenance=comparison_provenance,
     )
     sanitised = _sanitize_for_json(report)
     with open(path, "w", encoding="utf-8") as f:

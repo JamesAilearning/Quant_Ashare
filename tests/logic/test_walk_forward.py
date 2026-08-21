@@ -122,6 +122,150 @@ class WalkForwardValidationTests(unittest.TestCase):
             self.assertLessEqual(prev_test_end, curr_test_start)
 
 
+class BundleIdentityBoundaryTests(unittest.TestCase):
+    def test_run_aborts_when_bundle_changes_after_a_fold(self):
+        """A mid-run rebuild is a hard failure, not a NaN placeholder fold."""
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        def fake_single_fold(*, fold_index, train_start, train_end,
+                             valid_start, valid_end, test_start, test_end, **_):
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.01, ic_5d=0.02,
+                annualized_return=0.05, max_drawdown=-0.05,
+                information_ratio=0.5,
+                prediction_shape=(100,),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine,
+            "_resolve_bundle_identities",
+            side_effect=(
+                ("calendar-a", "build-a"),  # run start
+                ("calendar-a", "build-a"),  # before fold 0
+                ("calendar-a", "build-b"),  # after fold 0
+            ),
+        ), patch.object(
+            WalkForwardEngine, "_resolve_provider_uri", return_value=None,
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold", side_effect=fake_single_fold,
+        ), patch(
+            "src.core.walk_forward.engine.write_aggregate_report"
+        ) as write_aggregate:
+            config = WalkForwardConfig(
+                overall_start="2024-01-01",
+                overall_end="2024-09-30",
+                train_months=3,
+                valid_months=1,
+                test_months=1,
+                step_months=12,
+                output_dir=tmp,
+            )
+            with self.assertRaisesRegex(WalkForwardError, "bundle identity changed"):
+                WalkForwardEngine.run(config)
+
+        write_aggregate.assert_not_called()
+
+
+class AggregateComparisonProvenanceFlowTests(unittest.TestCase):
+    def test_run_passes_matching_fold_evidence_to_aggregate_report(self):
+        """The aggregate reads persisted fold reports, never config defaults."""
+        import json
+        import tempfile
+
+        from src.core.walk_forward import WalkForwardFold
+
+        backtest_provenance = {
+            "execution_timing_semantics": "lag_total_v2",
+            "price_limit_semantics": "close_expr_v1",
+            "config": {
+                "benchmark_code": "SH000300TR",
+                "signal_to_execution_lag": 1,
+                "account_config": {"init_cash": 100_000_000.0},
+                "st_mask": {"namechange_sha256": "a" * 16},
+                "adjust_mode": "pre_adjusted",
+                "exchange_config": {
+                    "execution_price_kind": "close",
+                    "limit_threshold": 0.095,
+                    "cost_model": {
+                        "commission_rate": 0.0005,
+                        "stamp_tax_schedule": None,
+                        "slippage_bps": 5.0,
+                        "min_cost": 5.0,
+                    },
+                },
+                "runtime": {
+                    "provider_uri": "data/qlib_cn",
+                    "region": "cn",
+                    "data_adjust_mode": "pre_adjusted",
+                    "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
+                    "bundle_build_identity": "fetch-integrity@2026-08-20T00:00:00+00:00",
+                },
+            },
+        }
+
+        def fake_single_fold(*, fold_index, train_start, train_end,
+                             valid_start, valid_end, test_start, test_end,
+                             output_dir, **_):
+            report_path = Path(output_dir) / f"fold_{fold_index:02d}_report.json"
+            report_path.write_text(
+                json.dumps({"backtest": {"provenance": backtest_provenance}}),
+                encoding="utf-8",
+            )
+            return WalkForwardFold(
+                fold_index=fold_index,
+                train_period=f"{train_start} ~ {train_end}",
+                valid_period=f"{valid_start} ~ {valid_end}",
+                test_period=f"{test_start} ~ {test_end}",
+                ic_1d=0.01, ic_5d=0.02,
+                annualized_return=0.05, max_drawdown=-0.05,
+                information_ratio=0.5,
+                prediction_shape=(100,),
+                report_path=str(report_path),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "src.core.walk_forward.engine.is_canonical_qlib_initialized",
+            return_value=True,
+        ), patch.object(
+            WalkForwardEngine, "_resolve_bundle_identities", return_value=("calendar-a", "build-a"),
+        ), patch.object(
+            WalkForwardEngine, "_resolve_provider_uri", return_value=None,
+        ), patch.object(
+            WalkForwardEngine, "_load_trading_calendar", return_value=_WF_CAL,
+        ), patch.object(
+            WalkForwardEngine, "_run_single_fold", side_effect=fake_single_fold,
+        ), patch(
+            "src.core.walk_forward.engine.write_aggregate_report"
+        ) as write_aggregate:
+            WalkForwardEngine.run(
+                WalkForwardConfig(
+                    overall_start="2024-01-01",
+                    overall_end="2024-09-30",
+                    train_months=3,
+                    valid_months=1,
+                    test_months=1,
+                    step_months=12,
+                    output_dir=tmp,
+                )
+            )
+
+        assert write_aggregate.call_args is not None
+        provenance = write_aggregate.call_args.kwargs["comparison_provenance"]
+        self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(provenance["config"]["runtime"]["region"], "cn")
+
+
 class WalkForwardConfigValidationTests(unittest.TestCase):
     """Regression guard for P1b: zero-length windows would hang the engine.
 

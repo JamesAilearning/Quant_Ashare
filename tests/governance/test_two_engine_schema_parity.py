@@ -55,6 +55,10 @@ if str(PROJECT_ROOT) not in sys.path:
 # exist in the other engine.
 # ---------------------------------------------------------------------------
 REPORT_SHARED = {"generated_at", "git_commit", "git_dirty", "config",
+                 # The same schema is resolved from the single pipeline
+                 # backtest or every walk-forward fold; unavailable/mixed
+                 # evidence is intentionally explicit for the workbench.
+                 "comparison_provenance",
                  # codex #406 r4: the metric verdict and its reason are
                  # now MIRRORED — walk-forward publishes a run-level
                  # status next to aggregate_metrics, pipeline keeps its

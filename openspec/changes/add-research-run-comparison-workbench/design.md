@@ -59,6 +59,18 @@ IDs and fields shown to the operator.
 The page does not infer a value from a sibling field.  It displays unavailable
 values as unavailable and explains why comparison is blocked.
 
+Walk-forward fold reports already carry the canonical backtest provenance that
+establishes execution semantics, ST-mask identity, and runtime/bundle identity.
+At aggregate write time, the engine publishes that evidence only when every
+persisted fold report contains the same required values.  A missing artifact is
+recorded as `unavailable`, and any disagreement as `mixed`; neither status is
+eligible for controlled ordering.  The engine also pins both bundle identities
+at run start and rechecks them before and after each non-resumed fold, refusing
+to publish a cross-generation aggregate if the provider changes mid-run.
+Pipeline and walk-forward reports share the same top-level
+`comparison_provenance` schema: Pipeline resolves its one canonical backtest
+record, while Walk-Forward resolves all fold records.
+
 ### Controlled ordering
 
 Only a compatible, artifact-complete selection can receive a stable ordering

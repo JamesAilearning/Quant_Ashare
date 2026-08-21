@@ -29,7 +29,7 @@ from src.core.canonical_backtest_contract import (
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
 )
-from src.core.pipeline import PipelineConfig
+from src.core.pipeline import PipelineConfig, PipelineError
 from web.operator_ui.job_io import (
     JobSummary,
     anchored_run_dir,
@@ -232,10 +232,20 @@ def _has_complete_pipeline_config_artifact(config: Mapping[str, Any]) -> bool:
     input file is therefore not sufficient evidence; the producer's resolved
     ``PipelineConfig`` serialization must be present without unknown fields.
     """
-    return (
-        _required_text(config.get("provider_uri")) is not None
-        and frozenset(config) == _PIPELINE_CONFIG_ARTIFACT_FIELDS
-    )
+    if (
+        _required_text(config.get("provider_uri")) is None
+        or frozenset(config) != _PIPELINE_CONFIG_ARTIFACT_FIELDS
+    ):
+        return False
+    try:
+        # Field equality proves this is a producer-shaped artifact; the
+        # producer's actual boundary validator proves its values describe a
+        # runnable PipelineConfig.  Do not accept impossible windows or
+        # malformed execution controls merely because every key is present.
+        PipelineConfig(**dict(config))
+    except (AttributeError, OverflowError, PipelineError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _window_from_walk_forward(config: Mapping[str, Any], kind: str) -> str | None:
@@ -574,27 +584,26 @@ def _walk_forward_contract(
 ) -> dict[str, str | None]:
     report_config = _mapping(report.get("config"))
     source = report_config if report_config else config
+    comparison_provenance = _mapping(report.get("comparison_provenance"))
+    provenance = (
+        comparison_provenance
+        if comparison_provenance.get("status") == "consistent"
+        else {}
+    )
+    producer_config = _mapping(provenance.get("config"))
+    runtime = _mapping(producer_config.get("runtime"))
     return {
         "engine": "walk_forward",
         "universe": _required_text(source.get("instruments")),
         "training_window": _window_from_walk_forward(source, "train"),
         "validation_window": _window_from_walk_forward(source, "valid"),
         "testing_window": _test_window_coverage(source, report.get("test_window_coverage")),
-        "benchmark": _required_text(source.get("benchmark_code")),
-        "execution_lag": _execution_lag(source.get("signal_to_execution_lag")),
-        # Current aggregate artifacts do not record a semantics-bound runtime
-        # fingerprint.  Do not infer it from config.yaml; ordering remains
-        # unavailable until a producer writes the evidence.
-        "execution_semantics_provenance": None,
-        "exchange_cost": _exchange_cost_from_config(source),
-        # Fold reports already record their ST-mask hashes, but the aggregate
-        # walk-forward artifact does not expose one run-level identity yet.
-        # Keep it unavailable rather than inferring from config.yaml.
-        "st_mask_identity": None,
-        # Existing walk-forward reports do not record the initialized qlib
-        # runtime.  A config.yaml declaration is not evidence of the runtime
-        # used, so ordering must remain blocked until a producer emits it.
-        "data_provenance": None,
+        "benchmark": _required_text(producer_config.get("benchmark_code")),
+        "execution_lag": _execution_lag(producer_config.get("signal_to_execution_lag")),
+        "execution_semantics_provenance": _execution_semantics_provenance(provenance),
+        "exchange_cost": _exchange_cost_from_request(producer_config),
+        "st_mask_identity": _st_mask_identity(producer_config),
+        "data_provenance": _data_provenance(runtime),
     }
 
 
@@ -691,6 +700,13 @@ def build_comparison_run(
         contract = _walk_forward_contract(report, config)
         metrics = _walk_forward_metrics(report)
         fold_evidence = _walk_forward_evidence(report)
+        if _stable_value(_mapping(report.get("comparison_provenance")).get("status")) == "mixed":
+            collected_issues.append(
+                ComparisonIssue(
+                    "mixed_fold_comparison_provenance",
+                    "逐折回测溯源不一致，无法选择任一折作为该运行的可比性证据。",
+                )
+            )
         if fold_evidence is None:
             collected_issues.append(
                 ComparisonIssue(
@@ -724,7 +740,7 @@ def build_comparison_run(
     data_provenance_source = (
         "pipeline_report.json:backtest.provenance.config.runtime"
         if engine == "pipeline" and contract.get("data_provenance")
-        else "config.yaml: provider_uri / region / adjust_mode"
+        else "walk_forward_report.json:comparison_provenance.config.runtime"
         if engine == "walk_forward" and contract.get("data_provenance")
         else None
     )
