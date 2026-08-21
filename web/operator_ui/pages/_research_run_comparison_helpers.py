@@ -29,12 +29,15 @@ from src.core.canonical_backtest_contract import (
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
 )
+from src.core.pipeline import PipelineConfig
 from web.operator_ui.job_io import (
     JobSummary,
     anchored_run_dir,
     canonical_dir_key,
     fold_catalog_by_dir,
 )
+
+_PIPELINE_CONFIG_ARTIFACT_FIELDS = frozenset(PipelineConfig.__dataclass_fields__)
 
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("engine", "研究运行类型"),
@@ -221,9 +224,18 @@ def _pipeline_windows_are_ordered(config: Mapping[str, Any]) -> bool:
     return train[1] < valid[0] and valid[1] < test[0]
 
 
-def _config_has_explicit_provider(config: Mapping[str, Any]) -> bool:
-    """Require the producer-owned runtime key from an artifact config.yaml."""
-    return _required_text(config.get("provider_uri")) is not None
+def _has_complete_pipeline_config_artifact(config: Mapping[str, Any]) -> bool:
+    """Accept only the complete ``PipelineConfig`` artifact written by the run.
+
+    The comparison page cannot reconstruct omitted keys from current defaults:
+    those defaults may have changed since the run completed.  A UI-submitted
+    input file is therefore not sufficient evidence; the producer's resolved
+    ``PipelineConfig`` serialization must be present without unknown fields.
+    """
+    return (
+        _required_text(config.get("provider_uri")) is not None
+        and frozenset(config) == _PIPELINE_CONFIG_ARTIFACT_FIELDS
+    )
 
 
 def _window_from_walk_forward(config: Mapping[str, Any], kind: str) -> str | None:
@@ -832,12 +844,13 @@ def _row_recency(row: JobSummary) -> datetime:
 
 
 def _ui_cli_share_execution(ui_job: JobSummary, cli_job: JobSummary) -> bool:
-    """Prove a CLI row was emitted during this UI job's own execution window."""
+    """Prove a CLI catalog row records this exact UI job as its producer."""
     if (
         ui_job.source != "ui"
         or cli_job.source != "cli"
         or ui_job.type != cli_job.type
         or _catalog_dir_key(ui_job.run_dir) != _catalog_dir_key(cli_job.run_dir)
+        or cli_job.operator_ui_job_id != ui_job.run_id
     ):
         return False
     ui_started = _parse_recorded_instant(ui_job.started_at)
@@ -858,9 +871,11 @@ def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
 
     A shared directory alone is not a mirror relationship: an operator can
     later point an independent CLI run at a former UI output directory.  A UI
-    row owns a CLI row only when the catalog's complete execution interval is
-    recorded inside that UI job's lifecycle.  Otherwise the newest record owns
-    the current artifacts, preserving exact-run traceability.
+    row owns a CLI row only when that catalog row producer-records the UI job
+    ID.  Timestamps are supporting lifecycle evidence, not identity: unrelated
+    CLI runs may overlap a UI job while using the same output directory.  In
+    the absence of that producer-written relation, the current CLI row owns
+    the current artifacts and remains directly addressable.
     """
     allowed_types = {"pipeline", "walk_forward"}
     relevant = tuple(
@@ -891,9 +906,10 @@ def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
         if mirrored_ui and current_cli is not None:
             owner = max(mirrored_ui, key=_row_recency)
             aliases[current_cli.run_id] = owner.run_id
+        elif current_cli is not None:
+            owner = current_cli
         else:
-            candidates = [*ui_rows, *([current_cli] if current_cli is not None else [])]
-            owner = max(candidates, key=_row_recency)
+            owner = max(ui_rows, key=_row_recency)
         selected.append(owner)
 
     return SelectableCatalog(

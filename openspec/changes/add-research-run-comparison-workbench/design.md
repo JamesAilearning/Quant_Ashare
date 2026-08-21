@@ -35,6 +35,17 @@ will read only the selected runs' `config.yaml`, `pipeline_report.json`, or
 boundary.  The read model is pure after artifact loading so contract and
 ranking decisions are directly testable.
 
+For pipeline runs, the page accepts only the complete, resolved
+`PipelineConfig` serialization written by the pipeline producer.  It does not
+fill omitted keys from current defaults.  The UI runner keeps its submitted
+input in the job directory and must not overwrite the complete run artifact;
+legacy or incomplete artifacts remain visible but block ordering.
+
+When a UI lifecycle row and a CLI catalog row share an artifact directory, the
+page aliases them only if the CLI producer wrote that UI job ID into its catalog
+record.  Timestamp overlap is lifecycle context rather than identity, so an
+unlinked CLI record remains the owner of the current artifacts.
+
 ### Comparison contract
 
 The gate compares the fields that change an experiment's meaning: universe,

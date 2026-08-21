@@ -21,6 +21,13 @@ not launch, cancel, mutate, delete, or otherwise operate on a run.
 - **THEN** the page explains the two-to-five requirement
 - **AND** does not assign a comparison rank
 
+#### Scenario: A CLI row only overlaps a UI job in time
+
+- **WHEN** a CLI catalog row shares a run directory and overlapping timestamps
+  with a UI lifecycle row but does not producer-record that UI job ID
+- **THEN** the workbench keeps the CLI row as the current artifact owner
+- **AND** does not alias its run ID to the UI row
+
 ### Requirement: Establish comparability before controlled ordering
 
 Before assigning a controlled research ordering, the workbench SHALL compare
@@ -94,3 +101,10 @@ read-only configuration and log references.
 - **THEN** the page presents an explicit needs-verification issue
 - **AND** blocks controlled ordering rather than treating the absent artifact
   as an empty or comparable result
+
+#### Scenario: A pipeline configuration is only a partial submit-time input
+
+- **WHEN** a selected pipeline run's `config.yaml` omits any resolved
+  `PipelineConfig` field
+- **THEN** the page marks the configuration as invalid evidence
+- **AND** does not reconstruct omitted values from current defaults

@@ -280,6 +280,24 @@ class RunCatalogRecordParityTests(unittest.TestCase):
         keys_w = set(build_record(engine="walk_forward", status="ok"))
         self.assertEqual(keys_p, keys_w)
 
+    def test_ui_job_provenance_is_written_by_both_catalog_producers(self) -> None:
+        from src.core.run_catalog import build_record
+
+        record = build_record(
+            engine="pipeline",
+            status="ok",
+            operator_ui_job_id="pipeline_20260821_010203_a1b2c3d4",
+        )
+        self.assertEqual(
+            record["operator_ui_job_id"],
+            "pipeline_20260821_010203_a1b2c3d4",
+        )
+        for source in (self._PIPELINE_SRC, self._WF_SRC):
+            self.assertIn(
+                "operator_ui_job_id=operator_ui_job_id_from_environment()",
+                source.read_text(encoding="utf-8"),
+            )
+
     def test_config_summary_keys(self) -> None:
         _assert_decomposition(
             self, what="_index.jsonl config_summary", engine="pipeline",

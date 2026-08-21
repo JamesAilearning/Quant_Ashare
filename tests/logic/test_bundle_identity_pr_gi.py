@@ -145,6 +145,22 @@ class ReadBundleBuildIdentityTests(unittest.TestCase):
                 "tushare-manifest@2026-08-20T00:00:00Z",
             )
 
+    def test_corrupt_integrity_stamp_does_not_fall_back_to_legacy_manifest(self) -> None:
+        # Before the fix, the broad catch in read_bundle_build_identity hid the
+        # corrupt canonical stamp and accepted this legacy rebuild timestamp.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "_fetch_integrity.json").write_text(
+                '{"schema_version": 999}', encoding="utf-8",
+            )
+            (d / "bundle_manifest.json").write_text(
+                json.dumps({"built_at": "2026-08-20T00:00:00+00:00"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(BundleIntegrityError):
+                read_bundle_build_identity(d)
+
 
 class ResumeFingerprintTests(unittest.TestCase):
     def test_real_identity_changes_fingerprint(self) -> None:

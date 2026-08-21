@@ -483,7 +483,11 @@ class WalkForwardEngine:
             # FULLY best-effort: an optional catalog-path failure — including an
             # import error in run_catalog or its deps — must never prevent
             # importing or running the engine. (codex P2 on #255.)
-            from src.core.run_catalog import append_run_record, build_record
+            from src.core.run_catalog import (
+                append_run_record,
+                build_record,
+                operator_ui_job_id_from_environment,
+            )
 
             has_any_nan = any(
                 math.isnan(f.ic_1d) or math.isnan(f.ic_5d)
@@ -507,6 +511,7 @@ class WalkForwardEngine:
                 metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
+                operator_ui_job_id=operator_ui_job_id_from_environment(),
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,

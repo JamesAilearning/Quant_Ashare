@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
 
 from src.core.canonical_backtest_contract import CANONICAL_OFFICIAL_BACKTEST_PATH
+from src.core.pipeline import PipelineConfig
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
-    _config_has_explicit_provider,
+    _has_complete_pipeline_config_artifact,
     assess_comparability,
     build_comparison_run,
     duplicate_run_ids,
@@ -200,11 +202,16 @@ def test_malformed_required_contract_fields_block_controlled_ranking() -> None:
     assert oversized_result.ranked_run_ids == ()
 
 
-def test_comparison_config_requires_the_explicit_provider_uri() -> None:
-    assert _config_has_explicit_provider({"provider_uri": "data/qlib_cn"})
-    assert not _config_has_explicit_provider({})
-    assert not _config_has_explicit_provider({"unrelated": True})
-    assert not _config_has_explicit_provider({"provider_uri": "  "})
+def test_comparison_config_requires_complete_producer_pipeline_shape() -> None:
+    complete = asdict(PipelineConfig(provider_uri="data/qlib_cn"))
+    with_unknown_key = {**complete, "operator_note": "not producer schema"}
+
+    assert _has_complete_pipeline_config_artifact(complete)
+    assert not _has_complete_pipeline_config_artifact({})
+    assert not _has_complete_pipeline_config_artifact({"unrelated": True})
+    assert not _has_complete_pipeline_config_artifact({"provider_uri": "  "})
+    assert not _has_complete_pipeline_config_artifact({"provider_uri": "data/qlib_cn"})
+    assert not _has_complete_pipeline_config_artifact(with_unknown_key)
 
 
 def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:
@@ -636,6 +643,7 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
         "",
         "",
         {},
+        operator_ui_job_id="ui-run",
     )
 
     catalog = selectable_catalog((cli_mirror, ui_job))
@@ -662,6 +670,24 @@ def test_selectable_catalog_keeps_newer_independent_cli_run_for_reused_directory
     assert catalog.run_id_alias == {}
 
 
+def test_selectable_catalog_keeps_unlinked_overlapping_cli_run() -> None:
+    ui_job = JobSummary(
+        "ui-run", "pipeline", "completed", "ui", "output/runs/shared",
+        "2026-08-20T09:00:00+08:00", "2026-08-20T09:00:00+08:00",
+        "2026-08-20T10:01:00+08:00",
+    )
+    cli_run = JobSummary(
+        "cli-run", "pipeline", "completed", "cli", "output/runs/shared",
+        "2026-08-20T10:00:00+08:00", "2026-08-20T09:01:00+08:00",
+        "2026-08-20T10:00:00+08:00",
+    )
+
+    catalog = selectable_catalog((ui_job, cli_run))
+
+    assert [job.run_id for job in catalog.rows] == ["cli-run"]
+    assert catalog.run_id_alias == {}
+
+
 def test_alias_collapsed_run_ids_are_reported_as_duplicates() -> None:
     catalog = selectable_catalog(
         (
@@ -674,6 +700,7 @@ def test_alias_collapsed_run_ids_are_reported_as_duplicates() -> None:
                 "cli-run", "pipeline", "completed", "cli", "output/runs/shared",
                 "2026-08-20T10:00:00+08:00", "2026-08-20T09:01:00+08:00",
                 "2026-08-20T10:00:00+08:00",
+                operator_ui_job_id="ui-run",
             ),
         )
     )

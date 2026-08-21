@@ -38,7 +38,7 @@ _ACTIVE_CHILD_PROCESS: subprocess.Popen[bytes] | None = None
 _CHILD_TERMINATE_TIMEOUT_S = 5.0
 
 
-def _runner_env() -> dict[str, str]:
+def _runner_env(*, operator_ui_job_id: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     project_root = str(PROJECT_ROOT)
     existing = env.get("PYTHONPATH")
@@ -47,6 +47,8 @@ def _runner_env() -> dict[str, str]:
         if not existing
         else project_root + os.pathsep + existing
     )
+    if operator_ui_job_id is not None:
+        env["QUANT_OPERATOR_UI_JOB_ID"] = operator_ui_job_id
     return env
 
 
@@ -65,17 +67,6 @@ def _find_run_dir(output_dir: Path) -> str | None:
         if entries:
             return str(max(entries, key=lambda path: path.stat().st_mtime))
     return None
-
-
-def _copy_exact_config_to_run_dir(config_path: Path, run_dir: str) -> None:
-    target = Path(run_dir) / "config.yaml"
-    try:
-        target.write_bytes(config_path.read_bytes())
-    except OSError:
-        # The pipeline's normalized config.yaml remains available if this
-        # best-effort exact-copy step fails. Do not flip a successful training
-        # job to failed because a post-run UI convenience copy failed.
-        return
 
 
 def _copy_pipeline_logs_to_run_dir(
@@ -241,7 +232,7 @@ def main(argv: list[str] | None = None) -> None:
             stdout=out,
             stderr=err,
             cwd=PROJECT_ROOT,
-            env=_runner_env(),
+            env=_runner_env(operator_ui_job_id=job_dir.name),
             shell=False,
         )
         try:
@@ -268,7 +259,6 @@ def main(argv: list[str] | None = None) -> None:
         run_dir = _find_run_dir(Path(output_dir))
         if run_dir:
             if mode == "pipeline":
-                _copy_exact_config_to_run_dir(config_path, run_dir)
                 _copy_pipeline_logs_to_run_dir(
                     stdout_path=stdout_path,
                     stderr_path=stderr_path,

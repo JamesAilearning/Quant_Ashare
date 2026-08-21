@@ -247,14 +247,20 @@ def read_bundle_build_identity(provider_uri: str | os.PathLike[str] | None) -> s
         return _LEGACY_BUNDLE_TAG
     base = Path(str(provider_uri))
 
-    try:
-        from src.data.pit.bundle_integrity import read_bundle_integrity
+    from src.data.pit.bundle_integrity import (
+        BundleIntegrityError,
+        read_bundle_integrity,
+    )
 
-        integrity = read_bundle_integrity(base)
-        if integrity is not None and integrity.built_at.strip():
-            return f"fetch-integrity@{integrity.built_at.strip()}"
-    except Exception:  # noqa: BLE001 — evidence unavailable, try legacy writers
-        pass
+    integrity = read_bundle_integrity(base)
+    if integrity is not None:
+        built_at = integrity.built_at.strip()
+        if not built_at:
+            raise BundleIntegrityError(
+                "bundle integrity stamp records an empty built_at; "
+                "refusing to fall back to an older rebuild identity."
+            )
+        return f"fetch-integrity@{built_at}"
 
     bundle_manifest_path = base / "bundle_manifest.json"
     if bundle_manifest_path.is_file():

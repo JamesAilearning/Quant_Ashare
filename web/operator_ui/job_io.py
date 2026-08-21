@@ -118,6 +118,9 @@ class JobSummary:
     key_metric_value: str = ""
     config_summary: dict[str, str] = field(default_factory=dict)
     error_message: str = ""
+    #: Producer-recorded UI job ID on a CLI catalog row, when that CLI process
+    #: was launched by the operator UI. Empty means the relationship is absent.
+    operator_ui_job_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +137,7 @@ class JobSummary:
             "key_metric_value": self.key_metric_value,
             "config_summary": self.config_summary,
             "error_message": self.error_message,
+            "operator_ui_job_id": self.operator_ui_job_id,
         }
 
 
@@ -567,6 +571,7 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         key_value = "✓"
 
     cfg_summary: dict[str, str] = {}
+    raw_operator_ui_job_id = raw.get("operator_ui_job_id")
     return JobSummary(
         run_id=run_id,
         type=etype,
@@ -580,6 +585,11 @@ def _normalise_cli_entry(raw: dict[str, Any]) -> JobSummary:
         key_metric_label=key_label,
         key_metric_value=key_value,
         config_summary=cfg_summary,
+        operator_ui_job_id=(
+            raw_operator_ui_job_id.strip()
+            if isinstance(raw_operator_ui_job_id, str)
+            else ""
+        ),
     )
 
 

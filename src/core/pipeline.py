@@ -71,8 +71,13 @@ from src.core.qlib_runtime import (
     init_qlib_canonical,
     provider_uri_guard_message,
 )
-from src.core.run_catalog import append_run_record
-from src.core.run_catalog import build_record as build_catalog_record
+from src.core.run_catalog import (
+    append_run_record,
+    operator_ui_job_id_from_environment,
+)
+from src.core.run_catalog import (
+    build_record as build_catalog_record,
+)
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
@@ -836,6 +841,7 @@ class Pipeline:
                 metrics_purpose=config.metrics_purpose,
                 started_at=started_at,
                 config_fingerprint=fingerprint,
+                operator_ui_job_id=operator_ui_job_id_from_environment(),
                 config_summary={
                     "instruments": config.instruments,
                     "feature_handler": config.feature_handler,

@@ -258,6 +258,17 @@ def catalog_lock(catalog: Path, *, timeout: float) -> Iterator[bool]:
                 _unlock(fd)
             os.close(fd)
 
+_OPERATOR_UI_JOB_ID_ENV = "QUANT_OPERATOR_UI_JOB_ID"
+
+
+def operator_ui_job_id_from_environment() -> str | None:
+    """Return the UI job ID explicitly passed by ``job_runner``, if any."""
+    raw = os.environ.get(_OPERATOR_UI_JOB_ID_ENV)
+    if not isinstance(raw, str):
+        return None
+    normalized = raw.strip()
+    return normalized or None
+
 
 def append_run_record(
     record: dict[str, Any],
@@ -370,6 +381,7 @@ def build_record(
     output_dir: str = "",
     metric_status: str = "official",
     metrics_purpose: str = "official",
+    operator_ui_job_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a run-catalog record with consistent schema.
 
@@ -391,6 +403,10 @@ def build_record(
         "output_dir": output_dir,
         "metric_status": metric_status,
         "metrics_purpose": metrics_purpose,
+        # A UI-run CLI process receives this exact ID from job_runner.  It is
+        # the producer-written evidence that lets read-only catalog consumers
+        # alias the two lifecycle rows without guessing from timestamps.
+        "operator_ui_job_id": operator_ui_job_id,
     }
 
 

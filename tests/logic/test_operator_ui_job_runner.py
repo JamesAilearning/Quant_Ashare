@@ -38,7 +38,7 @@ class JobRunnerDispatchTests(unittest.TestCase):
             data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
             self.assertEqual(data["run_dir"], str(output_dir))
 
-    def test_pipeline_mode_copies_exact_config_to_run_dir(self) -> None:
+    def test_pipeline_mode_preserves_complete_producer_config_in_run_dir(self) -> None:
         from web.operator_ui.job_runner import main
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -51,16 +51,42 @@ class JobRunnerDispatchTests(unittest.TestCase):
                 "provider_uri: 'D:/qlib_data/my_cn_data'\n"
             )
             job_dir.joinpath("config.yaml").write_text(config_text, encoding="utf-8")
+            producer_config = (
+                "provider_uri: D:/qlib_data/my_cn_data\n"
+                "region: cn\n"
+                "instruments: csi300\n"
+            )
+            run_dir.joinpath("config.yaml").write_text(producer_config, encoding="utf-8")
 
             with patch("subprocess.Popen") as mock_popen:
                 mock_proc = mock_popen.return_value
                 mock_proc.wait.return_value = 0
                 main([str(job_dir), "pipeline"])
 
-            copied = run_dir.joinpath("config.yaml").read_text(encoding="utf-8")
-            self.assertEqual(copied, config_text)
+            persisted = run_dir.joinpath("config.yaml").read_text(encoding="utf-8")
+            self.assertEqual(persisted, producer_config)
             data = json.loads(job_dir.joinpath("job.json").read_text(encoding="utf-8"))
             self.assertEqual(data["run_dir"], str(run_dir))
+
+    def test_runner_passes_its_job_id_to_the_catalog_producer(self) -> None:
+        from web.operator_ui.job_runner import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp)
+            output_dir = job_dir / "pipeline_output"
+            output_dir.mkdir()
+            (output_dir / "calendars").mkdir()
+            job_dir.joinpath("config.yaml").write_text(
+                f"output_dir: '{output_dir}'\n", encoding="utf-8",
+            )
+
+            with patch("subprocess.Popen") as mock_popen:
+                mock_proc = mock_popen.return_value
+                mock_proc.wait.return_value = 0
+                main([str(job_dir), "pipeline"])
+
+            child_env = mock_popen.call_args.kwargs["env"]
+            self.assertEqual(child_env["QUANT_OPERATOR_UI_JOB_ID"], job_dir.name)
 
     def test_failed_pipeline_does_not_bind_or_overwrite_existing_run_dir(self) -> None:
         from web.operator_ui.job_runner import main
