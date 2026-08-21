@@ -17,9 +17,10 @@ contract. Three-bullet design summary:
    builder falls through to a fresh build.
 2. **Write failures never block return.** ``cache_put`` logs at
    WARNING and returns; the build result is already in hand.
-3. **Bundle tag in the key.** A bundle re-ingest invalidates every
-   cached entry by changing the hash, so we cannot accidentally
-   serve stale data.
+3. **Bundle identities in the key.** The calendar tag and, when
+   available, the producer-written rebuild stamp invalidate cached
+   entries on a re-ingest or same-calendar bin correction, so we
+   cannot accidentally serve stale data.
 
 This module does not import qlib. The cached object IS a `FeatureDatasetResult`
 holding a qlib `DatasetH`; the cache file's bytes come from `pickle.dump`
@@ -92,8 +93,9 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
     * Neither manifest exists.
     * The manifest exists but can't be parsed or lacks the key fields.
 
-    The tag is included in the cache key (see :func:`compute_cache_key`)
-    so a bundle re-ingest invalidates every cached entry. Before audit
+    The tag is paired with a producer-written rebuild identity in the cache
+    key (see :func:`compute_cache_key`) when that identity is available, so a
+    bundle re-ingest invalidates every cached entry. Before audit
     P2, Tushare bundles always returned ``"unknown"`` because the
     reader only knew about ``bundle_manifest.json``; the resulting
     stable tag meant the cache happily served stale features across
@@ -286,6 +288,7 @@ def compute_cache_key(
     config: FeatureDatasetConfig,
     *,
     bundle_tag: str = _LEGACY_BUNDLE_TAG,
+    bundle_build_identity: str = _LEGACY_BUNDLE_TAG,
     handler_identity: str | None = None,
 ) -> str:
     """Return a stable sha256 hex digest identifying the dataset config.
@@ -298,6 +301,9 @@ def compute_cache_key(
     - the six date split fields (train/valid/test start/end)
     - ``bundle_tag`` (e.g. the qlib provider's tail_date — covers
       bundle re-ingest)
+    - ``bundle_build_identity`` (the producer-written publish/build stamp —
+      covers a corrected feature or instrument bin when the calendar is
+      unchanged)
     - ``handler_identity`` (covers handler-internal state that the
       registered name alone does not pin down — e.g. MinedFactor's
       currently-bound pool dir + PIT provider + delisted registry
@@ -328,6 +334,12 @@ def compute_cache_key(
         "bundle_tag": bundle_tag,
         "handler_identity": handler_identity or "_no_handler_identity_",
     }
+    # A known build identity makes a same-calendar rebuild a cache miss. Keep
+    # the legacy/unknown path byte-identical so an identity-less provider does
+    # not needlessly invalidate a cache whose invalidation boundary remains the
+    # calendar tag.
+    if bundle_build_identity != _LEGACY_BUNDLE_TAG:
+        payload["bundle_build_identity"] = bundle_build_identity
     # Materialisation-affecting dimensions added AFTER the original schema join
     # the payload ONLY WHEN NON-DEFAULT: the default payload stays byte-identical
     # to the pre-dimension key, so existing cache entries remain valid, while a
@@ -434,5 +446,6 @@ __all__ = [
     "cache_path_for",
     "cache_put",
     "compute_cache_key",
+    "read_bundle_build_identity",
     "read_bundle_tag",
 ]

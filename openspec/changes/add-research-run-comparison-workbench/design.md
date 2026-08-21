@@ -41,7 +41,7 @@ The gate compares the fields that change an experiment's meaning: universe,
 training/validation/testing windows, benchmark, execution lag, canonical cost
 and exchange controls, and data provenance (the canonical runtime snapshot,
 the calendar content tag, and the producer-written bundle rebuild identity in
-backtest provenance).  A value absent,
+backtest provenance and feature-cache keys).  A value absent,
 malformed, or different in any selected run is a block, with the affected run
 IDs and fields shown to the operator.
 

@@ -29,7 +29,8 @@ signal-to-execution lag, canonical cost/exchange controls, and data
 provenance including the producer-recorded calendar-content identity and
 rebuild identity.  A rebuild identity SHALL originate from a producer-written
 bundle build/publish stamp, so a corrected feature or instrument bin under an
-unchanged calendar cannot compare equal to the previous bundle.
+unchanged calendar cannot compare equal to the previous bundle or reuse its
+feature-dataset cache entry.
 A missing, malformed, or unequal required value SHALL block the ordering and
 identify the affected field and run ID.  The workbench SHALL NOT invent a
 missing value, recompute metrics, or call a non-comparable selection equivalent.

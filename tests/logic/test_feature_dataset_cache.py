@@ -138,6 +138,23 @@ def test_cache_key_different_bundle_tags_differ():
     assert a != b
 
 
+def test_cache_key_different_rebuild_identities_differ_with_same_calendar():
+    """A corrected bin publish must not reuse the same-calendar cache."""
+    cfg = _make_config()
+    calendar_tag = "2026-04-01@sha256:" + "a" * 64
+    before = compute_cache_key(
+        cfg,
+        bundle_tag=calendar_tag,
+        bundle_build_identity="fetch-integrity@2026-04-01T00:00:00+00:00",
+    )
+    after = compute_cache_key(
+        cfg,
+        bundle_tag=calendar_tag,
+        bundle_build_identity="fetch-integrity@2026-04-02T00:00:00+00:00",
+    )
+    assert before != after
+
+
 def test_cache_key_is_filesystem_safe():
     """The hex digest must not contain path separators or other
     characters that would corrupt the cache path."""
@@ -371,6 +388,38 @@ def test_build_second_call_reads_cache(stub_qlib, tmp_path):
     assert stub_qlib.handler_factory == initial["handler_factory"]
     assert stub_qlib.DatasetH == initial["DatasetH"]
     assert stub_qlib.prepare == initial["prepare"]
+
+
+def test_build_rebuild_with_same_calendar_misses_cache(stub_qlib, tmp_path, monkeypatch):
+    """A new producer build stamp must bypass cached pre-rebuild features."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "src.core.qlib_runtime.get_canonical_qlib_config",
+        lambda: SimpleNamespace(provider_uri="/bundle"),
+    )
+    monkeypatch.setattr(
+        "src.data._feature_dataset_cache.read_bundle_tag",
+        lambda _uri: "2026-04-01@sha256:" + "a" * 64,
+    )
+    build_identities = iter((
+        "fetch-integrity@2026-04-01T00:00:00+00:00",
+        "fetch-integrity@2026-04-02T00:00:00+00:00",
+    ))
+    monkeypatch.setattr(
+        "src.data._feature_dataset_cache.read_bundle_build_identity",
+        lambda _uri: next(build_identities),
+    )
+
+    cache_dir = tmp_path / "cache"
+    config = _make_config()
+    FeatureDatasetBuilder.build(config, cache_dir=cache_dir)
+    FeatureDatasetBuilder.build(config, cache_dir=cache_dir)
+
+    # Before fix: the second build was a stale cache hit. After fix, the
+    # changed producer stamp selects a new cache entry and rebuilds features.
+    assert stub_qlib.handler_factory == 2
+    assert len(list(cache_dir.glob("dataset_*.pkl"))) == 2
 
 
 def test_build_different_config_misses_cache(stub_qlib, tmp_path):
