@@ -636,12 +636,12 @@ def _effective_metric_status(report: Mapping[str, Any]) -> str | None:
     """Return the producer-recorded status, letting declared purpose downgrade it."""
     metric_status = _stable_value(report.get("metric_status"))
     metrics_purpose = _stable_value(report.get("metrics_purpose"))
-    if (
-        metric_status == OFFICIAL_METRIC_STATUS
-        and metrics_purpose is not None
-        and metrics_purpose != OFFICIAL_METRIC_STATUS
-    ):
-        return metrics_purpose
+    if metric_status == OFFICIAL_METRIC_STATUS:
+        if metrics_purpose == OFFICIAL_METRIC_STATUS:
+            return OFFICIAL_METRIC_STATUS
+        if metrics_purpose == "predictions_only":
+            return PREDICTIONS_ONLY_METRIC_STATUS
+        return None
     return metric_status
 
 

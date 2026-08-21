@@ -58,6 +58,11 @@ IDs and fields shown to the operator.
 
 The page does not infer a value from a sibling field.  It displays unavailable
 values as unavailable and explains why comparison is blocked.
+The artifact reader translates UTF-8 and JSON value-decoding failures into
+displayable read issues, so a damaged report remains unavailable evidence
+rather than aborting page rendering. An `official` metric status is accepted
+only when its producer-written `metrics_purpose` is explicitly `official`;
+missing or unsupported purposes remain unverified.
 
 Walk-forward fold reports already carry the canonical backtest provenance that
 establishes the official canonical path, execution semantics, ST-mask identity,

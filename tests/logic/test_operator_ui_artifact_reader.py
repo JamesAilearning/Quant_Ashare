@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.artifact_reader import (
@@ -38,6 +39,28 @@ class OperatorUiArtifactReaderTests(unittest.TestCase):
         self.assertEqual(result.issue.artifact_name, "metrics.json")
         self.assertEqual(result.issue.error_type, "JSONDecodeError")
         self.assertIn("metrics.json", result.issue.path)
+
+    def test_decode_and_value_errors_return_displayable_json_issue(self) -> None:
+        with tempfile.TemporaryDirectory(dir=output_path("operator_ui")) as tmp_dir:
+            artifact_path = Path(tmp_dir) / "metrics.json"
+            artifact_path.write_bytes(b"\xff")
+            decode_result = read_json_artifact(artifact_path, artifact_name="metrics.json")
+
+            artifact_path.write_text("{}", encoding="utf-8")
+            with patch(
+                "web.operator_ui.artifact_reader.json.loads",
+                side_effect=ValueError("numeric value is invalid"),
+            ):
+                value_result = read_json_artifact(artifact_path, artifact_name="metrics.json")
+
+        for result, error_type in (
+            (decode_result, "UnicodeDecodeError"),
+            (value_result, "ValueError"),
+        ):
+            self.assertEqual(result.value, {})
+            self.assertIsInstance(result.issue, ArtifactReadIssue)
+            assert result.issue is not None
+            self.assertEqual(result.issue.error_type, error_type)
 
     def test_non_object_json_artifact_returns_shape_issue(self) -> None:
         with tempfile.TemporaryDirectory(dir=output_path("operator_ui")) as tmp_dir:

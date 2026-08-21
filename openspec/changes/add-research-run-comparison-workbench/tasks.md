@@ -10,6 +10,7 @@
 - [x] 1.8 Treat corrupt resumed-fold provenance as unavailable and verify reported valid-IR counts against producer-required fold evidence.
 - [x] 1.9 Require positive, sequential walk-forward fold evidence and agreement among all official pipeline path projections.
 - [x] 1.10 Verify aggregate walk-forward metric status against measured fold status and prediction-shape evidence.
+- [x] 1.11 Surface report decoding failures as unavailable evidence and require a supported declared purpose for official metrics.
 
 ## 2. Read-only workbench page
 

@@ -140,6 +140,12 @@ read-only configuration and log references.
 - **AND** blocks controlled ordering rather than treating the absent artifact
   as an empty or comparable result
 
+#### Scenario: A report cannot be decoded completely
+
+- **WHEN** a report contains invalid UTF-8 or a JSON value decoding failure
+- **THEN** the page records a displayable artifact-read issue
+- **AND** treats the report as unavailable instead of failing page rendering
+
 #### Scenario: A pipeline configuration is only a partial submit-time input
 
 - **WHEN** a selected pipeline run's `config.yaml` omits any resolved
@@ -162,6 +168,13 @@ read-only configuration and log references.
   `backtest.provenance`, and `comparison_provenance` canonical paths are
   missing, non-canonical, or unequal
 - **THEN** the page marks the metric path unverified
+- **AND** blocks controlled ordering
+
+#### Scenario: An official metric lacks a supported declared purpose
+
+- **WHEN** a report claims `metric_status: official` but omits
+  `metrics_purpose` or records an unsupported purpose
+- **THEN** the page treats the metric status as unverified
 - **AND** blocks controlled ordering
 
 #### Scenario: Pipeline artifacts use equivalent runtime spellings

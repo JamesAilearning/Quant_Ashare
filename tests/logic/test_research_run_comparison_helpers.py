@@ -3,7 +3,10 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 
-from src.core.canonical_backtest_contract import CANONICAL_OFFICIAL_BACKTEST_PATH
+from src.core.canonical_backtest_contract import (
+    CANONICAL_OFFICIAL_BACKTEST_PATH,
+    PREDICTIONS_ONLY_METRIC_STATUS,
+)
 from src.core.pipeline import PipelineConfig
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
@@ -55,6 +58,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
     }
     return {
         "metric_status": "official",
+        "metrics_purpose": "official",
         "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
         "config": {
             "instruments": "csi300",
@@ -389,6 +393,31 @@ def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> N
     ):
         result = assess_comparability((official, run))
 
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("指标状态" in reason for reason in result.reasons)
+
+
+def test_official_metric_status_requires_supported_metrics_purpose() -> None:
+    official = _pipeline_run("official")
+    missing_purpose = _pipeline_report()
+    del missing_purpose["metrics_purpose"]
+    unsupported_purpose = _pipeline_report()
+    unsupported_purpose["metrics_purpose"] = "untracked"
+    predictions_only = _pipeline_report()
+    predictions_only["metrics_purpose"] = "predictions_only"
+
+    for run, expected_status in (
+        (_pipeline_run("missing-purpose", report=missing_purpose), None),
+        (_pipeline_run("unsupported-purpose", report=unsupported_purpose), None),
+        (
+            _pipeline_run("predictions-only-purpose", report=predictions_only),
+            PREDICTIONS_ONLY_METRIC_STATUS,
+        ),
+    ):
+        result = assess_comparability((official, run))
+
+        assert run.metric_status == expected_status
         assert result.eligible is False
         assert result.ranked_run_ids == ()
         assert any("指标状态" in reason for reason in result.reasons)
