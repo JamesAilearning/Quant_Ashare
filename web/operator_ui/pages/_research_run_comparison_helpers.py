@@ -672,6 +672,104 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     )
 
 
+def _pipeline_config_report_conflicts(
+    config: Mapping[str, Any], report: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Return producer fields that disagree between pipeline artifacts.
+
+    ``config.yaml`` is a complete resolved ``PipelineConfig`` artifact, while
+    ``pipeline_report.json`` records the materialized model/window fields and
+    canonical-backtest request. Comparing their shared producer-written
+    values prevents an artifact copy or partial restore from combining a
+    configuration reference from one run with metrics from another. Fields
+    absent from either artifact are handled by the existing missing-contract
+    checks; this helper never fills a value from current defaults.
+    """
+    report_config = _mapping(report.get("config"))
+    backtest_config = _mapping(_nested(report, "backtest", "provenance", "config"))
+    runtime = _mapping(backtest_config.get("runtime"))
+    account = _mapping(backtest_config.get("account_config"))
+    exchange = _mapping(backtest_config.get("exchange_config"))
+    cost_model = _mapping(exchange.get("cost_model"))
+    st_mask = _mapping(backtest_config.get("st_mask"))
+    conflicts: list[str] = []
+
+    def compare(
+        label: str,
+        source: Mapping[str, Any],
+        source_key: str,
+        observed: Mapping[str, Any],
+        observed_key: str,
+    ) -> None:
+        if (
+            source_key in source
+            and observed_key in observed
+            and source[source_key] != observed[observed_key]
+        ):
+            conflicts.append(label)
+
+    for field in (
+        "instruments",
+        "feature_handler",
+        "label_horizon_days",
+        "model_type",
+        "benchmark_code",
+        "topk",
+        "n_drop",
+        "attribution_sleeve_grouping",
+        "risk_constraints_enabled",
+        "risk_constraints_calibration",
+        "risk_constraint_scope",
+        "risk_constraints_mode",
+        "metrics_purpose",
+    ):
+        compare(field, config, field, report_config, field)
+
+    for period, start_key, end_key in (
+        ("train_period", "train_start", "train_end"),
+        ("valid_period", "valid_start", "valid_end"),
+        ("test_period", "test_start", "test_end"),
+    ):
+        if (
+            start_key in config
+            and end_key in config
+            and period in report_config
+            and f"{config[start_key]} ~ {config[end_key]}" != report_config[period]
+        ):
+            conflicts.append(period)
+
+    for field in ("benchmark_code", "signal_to_execution_lag", "adjust_mode"):
+        compare(field, config, field, backtest_config, field)
+    compare("provider_uri", config, "provider_uri", runtime, "provider_uri")
+    compare("region", config, "region", runtime, "region")
+    compare("init_cash", config, "init_cash", account, "init_cash")
+    compare(
+        "execution_price_kind",
+        config,
+        "execution_price_kind",
+        exchange,
+        "execution_price_kind",
+    )
+    compare("limit_threshold", config, "limit_threshold", exchange, "limit_threshold")
+    for field in ("commission_rate", "slippage_bps", "min_cost"):
+        compare(field, config, field, cost_model, field)
+    compare("namechange_path", config, "namechange_path", st_mask, "namechange_path")
+
+    # A ``None`` config value means the producer expanded the canonical
+    # default schedule before writing provenance, so raw equality would make
+    # an unmodified valid artifact look inconsistent. An explicit schedule
+    # is comparable byte-for-value through the producer-written request.
+    if config.get("stamp_tax_schedule") is not None:
+        compare(
+            "stamp_tax_schedule",
+            config,
+            "stamp_tax_schedule",
+            cost_model,
+            "stamp_tax_schedule",
+        )
+    return tuple(dict.fromkeys(conflicts))
+
+
 def build_comparison_run(
     *,
     run_id: str,
@@ -696,6 +794,16 @@ def build_comparison_run(
         contract = _pipeline_contract(report)
         metrics = _pipeline_metrics(report)
         fold_evidence = None
+        mismatches = _pipeline_config_report_conflicts(config, report)
+        if mismatches:
+            collected_issues.append(
+                ComparisonIssue(
+                    "config_report_mismatch",
+                    "config.yaml 与 pipeline_report.json 的运行记录不一致："
+                    + "、".join(mismatches)
+                    + "。无法确认它们属于同一次运行。",
+                )
+            )
     else:
         contract = _walk_forward_contract(report, config)
         metrics = _walk_forward_metrics(report)
@@ -723,11 +831,21 @@ def build_comparison_run(
         collected_issues.append(ComparisonIssue("missing_report", "报告工件不可用，无法核验现有指标。"))
 
     metric_status = _effective_metric_status(report)
+    canonical_path = (
+        _required_text(report.get("official_backtest_path"))
+        if engine == "pipeline"
+        else _required_text(
+            _mapping(report.get("comparison_provenance")).get(
+                "official_backtest_path"
+            )
+        )
+        if engine == "walk_forward"
+        else None
+    )
     if (
-        engine == "pipeline"
+        engine in {"pipeline", "walk_forward"}
         and metric_status == OFFICIAL_METRIC_STATUS
-        and _required_text(report.get("official_backtest_path"))
-        != CANONICAL_OFFICIAL_BACKTEST_PATH
+        and canonical_path != CANONICAL_OFFICIAL_BACKTEST_PATH
     ):
         collected_issues.append(
             ComparisonIssue(

@@ -188,6 +188,7 @@ class AggregateComparisonProvenanceFlowTests(unittest.TestCase):
         backtest_provenance = {
             "execution_timing_semantics": "lag_total_v2",
             "price_limit_semantics": "close_expr_v1",
+            "official_backtest_path": "qlib_native_canonical_v1",
             "config": {
                 "benchmark_code": "SH000300TR",
                 "signal_to_execution_lag": 1,
@@ -263,6 +264,7 @@ class AggregateComparisonProvenanceFlowTests(unittest.TestCase):
         assert write_aggregate.call_args is not None
         provenance = write_aggregate.call_args.kwargs["comparison_provenance"]
         self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(provenance["official_backtest_path"], "qlib_native_canonical_v1")
         self.assertEqual(provenance["config"]["runtime"]["region"], "cn")
 
 

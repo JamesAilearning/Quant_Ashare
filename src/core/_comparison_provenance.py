@@ -36,7 +36,11 @@ def _comparison_provenance_candidate(
         return None
     if any(
         field not in backtest_provenance
-        for field in ("execution_timing_semantics", "price_limit_semantics")
+        for field in (
+            "execution_timing_semantics",
+            "price_limit_semantics",
+            "official_backtest_path",
+        )
     ):
         return None
     return {
@@ -44,6 +48,11 @@ def _comparison_provenance_candidate(
             "execution_timing_semantics"
         ],
         "price_limit_semantics": backtest_provenance["price_limit_semantics"],
+        # This producer-written value is deliberately resolved across every
+        # fold too. An aggregate metric has no single top-level fold path;
+        # accepting it without matching canonical-path evidence would let an
+        # official-looking walk-forward rank bypass the canonical runtime.
+        "official_backtest_path": backtest_provenance["official_backtest_path"],
         "config": {
             field: config[field]
             for field in _COMPARISON_PROVENANCE_CONFIG_FIELDS

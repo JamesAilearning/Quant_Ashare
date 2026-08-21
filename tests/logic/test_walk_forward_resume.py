@@ -438,6 +438,9 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
                 rebased.report_path, str(new_dir / "fold_01_report.json"),
             )
             self.assertEqual(
+                rebased.fold.report_path, str(new_dir / "fold_01_report.json"),
+            )
+            self.assertEqual(
                 rebased.predictions_path,
                 str(new_dir / "fold_01_predictions.pkl"),
             )
@@ -497,6 +500,8 @@ class ResumeOutputDirRenameTests(unittest.TestCase):
         self.assertEqual(m.model_path, "m")  # original unchanged
         self.assertNotEqual(rebased.model_path, m.model_path)
         self.assertTrue(rebased.model_path.endswith("m"))
+        self.assertEqual(m.fold.report_path, _make_fold(idx=0).report_path)
+        self.assertEqual(rebased.fold.report_path, rebased.report_path)
 
 
 # ---------------------------------------------------------------------------

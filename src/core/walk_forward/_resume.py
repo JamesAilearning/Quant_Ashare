@@ -351,16 +351,23 @@ class FoldManifest:
         when that directory had a different name.
         """
         d = Path(output_dir)
+        rebased_report_path = self._rebase_path(self.report_path, d)
         return dataclasses.replace(
             self,
             model_path=self._rebase_path(self.model_path, d),
-            report_path=self._rebase_path(self.report_path, d),
+            report_path=rebased_report_path,
             predictions_path=self._rebase_path(self.predictions_path, d),
             positions_path=(
                 self._rebase_path(self.positions_path, d)
                 if self.positions_path
                 else None
             ),
+            # The engine appends ``manifest.fold`` for an AUTO-resumed fold,
+            # then reads that nested path while resolving aggregate comparison
+            # provenance. Keep it equal to the manifest-level path so a
+            # renamed output directory does not turn valid fold evidence into
+            # a false ``unavailable`` result.
+            fold=dataclasses.replace(self.fold, report_path=rebased_report_path),
         )
 
     # ------------------------------------------------------------------

@@ -459,6 +459,7 @@ class ResolveFoldComparisonProvenanceTests(unittest.TestCase):
                 "provenance": {
                     "execution_timing_semantics": "lag_total_v2",
                     "price_limit_semantics": "close_expr_v1",
+                    "official_backtest_path": "qlib_native_canonical_v1",
                     "config": {
                         "benchmark_code": "SH000300TR",
                         "signal_to_execution_lag": 1,
@@ -496,6 +497,7 @@ class ResolveFoldComparisonProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(provenance["status"], "consistent")
+        self.assertEqual(provenance["official_backtest_path"], "qlib_native_canonical_v1")
         self.assertEqual(
             provenance["config"]["runtime"]["bundle_build_identity"],
             "fetch-integrity@2026-08-20T00:00:00+00:00",
@@ -512,6 +514,26 @@ class ResolveFoldComparisonProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(provenance, {"status": "mixed"})
+
+    def test_noncanonical_fold_path_makes_aggregate_evidence_mixed(self):
+        noncanonical = self._fold_report()["backtest"]["provenance"]
+        noncanonical["official_backtest_path"] = "custom.backtest.path"
+
+        provenance = resolve_backtest_comparison_provenance(
+            [self._fold_report()["backtest"]["provenance"], noncanonical]
+        )
+
+        self.assertEqual(provenance, {"status": "mixed"})
+
+    def test_missing_fold_canonical_path_makes_evidence_unavailable(self):
+        missing_path = self._fold_report()["backtest"]["provenance"]
+        del missing_path["official_backtest_path"]
+
+        provenance = resolve_backtest_comparison_provenance(
+            [self._fold_report()["backtest"]["provenance"], missing_path]
+        )
+
+        self.assertEqual(provenance, {"status": "unavailable"})
 
 
 # ---------------------------------------------------------------------------

@@ -43,9 +43,9 @@ identify the affected field and run ID.  The workbench SHALL NOT invent a
 missing value, recompute metrics, or call a non-comparable selection equivalent.
 For a walk-forward run, the aggregate report SHALL expose canonical-backtest
 comparison provenance only when every persisted fold report records matching
-execution semantics, ST-mask identity, and runtime/bundle identity.  Missing
-fold evidence or disagreement between folds SHALL remain explicit and SHALL
-block controlled ordering.
+canonical official-backtest path, execution semantics, ST-mask identity, and
+runtime/bundle identity.  Missing fold evidence or disagreement between folds
+SHALL remain explicit and SHALL block controlled ordering.
 
 #### Scenario: Equal complete contracts permit an ordering
 
@@ -82,6 +82,13 @@ block controlled ordering.
 - **THEN** its aggregate report marks that provenance as mixed
 - **AND** the workbench blocks controlled ordering rather than selecting an
   arbitrary fold's value
+
+#### Scenario: A walk-forward aggregate lacks a canonical path across folds
+
+- **WHEN** an aggregate declares official metrics but its persisted fold
+  evidence has a missing, non-canonical, or mismatched official-backtest path
+- **THEN** the aggregate does not qualify as canonical comparison evidence
+- **AND** the workbench blocks controlled ordering for that run
 
 #### Scenario: A bundle changes during a walk-forward run
 
@@ -127,3 +134,12 @@ read-only configuration and log references.
   `PipelineConfig` field
 - **THEN** the page marks the configuration as invalid evidence
 - **AND** does not reconstruct omitted values from current defaults
+
+#### Scenario: Pipeline configuration and report are from different runs
+
+- **WHEN** a complete pipeline `config.yaml` disagrees with its
+  `pipeline_report.json` on a producer-written shared field such as universe,
+  window, or canonical execution control
+- **THEN** the page marks the artifact pair as inconsistent evidence
+- **AND** blocks controlled ordering instead of showing the configuration as
+  the source of the reported metrics

@@ -33,6 +33,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                 "config_fingerprint": "c" * 16,
                 "execution_timing_semantics": "lag_total_v2",
                 "price_limit_semantics": "close_expr_v1",
+                "official_backtest_path": CANONICAL_OFFICIAL_BACKTEST_PATH,
                 "config": {
                     "benchmark_code": "SH000300TR",
                     "signal_to_execution_lag": 1,
@@ -73,7 +74,13 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
     }
 
 
-def _pipeline_run(run_id: str, *, information_ratio: float = 0.4, report: dict[str, object] | None = None):
+def _pipeline_run(
+    run_id: str,
+    *,
+    information_ratio: float = 0.4,
+    report: dict[str, object] | None = None,
+    config: dict[str, object] | None = None,
+):
     return build_comparison_run(
         run_id=run_id,
         engine="pipeline",
@@ -82,7 +89,15 @@ def _pipeline_run(run_id: str, *, information_ratio: float = 0.4, report: dict[s
         config_path=f"output/runs/{run_id}/config.yaml",
         report_path=f"output/runs/{run_id}/pipeline_report.json",
         log_paths=(),
-        config={"provider_uri": "data/qlib_cn", "region": "cn", "adjust_mode": "pre_adjusted"},
+        config=(
+            config
+            if config is not None
+            else {
+                "provider_uri": "data/qlib_cn",
+                "region": "cn",
+                "adjust_mode": "pre_adjusted",
+            }
+        ),
         report=report if report is not None else _pipeline_report(information_ratio=information_ratio),
     )
 
@@ -384,6 +399,38 @@ def test_official_pipeline_metrics_require_the_canonical_backtest_path() -> None
         assert any("canonical qlib 回测路径" in reason for reason in result.reasons)
 
 
+def test_pipeline_config_artifact_must_match_its_reported_run() -> None:
+    report = _pipeline_report()
+    resolved_config = asdict(
+        PipelineConfig(
+            provider_uri="data/qlib_cn",
+            instruments="csi300",
+            train_start="2020-01-01",
+            train_end="2022-12-31",
+            valid_start="2023-01-01",
+            valid_end="2023-06-30",
+            test_start="2023-07-01",
+            test_end="2023-12-31",
+        )
+    )
+    for field, value, expected_conflict in (
+        ("instruments", "csi500", "instruments"),
+        ("train_start", "2019-01-01", "train_period"),
+        ("signal_to_execution_lag", 2, "signal_to_execution_lag"),
+    ):
+        copied_config = {**resolved_config, field: value}
+        result = assess_comparability(
+            (
+                _pipeline_run("matching", report=report, config=resolved_config),
+                _pipeline_run("copied", report=report, config=copied_config),
+            )
+        )
+
+        assert result.eligible is False
+        assert any("config.yaml 与 pipeline_report.json" in reason for reason in result.reasons)
+        assert any(expected_conflict in reason for reason in result.reasons)
+
+
 def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalculation() -> None:
     config = {
         "provider_uri": "data/qlib_cn",
@@ -608,6 +655,7 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
             "status": "consistent",
             "execution_timing_semantics": pipeline_provenance["execution_timing_semantics"],
             "price_limit_semantics": pipeline_provenance["price_limit_semantics"],
+            "official_backtest_path": pipeline_provenance["official_backtest_path"],
             "config": pipeline_provenance["config"],
         },
         "aggregate_metrics": {
@@ -666,6 +714,26 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
 
     assert mixed_result.eligible is False
     assert any("逐折回测溯源不一致" in reason for reason in mixed_result.reasons)
+
+    unverified_path_report = deepcopy(report)
+    unverified_path_report["comparison_provenance"]["official_backtest_path"] = (  # type: ignore[index]
+        "custom.backtest.path"
+    )
+    unverified_path = build_comparison_run(
+        run_id="wf-unverified-path",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=unverified_path_report,
+    )
+    unverified_path_result = assess_comparability((first, unverified_path))
+
+    assert unverified_path_result.eligible is False
+    assert any("canonical qlib 回测路径" in reason for reason in unverified_path_result.reasons)
 
 
 def test_selectable_catalog_folds_superseded_artifact_directories() -> None:
