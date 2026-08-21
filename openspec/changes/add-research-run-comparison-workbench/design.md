@@ -73,6 +73,12 @@ Unreadable fold-report evidence, including text-decode and JSON-value failures,
 is likewise recorded as unavailable rather than aborting aggregate publication.
 The read model accepts reported fold stability only when the declared valid-IR
 count equals the finite IR values in uniquely indexed fold records.
+It also validates the producer-recorded aggregate metric status from the
+serialized fold status and prediction-shape evidence: measured official folds
+are required for an official aggregate, a predictions-only declaration
+downgrades the aggregate, and a `[0]` failed placeholder is correctly treated
+as no measurement. Missing or contradictory status evidence blocks controlled
+ordering rather than allowing an aggregate label to launder it.
 
 Pipeline and walk-forward reports share the same top-level
 `comparison_provenance` schema: Pipeline resolves its one canonical backtest

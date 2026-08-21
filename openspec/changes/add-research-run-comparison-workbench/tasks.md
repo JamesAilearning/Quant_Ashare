@@ -9,6 +9,7 @@
 - [x] 1.7 Normalize pipeline runtime values and default stamp-tax schedules before cross-checking complete configuration artifacts against report provenance.
 - [x] 1.8 Treat corrupt resumed-fold provenance as unavailable and verify reported valid-IR counts against producer-required fold evidence.
 - [x] 1.9 Require positive, sequential walk-forward fold evidence and agreement among all official pipeline path projections.
+- [x] 1.10 Verify aggregate walk-forward metric status against measured fold status and prediction-shape evidence.
 
 ## 2. Read-only workbench page
 

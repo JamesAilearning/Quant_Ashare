@@ -23,10 +23,13 @@ from src.core.backtest_runner import (
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     COMMISSION_RATE_MAX,
+    FAILED_METRIC_STATUS,
     OFFICIAL_METRIC_STATUS,
+    PREDICTIONS_ONLY_METRIC_STATUS,
     SLIPPAGE_BPS_MAX,
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
+    UNVERIFIED_METRIC_STATUS,
     CanonicalBacktestContractError,
     resolve_stamp_tax_schedule,
 )
@@ -642,6 +645,74 @@ def _effective_metric_status(report: Mapping[str, Any]) -> str | None:
     return metric_status
 
 
+def _walk_forward_metric_status_matches_folds(
+    report: Mapping[str, Any], folds: tuple[Mapping[str, Any], ...]
+) -> bool:
+    """Verify the report's recorded aggregate status from its fold evidence.
+
+    This mirrors ``run_metric_status`` without recalculating any result
+    metric. A failed placeholder has ``prediction_shape == [0]`` and carries
+    no measurement, so it cannot either certify or taint the aggregate.
+    """
+    reported_status = _stable_value(report.get("metric_status"))
+    metrics_purpose = _stable_value(report.get("metrics_purpose"))
+    if (
+        reported_status not in {
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+            UNVERIFIED_METRIC_STATUS,
+        }
+        or metrics_purpose not in {OFFICIAL_METRIC_STATUS, "predictions_only"}
+    ):
+        return False
+
+    measured_statuses: set[str] = set()
+    for fold in folds:
+        if "prediction_shape" not in fold or "metric_status" not in fold:
+            return False
+        prediction_shape = fold["prediction_shape"]
+        if (
+            not isinstance(prediction_shape, list)
+            or any(
+                isinstance(dimension, bool)
+                or not isinstance(dimension, int)
+                or dimension < 0
+                for dimension in prediction_shape
+            )
+        ):
+            return False
+        fold_status = fold["metric_status"]
+        if not isinstance(fold_status, str) or fold_status not in {
+            OFFICIAL_METRIC_STATUS,
+            PREDICTIONS_ONLY_METRIC_STATUS,
+            FAILED_METRIC_STATUS,
+        }:
+            return False
+        if prediction_shape == [0]:
+            if (
+                fold_status != FAILED_METRIC_STATUS
+                or fold.get("information_ratio") is not None
+            ):
+                return False
+        elif fold_status == FAILED_METRIC_STATUS:
+            return False
+        else:
+            measured_statuses.add(fold_status)
+
+    if (
+        metrics_purpose == "predictions_only"
+        or PREDICTIONS_ONLY_METRIC_STATUS in measured_statuses
+    ):
+        derived_status = PREDICTIONS_ONLY_METRIC_STATUS
+    elif not measured_statuses:
+        derived_status = UNVERIFIED_METRIC_STATUS
+    elif measured_statuses == {OFFICIAL_METRIC_STATUS}:
+        derived_status = OFFICIAL_METRIC_STATUS
+    else:
+        derived_status = UNVERIFIED_METRIC_STATUS
+    return reported_status == derived_status
+
+
 def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     aggregate = _mapping(report.get("aggregate_metrics"))
     raw_folds = report.get("folds")
@@ -682,6 +753,7 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     if (
         seen_fold_indices != set(range(fold_count))
         or valid_count != valid_information_ratio_count
+        or not _walk_forward_metric_status_matches_folds(report, folds)
     ):
         return None
     return FoldEvidence(
@@ -887,7 +959,7 @@ def build_comparison_run(
             collected_issues.append(
                 ComparisonIssue(
                     "invalid_fold_evidence",
-                    "逐折稳定性证据结构无效，无法按既有工件展示。",
+                    "逐折稳定性或指标状态证据结构无效，无法按既有工件展示。",
                 )
             )
 

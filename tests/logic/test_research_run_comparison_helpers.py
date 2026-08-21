@@ -515,6 +515,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     }
     report = {
         "metric_status": "official",
+        "metrics_purpose": "official",
         "num_folds": 2,
         "config": {
             "instruments": "csi300",
@@ -551,7 +552,20 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             "max_overlap_days": 0,
             "max_overlap_depth": 0,
         },
-        "folds": [{"fold_index": 0, "information_ratio": 0.2}, {"fold_index": 1, "information_ratio": 0.5}],
+        "folds": [
+            {
+                "fold_index": 0,
+                "information_ratio": 0.2,
+                "prediction_shape": [10],
+                "metric_status": "official",
+            },
+            {
+                "fold_index": 1,
+                "information_ratio": 0.5,
+                "prediction_shape": [10],
+                "metric_status": "official",
+            },
+        ],
     }
 
     run = build_comparison_run(
@@ -690,6 +704,99 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert zero_folds_run.fold_evidence is None
     assert any(issue.code == "invalid_fold_evidence" for issue in zero_folds_run.issues)
 
+    missing_fold_status = deepcopy(report)
+    del missing_fold_status["folds"][1]["metric_status"]  # type: ignore[index]
+    missing_fold_status_run = build_comparison_run(
+        run_id="wf-missing-fold-status",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=missing_fold_status,
+    )
+    assert missing_fold_status_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in missing_fold_status_run.issues)
+
+    non_canonical_fold = deepcopy(report)
+    non_canonical_fold["folds"][1]["metric_status"] = "predictions_only_non_canonical"  # type: ignore[index]
+    non_canonical_fold_run = build_comparison_run(
+        run_id="wf-non-canonical-fold",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=non_canonical_fold,
+    )
+    assert non_canonical_fold_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in non_canonical_fold_run.issues)
+
+    contradictory_aggregate_status = deepcopy(report)
+    contradictory_aggregate_status["metric_status"] = "unverified_no_fold_stamp"
+    contradictory_aggregate_status_run = build_comparison_run(
+        run_id="wf-contradictory-aggregate-status",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=contradictory_aggregate_status,
+    )
+    assert contradictory_aggregate_status_run.fold_evidence is None
+    assert any(
+        issue.code == "invalid_fold_evidence"
+        for issue in contradictory_aggregate_status_run.issues
+    )
+
+    failed_placeholder = deepcopy(report)
+    failed_placeholder["folds"][0] = {
+        "fold_index": 0,
+        "information_ratio": None,
+        "prediction_shape": [0],
+        "metric_status": "failed_no_metrics",
+    }
+    failed_placeholder["aggregate_metrics"]["valid_folds_information_ratio"] = 1  # type: ignore[index]
+    failed_placeholder_run = build_comparison_run(
+        run_id="wf-failed-placeholder",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=failed_placeholder,
+    )
+    assert failed_placeholder_run.fold_evidence is not None
+    assert not any(issue.code == "invalid_fold_evidence" for issue in failed_placeholder_run.issues)
+
+    failed_placeholder_with_metric = deepcopy(failed_placeholder)
+    failed_placeholder_with_metric["folds"][0]["information_ratio"] = 0.0  # type: ignore[index]
+    failed_placeholder_with_metric["aggregate_metrics"]["valid_folds_information_ratio"] = 2  # type: ignore[index]
+    failed_placeholder_with_metric_run = build_comparison_run(
+        run_id="wf-failed-placeholder-with-metric",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=failed_placeholder_with_metric,
+    )
+    assert failed_placeholder_with_metric_run.fold_evidence is None
+    assert any(
+        issue.code == "invalid_fold_evidence"
+        for issue in failed_placeholder_with_metric_run.issues
+    )
+
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]
     different_schedule = build_comparison_run(
@@ -767,6 +874,7 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
     pipeline_provenance = _pipeline_report()["backtest"]["provenance"]  # type: ignore[index]
     report = {
         "metric_status": "official",
+        "metrics_purpose": "official",
         "num_folds": 1,
         "config": {
             "instruments": "csi300",
@@ -799,7 +907,14 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
             "max_overlap_days": 0,
             "max_overlap_depth": 0,
         },
-        "folds": [{"fold_index": 0, "information_ratio": 0.35}],
+        "folds": [
+            {
+                "fold_index": 0,
+                "information_ratio": 0.35,
+                "prediction_shape": [10],
+                "metric_status": "official",
+            }
+        ],
     }
 
     def build(run_id: str):
