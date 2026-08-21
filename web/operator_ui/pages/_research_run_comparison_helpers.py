@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
+from src.core.backtest_runner import (
+    EXECUTION_TIMING_SEMANTICS,
+    PRICE_LIMIT_SEMANTICS,
+)
 from src.core.canonical_backtest_contract import (
     CANONICAL_OFFICIAL_BACKTEST_PATH,
     COMMISSION_RATE_MAX,
@@ -24,10 +28,6 @@ from src.core.canonical_backtest_contract import (
     STAMP_TAX_BPS_MAX,
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
-)
-from src.core.backtest_runner import (
-    EXECUTION_TIMING_SEMANTICS,
-    PRICE_LIMIT_SEMANTICS,
 )
 from web.operator_ui.job_io import (
     JobSummary,
@@ -423,7 +423,13 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
     """Return a producer-recorded runtime snapshot, never a YAML substitute."""
     if not runtime:
         return None
-    required = ("provider_uri", "region", "data_adjust_mode", "bundle_identity")
+    required = (
+        "provider_uri",
+        "region",
+        "data_adjust_mode",
+        "bundle_identity",
+        "bundle_build_identity",
+    )
     values = {key: _required_text(runtime.get(key)) for key in required}
     if any(value is None for value in values.values()):
         return None
@@ -437,6 +443,23 @@ def _data_provenance(runtime: Mapping[str, Any]) -> str | None:
         return None
     bundle_prefix, separator, bundle_revision = bundle_identity.partition("@")
     if not separator or not bundle_revision:
+        return None
+    bundle_build_identity = values["bundle_build_identity"]
+    assert bundle_build_identity is not None
+    build_prefix, build_separator, build_timestamp = bundle_build_identity.partition("@")
+    if (
+        not build_separator
+        or build_prefix
+        not in {"fetch-integrity", "bundle-manifest", "tushare-manifest"}
+    ):
+        return None
+    try:
+        parsed_build_timestamp = datetime.fromisoformat(
+            build_timestamp.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if parsed_build_timestamp.tzinfo is None:
         return None
     if bundle_prefix.startswith("tushare:"):
         # Tushare manifests use their publish timestamp as the immutable
@@ -608,10 +631,18 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     ):
         return None
     folds = tuple(raw_folds)
-    valid_count = aggregate.get("valid_folds_information_ratio")
+    fold_count = _non_boolean_int(report.get("num_folds"))
+    valid_count = _non_boolean_int(aggregate.get("valid_folds_information_ratio"))
+    if (
+        fold_count is None
+        or valid_count is None
+        or fold_count != len(folds)
+        or valid_count > fold_count
+    ):
+        return None
     return FoldEvidence(
-        fold_count=_non_boolean_int(report.get("num_folds")),
-        valid_fold_count=_non_boolean_int(valid_count),
+        fold_count=fold_count,
+        valid_fold_count=valid_count,
         mean_information_ratio=_finite_float(aggregate.get("mean_information_ratio")),
         std_information_ratio=_finite_float(aggregate.get("std_information_ratio")),
         worst_drawdown=_finite_float(aggregate.get("worst_drawdown")),

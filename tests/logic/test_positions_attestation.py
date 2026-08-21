@@ -1,4 +1,4 @@
-"""Positions attestation and bundle provenance (schema version 5).
+"""Positions attestation and bundle provenance (schema version 6).
 
 2026-07-17-csi800-cadence-campaign DP-5, producer side: both engines
 stamp a sha256 of the PERSISTED positions bytes under the SAME field
@@ -46,8 +46,8 @@ _POSITIONS = {
 }
 
 
-def test_schema_version_bumped_for_bundle_identity_provenance() -> None:
-    assert FOLD_REPORT_SCHEMA_VERSION == "5-bundle-identity-provenance"
+def test_schema_version_bumped_for_bundle_build_identity_provenance() -> None:
+    assert FOLD_REPORT_SCHEMA_VERSION == "6-bundle-build-identity-provenance"
 
 
 def test_write_positions_returns_digest_of_persisted_bytes() -> None:

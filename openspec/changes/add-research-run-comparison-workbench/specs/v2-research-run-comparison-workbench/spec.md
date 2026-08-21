@@ -26,7 +26,10 @@ not launch, cancel, mutate, delete, or otherwise operate on a run.
 Before assigning a controlled research ordering, the workbench SHALL compare
 the selected runs' universe, training/validation/testing windows, benchmark,
 signal-to-execution lag, canonical cost/exchange controls, and data
-provenance including the producer-recorded immutable bundle-content identity.
+provenance including the producer-recorded calendar-content identity and
+rebuild identity.  A rebuild identity SHALL originate from a producer-written
+bundle build/publish stamp, so a corrected feature or instrument bin under an
+unchanged calendar cannot compare equal to the previous bundle.
 A missing, malformed, or unequal required value SHALL block the ordering and
 identify the affected field and run ID.  The workbench SHALL NOT invent a
 missing value, recompute metrics, or call a non-comparable selection equivalent.
@@ -52,6 +55,13 @@ missing value, recompute metrics, or call a non-comparable selection equivalent.
 - **THEN** the page labels data provenance unavailable
 - **AND** blocks metric ordering rather than treating the path as data identity
 
+#### Scenario: A rebuild changes bytes under an unchanged calendar
+
+- **WHEN** two selected runs have the same calendar-content identity but
+  different producer-recorded bundle rebuild identities
+- **THEN** the page blocks controlled ordering as data-provenance mismatch
+- **AND** never scans all bundle files while reading the comparison page
+
 ### Requirement: Present existing evidence and precise read-only references
 
 For every selected run, the workbench SHALL display only values already present
@@ -64,9 +74,17 @@ read-only configuration and log references.
 #### Scenario: A selected walk-forward run has fold evidence
 
 - **WHEN** a selected run has a valid `walk_forward_report.json` with fold
-  records
+  records whose declared `num_folds` equals the fold-record count and whose
+  valid-fold count is within that declared total
 - **THEN** the page displays its existing aggregate metrics and fold stability
   evidence without calculating replacement fold metrics
+
+#### Scenario: Fold counts contradict the listed records
+
+- **WHEN** a walk-forward report declares a fold count different from its fold
+  list length, or a valid-fold count outside that total
+- **THEN** the page marks fold stability evidence invalid
+- **AND** does not display the contradictory counts as evidence
 
 #### Scenario: A required artifact is missing or invalid
 

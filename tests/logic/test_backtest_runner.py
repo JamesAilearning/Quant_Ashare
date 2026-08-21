@@ -1642,6 +1642,9 @@ class ProvenanceFingerprintTests(unittest.TestCase):
         ), patch(
             "src.core.backtest_runner.read_bundle_tag",
             return_value="2026-08-20@sha256:" + "a" * 64,
+        ), patch(
+            "src.core.backtest_runner.read_bundle_build_identity",
+            return_value="fetch-integrity@2026-08-20T00:00:00+00:00",
         ):
             prov = BacktestRunner._build_provenance(
                 self._make_request(), topk=50, n_drop=5,
@@ -1661,6 +1664,10 @@ class ProvenanceFingerprintTests(unittest.TestCase):
             prov["config"]["runtime"]["bundle_identity"],
             "2026-08-20@sha256:" + "a" * 64,
         )
+        self.assertEqual(
+            prov["config"]["runtime"]["bundle_build_identity"],
+            "fetch-integrity@2026-08-20T00:00:00+00:00",
+        )
 
     def test_fingerprint_changes_when_a_bundle_is_reingested_at_the_same_path(self) -> None:
         runtime = QlibRuntimeConfig(
@@ -1671,18 +1678,25 @@ class ProvenanceFingerprintTests(unittest.TestCase):
             "src.core.backtest_runner.get_canonical_qlib_config", return_value=runtime
         ), patch(
             "src.core.backtest_runner.read_bundle_tag",
+            return_value="2026-08-20@sha256:" + "a" * 64,
+        ), patch(
+            "src.core.backtest_runner.read_bundle_build_identity",
             side_effect=(
-                "2026-08-20@sha256:" + "a" * 64,
-                "2026-08-20@sha256:" + "b" * 64,
+                "fetch-integrity@2026-08-20T00:00:00+00:00",
+                "fetch-integrity@2026-08-21T00:00:00+00:00",
             ),
         ):
             before = BacktestRunner._build_provenance(self._make_request(), topk=50, n_drop=5)
             after = BacktestRunner._build_provenance(self._make_request(), topk=50, n_drop=5)
 
         self.assertNotEqual(before["config_fingerprint"], after["config_fingerprint"])
-        self.assertNotEqual(
+        self.assertEqual(
             before["config"]["runtime"]["bundle_identity"],
             after["config"]["runtime"]["bundle_identity"],
+        )
+        self.assertNotEqual(
+            before["config"]["runtime"]["bundle_build_identity"],
+            after["config"]["runtime"]["bundle_build_identity"],
         )
 
     def test_fingerprint_changes_with_provider_uri(self) -> None:

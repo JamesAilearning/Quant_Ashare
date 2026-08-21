@@ -3,7 +3,7 @@
 - [x] 1.1 Add pure models and extraction helpers for existing pipeline and walk-forward report evidence.
 - [x] 1.2 Implement explicit comparison-contract validation and controlled ranking eligibility without metric recomputation.
 - [x] 1.3 Add focused tests for complete, mismatched, and missing-contract selections.
-- [x] 1.4 Record the canonical bundle-content identity in new backtest provenance and bump the walk-forward fold schema so resumed folds cannot mix evidence generations.
+- [x] 1.4 Record calendar-content and producer-written rebuild identities in new backtest provenance, validate them for controlled comparison, and bump/invalidate walk-forward resume evidence so corrected bytes cannot mix generations.
 
 ## 2. Read-only workbench page
 

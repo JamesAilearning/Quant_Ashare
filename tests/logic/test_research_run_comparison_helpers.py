@@ -56,6 +56,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                         "region": "cn",
                         "data_adjust_mode": "pre_adjusted",
                         "bundle_identity": "2026-08-20@sha256:" + "b" * 64,
+                        "bundle_build_identity": "fetch-integrity@2026-08-20T00:00:00+00:00",
                     },
                 },
             },
@@ -251,6 +252,7 @@ def test_malformed_runtime_provenance_values_block_controlled_ranking() -> None:
         ("region", "mars"),
         ("data_adjust_mode", "unknown"),
         ("bundle_identity", "tushare:not-a-date@not-a-timestamp"),
+        ("bundle_build_identity", "fetch-integrity@not-a-timestamp"),
     ):
         malformed_report = _pipeline_report()
         runtime = malformed_report["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
@@ -263,8 +265,32 @@ def test_malformed_runtime_provenance_values_block_controlled_ranking() -> None:
         assert result.ranked_run_ids == ()
         assert any("数据来源 / 运行时快照" in reason for reason in result.reasons)
 
+    valid_tushare = _pipeline_report()
+    valid_tushare_runtime = valid_tushare["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    valid_tushare_runtime["bundle_identity"] = "tushare:2026-08-20@2026-08-20T00:00:00Z"  # type: ignore[index]
+    valid_tushare_runtime["bundle_build_identity"] = "tushare-manifest@2026-08-20T00:00:00Z"  # type: ignore[index]
+    valid_tushare_result = assess_comparability(
+        (
+            _pipeline_run("run-tushare-a", report=valid_tushare),
+            _pipeline_run("run-tushare-b", report=deepcopy(valid_tushare)),
+        )
+    )
+    assert valid_tushare_result.eligible is True
 
-def test_missing_or_changed_bundle_identity_blocks_controlled_ranking() -> None:
+    malformed_tushare = deepcopy(valid_tushare)
+    malformed_tushare_runtime = malformed_tushare["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    malformed_tushare_runtime["bundle_build_identity"] = "tushare-manifest@not-a-timestamp"  # type: ignore[index]
+    malformed_tushare_result = assess_comparability(
+        (
+            _pipeline_run("run-tushare-valid", report=valid_tushare),
+            _pipeline_run("run-tushare-malformed", report=malformed_tushare),
+        )
+    )
+    assert malformed_tushare_result.eligible is False
+    assert any("数据来源 / 运行时快照" in reason for reason in malformed_tushare_result.reasons)
+
+
+def test_missing_or_changed_bundle_provenance_blocks_controlled_ranking() -> None:
     complete = _pipeline_run("run-complete")
     missing_identity = _pipeline_report()
     runtime = missing_identity["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
@@ -276,6 +302,15 @@ def test_missing_or_changed_bundle_identity_blocks_controlled_ranking() -> None:
     assert missing_result.eligible is False
     assert any("数据来源 / 运行时快照" in reason for reason in missing_result.reasons)
 
+    missing_rebuild_identity = _pipeline_report()
+    missing_rebuild_runtime = missing_rebuild_identity["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    del missing_rebuild_runtime["bundle_build_identity"]  # type: ignore[index]
+    missing_rebuild_result = assess_comparability(
+        (complete, _pipeline_run("run-missing-rebuild-id", report=missing_rebuild_identity))
+    )
+    assert missing_rebuild_result.eligible is False
+    assert any("数据来源 / 运行时快照" in reason for reason in missing_rebuild_result.reasons)
+
     changed_identity = _pipeline_report()
     changed_runtime = changed_identity["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
     changed_runtime["bundle_identity"] = "2026-08-20@sha256:" + "c" * 64  # type: ignore[index]
@@ -284,6 +319,15 @@ def test_missing_or_changed_bundle_identity_blocks_controlled_ranking() -> None:
     )
     assert changed_result.eligible is False
     assert any("数据来源 / 运行时快照不一致" in reason for reason in changed_result.reasons)
+
+    rebuilt = _pipeline_report()
+    rebuilt_runtime = rebuilt["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    rebuilt_runtime["bundle_build_identity"] = "fetch-integrity@2026-08-21T00:00:00+00:00"  # type: ignore[index]
+    rebuilt_result = assess_comparability(
+        (complete, _pipeline_run("run-rebuilt-bundle", report=rebuilt))
+    )
+    assert rebuilt_result.eligible is False
+    assert any("数据来源 / 运行时快照不一致" in reason for reason in rebuilt_result.reasons)
 
 
 def test_non_official_or_unstamped_metrics_cannot_receive_a_research_rank() -> None:
@@ -405,9 +449,40 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             config=config,
             report=malformed_counts,
         )
-        assert malformed_count_run.fold_evidence is not None
-        assert malformed_count_run.fold_evidence.fold_count is None
-        assert malformed_count_run.fold_evidence.valid_fold_count is None
+        assert malformed_count_run.fold_evidence is None
+        assert any(issue.code == "invalid_fold_evidence" for issue in malformed_count_run.issues)
+
+    contradictory_counts = deepcopy(report)
+    contradictory_counts["num_folds"] = 3
+    contradictory_count_run = build_comparison_run(
+        run_id="wf-contradictory-counts",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=contradictory_counts,
+    )
+    assert contradictory_count_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in contradictory_count_run.issues)
+
+    impossible_valid_count = deepcopy(report)
+    impossible_valid_count["aggregate_metrics"]["valid_folds_information_ratio"] = 3  # type: ignore[index]
+    impossible_valid_count_run = build_comparison_run(
+        run_id="wf-impossible-valid-count",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=impossible_valid_count,
+    )
+    assert impossible_valid_count_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in impossible_valid_count_run.issues)
 
     malformed_folds = deepcopy(report)
     malformed_folds["folds"] = [{"fold_index": 0}, "not-a-fold"]

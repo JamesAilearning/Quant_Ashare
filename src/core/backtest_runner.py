@@ -50,7 +50,7 @@ from src.core.risk_constraints import (
     RiskConstraintError,
     RiskConstraintMode,
 )
-from src.data._feature_dataset_cache import read_bundle_tag
+from src.data._feature_dataset_cache import read_bundle_build_identity, read_bundle_tag
 from src.data.st_history import (
     StHistoryError,
     assert_covers,
@@ -1982,6 +1982,14 @@ class BacktestRunner:
                 # feature-cache and walk-forward resume boundaries; ``unknown``
                 # remains explicit unavailable evidence for readers.
                 "bundle_identity": read_bundle_tag(runtime_config.provider_uri),
+                # The calendar tag above is deliberately cheap and therefore
+                # cannot see a corrected feature/instrument bin under an
+                # unchanged calendar.  Bind the producer-written build stamp
+                # as well: it changes on every complete rebuild without a
+                # per-fold full-bundle scan.
+                "bundle_build_identity": read_bundle_build_identity(
+                    runtime_config.provider_uri
+                ),
             }
             if runtime_config is not None
             else {}

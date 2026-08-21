@@ -224,6 +224,59 @@ def read_bundle_tag(provider_uri: str | os.PathLike[str] | None) -> str:
     return _LEGACY_BUNDLE_TAG
 
 
+def read_bundle_build_identity(provider_uri: str | os.PathLike[str] | None) -> str:
+    """Return the build stamp that changes whenever a bundle is rebuilt.
+
+    ``read_bundle_tag`` intentionally hashes only the calendar because it is on
+    the feature-cache hot path.  That lightweight tag cannot distinguish an
+    in-place feature or instrument correction from the previous build when the
+    calendar is unchanged.  Backtest provenance and walk-forward resume need a
+    second, producer-written identity for that boundary, but must not read every
+    bin file on each fold.  The relevant builders already write a fresh,
+    timezone-aware publication/build timestamp on every complete publish.
+
+    The returned value is deliberately source-qualified so values from unrelated
+    sidecars cannot compare equal.  ``"unknown"`` means no producer-written
+    rebuild identity is available; callers that require immutable comparison
+    evidence must treat it as unavailable instead of deriving one from a mutable
+    directory timestamp.
+    """
+    if not provider_uri:
+        return _LEGACY_BUNDLE_TAG
+    base = Path(str(provider_uri))
+
+    try:
+        from src.data.pit.bundle_integrity import read_bundle_integrity
+
+        integrity = read_bundle_integrity(base)
+        if integrity is not None and integrity.built_at.strip():
+            return f"fetch-integrity@{integrity.built_at.strip()}"
+    except Exception:  # noqa: BLE001 — evidence unavailable, try legacy writers
+        pass
+
+    bundle_manifest_path = base / "bundle_manifest.json"
+    if bundle_manifest_path.is_file():
+        try:
+            payload = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
+            built_at = str(payload.get("built_at") or "").strip()
+            if built_at:
+                return f"bundle-manifest@{built_at}"
+        except Exception:  # noqa: BLE001 — evidence unavailable, try Tushare
+            pass
+
+    tushare_manifest_path = base / "tushare_provider_manifest.json"
+    if tushare_manifest_path.is_file():
+        try:
+            payload = json.loads(tushare_manifest_path.read_text(encoding="utf-8"))
+            snapshot_at = str(payload.get("snapshot_at") or "").strip()
+            if snapshot_at:
+                return f"tushare-manifest@{snapshot_at}"
+        except Exception:  # noqa: BLE001 — explicit unavailable evidence below
+            pass
+
+    return _LEGACY_BUNDLE_TAG
+
+
 # ---------------------------------------------------------------------------
 # Cache key
 # ---------------------------------------------------------------------------
