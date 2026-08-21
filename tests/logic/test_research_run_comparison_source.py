@@ -36,6 +36,7 @@ def test_comparison_page_is_read_only_and_uses_guarded_catalog_artifacts() -> No
     assert "_has_complete_pipeline_config_artifact(loaded)" in source
     assert 'config_reference = f"{report_path}#config"' in source
     assert "if engine == \"pipeline\":" in source
+    assert "catalog_config_fingerprint=job.config_fingerprint" in source
 
 
 def test_unknown_url_run_ids_block_comparison_without_rewriting_the_request() -> None:

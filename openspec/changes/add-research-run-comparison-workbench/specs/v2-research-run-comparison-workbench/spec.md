@@ -129,6 +129,16 @@ read-only configuration and log references.
 - **THEN** the page displays its existing aggregate metrics and fold stability
   evidence without calculating replacement fold metrics
 
+#### Scenario: A walk-forward catalog records a configuration fingerprint
+
+- **WHEN** a selected walk-forward catalog row contains a producer-written
+  non-empty `config_fingerprint` while its aggregate has no top-level
+  backtest-provenance configuration fingerprint
+- **THEN** the page displays that exact catalog value as the read-only
+  configuration identity
+- **AND** does not use it to fill a comparison-contract field or permit
+  controlled ordering
+
 #### Scenario: Fold counts contradict the listed records
 
 - **WHEN** a walk-forward report declares a fold count different from its fold

@@ -189,6 +189,18 @@ class NormaliseJobIdLengthTests(unittest.TestCase):
             "pipeline_20260821_010203_a1b2c3d4",
         )
 
+    def test_cli_entry_keeps_producer_recorded_config_fingerprint(self) -> None:
+        from web.operator_ui.job_io import _normalise_cli_entry
+
+        result = _normalise_cli_entry({
+            "run_id": "walk-forward-cli",
+            "engine": "walk_forward",
+            "config_fingerprint": "  catalog-config-fingerprint  ",
+        })
+
+        assert result.config_fingerprint == "catalog-config-fingerprint"
+        assert result.to_dict()["config_fingerprint"] == "catalog-config-fingerprint"
+
 
 class ExtractFailureDetailTests(unittest.TestCase):
     """Regression tests for ``_extract_failure_detail`` — the helper that

@@ -966,6 +966,23 @@ def test_walk_forward_stale_aggregate_ir_is_not_valid_fold_evidence() -> None:
     assert result.ranked_run_ids == ()
 
 
+def test_walk_forward_config_identity_uses_producer_catalog_fingerprint() -> None:
+    run = build_comparison_run(
+        run_id="wf-catalog-fingerprint",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="walk_forward_report.json#config",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=_walk_forward_report(),
+        catalog_config_fingerprint="catalog-config-fingerprint",
+    )
+
+    assert run.config_identity == "catalog-config-fingerprint"
+
+
 def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
     config = {"provider_uri": "data/qlib_cn", "region": "cn", "adjust_mode": "pre_adjusted"}
     report = {

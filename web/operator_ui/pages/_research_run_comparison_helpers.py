@@ -1075,6 +1075,7 @@ def build_comparison_run(
     log_paths: Iterable[str],
     config: Mapping[str, Any],
     report: Mapping[str, Any],
+    catalog_config_fingerprint: str | None = None,
     issues: Iterable[ComparisonIssue] = (),
 ) -> ComparisonRun:
     """Transform already-read artifacts into one displayable research run."""
@@ -1188,6 +1189,13 @@ def build_comparison_run(
         if engine == "walk_forward"
         else _mapping(report.get("config")) or config
     )
+    config_identity = (
+        _required_text(catalog_config_fingerprint)
+        if engine == "walk_forward"
+        else _stable_value(
+            _nested(report, "backtest", "provenance", "config_fingerprint")
+        )
+    )
     data_provenance_source = (
         "pipeline_report.json:backtest.provenance.config.runtime"
         if engine == "pipeline" and contract.get("data_provenance")
@@ -1207,7 +1215,7 @@ def build_comparison_run(
         metrics=metrics,
         metric_status=metric_status,
         model_identity=_stable_value(model_source.get("model_type")),
-        config_identity=_stable_value(_nested(report, "backtest", "provenance", "config_fingerprint")),
+        config_identity=config_identity,
         # Version is deliberately unavailable until a producer writes one.  A
         # provider URI is provenance, not a package-version claim.
         data_package_version=None,

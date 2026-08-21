@@ -54,6 +54,11 @@ producer-expanded schedule; a disagreement or missing report-side expansion
 blocks ordering.  Likewise, every shared field must appear in folded
 provenance, including an explicit null ST-mask path for a disabled input; an
 omission is inconsistent evidence, not an invitation to infer equality.
+The selected catalog row's producer-written `config_fingerprint` is carried
+through only as a read-only configuration identity for display because the
+walk-forward aggregate has no corresponding top-level backtest-provenance
+field. It never substitutes for configuration-contract evidence or permits
+controlled ordering; an absent catalog value remains visibly unavailable.
 
 When a UI lifecycle row and a CLI catalog row share an artifact directory, the
 page aliases them only if the CLI producer wrote that UI job ID into its catalog

@@ -123,6 +123,7 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
             log_paths=(),
             config={},
             report={},
+            catalog_config_fingerprint=job.config_fingerprint,
             issues=(ComparisonIssue("unsupported_engine", "作业目录记录的研究运行类型不受支持。"),),
         )
 
@@ -137,6 +138,7 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
             log_paths=(),
             config={},
             report={},
+            catalog_config_fingerprint=job.config_fingerprint,
             issues=(ComparisonIssue("missing_run_dir", "作业目录未记录产物路径，需核验。"),),
         )
 
@@ -154,6 +156,7 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
             log_paths=(),
             config={},
             report={},
+            catalog_config_fingerprint=job.config_fingerprint,
             issues=(ComparisonIssue("unsafe_run_dir", f"运行目录在可读边界外：{exc}"),),
         )
 
@@ -187,6 +190,7 @@ def _load_comparison_run(job: JobSummary) -> ComparisonRun:
         log_paths=log_paths,
         config=config,
         report=report,
+        catalog_config_fingerprint=job.config_fingerprint,
         issues=issues,
     )
 
