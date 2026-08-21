@@ -44,9 +44,10 @@ training, serving, or trading-execution code.
 - **THEN** the page retains a visible verification warning
 - **AND** any progress count includes only valid effective records
 
-#### Scenario: A journal row has no human reason
+#### Scenario: A journal row has no valid human reason
 
-- **WHEN** a persisted journal row has an empty or whitespace-only reason
+- **WHEN** a persisted journal row has an empty, whitespace-only, or non-string
+  reason
 - **THEN** the journal reader counts it as malformed before building its
   effective view
 - **AND** valid rows continue to appear in the audit and review-progress view

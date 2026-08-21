@@ -353,13 +353,20 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
         or raw_version != JOURNAL_VERSION
     ):
         return None
+    # Validate the persisted type before coercion. ``str(None)`` and
+    # ``str([..])`` are non-empty, but neither is an operator-provided human
+    # rationale; accepting either would silently promote corrupt JSON into the
+    # effective review state.
+    raw_reason = payload.get("reason")
+    if not isinstance(raw_reason, str):
+        return None
     try:
         entry = DecisionEntry(
             journal_version=raw_version,
             trade_date=str(payload["trade_date"]),
             code=str(payload["code"]),
             action=str(payload["action"]),
-            reason=str(payload["reason"]),
+            reason=raw_reason,
             rank=None if payload.get("rank") is None else int(payload["rank"]),
             score=(
                 None if payload.get("score") is None else float(payload["score"])

@@ -38,8 +38,8 @@ Streamlit and pandas.
 The existing page continues to validate the artifact, `picks`, date match,
 and HOLD boundary before it builds a projection.  A HOLD artifact keeps its
 existing form block and does not render a completion summary or candidate
-review labels.  Malformed journal lines, including rows with a blank human
-reason, remain excluded by `read_journal()` at the persisted-data boundary;
+review labels.  Malformed journal lines, including rows with a blank or
+non-string human reason, remain excluded by `read_journal()` at the persisted-data boundary;
 the page shows its existing warning and labels counts as valid-record-only,
 never as evidence of execution.
 
