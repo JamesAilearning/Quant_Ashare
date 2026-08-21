@@ -87,6 +87,27 @@ class PageBoundaryTests(unittest.TestCase):
             self.page,
         )
 
+    def test_invalid_candidate_keys_disable_projection_without_hiding_journal_audit(self) -> None:
+        """Candidate ambiguity must not turn a valid journal into invisible history."""
+        candidate_start = self.page.index("_codes = validate_review_candidate_codes(")
+        candidate_section = self.page[
+            candidate_start : self.page.index("if _hold.is_hold:", candidate_start)
+        ]
+        self.assertIn("_candidate_codes_valid = False", candidate_section)
+        self.assertNotIn("st.stop()", candidate_section)
+        self.assertIn("_codes = ()", candidate_section)
+
+        summary_start = self.page.index("with _review_summary_slot:")
+        summary_section = self.page[
+            summary_start : self.page.index("with _candidate_table_slot:", summary_start)
+        ]
+        self.assertIn("elif not _candidate_codes_valid:", summary_section)
+        self.assertIn("_review_progress = None", summary_section)
+        self.assertLess(
+            self.page.index("_journal = read_journal()"),
+            self.page.index("_today_entries = ["),
+        )
+
 
 class RegistrationAndDocsTests(unittest.TestCase):
     def test_page_registered_in_daily_decision_group_with_icon(self) -> None:

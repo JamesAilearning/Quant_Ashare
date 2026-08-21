@@ -9,6 +9,7 @@
 - [x] 2.1 Render dated review summary and non-execution candidate labels for valid non-HOLD signals.
 - [x] 2.2 Keep journal warning, HOLD block, append-only audit table, and artifact validation semantics intact.
 - [x] 2.3 Replace Today Workbench's duplicate count helper with the shared read model.
+- [x] 2.4 Keep the readable journal audit available when candidate identifiers prevent an exact review projection.
 
 ## 3. Verification
 

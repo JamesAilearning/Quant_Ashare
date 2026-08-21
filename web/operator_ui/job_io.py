@@ -511,8 +511,10 @@ def canonical_dir_key(run_dir: str) -> str | None:
     键不统一的话同一次运行会在选择器里出现两条,而「被覆盖」的判定也随之
     失效(codex #444 r9)。逐行只做字符串前缀匹配与替换,不碰盘。
     """
-    text = str(run_dir or "").strip()
-    if not text:
+    text = str(run_dir or "")
+    if not text.strip():
+        # 只拿 strip 判「是不是空的」,**绝不把 strip 后的串当路径往下传**。
+        # 空判之外的归一化交给 `anchored_run_dir`,那里同样不改字符串。
         return None
     candidate = os.path.normcase(str(anchored_run_dir(text)))
     for root, canonical in _allowed_root_keys():
@@ -584,8 +586,15 @@ def anchored_run_dir(run_dir: str) -> Path:
     的运行——被覆盖的历史行于是静默渲染出当前那份报告(codex #444 r6)。
     折平用 ``os.path.normpath``:纯词法、无文件系统 I/O,与「判据不做逐行
     I/O」的约束一致(``resolve()`` 会走符号链接,那是判据自己那一步的事)。
+
+    **不 strip**。前导空格是合法的文件名字符(POSIX 如此;本机 Windows 实测也
+    能造出名为 `" output"` 的目录),而写入侧是把 ``config.output_dir`` 原样交
+    给 ``Path`` 的。这里一旦先 strip 再解析,判据看的就不是产物真正的位置:
+    `" output/runs/x"` 的产物在树外的 `<repo>/ output/runs/x`,却会被判成树内
+    的 `<repo>/output/runs/x` 而**列出来**,点开是另一次运行的产物 —— 正是本
+    条判据写明「绝不能发生」的那个方向(codex #453)。写入侧同一处已同样改过。
     """
-    candidate = Path(str(run_dir or "").strip())
+    candidate = Path(str(run_dir or ""))
     if not candidate.is_absolute():
         candidate = PROJECT_ROOT / candidate
     return Path(os.path.normpath(str(candidate)))

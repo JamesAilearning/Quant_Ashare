@@ -102,6 +102,30 @@ class RunDirInspectabilityTests(unittest.TestCase):
     def test_escapes_out_of_the_tree_are_refused(self) -> None:
         self.assertFalse(run_dir_is_inspectable("output/../../elsewhere"))
 
+    def test_leading_space_names_a_different_directory(self) -> None:
+        """前导空格是名字的一部分，不是噪声 —— 判据不许先 strip 再解析。
+
+        前导空格是合法的文件名字符（POSIX 如此；本机 Windows 实测也能造出名为
+        `" output"` 的目录），而写入侧把 `config.output_dir` 原样交给 `Path`。
+        判据一旦先 strip，看的就不是产物真正的位置：`" output/runs/x"` 的产物
+        在树外的 `<repo>/ output/runs/x`，却会被判成树内的
+        `<repo>/output/runs/x` 而**列出来**，点开是另一次运行的产物 —— 正是
+        本判据写明「绝不能发生」的那个方向（codex #453）。
+
+        写入侧 `src/core/run_catalog.py` 的同一处已同样改过，这条是它的对称。
+        """
+        self.assertNotEqual(
+            anchored_run_dir(" output/runs/x"),
+            anchored_run_dir("output/runs/x"),
+            "带前导空格的串被锚成了同一个目录 —— 判据 strip 掉了它",
+        )
+        self.assertFalse(
+            run_dir_is_inspectable(" output/runs/x"),
+            "树外的 ` output/runs/x` 被判成可检视，点开会是别人的产物",
+        )
+        # 反面：真正的空白仍然算「没给」，不是一个名字叫空格的目录。
+        self.assertFalse(run_dir_is_inspectable("   "))
+
     def test_relative_rows_anchor_to_the_repo_not_the_cwd(self) -> None:
         # 索引里 1257 条是相对路径，按进程 CWD 解析会随启动目录变答案。
         import os

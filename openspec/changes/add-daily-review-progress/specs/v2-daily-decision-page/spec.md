@@ -51,3 +51,12 @@ training, serving, or trading-execution code.
 - **THEN** the journal reader counts it as malformed before building its
   effective view
 - **AND** valid rows continue to appear in the audit and review-progress view
+
+#### Scenario: Current candidate identifiers are ambiguous
+
+- **WHEN** an otherwise readable selected artifact has a missing or duplicate
+  candidate code
+- **THEN** the page does not render its decision form, review-completion
+  projection, or candidate review labels
+- **AND** it continues to render the separate append-only journal audit and
+  any malformed-row warning from a readable journal

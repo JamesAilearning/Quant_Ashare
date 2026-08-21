@@ -51,9 +51,9 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_UNKNOWN,
     VERDICT_V1_UNKNOWN,
     anchored_to_repo,
-    artifact_schema_is_supported,
     artifact_kind_of,
     artifact_meta_status,
+    artifact_schema_is_supported,
     banner_status,
     hold_state,
     journal_model_id,
@@ -62,9 +62,9 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_trainer_sidecar_sha,
     picks_table_rows,
     provenance_verdict,
-    review_progress_is_available,
     resolve_incumbent,
     resolve_model_path,
+    review_progress_is_available,
 )
 from web.operator_ui.pages._daily_review_progress_helpers import (
     DailyReviewProgress,
@@ -468,8 +468,17 @@ try:
     )
 except ValueError as _candidate_code_exc:
     st.error(f"⚠ 工件候选标识无法核验：{_candidate_code_exc}")
-    st.stop()
-if _hold.is_hold:
+    # An ambiguous candidate set disables the entry form and its projection,
+    # but it says nothing about the append-only journal.  Continue to its
+    # reader below so valid historical entries and malformed-row warnings stay
+    # inspectable instead of disappearing behind a candidate-artifact error.
+    _candidate_codes_valid = False
+    _codes = ()
+else:
+    _candidate_codes_valid = True
+if not _candidate_codes_valid:
+    st.info("当前候选标识无法唯一映射；不显示决策表单或人工审阅进度。")
+elif _hold.is_hold:
     # spec(v2-daily-decision-page HOLD reader): 入场表单 SHALL 被禁用或
     # 等效阻断 — HOLD 日不渲染表单控件,监控视图不受理入场决策。
     st.caption(
@@ -567,6 +576,9 @@ with _review_summary_slot:
         _review_progress = None
     elif _hold.is_hold:
         st.info("HOLD 日不显示人工审阅完成度；该工件不构成入场决策。")
+        _review_progress = None
+    elif not _candidate_codes_valid:
+        st.info("当前候选标识无法唯一映射；不显示人工审阅完成度或候选审阅标签。")
         _review_progress = None
     else:
         try:

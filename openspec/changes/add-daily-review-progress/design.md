@@ -43,6 +43,12 @@ non-string human reason, remain excluded by `read_journal()` at the persisted-da
 the page shows its existing warning and labels counts as valid-record-only,
 never as evidence of execution.
 
+If an otherwise readable artifact has missing or duplicate candidate codes,
+the page disables its form and candidate-progress projection because it cannot
+make an exact journal-key mapping.  That artifact error does not invalidate
+the separate append-only journal: the page continues to render valid audit
+entries and malformed-row warnings rather than ending before the audit view.
+
 ### Shared Workbench consumer
 
 The Today Workbench converts its already validated candidate-code list and
