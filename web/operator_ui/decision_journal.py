@@ -360,11 +360,18 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
     raw_reason = payload.get("reason")
     if not isinstance(raw_reason, str):
         return None
+    # Use the same canonical code key as ``make_entry``.  Legacy/manual rows
+    # can carry surrounding display whitespace; retaining it here would split
+    # the effective map from a later writer-normalized correction and make the
+    # current-candidate projection miss an otherwise valid review.
+    raw_code = payload.get("code")
+    if not str(raw_code or "").strip():
+        return None
     try:
         entry = DecisionEntry(
             journal_version=raw_version,
             trade_date=str(payload["trade_date"]),
-            code=str(payload["code"]),
+            code=str(raw_code).strip(),
             action=str(payload["action"]),
             reason=raw_reason,
             rank=None if payload.get("rank") is None else int(payload["rank"]),

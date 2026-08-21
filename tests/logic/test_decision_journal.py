@@ -145,6 +145,40 @@ class T2TornLineToleranceTests(unittest.TestCase):
         for index in range(5):
             self.assertNotIn(("2026-07-03", f"SZ00000{index}"), result.effective)
 
+    def test_reader_normalizes_legacy_padded_code_before_superseding(self) -> None:
+        # A pre-normalization/manual row must share the writer's exact key.
+        # Before fix: the reader retained its surrounding whitespace, so the
+        # later correction created a second effective key and progress missed
+        # the former review entirely.
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = {
+                "journal_version": 1, "trade_date": "2026-07-03",
+                "code": " SH600000 ", "action": "adopt",
+                "reason": "旧记录仍有效", "rank": 1, "score": 0.1,
+                "model_id": "m", "decided_at": "2026-07-03T18:30:00+08:00",
+                "nonce": "n-legacy-padded-code",
+            }
+            journal_path(tmp).parent.mkdir(parents=True, exist_ok=True)
+            journal_path(tmp).write_bytes(_json.dumps(legacy).encode("utf-8") + b"\n")
+            append_decision(
+                _entry(
+                    action="reject", nonce="n-normalized-correction",
+                    decided_at="2026-07-03T19:00:00+08:00",
+                ),
+                journal_dir=tmp,
+            )
+            result = read_journal(journal_dir=tmp)
+
+        self.assertEqual(result.malformed_count, 0)
+        self.assertEqual([item.code for item in result.entries], ["SH600000", "SH600000"])
+        self.assertEqual(set(result.effective), {("2026-07-03", "SH600000")})
+        self.assertEqual(
+            result.effective[("2026-07-03", "SH600000")].action,
+            "reject",
+        )
+
     def test_append_after_unterminated_tail_quarantines_fragment(self) -> None:
         # codex P1 on #330: appending directly after a newline-less torn tail
         # would FUSE the new entry onto the fragment — one combined malformed
