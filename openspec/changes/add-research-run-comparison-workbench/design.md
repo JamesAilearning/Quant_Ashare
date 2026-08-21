@@ -68,6 +68,12 @@ as `mixed`; neither status is eligible for controlled ordering.  The engine
 also pins both bundle identities at run start and rechecks them before and
 after each non-resumed fold, refusing to publish a cross-generation aggregate
 if the provider changes mid-run.
+
+Unreadable fold-report evidence, including text-decode and JSON-value failures,
+is likewise recorded as unavailable rather than aborting aggregate publication.
+The read model accepts reported fold stability only when the declared valid-IR
+count equals the finite IR values in uniquely indexed fold records.
+
 Pipeline and walk-forward reports share the same top-level
 `comparison_provenance` schema: Pipeline resolves its one canonical backtest
 record, while Walk-Forward resolves all fold records.

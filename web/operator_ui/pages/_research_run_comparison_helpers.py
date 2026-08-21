@@ -659,6 +659,26 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
         or valid_count > fold_count
     ):
         return None
+    seen_fold_indices: set[int] = set()
+    valid_information_ratio_count = 0
+    for fold in folds:
+        # These are the producer-required fields used to make the aggregate
+        # valid-fold count meaningful. A missing or duplicate index, or an
+        # absent/non-finite IR, is not fold-stability evidence.
+        if "fold_index" not in fold or "information_ratio" not in fold:
+            return None
+        fold_index = _non_boolean_int(fold["fold_index"])
+        if fold_index is None or fold_index < 0 or fold_index in seen_fold_indices:
+            return None
+        seen_fold_indices.add(fold_index)
+        information_ratio = fold["information_ratio"]
+        if information_ratio is None:
+            continue
+        if _finite_float(information_ratio) is None:
+            return None
+        valid_information_ratio_count += 1
+    if valid_count != valid_information_ratio_count:
+        return None
     return FoldEvidence(
         fold_count=fold_count,
         valid_fold_count=valid_count,

@@ -178,6 +178,30 @@ class BundleIdentityBoundaryTests(unittest.TestCase):
 
 
 class AggregateComparisonProvenanceFlowTests(unittest.TestCase):
+    def test_corrupt_fold_report_is_unavailable_comparison_evidence(self):
+        """Artifact corruption must not abort the aggregate report write."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "fold_00_report.json"
+            report_path.write_bytes(b"\xff")
+            self.assertIsNone(
+                WalkForwardEngine._read_fold_backtest_provenance_for_comparison(
+                    str(report_path)
+                )
+            )
+
+            report_path.write_text("{}", encoding="utf-8")
+            with patch(
+                "src.core.walk_forward.engine.json.loads",
+                side_effect=ValueError("integer literal exceeds the JSON limit"),
+            ):
+                self.assertIsNone(
+                    WalkForwardEngine._read_fold_backtest_provenance_for_comparison(
+                        str(report_path)
+                    )
+                )
+
     def test_run_passes_matching_fold_evidence_to_aggregate_report(self):
         """The aggregate reads persisted fold reports, never config defaults."""
         import json

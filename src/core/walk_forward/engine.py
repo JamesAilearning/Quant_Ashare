@@ -916,7 +916,7 @@ class WalkForwardEngine:
             return None  # fallback-ok: unavailable evidence must block comparison, not the completed numeric report
         try:
             report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             _logger.warning(
                 "Fold report %s is unavailable for comparison provenance; "
                 "the aggregate report will remain non-comparable.",

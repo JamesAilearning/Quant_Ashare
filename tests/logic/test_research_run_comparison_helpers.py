@@ -617,6 +617,38 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     assert malformed_fold_run.fold_evidence is None
     assert any(issue.code == "invalid_fold_evidence" for issue in malformed_fold_run.issues)
 
+    missing_information_ratio = deepcopy(report)
+    del missing_information_ratio["folds"][1]["information_ratio"]  # type: ignore[index]
+    missing_information_ratio_run = build_comparison_run(
+        run_id="wf-missing-information-ratio",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=missing_information_ratio,
+    )
+    assert missing_information_ratio_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in missing_information_ratio_run.issues)
+
+    inconsistent_valid_count = deepcopy(report)
+    inconsistent_valid_count["folds"][1]["information_ratio"] = None  # type: ignore[index]
+    inconsistent_valid_count_run = build_comparison_run(
+        run_id="wf-inconsistent-valid-count",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config=config,
+        report=inconsistent_valid_count,
+    )
+    assert inconsistent_valid_count_run.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in inconsistent_valid_count_run.issues)
+
     changed = deepcopy(report)
     changed["config"]["step_months"] = 6  # type: ignore[index]
     different_schedule = build_comparison_run(

@@ -117,14 +117,15 @@ read-only configuration and log references.
 
 - **WHEN** a selected run has a valid `walk_forward_report.json` with fold
   records whose declared `num_folds` equals the fold-record count and whose
-  valid-fold count is within that declared total
+  valid-fold count equals the listed finite `information_ratio` values
 - **THEN** the page displays its existing aggregate metrics and fold stability
   evidence without calculating replacement fold metrics
 
 #### Scenario: Fold counts contradict the listed records
 
 - **WHEN** a walk-forward report declares a fold count different from its fold
-  list length, or a valid-fold count outside that total
+  list length, a valid-fold count different from its listed finite IR values,
+  or a fold row omits its index or information-ratio field
 - **THEN** the page marks fold stability evidence invalid
 - **AND** does not display the contradictory counts as evidence
 
