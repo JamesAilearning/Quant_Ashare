@@ -147,6 +147,14 @@ read-only configuration and log references.
 - **AND** does not use it to fill a comparison-contract field or permit
   controlled ordering
 
+#### Scenario: A UI owner aliases a producer-linked CLI catalog row
+
+- **WHEN** a UI lifecycle row is selected as the alias owner for its
+  producer-linked CLI catalog row
+- **THEN** the page retains the CLI row's exact producer-written
+  `config_fingerprint` as the selected owner's configuration identity
+- **AND** does not use that display value as comparison-contract evidence
+
 #### Scenario: Fold counts contradict the listed records
 
 - **WHEN** a walk-forward report declares a fold count different from its fold
@@ -229,6 +237,14 @@ read-only configuration and log references.
 
 - **WHEN** a report claims `metric_status: official` but omits
   `metrics_purpose` or records an unsupported purpose
+- **THEN** the page treats the metric status as unverified
+- **AND** blocks controlled ordering
+
+#### Scenario: An official metric purpose conflicts with its embedded config
+
+- **WHEN** a report claims `metric_status: official` and a top-level
+  `metrics_purpose: official`, but its complete embedded producer config
+  records a different metric purpose
 - **THEN** the page treats the metric status as unverified
 - **AND** blocks controlled ordering
 

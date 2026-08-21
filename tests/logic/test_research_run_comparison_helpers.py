@@ -68,6 +68,7 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
             "valid_period": "2023-01-01 ~ 2023-06-30",
             "test_period": "2023-07-01 ~ 2023-12-31",
             "model_type": "LGBModel",
+            "metrics_purpose": "official",
         },
         "backtest": {"provenance": backtest_provenance},
         "comparison_provenance": {
@@ -508,6 +509,7 @@ def test_official_metric_status_requires_supported_metrics_purpose() -> None:
     unsupported_purpose["metrics_purpose"] = "untracked"
     predictions_only = _pipeline_report()
     predictions_only["metrics_purpose"] = "predictions_only"
+    predictions_only["config"]["metrics_purpose"] = "predictions_only"  # type: ignore[index]
 
     for run, expected_status in (
         (_pipeline_run("missing-purpose", report=missing_purpose), None),
@@ -520,6 +522,53 @@ def test_official_metric_status_requires_supported_metrics_purpose() -> None:
         result = assess_comparability((official, run))
 
         assert run.metric_status == expected_status
+        assert result.eligible is False
+        assert result.ranked_run_ids == ()
+        assert any("指标状态" in reason for reason in result.reasons)
+
+
+def test_embedded_config_purpose_conflict_blocks_official_ranking() -> None:
+    pipeline_reference = _pipeline_run("pipeline-reference")
+    pipeline_conflict = _pipeline_report()
+    pipeline_conflict["config"]["metrics_purpose"] = "predictions_only"  # type: ignore[index]
+    pipeline_result = assess_comparability(
+        (
+            pipeline_reference,
+            _pipeline_run("pipeline-conflict", report=pipeline_conflict),
+        )
+    )
+
+    walk_forward_reference = build_comparison_run(
+        run_id="walk-forward-reference",
+        engine="walk_forward",
+        status="completed",
+        created_at="2026-08-19T10:00:00Z",
+        config_path="walk_forward_report.json#config",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=_walk_forward_report(),
+    )
+    walk_forward_conflict = _walk_forward_report()
+    walk_forward_conflict["config"]["metrics_purpose"] = "predictions_only"  # type: ignore[index]
+    walk_forward_result = assess_comparability(
+        (
+            walk_forward_reference,
+            build_comparison_run(
+                run_id="walk-forward-conflict",
+                engine="walk_forward",
+                status="completed",
+                created_at="2026-08-19T10:00:00Z",
+                config_path="walk_forward_report.json#config",
+                report_path="walk_forward_report.json",
+                log_paths=(),
+                config={},
+                report=walk_forward_conflict,
+            ),
+        )
+    )
+
+    for result in (pipeline_result, walk_forward_result):
         assert result.eligible is False
         assert result.ranked_run_ids == ()
         assert any("指标状态" in reason for reason in result.reasons)
@@ -1290,12 +1339,14 @@ def test_selectable_catalog_prefers_ui_owner_and_aliases_cli_mirror() -> None:
         "",
         {},
         operator_ui_job_id="ui-run",
+        config_fingerprint="producer-fingerprint",
     )
 
     catalog = selectable_catalog((cli_mirror, ui_job))
 
     assert [job.run_id for job in catalog.rows] == ["ui-run"]
     assert catalog.run_id_alias == {"cli-run": "ui-run"}
+    assert catalog.rows[0].config_fingerprint == "producer-fingerprint"
 
 
 def test_selectable_catalog_keeps_newer_independent_cli_run_for_reused_directory() -> None:

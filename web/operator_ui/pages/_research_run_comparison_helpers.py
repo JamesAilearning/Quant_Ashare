@@ -12,7 +12,7 @@ import json
 import math
 import os
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -677,10 +677,15 @@ def _walk_forward_metrics(report: Mapping[str, Any]) -> tuple[ReportMetric, ...]
 
 
 def _effective_metric_status(report: Mapping[str, Any]) -> str | None:
-    """Return the producer-recorded status, letting declared purpose downgrade it."""
+    """Return status only when the report and embedded config agree on purpose."""
     metric_status = _stable_value(report.get("metric_status"))
     metrics_purpose = _stable_value(report.get("metrics_purpose"))
     if metric_status == OFFICIAL_METRIC_STATUS:
+        config_metrics_purpose = _stable_value(
+            _mapping(report.get("config")).get("metrics_purpose")
+        )
+        if metrics_purpose != config_metrics_purpose:
+            return None
         if metrics_purpose == OFFICIAL_METRIC_STATUS:
             return OFFICIAL_METRIC_STATUS
         if metrics_purpose == "predictions_only":
@@ -1379,7 +1384,10 @@ def selectable_catalog(rows: Iterable[JobSummary]) -> SelectableCatalog:
             else []
         )
         if mirrored_ui and current_cli is not None:
-            owner = max(mirrored_ui, key=_row_recency)
+            owner = replace(
+                max(mirrored_ui, key=_row_recency),
+                config_fingerprint=current_cli.config_fingerprint,
+            )
             aliases[current_cli.run_id] = owner.run_id
         elif current_cli is not None:
             owner = current_cli

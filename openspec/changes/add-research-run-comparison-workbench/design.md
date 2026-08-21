@@ -62,8 +62,10 @@ than being silently classified as stable.
 The selected catalog row's producer-written `config_fingerprint` is carried
 through only as a read-only configuration identity for display because the
 walk-forward aggregate has no corresponding top-level backtest-provenance
-field. It never substitutes for configuration-contract evidence or permits
-controlled ordering; an absent catalog value remains visibly unavailable.
+field. When a UI lifecycle row aliases its producer-linked CLI catalog row,
+the selected UI owner retains that exact CLI fingerprint. It never substitutes
+for configuration-contract evidence or permits controlled ordering; an absent
+catalog value remains visibly unavailable.
 
 When a UI lifecycle row and a CLI catalog row share an artifact directory, the
 page aliases them only if the CLI producer wrote that UI job ID into its catalog
@@ -85,8 +87,9 @@ values as unavailable and explains why comparison is blocked.
 The artifact reader translates UTF-8 and JSON value-decoding failures into
 displayable read issues, so a damaged report remains unavailable evidence
 rather than aborting page rendering. An `official` metric status is accepted
-only when its producer-written `metrics_purpose` is explicitly `official`;
-missing or unsupported purposes remain unverified.
+only when its producer-written top-level `metrics_purpose` is explicitly
+`official` and exactly matches the complete embedded configuration artifact;
+missing, unsupported, or conflicting purposes remain unverified.
 
 Walk-forward fold reports already carry the canonical backtest provenance that
 establishes the official canonical path, execution semantics, ST-mask identity,
