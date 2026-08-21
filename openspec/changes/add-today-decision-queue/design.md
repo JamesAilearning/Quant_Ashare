@@ -48,7 +48,11 @@ Queue navigation is limited to existing pages.  It uses native page links only;
 a dated review link passes its artifact date as a URL hint, which the daily
 decision page consumes once into its existing date-selection handoff.  This
 carries navigation context only and writes neither the artifact nor the
-journal.  Jobs links retain their status query filter.
+journal.  Jobs links retain their status query filter and carry an opaque,
+validated one-shot navigation token.  The Jobs page consumes that token once
+for the status filter, so a second queue navigation requesting the same status
+replaces stale widget state without clobbering a user's subsequent in-page
+selection.
 
 ## Risks / Trade-offs
 

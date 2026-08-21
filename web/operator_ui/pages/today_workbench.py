@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 import streamlit as st
 
@@ -161,6 +162,13 @@ def _render_queue_item(item: TodayQueueItem) -> None:
     if item.source_time:
         st.caption(f"来源时间：{item.source_time}")
     page, query_params = queue_page_link(item)
+    if page == "pages/jobs.py":
+        # Status alone is insufficient as a cross-page handoff: the operator
+        # can leave Jobs after changing its widget, then follow another queue
+        # link requesting the same status.  Mint a navigation-only token so
+        # Jobs applies this specific request exactly once without changing the
+        # read-only queue item or any job/artifact state.
+        query_params = {**(query_params or {}), "handoff": uuid4().hex}
     st.page_link(page, label="前往详情", query_params=query_params)
 
 

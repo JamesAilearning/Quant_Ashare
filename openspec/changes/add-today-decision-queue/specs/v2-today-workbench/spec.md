@@ -43,3 +43,10 @@ signal SHALL carry that exact artifact date to the daily decision page.
 - **WHEN** the decision journal cannot be read
 - **THEN** the queue shows a needs-verification item with the journal reason
 - **AND** does not report zero outstanding reviews
+
+#### Scenario: A repeated Jobs queue link has the same status
+
+- **WHEN** an operator changes the Jobs status filter, leaves the page, and
+  follows another queue link requesting the same status as the old URL
+- **THEN** the Jobs page applies the newly requested queue status once
+- **AND** retains any later in-page filter choice on rerun

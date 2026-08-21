@@ -36,8 +36,8 @@ from web.operator_ui.formatting import (
 )
 from web.operator_ui.job_io import (
     SORT_OPTIONS,
-    count_malformed_cli_entries,
     count_cli_rows_outside_output_tree,
+    count_malformed_cli_entries,
     count_malformed_ui_job_entries,
     jobs_eligible_for_cleanup,
     list_all_jobs,
@@ -85,22 +85,51 @@ def _qp_write(key: str, value: str) -> None:
         st.query_params[key] = value
 
 
-def _seed_session_from_url(keys: list[str]) -> None:
-    """Consume each changed URL value once into its widget-bound state."""
+def _handoff_token() -> str:
+    """Return a validated navigation token, or an empty direct-URL sentinel."""
+    raw = st.query_params.get("handoff")
+    if raw is None:
+        return ""
+    return _sanitize_qp("handoff", raw, default="")
+
+
+def _seed_session_from_url(
+    keys: list[str],
+    *,
+    handoff_token: str = "",
+    handoff_keys: frozenset[str] = frozenset(),
+) -> None:
+    """Consume URL filters once, including a distinct cross-page handoff."""
     for k in keys:
         sk = f"jobs_{k}"
         url_state_key = f"jobs_last_url_{k}"
+        handoff_state_key = f"jobs_last_handoff_{k}"
         url_value = _qp_read(k)
         # Streamlit preserves this page's widget state when navigating away and
         # back.  Remembering the last consumed URL value lets a queue link
         # replace stale page-local state, while a user changing the selectbox
         # on this page is not overwritten before _qp_write mirrors it to URL.
-        if sk not in st.session_state or st.session_state.get(url_state_key) != url_value:
+        if (
+            k in handoff_keys
+            and handoff_token
+            and st.session_state.get(handoff_state_key) != handoff_token
+        ):
+            # A queue link can request the same status as the URL left by an
+            # earlier visit.  The token identifies this navigation, so it
+            # must supersede stale widget state exactly once; later reruns
+            # retain any on-page widget choice until that is mirrored to URL.
+            st.session_state[sk] = url_value
+            st.session_state[handoff_state_key] = handoff_token
+        elif sk not in st.session_state or st.session_state.get(url_state_key) != url_value:
             st.session_state[sk] = url_value
         st.session_state[url_state_key] = url_value
 
 
-_seed_session_from_url(list(_DEFAULTS.keys()))
+_seed_session_from_url(
+    list(_DEFAULTS.keys()),
+    handoff_token=_handoff_token(),
+    handoff_keys=frozenset({"status"}),
+)
 
 
 # ---------------------------------------------------------------------------

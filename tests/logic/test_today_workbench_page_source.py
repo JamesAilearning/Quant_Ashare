@@ -38,6 +38,11 @@ class TodayWorkbenchSourceTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, source)
 
+    def test_jobs_queue_link_uses_a_fresh_one_shot_handoff_token(self) -> None:
+        source = _PAGE.read_text(encoding="utf-8")
+        self.assertIn('page == "pages/jobs.py"', source)
+        self.assertIn('"handoff": uuid4().hex', source)
+
     def test_workbench_uses_the_non_mutating_job_reader(self) -> None:
         source = _PAGE.read_text(encoding="utf-8")
         self.assertIn("load_all_jobs_read_only", source)

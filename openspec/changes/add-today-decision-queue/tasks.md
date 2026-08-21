@@ -7,7 +7,7 @@
 ## 2. Workbench rendering
 
 - [x] 2.1 Read the existing journal/effective decisions and valid signal candidate codes without adding artifact parsers.
-- [x] 2.2 Render counts, blocker/attention visibility, collapsed lower-priority items, and navigation-only links.
+- [x] 2.2 Render counts, blocker/attention visibility, collapsed lower-priority items, and navigation-only links with one-shot Jobs filter handoff context.
 - [x] 2.3 Carry a dated review item to the existing daily-decision page without journal or artifact writes.
 
 ## 3. Verification
