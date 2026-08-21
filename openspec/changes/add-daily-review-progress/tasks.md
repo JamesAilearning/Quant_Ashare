@@ -10,6 +10,7 @@
 - [x] 2.2 Keep journal warning, HOLD block, append-only audit table, and artifact validation semantics intact.
 - [x] 2.3 Replace Today Workbench's duplicate count helper with the shared read model.
 - [x] 2.4 Keep the readable journal audit available when candidate identifiers prevent an exact review projection.
+- [x] 2.5 Require strict, forward artifact entry-date evidence before certifying entry-session guidance or rendering review progress.
 
 ## 3. Verification
 

@@ -51,6 +51,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     VERDICT_SINGLE_SHA_UNKNOWN,
     VERDICT_V1_UNKNOWN,
     anchored_to_repo,
+    artifact_entry_timing_is_valid,
     artifact_kind_of,
     artifact_meta_status,
     artifact_schema_is_supported,
@@ -400,12 +401,13 @@ st.caption(
 # 缺 entry_date 的工件不得走这条路:那样会渲染出「entry — 是已收盘会话」
 # ——把一份**违约的**数据当成可信引导来背书(codex #443 r2)。
 _entry_date = _payload.get("entry_date")
-_entry_date_is_valid = isinstance(_entry_date, str) and bool(_entry_date.strip())
+_entry_date_is_valid = artifact_entry_timing_is_valid(_payload)
 _artifact_schema_supported = artifact_schema_is_supported(_payload)
 _artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported
 if not _entry_date_is_valid:
     st.error(
-        "⚠ 工件缺少 `entry_date`(或为空/非字符串)——**工件契约被违反**,"
+        "⚠ 工件 `entry_date`/`as_of_date` 缺失、格式错误或非前向会话——"
+        "**工件契约被违反**,"
         "本页拒绝据此给出任何入场时点结论。请核查产出该工件的那次运行"
         "(scripts/daily_recommend.py 正常写出该字段)。"
     )

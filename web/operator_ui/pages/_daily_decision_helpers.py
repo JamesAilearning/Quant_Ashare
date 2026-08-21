@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Final
 
@@ -53,7 +54,6 @@ from web.operator_ui.incumbent import (
     unusable_path_reason as unusable_path_reason,
 )
 
-
 # The inference producer currently writes this exact artifact schema.  Keep the
 # read-only pages on one contract boundary instead of letting each page accept
 # a different version vocabulary.
@@ -68,6 +68,28 @@ def artifact_schema_is_supported(payload: dict[str, Any]) -> bool:
         and isinstance(version, int)
         and version == SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION
     )
+
+
+def artifact_entry_timing_is_valid(payload: dict[str, Any]) -> bool:
+    """Whether the artifact records a strict, forward T+1-style entry date.
+
+    This reader has no trading-calendar substrate, so it cannot prove that no
+    intermediate session exists. It can still reject malformed dates and prove
+    the producer-recorded entry is later than its as-of session; the producer
+    owns the exact next-session lookup against qlib's calendar.
+    """
+    def strict_day(value: Any) -> date | None:
+        if not isinstance(value, str) or len(value) != 10:
+            return None
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.isoformat() == value else None
+
+    as_of = strict_day(payload.get("as_of_date"))
+    entry = strict_day(payload.get("entry_date"))
+    return as_of is not None and entry is not None and entry > as_of
 
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").

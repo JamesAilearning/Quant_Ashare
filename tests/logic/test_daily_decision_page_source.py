@@ -309,6 +309,33 @@ class HelpersRuntimeTests(unittest.TestCase):
             "**entry {_payload.get('entry_date', '—')} 是已收盘会话**", src
         )
 
+    def test_entry_timing_requires_strict_forward_iso_dates(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            artifact_entry_timing_is_valid,
+        )
+
+        assert artifact_entry_timing_is_valid(
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-24"}
+        ) is True
+        for payload in (
+            {"as_of_date": "2026-08-21", "entry_date": "2026-99-99"},
+            {"as_of_date": "2026-08-21", "entry_date": "tomorrow"},
+            {"as_of_date": "2026-08-21", "entry_date": "20260824"},
+            {"as_of_date": "2026-08-21", "entry_date": " 2026-08-24"},
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-21"},
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-20"},
+            {"as_of_date": "not-a-date", "entry_date": "2026-08-24"},
+        ):
+            with self.subTest(payload=payload):
+                assert artifact_entry_timing_is_valid(payload) is False
+
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("artifact_entry_timing_is_valid(_payload)", src)
+        self.assertIn(
+            "_artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported",
+            src,
+        )
+
     def test_slippage_in_caption_is_derived_not_restated(self) -> None:
         # codex #443 r1: 常量与列名都随 profile 走，而文案里写死的
         # 「20 bps」不会——profile 一挪就三处对不上，正是本 PR 要消灭的

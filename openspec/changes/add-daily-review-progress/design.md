@@ -35,8 +35,12 @@ Streamlit and pandas.
 
 ### Page order and invalid states
 
-The existing page continues to validate the artifact, `picks`, date match,
-and HOLD boundary before it builds a projection.  A HOLD artifact keeps its
+The existing page continues to validate the artifact, `picks`, strict ISO
+`as_of_date` / `entry_date` ordering, and HOLD boundary before it builds a
+projection.  The read-only page has no trading-calendar substrate, so the
+producer remains responsible for the exact next-session lookup; the page still
+requires a parseable entry date strictly later than the as-of date before it
+can present the entry-session guidance.  A HOLD artifact keeps its
 existing form block and does not render a completion summary or candidate
 review labels.  Malformed journal lines, including rows with a blank or
 non-string human reason, remain excluded by `read_journal()` at the persisted-data boundary;
@@ -63,7 +67,9 @@ item; it does not substitute a zero count.
 - An existing malformed journal line makes audit completeness uncertain.  It
   is visibly warned and never converted into a valid review.
 - Candidate identifiers are the only matching key.  Missing or duplicate
-  codes are rejected rather than guessed from names, ranks, or scores.
+codes are rejected rather than guessed from names, ranks, or scores.
+- A malformed or non-forward entry date cannot be used to certify an entry
+  session; the page withholds the review projection and candidate labels.
 
 ## Migration Plan
 

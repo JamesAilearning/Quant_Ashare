@@ -34,6 +34,11 @@ human review only, not as orders, positions, or execution state.
 
 The page SHALL preserve existing HOLD and artifact-validation protections.
 It SHALL NOT show a completion summary for HOLD or unverifiable artifacts.
+An artifact's `as_of_date` and `entry_date` SHALL be strict ISO calendar dates
+with `entry_date` later than `as_of_date`; missing, malformed, or non-forward
+dates are unverifiable and SHALL NOT receive entry-session guidance, a review
+completion summary, or candidate review labels.  The producer remains the
+source of truth for the exact next trading-session lookup.
 Malformed journal rows SHALL NOT count as reviewed and SHALL remain visibly
 warned.  The review projection SHALL NOT be imported by runtime, backtest,
 training, serving, or trading-execution code.
@@ -60,3 +65,11 @@ training, serving, or trading-execution code.
   projection, or candidate review labels
 - **AND** it continues to render the separate append-only journal audit and
   any malformed-row warning from a readable journal
+
+#### Scenario: Artifact entry date is malformed or non-forward
+
+- **WHEN** a selected artifact has an invalid ISO `entry_date`, or one that is
+  not later than its valid `as_of_date`
+- **THEN** the page marks the artifact contract as unverifiable
+- **AND** does not present entry-session guidance, review completion, or
+  candidate review labels
