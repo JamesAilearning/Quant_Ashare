@@ -35,6 +35,7 @@ from src.core.canonical_backtest_contract import (
 )
 from src.core.pipeline import PipelineConfig, PipelineError
 from src.core.qlib_runtime import QlibRuntimeConfig, QlibRuntimeInitError
+from src.core.walk_forward.config import WalkForwardConfig, WalkForwardError
 from web.operator_ui.job_io import (
     JobSummary,
     anchored_run_dir,
@@ -43,6 +44,9 @@ from web.operator_ui.job_io import (
 )
 
 _PIPELINE_CONFIG_ARTIFACT_FIELDS = frozenset(PipelineConfig.__dataclass_fields__)
+_WALK_FORWARD_CONFIG_ARTIFACT_FIELDS = frozenset(
+    WalkForwardConfig.__dataclass_fields__
+)
 
 CONTRACT_FIELDS: tuple[tuple[str, str], ...] = (
     ("engine", "研究运行类型"),
@@ -249,6 +253,23 @@ def _has_complete_pipeline_config_artifact(config: Mapping[str, Any]) -> bool:
         # malformed execution controls merely because every key is present.
         PipelineConfig(**dict(config))
     except (AttributeError, OverflowError, PipelineError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _has_complete_walk_forward_config_artifact(config: Mapping[str, Any]) -> bool:
+    """Accept only the full validated config embedded by the aggregate writer.
+
+    ``walk_forward_report.json`` is self-contained: the aggregate producer
+    writes ``asdict(WalkForwardConfig)`` into its ``config`` field.  Reading a
+    sidecar input file or filling absent fields from today's defaults would let
+    the comparison page construct a contract no historical producer recorded.
+    """
+    if frozenset(config) != _WALK_FORWARD_CONFIG_ARTIFACT_FIELDS:
+        return False
+    try:
+        WalkForwardConfig(**dict(config))
+    except (AttributeError, OverflowError, WalkForwardError, TypeError, ValueError):
         return False
     return True
 
@@ -580,11 +601,8 @@ def _pipeline_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
-def _walk_forward_contract(
-    report: Mapping[str, Any], config: Mapping[str, Any]
-) -> dict[str, str | None]:
+def _walk_forward_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
     report_config = _mapping(report.get("config"))
-    source = report_config if report_config else config
     comparison_provenance = _mapping(report.get("comparison_provenance"))
     provenance = (
         comparison_provenance
@@ -595,10 +613,12 @@ def _walk_forward_contract(
     runtime = _mapping(producer_config.get("runtime"))
     return {
         "engine": "walk_forward",
-        "universe": _required_text(source.get("instruments")),
-        "training_window": _window_from_walk_forward(source, "train"),
-        "validation_window": _window_from_walk_forward(source, "valid"),
-        "testing_window": _test_window_coverage(source, report.get("test_window_coverage")),
+        "universe": _required_text(report_config.get("instruments")),
+        "training_window": _window_from_walk_forward(report_config, "train"),
+        "validation_window": _window_from_walk_forward(report_config, "valid"),
+        "testing_window": _test_window_coverage(
+            report_config, report.get("test_window_coverage")
+        ),
         "benchmark": _required_text(producer_config.get("benchmark_code")),
         "execution_lag": _execution_lag(producer_config.get("signal_to_execution_lag")),
         "execution_semantics_provenance": _execution_semantics_provenance(provenance),
@@ -910,6 +930,73 @@ def _pipeline_config_report_conflicts(
     return tuple(dict.fromkeys(conflicts))
 
 
+def _walk_forward_report_provenance_conflicts(
+    report: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return shared execution fields that disagree within one aggregate.
+
+    The aggregate's embedded ``WalkForwardConfig`` is the producer-written
+    schedule/model input, while ``comparison_provenance.config`` is resolved
+    across the canonical backtest records of every fold.  The latter is not a
+    substitute for the former: when both write a field, disagreement proves
+    the aggregate cannot describe one coherent research execution.
+    """
+    source = _mapping(report.get("config"))
+    comparison_provenance = _mapping(report.get("comparison_provenance"))
+    if comparison_provenance.get("status") != "consistent":
+        return ()
+    producer_config = _mapping(comparison_provenance.get("config"))
+    account = _mapping(producer_config.get("account_config"))
+    exchange = _mapping(producer_config.get("exchange_config"))
+    cost_model = _mapping(exchange.get("cost_model"))
+    st_mask = _mapping(producer_config.get("st_mask"))
+    runtime = _mapping(producer_config.get("runtime"))
+    conflicts: list[str] = []
+
+    def compare(
+        label: str,
+        source_key: str,
+        observed: Mapping[str, Any],
+        observed_key: str,
+    ) -> None:
+        if source_key not in source:
+            return
+        if observed_key not in observed:
+            # The canonical producer writes every projected shared field,
+            # including explicit ``null`` for an ST-off input. A missing key is
+            # truncated evidence, never proof that it agrees with the aggregate.
+            conflicts.append(label)
+            return
+        if source[source_key] != observed[observed_key]:
+            conflicts.append(label)
+
+    for field in ("benchmark_code", "signal_to_execution_lag", "adjust_mode"):
+        compare(field, field, producer_config, field)
+    compare("init_cash", "init_cash", account, "init_cash")
+    compare("namechange_path", "namechange_path", st_mask, "namechange_path")
+    compare("data_adjust_mode", "adjust_mode", runtime, "data_adjust_mode")
+    for field in ("execution_price_kind", "limit_threshold"):
+        compare(field, field, exchange, field)
+    for field in ("commission_rate", "slippage_bps", "min_cost"):
+        compare(field, field, cost_model, field)
+
+    if "stamp_tax_schedule" in source and "stamp_tax_schedule" in cost_model:
+        configured_schedule = _stamp_tax_schedule_identity(
+            source["stamp_tax_schedule"]
+        )
+        # The canonical producer records an expanded schedule. A source-side
+        # ``None`` means the canonical default, whereas a report-side ``None``
+        # is missing evidence and must not compare equal by accidental default.
+        recorded_schedule = (
+            _stamp_tax_schedule_identity(cost_model["stamp_tax_schedule"])
+            if cost_model["stamp_tax_schedule"] is not None
+            else None
+        )
+        if configured_schedule != recorded_schedule:
+            conflicts.append("stamp_tax_schedule")
+    return tuple(dict.fromkeys(conflicts))
+
+
 def build_comparison_run(
     *,
     run_id: str,
@@ -945,9 +1032,30 @@ def build_comparison_run(
                 )
             )
     else:
-        contract = _walk_forward_contract(report, config)
         metrics = _walk_forward_metrics(report)
         fold_evidence = _walk_forward_evidence(report)
+        report_config = _mapping(report.get("config"))
+        if not _has_complete_walk_forward_config_artifact(report_config):
+            contract = {key: None for key, _ in CONTRACT_FIELDS}
+            collected_issues.append(
+                ComparisonIssue(
+                    "invalid_walk_forward_config",
+                    "walk_forward_report.json 内嵌配置不是完整且可验证的 "
+                    "WalkForwardConfig 工件，无法核验研究合同。",
+                )
+            )
+        else:
+            contract = _walk_forward_contract(report)
+            mismatches = _walk_forward_report_provenance_conflicts(report)
+            if mismatches:
+                collected_issues.append(
+                    ComparisonIssue(
+                        "report_provenance_mismatch",
+                        "walk_forward_report.json 的内嵌配置与逐折回测溯源不一致："
+                        + "、".join(mismatches)
+                        + "。无法确认它们属于同一次执行。",
+                    )
+                )
         if _stable_value(_mapping(report.get("comparison_provenance")).get("status")) == "mixed":
             collected_issues.append(
                 ComparisonIssue(
@@ -1008,7 +1116,11 @@ def build_comparison_run(
             )
         )
 
-    model_source = _mapping(report.get("config")) or config
+    model_source = (
+        _mapping(report.get("config"))
+        if engine == "walk_forward"
+        else _mapping(report.get("config")) or config
+    )
     data_provenance_source = (
         "pipeline_report.json:backtest.provenance.config.runtime"
         if engine == "pipeline" and contract.get("data_provenance")

@@ -153,6 +153,29 @@ read-only configuration and log references.
 - **THEN** the page marks the configuration as invalid evidence
 - **AND** does not reconstruct omitted values from current defaults
 
+#### Scenario: A walk-forward aggregate has an incomplete or invalid embedded configuration
+
+- **WHEN** a selected `walk_forward_report.json` omits or adds a
+  `WalkForwardConfig` field, or its embedded value fails `WalkForwardConfig`
+  validation
+- **THEN** the page marks its comparison contract as unverified
+- **AND** does not fill values from a sidecar configuration or current defaults
+- **AND** blocks controlled ordering while retaining only separately valid
+  existing fold evidence for display
+
+#### Scenario: Walk-forward configuration conflicts with fold provenance
+
+- **WHEN** a selected walk-forward aggregate's complete embedded configuration
+  disagrees with its consistent `comparison_provenance.config` on a
+  producer-written shared execution field
+- **THEN** the page identifies the conflicting field as inconsistent evidence
+- **AND** blocks controlled ordering rather than combining aggregate schedule
+  evidence with a different folded backtest execution
+- **AND** treats any missing folded counterpart, including an explicit-null
+  ST-mask input, as inconsistent evidence rather than inferring equality
+- **AND** compares a source-level null stamp-tax schedule as the canonical
+  default against the producer-written expanded schedule
+
 #### Scenario: Pipeline configuration and report are from different runs
 
 - **WHEN** a complete pipeline `config.yaml` disagrees with its

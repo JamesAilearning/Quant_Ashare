@@ -11,6 +11,7 @@
 - [x] 1.9 Require positive, sequential walk-forward fold evidence and agreement among all official pipeline path projections.
 - [x] 1.10 Verify aggregate walk-forward metric status against measured fold status and prediction-shape evidence.
 - [x] 1.11 Surface report decoding failures as unavailable evidence and require a supported declared purpose for official metrics.
+- [x] 1.12 Validate each aggregate walk-forward configuration as the exact producer `WalkForwardConfig` artifact and cross-check it against folded comparison provenance before admitting a comparison contract.
 
 ## 2. Read-only workbench page
 

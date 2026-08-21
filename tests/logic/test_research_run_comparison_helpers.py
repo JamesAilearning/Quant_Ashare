@@ -8,9 +8,11 @@ from src.core.canonical_backtest_contract import (
     PREDICTIONS_ONLY_METRIC_STATUS,
 )
 from src.core.pipeline import PipelineConfig
+from src.core.walk_forward.config import WalkForwardConfig
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._research_run_comparison_helpers import (
     _has_complete_pipeline_config_artifact,
+    _has_complete_walk_forward_config_artifact,
     assess_comparability,
     build_comparison_run,
     duplicate_run_ids,
@@ -86,6 +88,53 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                 "information_ratio": information_ratio,
             },
         },
+    }
+
+
+def _walk_forward_config(**overrides: object) -> dict[str, object]:
+    config = asdict(WalkForwardConfig(overall_start="2020-01-01", overall_end="2023-12-31"))
+    config.update(overrides)
+    return config
+
+
+def _walk_forward_report(*, config: dict[str, object] | None = None) -> dict[str, object]:
+    pipeline_provenance = deepcopy(_pipeline_report()["backtest"]["provenance"])  # type: ignore[index]
+    pipeline_provenance["config"]["st_mask"]["namechange_path"] = None  # type: ignore[index]
+    return {
+        "metric_status": "official",
+        "metrics_purpose": "official",
+        "num_folds": 1,
+        "config": config if config is not None else _walk_forward_config(),
+        "comparison_provenance": {
+            "status": "consistent",
+            "execution_timing_semantics": pipeline_provenance["execution_timing_semantics"],
+            "price_limit_semantics": pipeline_provenance["price_limit_semantics"],
+            "official_backtest_path": pipeline_provenance["official_backtest_path"],
+            "config": pipeline_provenance["config"],
+        },
+        "aggregate_metrics": {
+            "mean_annualized_return": 0.1,
+            "worst_drawdown": -0.12,
+            "mean_information_ratio": 0.35,
+            "std_information_ratio": 0.11,
+            "valid_folds_information_ratio": 1,
+        },
+        "test_window_coverage": {
+            "mode": "continuous",
+            "gap_count": 0,
+            "max_gap_days": 0,
+            "overlap_count": 0,
+            "max_overlap_days": 0,
+            "max_overlap_depth": 0,
+        },
+        "folds": [
+            {
+                "fold_index": 0,
+                "information_ratio": 0.35,
+                "prediction_shape": [10],
+                "metric_status": "official",
+            }
+        ],
     }
 
 
@@ -252,6 +301,19 @@ def test_comparison_config_rejects_semantically_invalid_pipeline_values() -> Non
 
     assert not _has_complete_pipeline_config_artifact(equal_train_window)
     assert not _has_complete_pipeline_config_artifact(invalid_execution_lag)
+
+
+def test_walk_forward_report_config_requires_complete_valid_producer_shape() -> None:
+    complete = _walk_forward_config()
+    missing_field = dict(complete)
+    del missing_field["ensemble_window"]
+    unknown_field = {**complete, "operator_note": "not producer schema"}
+    invalid_ensemble_window = {**complete, "ensemble_window": 0}
+
+    assert _has_complete_walk_forward_config_artifact(complete)
+    assert not _has_complete_walk_forward_config_artifact(missing_field)
+    assert not _has_complete_walk_forward_config_artifact(unknown_field)
+    assert not _has_complete_walk_forward_config_artifact(invalid_ensemble_window)
 
 
 def test_unrepresentable_numeric_metric_is_shown_as_unavailable() -> None:
@@ -546,26 +608,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
         "metric_status": "official",
         "metrics_purpose": "official",
         "num_folds": 2,
-        "config": {
-            "instruments": "csi300",
-            "overall_start": "2020-01-01",
-            "overall_end": "2023-12-31",
-            "train_months": 24,
-            "valid_months": 3,
-            "test_months": 3,
-            "step_months": 3,
-            "benchmark_code": "SH000300TR",
-            "signal_to_execution_lag": 1,
-            "execution_price_kind": "close",
-            "commission_rate": 0.0005,
-            "stamp_tax_schedule": None,
-            "slippage_bps": 5.0,
-            "min_cost": 5.0,
-            "init_cash": 100_000_000.0,
-            "limit_threshold": 0.095,
-            "adjust_mode": "pre_adjusted",
-            "model_type": "LGBModel",
-        },
+        "config": _walk_forward_config(),
         "aggregate_metrics": {
             "mean_annualized_return": 0.1,
             "worst_drawdown": -0.12,
@@ -848,25 +891,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
 def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
     config = {"provider_uri": "data/qlib_cn", "region": "cn", "adjust_mode": "pre_adjusted"}
     report = {
-        "config": {
-            "instruments": "csi300",
-            "overall_start": "2020-01-01",
-            "overall_end": "2023-12-31",
-            "train_months": 24,
-            "valid_months": 3,
-            "test_months": 3,
-            "step_months": 3,
-            "benchmark_code": "SH000300TR",
-            "signal_to_execution_lag": 1,
-            "execution_price_kind": "close",
-            "commission_rate": 0.0005,
-            "stamp_tax_schedule": None,
-            "slippage_bps": 5.0,
-            "min_cost": 5.0,
-            "init_cash": 100_000_000.0,
-            "limit_threshold": 0.095,
-            "adjust_mode": "pre_adjusted",
-        },
+        "config": _walk_forward_config(),
         "aggregate_metrics": {"mean_information_ratio": 0.35},
         "test_window_coverage": {"mode": "continuous"},
     }
@@ -901,19 +926,12 @@ def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
 
 def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
     pipeline_provenance = _pipeline_report()["backtest"]["provenance"]  # type: ignore[index]
+    pipeline_provenance["config"]["st_mask"]["namechange_path"] = None  # type: ignore[index]
     report = {
         "metric_status": "official",
         "metrics_purpose": "official",
         "num_folds": 1,
-        "config": {
-            "instruments": "csi300",
-            "overall_start": "2020-01-01",
-            "overall_end": "2023-12-31",
-            "train_months": 24,
-            "valid_months": 3,
-            "test_months": 3,
-            "step_months": 3,
-        },
+        "config": _walk_forward_config(),
         "comparison_provenance": {
             "status": "consistent",
             "execution_timing_semantics": pipeline_provenance["execution_timing_semantics"],
@@ -1004,6 +1022,113 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
 
     assert unverified_path_result.eligible is False
     assert any("canonical qlib 回测路径" in reason for reason in unverified_path_result.reasons)
+
+
+def test_invalid_walk_forward_aggregate_config_cannot_supply_a_contract() -> None:
+    report = _walk_forward_report()
+    complete = build_comparison_run(
+        run_id="wf-complete",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=report,
+    )
+    invalid_report = deepcopy(report)
+    invalid_report["config"]["ensemble_window"] = 0  # type: ignore[index]
+    invalid = build_comparison_run(
+        run_id="wf-invalid-config",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={"instruments": "external-config-must-not-be-used"},
+        report=invalid_report,
+    )
+
+    assert any(issue.code == "invalid_walk_forward_config" for issue in invalid.issues)
+    assert all(value is None for value in invalid.contract.values())
+    assert assess_comparability((complete, invalid)).eligible is False
+
+
+def test_walk_forward_embedded_config_must_match_fold_provenance() -> None:
+    report = _walk_forward_report(config=_walk_forward_config(namechange_path="data/namechange-a.parquet"))
+    provenance = report["comparison_provenance"]["config"]  # type: ignore[index]
+    provenance["st_mask"]["namechange_path"] = "data/namechange-a.parquet"  # type: ignore[index]
+
+    def build(run_id: str, candidate: dict[str, object]):
+        return build_comparison_run(
+            run_id=run_id,
+            engine="walk_forward",
+            status="completed",
+            created_at="",
+            config_path="config.yaml",
+            report_path="walk_forward_report.json",
+            log_paths=(),
+            config={},
+            report=candidate,
+        )
+
+    complete = build("wf-complete", report)
+    assert not any(issue.code == "report_provenance_mismatch" for issue in complete.issues)
+
+    changed_benchmark = deepcopy(report)
+    changed_benchmark["comparison_provenance"]["config"]["benchmark_code"] = "csi500"  # type: ignore[index]
+    changed_lag = deepcopy(report)
+    changed_lag["comparison_provenance"]["config"]["signal_to_execution_lag"] = 2  # type: ignore[index]
+    changed_cash = deepcopy(report)
+    changed_cash["comparison_provenance"]["config"]["account_config"]["init_cash"] = 10_000_000.0  # type: ignore[index]
+    changed_st_path = deepcopy(report)
+    changed_st_path["comparison_provenance"]["config"]["st_mask"]["namechange_path"] = "data/namechange-b.parquet"  # type: ignore[index]
+    missing_st_path = deepcopy(report)
+    del missing_st_path["comparison_provenance"]["config"]["st_mask"]["namechange_path"]  # type: ignore[index]
+    missing_null_st_path = _walk_forward_report()
+    del missing_null_st_path["comparison_provenance"]["config"]["st_mask"]["namechange_path"]  # type: ignore[index]
+    changed_adjust_mode = deepcopy(report)
+    changed_adjust_mode["comparison_provenance"]["config"]["adjust_mode"] = "post_adjusted"  # type: ignore[index]
+    changed_runtime_adjust_mode = deepcopy(report)
+    changed_runtime_adjust_mode["comparison_provenance"]["config"]["runtime"]["data_adjust_mode"] = "post_adjusted"  # type: ignore[index]
+    changed_execution_price = deepcopy(report)
+    changed_execution_price["comparison_provenance"]["config"]["exchange_config"]["execution_price_kind"] = "open"  # type: ignore[index]
+    changed_limit = deepcopy(report)
+    changed_limit["comparison_provenance"]["config"]["exchange_config"]["limit_threshold"] = 0.1  # type: ignore[index]
+    changed_commission = deepcopy(report)
+    changed_commission["comparison_provenance"]["config"]["exchange_config"]["cost_model"]["commission_rate"] = 0.001  # type: ignore[index]
+    changed_slippage = deepcopy(report)
+    changed_slippage["comparison_provenance"]["config"]["exchange_config"]["cost_model"]["slippage_bps"] = 6.0  # type: ignore[index]
+    changed_min_cost = deepcopy(report)
+    changed_min_cost["comparison_provenance"]["config"]["exchange_config"]["cost_model"]["min_cost"] = 6.0  # type: ignore[index]
+    changed_schedule = deepcopy(report)
+    changed_schedule["comparison_provenance"]["config"]["exchange_config"]["cost_model"]["stamp_tax_schedule"] = [  # type: ignore[index]
+        {"effective_from": "2008-09-19", "bps": 10.0}
+    ]
+
+    for expected_field, candidate in (
+        ("benchmark_code", changed_benchmark),
+        ("signal_to_execution_lag", changed_lag),
+        ("init_cash", changed_cash),
+        ("namechange_path", changed_st_path),
+        ("namechange_path", missing_st_path),
+        ("namechange_path", missing_null_st_path),
+        ("adjust_mode", changed_adjust_mode),
+        ("data_adjust_mode", changed_runtime_adjust_mode),
+        ("execution_price_kind", changed_execution_price),
+        ("limit_threshold", changed_limit),
+        ("commission_rate", changed_commission),
+        ("slippage_bps", changed_slippage),
+        ("min_cost", changed_min_cost),
+        ("stamp_tax_schedule", changed_schedule),
+    ):
+        mismatched = build(f"wf-mismatch-{expected_field}", candidate)
+
+        issue = next(issue for issue in mismatched.issues if issue.code == "report_provenance_mismatch")
+        assert expected_field in issue.message
+        assert assess_comparability((complete, mismatched)).eligible is False
 
 
 def test_selectable_catalog_folds_superseded_artifact_directories() -> None:

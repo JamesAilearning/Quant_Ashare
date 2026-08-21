@@ -41,6 +41,20 @@ fill omitted keys from current defaults.  The UI runner keeps its submitted
 input in the job directory and must not overwrite the complete run artifact;
 legacy or incomplete artifacts remain visible but block ordering.
 
+For walk-forward runs, `walk_forward_report.json["config"]` is the only
+configuration evidence used for the comparison contract.  The aggregate writer
+serializes the exact `WalkForwardConfig` there, so the page requires the exact
+field set and re-applies that configuration's value validation without filling
+defaults or using a sidecar input file.  It also cross-checks every producer
+field shared with the consistent fold-derived `comparison_provenance.config`:
+benchmark, execution lag, account cash, ST-mask input path, adjustment mode,
+exchange/cost controls, and the runtime adjustment mode.  A source-level null
+stamp-tax schedule is compared as the canonical default against the
+producer-expanded schedule; a disagreement or missing report-side expansion
+blocks ordering.  Likewise, every shared field must appear in folded
+provenance, including an explicit null ST-mask path for a disabled input; an
+omission is inconsistent evidence, not an invitation to infer equality.
+
 When a UI lifecycle row and a CLI catalog row share an artifact directory, the
 page aliases them only if the CLI producer wrote that UI job ID into its catalog
 record.  Timestamp overlap is lifecycle context rather than identity, so an
