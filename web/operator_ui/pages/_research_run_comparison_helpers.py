@@ -542,9 +542,30 @@ def _execution_lag(value: Any) -> str | None:
     return str(value)
 
 
-def _st_mask_identity(provenance: Mapping[str, Any]) -> str | None:
-    """Return the recorded ST-input content hash, never its mutable path."""
-    sha256 = _mapping(provenance.get("st_mask")).get("namechange_sha256")
+def _st_mask_identity(
+    provenance: Mapping[str, Any], *, st_mask_mode: Any = "required",
+) -> str | None:
+    """Return the recorded ST-handling identity, never a mutable path."""
+    st_mask = provenance.get("st_mask")
+    if not isinstance(st_mask, Mapping):
+        return None
+    if st_mask_mode == "off_experiment":
+        # ``BacktestRunner`` stamps the explicit research opt-out as exactly
+        # ``{"namechange_path": None}``.  Blank paths from a serialized YAML
+        # are the same intentional no-input state; an actual path or digest
+        # contradicts the off declaration and must not become comparable.
+        if "namechange_path" not in st_mask or "namechange_sha256" in st_mask:
+            return None
+        raw_path = st_mask.get("namechange_path")
+        if (
+            raw_path is not None
+            and (not isinstance(raw_path, str) or raw_path.strip())
+        ):
+            return None
+        return "off_experiment"
+    if st_mask_mode != "required":
+        return None
+    sha256 = st_mask.get("namechange_sha256")
     if not isinstance(sha256, str):
         return None
     normalized = sha256.strip().lower()
@@ -623,7 +644,10 @@ def _walk_forward_contract(report: Mapping[str, Any]) -> dict[str, str | None]:
         "execution_lag": _execution_lag(producer_config.get("signal_to_execution_lag")),
         "execution_semantics_provenance": _execution_semantics_provenance(provenance),
         "exchange_cost": _exchange_cost_from_request(producer_config),
-        "st_mask_identity": _st_mask_identity(producer_config),
+        "st_mask_identity": _st_mask_identity(
+            producer_config,
+            st_mask_mode=report_config.get("st_mask_mode", "required"),
+        ),
         "data_provenance": _data_provenance(runtime),
     }
 
@@ -753,7 +777,7 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
     ):
         return None
     seen_fold_indices: set[int] = set()
-    valid_information_ratio_count = 0
+    valid_information_ratios: list[float] = []
     for fold in folds:
         # These are the producer-required fields used to make the aggregate
         # valid-fold count meaningful. A missing or duplicate index, or an
@@ -767,20 +791,63 @@ def _walk_forward_evidence(report: Mapping[str, Any]) -> FoldEvidence | None:
         information_ratio = fold["information_ratio"]
         if information_ratio is None:
             continue
-        if _finite_float(information_ratio) is None:
+        parsed_information_ratio = _finite_float(information_ratio)
+        if parsed_information_ratio is None:
             return None
-        valid_information_ratio_count += 1
+        valid_information_ratios.append(parsed_information_ratio)
+    reported_mean_information_ratio = _finite_float(
+        aggregate.get("mean_information_ratio")
+    )
+    reported_std_information_ratio = _finite_float(
+        aggregate.get("std_information_ratio")
+    )
+    if valid_information_ratios:
+        try:
+            expected_mean_information_ratio = (
+                math.fsum(valid_information_ratios) / len(valid_information_ratios)
+            )
+            expected_std_information_ratio = math.sqrt(
+                math.fsum(
+                    (value - expected_mean_information_ratio) ** 2
+                    for value in valid_information_ratios
+                )
+                / len(valid_information_ratios)
+            )
+        except (OverflowError, ValueError):
+            return None
+        if (
+            reported_mean_information_ratio is None
+            or reported_std_information_ratio is None
+            or not math.isclose(
+                reported_mean_information_ratio,
+                expected_mean_information_ratio,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+            or not math.isclose(
+                reported_std_information_ratio,
+                expected_std_information_ratio,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            )
+        ):
+            return None
+    elif (
+        reported_mean_information_ratio is not None
+        or reported_std_information_ratio is not None
+    ):
+        return None
     if (
         seen_fold_indices != set(range(fold_count))
-        or valid_count != valid_information_ratio_count
+        or valid_count != len(valid_information_ratios)
         or not _walk_forward_metric_status_matches_folds(report, folds)
     ):
         return None
     return FoldEvidence(
         fold_count=fold_count,
         valid_fold_count=valid_count,
-        mean_information_ratio=_finite_float(aggregate.get("mean_information_ratio")),
-        std_information_ratio=_finite_float(aggregate.get("std_information_ratio")),
+        mean_information_ratio=reported_mean_information_ratio,
+        std_information_ratio=reported_std_information_ratio,
         worst_drawdown=_finite_float(aggregate.get("worst_drawdown")),
         test_window_coverage=_mapping(report.get("test_window_coverage")),
         folds=folds,

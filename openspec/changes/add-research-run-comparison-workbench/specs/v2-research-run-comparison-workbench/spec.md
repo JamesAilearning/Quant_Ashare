@@ -46,6 +46,10 @@ comparison provenance only when every persisted fold report records matching
 canonical official-backtest path, execution semantics, ST-mask identity, and
 runtime/bundle identity.  Missing fold evidence or disagreement between folds
 SHALL remain explicit and SHALL block controlled ordering.
+An explicit `st_mask_mode="off_experiment"` aggregate with the producer's
+no-input `st_mask.namechange_path` (null or blank, and no digest) SHALL use a
+stable ST-handling identity distinct from a required-mask content digest.
+An off declaration carrying an ST path or digest SHALL be unavailable evidence.
 
 #### Scenario: Equal complete contracts permit an ordering
 
@@ -118,6 +122,8 @@ read-only configuration and log references.
 - **WHEN** a selected run has a valid `walk_forward_report.json` with fold
   records whose declared positive `num_folds` equals the fold-record count
   and whose valid-fold count equals the listed finite `information_ratio` values,
+  and whose recorded mean and population standard deviation of information
+  ratio equal those finite fold values,
   and whose per-fold metric statuses and prediction shapes support the recorded
   aggregate metric status
 - **THEN** the page displays its existing aggregate metrics and fold stability
@@ -131,6 +137,14 @@ read-only configuration and log references.
   prediction shape, or a measured fold's status contradicts the aggregate status
 - **THEN** the page marks fold stability evidence invalid
 - **AND** does not display the contradictory counts as evidence
+
+#### Scenario: Aggregate information ratio contradicts fold evidence
+
+- **WHEN** a walk-forward aggregate's recorded mean or population standard
+  deviation of information ratio differs from its finite persisted fold values
+- **THEN** the page marks fold stability evidence invalid
+- **AND** blocks controlled ordering without displaying a recomputed
+  replacement aggregate
 
 #### Scenario: A required artifact is missing or invalid
 

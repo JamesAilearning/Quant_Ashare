@@ -116,7 +116,7 @@ def _walk_forward_report(*, config: dict[str, object] | None = None) -> dict[str
             "mean_annualized_return": 0.1,
             "worst_drawdown": -0.12,
             "mean_information_ratio": 0.35,
-            "std_information_ratio": 0.11,
+            "std_information_ratio": 0.0,
             "valid_folds_information_ratio": 1,
         },
         "test_window_coverage": {
@@ -339,6 +339,46 @@ def test_mismatched_st_mask_content_identity_blocks_controlled_ranking() -> None
     assert result.eligible is False
     assert result.ranked_run_ids == ()
     assert any("ST 掩码输入内容不一致" in reason for reason in result.reasons)
+
+
+def test_explicit_st_off_walk_forward_identity_is_comparable_without_a_digest() -> None:
+    report = _walk_forward_report(
+        config=_walk_forward_config(st_mask_mode="off_experiment", namechange_path=None)
+    )
+    provenance = report["comparison_provenance"]["config"]  # type: ignore[index]
+    provenance["st_mask"] = {"namechange_path": None}  # type: ignore[index]
+
+    def build(run_id: str, candidate: dict[str, object]):
+        return build_comparison_run(
+            run_id=run_id,
+            engine="walk_forward",
+            status="completed",
+            created_at="",
+            config_path="config.yaml",
+            report_path="walk_forward_report.json",
+            log_paths=(),
+            config={},
+            report=candidate,
+        )
+
+    first = build("wf-st-off-a", report)
+    second = build("wf-st-off-b", deepcopy(report))
+    result = assess_comparability((first, second))
+
+    assert first.contract["st_mask_identity"] == "off_experiment"
+    assert result.eligible is True
+
+    blank_path = deepcopy(report)
+    blank_path["comparison_provenance"]["config"]["st_mask"] = {  # type: ignore[index]
+        "namechange_path": "  "
+    }
+    assert build("wf-st-off-blank", blank_path).contract["st_mask_identity"] == "off_experiment"
+
+    contradictory = deepcopy(report)
+    contradictory["comparison_provenance"]["config"]["st_mask"] = {  # type: ignore[index]
+        "namechange_path": None, "namechange_sha256": "a" * 16,
+    }
+    assert build("wf-st-off-contradictory", contradictory).contract["st_mask_identity"] is None
 
 
 def test_missing_runtime_provenance_is_visible_and_blocks_comparison() -> None:
@@ -613,7 +653,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
             "mean_annualized_return": 0.1,
             "worst_drawdown": -0.12,
             "mean_information_ratio": 0.35,
-            "std_information_ratio": 0.11,
+            "std_information_ratio": 0.15,
             "valid_folds_information_ratio": 2,
         },
         "test_window_coverage": {
@@ -654,7 +694,7 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
 
     assert run.fold_evidence is not None
     assert run.fold_evidence.mean_information_ratio == 0.35
-    assert run.fold_evidence.std_information_ratio == 0.11
+    assert run.fold_evidence.std_information_ratio == 0.15
     assert run.fold_evidence.folds == tuple(report["folds"])
     assert any(metric.value == 0.35 for metric in run.metrics if "信息比率" in metric.label)
     assert run.data_provenance_source is None
@@ -835,6 +875,8 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
         "metric_status": "failed_no_metrics",
     }
     failed_placeholder["aggregate_metrics"]["valid_folds_information_ratio"] = 1  # type: ignore[index]
+    failed_placeholder["aggregate_metrics"]["mean_information_ratio"] = 0.5  # type: ignore[index]
+    failed_placeholder["aggregate_metrics"]["std_information_ratio"] = 0.0  # type: ignore[index]
     failed_placeholder_run = build_comparison_run(
         run_id="wf-failed-placeholder",
         engine="walk_forward",
@@ -852,6 +894,8 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
     failed_placeholder_with_metric = deepcopy(failed_placeholder)
     failed_placeholder_with_metric["folds"][0]["information_ratio"] = 0.0  # type: ignore[index]
     failed_placeholder_with_metric["aggregate_metrics"]["valid_folds_information_ratio"] = 2  # type: ignore[index]
+    failed_placeholder_with_metric["aggregate_metrics"]["mean_information_ratio"] = 0.25  # type: ignore[index]
+    failed_placeholder_with_metric["aggregate_metrics"]["std_information_ratio"] = 0.25  # type: ignore[index]
     failed_placeholder_with_metric_run = build_comparison_run(
         run_id="wf-failed-placeholder-with-metric",
         engine="walk_forward",
@@ -886,6 +930,40 @@ def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalcul
 
     assert result.eligible is False
     assert any("测试窗口不一致" in reason for reason in result.reasons)
+
+
+def test_walk_forward_stale_aggregate_ir_is_not_valid_fold_evidence() -> None:
+    stale_report = _walk_forward_report()
+    stale_report["aggregate_metrics"]["mean_information_ratio"] = 9.0  # type: ignore[index]
+    stale = build_comparison_run(
+        run_id="wf-stale-aggregate",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=stale_report,
+    )
+    valid = build_comparison_run(
+        run_id="wf-valid-aggregate",
+        engine="walk_forward",
+        status="completed",
+        created_at="",
+        config_path="config.yaml",
+        report_path="walk_forward_report.json",
+        log_paths=(),
+        config={},
+        report=_walk_forward_report(),
+    )
+
+    result = assess_comparability((stale, valid))
+
+    assert stale.fold_evidence is None
+    assert any(issue.code == "invalid_fold_evidence" for issue in stale.issues)
+    assert result.eligible is False
+    assert result.ranked_run_ids == ()
 
 
 def test_walk_forward_without_runtime_snapshot_cannot_be_ranked() -> None:
@@ -943,7 +1021,7 @@ def test_walk_forward_uses_consistent_aggregate_comparison_provenance() -> None:
             "mean_annualized_return": 0.1,
             "worst_drawdown": -0.12,
             "mean_information_ratio": 0.35,
-            "std_information_ratio": 0.11,
+            "std_information_ratio": 0.0,
             "valid_folds_information_ratio": 1,
         },
         "test_window_coverage": {

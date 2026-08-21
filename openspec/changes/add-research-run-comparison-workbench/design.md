@@ -91,13 +91,23 @@ if the provider changes mid-run.
 Unreadable fold-report evidence, including text-decode and JSON-value failures,
 is likewise recorded as unavailable rather than aborting aggregate publication.
 The read model accepts reported fold stability only when the declared valid-IR
-count equals the finite IR values in uniquely indexed fold records.
+count equals the finite IR values in uniquely indexed fold records and the
+producer-recorded mean and population standard deviation equal those finite
+values.  This is an integrity cross-check only: the page never substitutes a
+recalculated value for display or ranking when the recorded aggregate differs.
 It also validates the producer-recorded aggregate metric status from the
 serialized fold status and prediction-shape evidence: measured official folds
 are required for an official aggregate, a predictions-only declaration
 downgrades the aggregate, and a `[0]` failed placeholder is correctly treated
 as no measurement. Missing or contradictory status evidence blocks controlled
 ordering rather than allowing an aggregate label to launder it.
+
+An explicitly stamped `st_mask_mode="off_experiment"` represents the stable
+research identity `off_experiment` only when the folded backtest provenance
+contains exactly the producer's no-input `st_mask.namechange_path` (null or
+blank) and no content digest.  ST-on runs continue to require the recorded
+content digest.  A path or digest alongside the off declaration is
+contradictory evidence, not an implicit fallback to either mode.
 
 Pipeline and walk-forward reports share the same top-level
 `comparison_provenance` schema: Pipeline resolves its one canonical backtest
