@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from web.operator_ui.job_io import JobSummary
+from web.operator_ui.pages._daily_review_progress_helpers import DailyReviewProgress
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
 
 _PRIORITY = {
@@ -45,36 +46,6 @@ class TodayQueueItem:
     source_time: str
     destination: str
     context: str | None = None
-
-
-@dataclass(frozen=True)
-class ReviewProgress:
-    """Effective human-review coverage for one dated recommendation artifact."""
-
-    artifact_date: str
-    candidate_count: int
-    reviewed_count: int
-    unreviewed_count: int
-
-
-def review_progress(
-    artifact_date: str,
-    candidate_codes: Iterable[str],
-    effective_decisions: Mapping[tuple[str, str], object],
-) -> ReviewProgress:
-    """Measure only existing effective decisions for an exact artifact date."""
-    codes = tuple(str(code).strip() for code in candidate_codes)
-    if not artifact_date or any(not code for code in codes):
-        raise ValueError("候选或工件日期不完整，无法计算人工审阅进度。")
-    if len(set(codes)) != len(codes):
-        raise ValueError("候选代码重复，无法将 journal 的按代码记录映射为审阅进度。")
-    reviewed = sum((artifact_date, code) in effective_decisions for code in codes)
-    return ReviewProgress(
-        artifact_date=artifact_date,
-        candidate_count=len(codes),
-        reviewed_count=reviewed,
-        unreviewed_count=len(codes) - reviewed,
-    )
 
 
 def _item(
@@ -167,7 +138,7 @@ def build_today_decision_queue(
     signal: DailySignalSummary,
     jobs: Iterable[JobSummary],
     jobs_error: str | None,
-    review: ReviewProgress | None,
+    review: DailyReviewProgress | None,
     review_error: str | None,
     incumbent_kind: str,
     incumbent_detail: str,
@@ -310,10 +281,10 @@ def build_today_decision_queue(
         ))
     elif review is not None and review.unreviewed_count:
         items.append(_item(
-            "review", f"review:{review.artifact_date}", "可完成人工审阅",
+            "review", f"review:{review.trade_date}", "可完成人工审阅",
             f"{review.unreviewed_count}/{review.candidate_count} 个候选尚无有效人工记录。",
-            source_time=review.artifact_date, destination="daily_decision",
-            context=review.artifact_date,
+            source_time=review.trade_date, destination="daily_decision",
+            context=review.trade_date,
         ))
     elif (
         signal.kind in {"daily", "rebalance"}
@@ -321,10 +292,10 @@ def build_today_decision_queue(
         and review.candidate_count
     ):
         items.append(_item(
-            "information", f"review:{review.artifact_date}", "当日候选已完成记录核对",
+            "information", f"review:{review.trade_date}", "当日候选已完成记录核对",
             f"{review.reviewed_count}/{review.candidate_count} 个候选已有有效人工记录；不代表交易已执行。",
-            source_time=review.artifact_date, destination="daily_decision",
-            context=review.artifact_date,
+            source_time=review.trade_date, destination="daily_decision",
+            context=review.trade_date,
         ))
 
     if incumbent_kind in {"single", "ensemble"}:
@@ -363,10 +334,8 @@ def queue_counts(items: Iterable[TodayQueueItem]) -> Mapping[str, int]:
 
 
 __all__ = [
-    "ReviewProgress",
     "TodayQueueItem",
     "build_today_decision_queue",
     "queue_page_link",
     "queue_counts",
-    "review_progress",
 ]

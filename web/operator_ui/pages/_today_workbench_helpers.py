@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Final
 
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
+    SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
     VERDICT_MATCHES_INCUMBENT,
     VERDICT_SINGLE_SHA_OK,
+    artifact_entry_timing_is_valid,
     artifact_meta_status,
     hold_state,
     picks_table_rows,
@@ -25,12 +26,6 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
-
-# ``src.inference.daily_recommend`` is deliberately not imported here: opening
-# this read-only Streamlit helper must not pull qlib-bound inference imports
-# into the UI process. The producer's named value is pinned by a source test.
-SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
-
 
 @dataclass(frozen=True)
 class DailySignalSummary:
@@ -86,6 +81,13 @@ def summarise_daily_signal(
             "needs_verification",
             "工件缺少有效 entry_date，无法确认信号时点。",
             as_of_date=as_of_date,
+        )
+    if not artifact_entry_timing_is_valid(payload):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件 entry_date 必须是晚于 as_of_date 的严格 ISO 日期，无法确认信号时点。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
         )
 
     schema_version = payload.get("artifact_schema_version")

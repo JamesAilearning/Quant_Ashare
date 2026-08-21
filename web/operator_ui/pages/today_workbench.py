@@ -35,12 +35,15 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_trainer_sidecar_sha,
     picks_table_rows,
 )
+from web.operator_ui.pages._daily_review_progress_helpers import (
+    DailyReviewProgress,
+    summarise_daily_review_progress,
+)
 from web.operator_ui.pages._today_decision_queue_helpers import (
     TodayQueueItem,
     build_today_decision_queue,
     queue_counts,
     queue_page_link,
-    review_progress,
 )
 from web.operator_ui.pages._today_workbench_helpers import (
     DailySignalSummary,
@@ -396,7 +399,7 @@ else:
     else:
         _render_card("当前运行或异常", "全部空闲", operations.detail)
 
-review = None
+review: DailyReviewProgress | None = None
 review_error: str | None = None
 if signal.kind in {"daily", "rebalance"}:
     if signal_payload is None:
@@ -409,7 +412,7 @@ if signal.kind in {"daily", "rebalance"}:
             if journal.malformed_count:
                 review_error = f"决策日志含 {journal.malformed_count} 行坏行，审阅进度需要核验。"
             else:
-                review = review_progress(
+                review = summarise_daily_review_progress(
                     signal.as_of_date or "", candidate_codes, journal.effective,
                 )
         except (DecisionJournalError, ValueError) as exc:

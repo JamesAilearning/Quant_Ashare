@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from scripts.eval_profiles import EVAL_PROFILES
 from web.operator_ui._path_guard import output_path
@@ -52,6 +53,43 @@ from web.operator_ui.incumbent import (
 from web.operator_ui.incumbent import (
     unusable_path_reason as unusable_path_reason,
 )
+
+# The inference producer currently writes this exact artifact schema.  Keep the
+# read-only pages on one contract boundary instead of letting each page accept
+# a different version vocabulary.
+SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+
+
+def artifact_schema_is_supported(payload: dict[str, Any]) -> bool:
+    """Whether a persisted recommendation artifact has the supported schema."""
+    version = payload.get("artifact_schema_version")
+    return (
+        not isinstance(version, bool)
+        and isinstance(version, int)
+        and version == SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION
+    )
+
+
+def artifact_entry_timing_is_valid(payload: dict[str, Any]) -> bool:
+    """Whether the artifact records a strict, forward T+1-style entry date.
+
+    This reader has no trading-calendar substrate, so it cannot prove that no
+    intermediate session exists. It can still reject malformed dates and prove
+    the producer-recorded entry is later than its as-of session; the producer
+    owns the exact next-session lookup against qlib's calendar.
+    """
+    def strict_day(value: Any) -> date | None:
+        if not isinstance(value, str) or len(value) != 10:
+            return None
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.isoformat() == value else None
+
+    as_of = strict_day(payload.get("as_of_date"))
+    entry = strict_day(payload.get("entry_date"))
+    return as_of is not None and entry is not None and entry > as_of
 
 # Where the daily_recommend CLI writes its dated artifacts
 # (RecommendationConfig.out_dir default "output/daily_recommend").
@@ -492,6 +530,16 @@ VERDICT_INCUMBENT_UNRESOLVED = "incumbent_unresolved"
 VERDICT_SINGLE_SHA_MISMATCH = "single_sha_mismatch"
 VERDICT_SINGLE_SHA_UNKNOWN = "single_sha_unknown"
 VERDICT_SINGLE_SHA_OK = "single_sha_ok"
+
+
+def provenance_is_verified(verdict: str) -> bool:
+    """Whether an artifact's source is confirmed for review projections."""
+    return verdict in {VERDICT_MATCHES_INCUMBENT, VERDICT_SINGLE_SHA_OK}
+
+
+def review_progress_is_available(*, verdict: str, artifact_contract_valid: bool) -> bool:
+    """Whether provenance and artifact shape both support review projection."""
+    return artifact_contract_valid and provenance_is_verified(verdict)
 
 
 def classify_provenance(

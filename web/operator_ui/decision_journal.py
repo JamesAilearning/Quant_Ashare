@@ -324,6 +324,25 @@ def _parse_decided_at(value: str) -> datetime | None:
     inconsistently (codex P2 on #330). Shared by the writer (make_entry) and
     the reader (_parse_line): one check point, symmetric boundaries.
     """
+    # Python 3.11 added direct support for ISO basic-format date/time portions
+    # (``YYYYMMDDTHHMMSS...``), whereas the supported 3.10 runtime rejects
+    # them. Normalize the basic date and complete ``HHMMSS`` time portions
+    # before parsing so valid persisted rows have identical writer/reader
+    # semantics across the CI matrix.
+    if (
+        isinstance(value, str)
+        and len(value) >= 9
+        and value[:8].isdigit()
+        and value[8] == "T"
+    ):
+        value = f"{value[:4]}-{value[4:6]}-{value[6:8]}{value[8:]}"
+    if (
+        isinstance(value, str)
+        and len(value) >= 17
+        and value[10] == "T"
+        and value[11:17].isdigit()
+    ):
+        value = f"{value[:13]}:{value[13:15]}:{value[15:17]}{value[17:]}"
     try:
         parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
@@ -353,13 +372,27 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
         or raw_version != JOURNAL_VERSION
     ):
         return None
+    # Validate the persisted type before coercion. ``str(None)`` and
+    # ``str([..])`` are non-empty, but neither is an operator-provided human
+    # rationale; accepting either would silently promote corrupt JSON into the
+    # effective review state.
+    raw_reason = payload.get("reason")
+    if not isinstance(raw_reason, str):
+        return None
+    # Use the same canonical code key as ``make_entry``.  Legacy/manual rows
+    # can carry surrounding display whitespace; retaining it here would split
+    # the effective map from a later writer-normalized correction and make the
+    # current-candidate projection miss an otherwise valid review.
+    raw_code = payload.get("code")
+    if not str(raw_code or "").strip():
+        return None
     try:
         entry = DecisionEntry(
             journal_version=raw_version,
             trade_date=str(payload["trade_date"]),
-            code=str(payload["code"]),
+            code=str(raw_code).strip(),
             action=str(payload["action"]),
-            reason=str(payload["reason"]),
+            reason=raw_reason,
             rank=None if payload.get("rank") is None else int(payload["rank"]),
             score=(
                 None if payload.get("score") is None else float(payload["score"])
@@ -371,6 +404,13 @@ def _parse_line(line: bytes) -> DecisionEntry | None:
     except (KeyError, TypeError, ValueError):
         return None
     if entry.action not in ACTIONS:
+        return None
+    # Keep the reader boundary symmetric with ``make_entry``: a manually
+    # edited/legacy row whose reason is blank is not a valid human decision.
+    # Counting it as effective would make the review projection fail after
+    # the reader had already claimed the row was valid, hiding all otherwise
+    # valid audit history behind a page-level error.
+    if not entry.reason.strip():
         return None
     if not entry.nonce.strip():
         return None

@@ -63,6 +63,51 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("uuid4().hex", self.page)
         self.assertIn('st.button("✍ 记录决策"', self.page)
 
+    def test_review_progress_is_human_only_and_respects_hold_boundary(self) -> None:
+        self.assertIn("summarise_daily_review_progress", self.page)
+        self.assertIn("人工审阅进度", self.page)
+        self.assertIn("不表示买入、卖出、持仓或订单已执行", self.page)
+        self.assertIn("HOLD 日不显示人工审阅完成度", self.page)
+        self.assertIn("不计入上方审阅进度", self.page)
+
+    def test_decision_row_lookup_uses_the_same_normalized_candidate_code(self) -> None:
+        self.assertIn(
+            'str(r.get("代码") or "").strip() == _sel_code', self.page
+        )
+
+    def test_candidates_render_before_journal_failures_and_audit_keeps_history(self) -> None:
+        self.assertIn("_candidate_table_slot = st.empty()", self.page)
+        self.assertLess(
+            self.page.index("with _candidate_table_slot:"),
+            self.page.index("_journal_file = journal_path()"),
+        )
+        self.assertIn("for entry in _journal.entries", self.page)
+        self.assertNotIn(
+            "for (t_date, _code), entry in sorted(_journal.effective.items())",
+            self.page,
+        )
+
+    def test_invalid_candidate_keys_disable_projection_without_hiding_journal_audit(self) -> None:
+        """Candidate ambiguity must not turn a valid journal into invisible history."""
+        candidate_start = self.page.index("_codes = validate_review_candidate_codes(")
+        candidate_section = self.page[
+            candidate_start : self.page.index("if _hold.is_hold:", candidate_start)
+        ]
+        self.assertIn("_candidate_codes_valid = False", candidate_section)
+        self.assertNotIn("st.stop()", candidate_section)
+        self.assertIn("_codes = ()", candidate_section)
+
+        summary_start = self.page.index("with _review_summary_slot:")
+        summary_section = self.page[
+            summary_start : self.page.index("with _candidate_table_slot:", summary_start)
+        ]
+        self.assertIn("elif not _candidate_codes_valid:", summary_section)
+        self.assertIn("_review_progress = None", summary_section)
+        self.assertLess(
+            self.page.index("_journal = read_journal()"),
+            self.page.index("_today_entries = ["),
+        )
+
 
 class RegistrationAndDocsTests(unittest.TestCase):
     def test_page_registered_in_daily_decision_group_with_icon(self) -> None:
@@ -262,6 +307,33 @@ class HelpersRuntimeTests(unittest.TestCase):
         # 且 caption 只能读已校验过的局部变量，不能再从 payload 里取。
         self.assertNotIn(
             "**entry {_payload.get('entry_date', '—')} 是已收盘会话**", src
+        )
+
+    def test_entry_timing_requires_strict_forward_iso_dates(self) -> None:
+        from web.operator_ui.pages._daily_decision_helpers import (
+            artifact_entry_timing_is_valid,
+        )
+
+        assert artifact_entry_timing_is_valid(
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-24"}
+        ) is True
+        for payload in (
+            {"as_of_date": "2026-08-21", "entry_date": "2026-99-99"},
+            {"as_of_date": "2026-08-21", "entry_date": "tomorrow"},
+            {"as_of_date": "2026-08-21", "entry_date": "20260824"},
+            {"as_of_date": "2026-08-21", "entry_date": " 2026-08-24"},
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-21"},
+            {"as_of_date": "2026-08-21", "entry_date": "2026-08-20"},
+            {"as_of_date": "not-a-date", "entry_date": "2026-08-24"},
+        ):
+            with self.subTest(payload=payload):
+                assert artifact_entry_timing_is_valid(payload) is False
+
+        src = _PAGE.read_text(encoding="utf-8")
+        self.assertIn("artifact_entry_timing_is_valid(_payload)", src)
+        self.assertIn(
+            "_artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported",
+            src,
         )
 
     def test_slippage_in_caption_is_derived_not_restated(self) -> None:
@@ -480,6 +552,150 @@ class HelpersRuntimeTests(unittest.TestCase):
                 (root / name).write_text("{}", encoding="utf-8")
             found = list_recommendation_artifacts(root)
         self.assertEqual([d for d, _ in found], ["2026-07-03", "2026-07-01"])
+
+    def test_empty_artifact_state_stops_in_streamlit_without_hiding_errors(
+            self) -> None:
+        """The runner's stop signal, not SystemExit, owns empty-state flow.
+
+        The harness executes the page's actual empty-state AST with the
+        control-flow signal that Streamlit raises for ``st.stop``.  A
+        hand-written ``SystemExit`` made a bare Python import succeed before
+        later module errors could run.  The isolated page smoke below executes
+        the complete Streamlit module without contaminating this test process
+        (codex P2 on #457).
+        """
+        import ast
+        import subprocess
+        import sys
+        from unittest.mock import Mock
+
+        class _StreamlitStop(Exception):
+            pass
+
+        class _StreamlitHarness:
+            def stop(self) -> None:
+                raise _StreamlitStop()
+
+        source = _PAGE.read_text(encoding="utf-8")
+        empty_start = source.index("if not _artifacts:")
+        empty_section = source[empty_start : source.index("_date_options =", empty_start)]
+        self.assertIn("st.stop()", empty_section)
+        self.assertIn("暂无日度信号工件", empty_section)
+        self.assertNotIn("raise SystemExit", empty_section)
+
+        page_tree = ast.parse(source, filename=str(_PAGE))
+        empty_state = next(
+            node for node in page_tree.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "_artifacts"
+        )
+        render_empty = Mock()
+        namespace = {
+            "_artifacts": [],
+            "render_empty_state": render_empty,
+            "st": _StreamlitHarness(),
+        }
+        with self.assertRaises(_StreamlitStop):
+            exec(
+                compile(
+                    ast.Module(body=[empty_state], type_ignores=[]),
+                    str(_PAGE),
+                    "exec",
+                ),
+                namespace,
+            )
+        render_empty.assert_called_once()
+
+        smoke = (
+            "from streamlit.testing.v1 import AppTest\n"
+            f"app = AppTest.from_file({str(_PAGE)!r})\n"
+            "app.run(timeout=30)\n"
+            "assert not app.exception, app.exception\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", smoke],
+            cwd=_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            "Streamlit 页面烟测失败：" + result.stderr,
+        )
+
+    def test_empty_candidate_review_progress_renders_zero_metrics(self) -> None:
+        """An empty valid signal still exposes every review-progress metric."""
+        import ast
+
+        from web.operator_ui.pages._daily_review_progress_helpers import (
+            DailyReviewProgress,
+        )
+
+        class _Column:
+            def __init__(self) -> None:
+                self.metrics: list[tuple[str, int]] = []
+
+            def metric(self, label: str, value: int) -> None:
+                self.metrics.append((label, value))
+
+        class _StreamlitHarness:
+            def __init__(self) -> None:
+                self.infos: list[str] = []
+                self.columns_created: list[_Column] = []
+
+            def subheader(self, _label: str) -> None:
+                pass
+
+            def info(self, message: str) -> None:
+                self.infos.append(message)
+
+            def columns(self, count: int) -> list[_Column]:
+                columns = [_Column() for _ in range(count)]
+                self.columns_created.extend(columns)
+                return columns
+
+            def caption(self, _message: str) -> None:
+                pass
+
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"), filename=str(_PAGE))
+        renderer = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_review_progress"
+        )
+        harness = _StreamlitHarness()
+        namespace = {"st": harness, "DailyReviewProgress": DailyReviewProgress}
+        exec(
+            compile(ast.Module(body=[renderer], type_ignores=[]), str(_PAGE), "exec"),
+            namespace,
+        )
+        namespace["_render_review_progress"](
+            DailyReviewProgress(
+                trade_date="2026-08-20",
+                candidates=(),
+                candidate_count=0,
+                reviewed_count=0,
+                unreviewed_count=0,
+                adopt_count=0,
+                reject_count=0,
+                watch_count=0,
+                latest_reviewed_at=None,
+            )
+        )
+
+        self.assertEqual(
+            [metric for column in harness.columns_created for metric in column.metrics],
+            [
+                ("候选", 0), ("已审阅", 0), ("未审阅", 0),
+                ("人工采纳", 0), ("人工拒绝", 0), ("人工观望", 0),
+            ],
+        )
+        self.assertEqual(harness.infos, ["当前有效信号没有候选；各项人工审阅统计均为 0。"])
 
     def test_banner_meta_is_promotion_sidecar_only_no_fallthrough(self) -> None:
         # codex P2 on #330: a trainer sidecar must NOT stand in for a missing
@@ -1150,6 +1366,50 @@ class ProvenanceRenderingTests(unittest.TestCase):
         from web.operator_ui.pages import _daily_decision_helpers as h
         names = {n for n in dir(h) if n.startswith("VERDICT_")}
         self.assertEqual(names - {"VERDICT_SINGLE_SHA_OK"}, set(self.seg))
+
+    def test_only_verified_and_contract_valid_artifacts_allow_review_progress_projection(self) -> None:
+        from web.operator_ui.pages import _daily_decision_helpers as helpers
+
+        verdicts = {
+            value
+            for name, value in vars(helpers).items()
+            if name.startswith("VERDICT_")
+        }
+        self.assertEqual(
+            {
+                verdict
+                for verdict in verdicts
+                if helpers.review_progress_is_available(
+                    verdict=verdict, artifact_contract_valid=True
+                )
+            },
+            {helpers.VERDICT_MATCHES_INCUMBENT, helpers.VERDICT_SINGLE_SHA_OK},
+        )
+        assert helpers.review_progress_is_available(
+            verdict=helpers.VERDICT_MATCHES_INCUMBENT, artifact_contract_valid=False,
+        ) is False
+        for payload in (
+            {},
+            {"artifact_schema_version": False},
+            {"artifact_schema_version": "2"},
+            {"artifact_schema_version": 1},
+            {"artifact_schema_version": 3},
+        ):
+            with self.subTest(payload=payload):
+                assert helpers.artifact_schema_is_supported(payload) is False
+                assert helpers.review_progress_is_available(
+                    verdict=helpers.VERDICT_MATCHES_INCUMBENT,
+                    artifact_contract_valid=helpers.artifact_schema_is_supported(payload),
+                ) is False
+        assert helpers.artifact_schema_is_supported({"artifact_schema_version": 2})
+        review_start = self.page.index("with _review_summary_slot:")
+        review_section = self.page[
+            review_start
+            : self.page.index("with _candidate_table_slot:", review_start)
+        ]
+        self.assertIn("if not review_progress_is_available(", review_section)
+        self.assertIn("artifact_contract_valid=_artifact_contract_valid", review_section)
+        self.assertIn("_review_progress = None", review_section)
 
     def test_each_branch_says_its_own_words(self) -> None:
         # ...and only its own: a phrase that also appears next door would let

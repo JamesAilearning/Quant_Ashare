@@ -83,6 +83,25 @@ class DailySignalSummaryTests(unittest.TestCase):
                 )
                 self.assertEqual(result.kind, "needs_verification")
 
+    def test_invalid_or_nonforward_entry_date_never_becomes_a_signal(self) -> None:
+        cases = (
+            ("malformed", "tomorrow"),
+            ("same session", "2026-08-18"),
+            ("earlier session", "2026-08-17"),
+        )
+        for label, entry_date in cases:
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                payload["entry_date"] = entry_date
+                result = summarise_daily_signal(
+                    "2026-08-18",
+                    payload,
+                    incumbent=self.incumbent,
+                    current_model_sha=None,
+                )
+                self.assertEqual(result.kind, "needs_verification")
+                self.assertIn("entry_date", result.detail)
+
     def test_invalid_picks_shape_never_becomes_a_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
             ("missing", None),
