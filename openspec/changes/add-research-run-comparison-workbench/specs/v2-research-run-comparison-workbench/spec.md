@@ -151,3 +151,14 @@ read-only configuration and log references.
 - **THEN** the page marks the artifact pair as inconsistent evidence
 - **AND** blocks controlled ordering instead of showing the configuration as
   the source of the reported metrics
+
+#### Scenario: Pipeline artifacts use equivalent runtime spellings
+
+- **WHEN** a complete pipeline `config.yaml` records a relative, user-home, or
+  case-variant provider path, or an uppercase supported region, and the
+  producer-written report records the canonically normalized runtime values
+- **THEN** the page treats those runtime controls as equal
+- **AND** resolves a config-side `null` stamp-tax schedule to the canonical
+  default before comparing it with the report's producer-written expanded
+  schedule
+- **AND** blocks ordering when that expanded report schedule differs

@@ -81,7 +81,10 @@ model or prediction bytes from one generation to provenance from another.
 
 For pipeline rows, the read model also compares each complete resolved
 `config.yaml` with the producer-written overlapping report and canonical
-backtest fields.  A mismatch blocks ordering; configuration files are display
+backtest fields. Runtime provider paths and regions are compared after the
+canonical runtime normalizes them; a source-level `null` stamp-tax schedule is
+resolved to the canonical default and compared with the producer-written
+expanded request. A mismatch blocks ordering; configuration files are display
 references only when they can be tied to the report that supplied the metrics.
 
 ### Controlled ordering

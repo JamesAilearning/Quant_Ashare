@@ -25,11 +25,13 @@ from src.core.canonical_backtest_contract import (
     COMMISSION_RATE_MAX,
     OFFICIAL_METRIC_STATUS,
     SLIPPAGE_BPS_MAX,
-    STAMP_TAX_BPS_MAX,
     SUPPORTED_ADJUST_MODES,
     SUPPORTED_EXECUTION_PRICE_KINDS,
+    CanonicalBacktestContractError,
+    resolve_stamp_tax_schedule,
 )
 from src.core.pipeline import PipelineConfig, PipelineError
+from src.core.qlib_runtime import QlibRuntimeConfig, QlibRuntimeInitError
 from web.operator_ui.job_io import (
     JobSummary,
     anchored_run_dir,
@@ -309,32 +311,24 @@ def _bounded_number(value: Any, *, lower: float, upper: float | None = None) -> 
     return number
 
 
-def _stamp_tax_schedule_identity(value: Any) -> list[dict[str, float | str]] | str | None:
-    """Validate the serialized canonical stamp-tax schedule before comparing it."""
-    if value is None:
-        # ``None`` is the explicit producer-configured request for the
-        # canonical CN default.  It is distinguishable from an absent key at
-        # the caller and must not be silently treated as missing evidence.
-        return "canonical_default"
-    if not isinstance(value, (list, tuple)) or not value:
+def _stamp_tax_schedule_identity(value: Any) -> list[dict[str, float | str]] | None:
+    """Normalize a config-shaped schedule to the producer-written request form."""
+    try:
+        schedule = resolve_stamp_tax_schedule(value)
+    except (CanonicalBacktestContractError, TypeError, ValueError):
         return None
     entries: list[dict[str, float | str]] = []
     previous: date | None = None
-    for item in value:
-        if not isinstance(item, Mapping):
+    for entry in schedule:
+        if previous is not None and entry.effective_from <= previous:
             return None
-        effective_from = _required_text(item.get("effective_from"))
-        bps = _bounded_number(item.get("bps"), lower=0.0, upper=STAMP_TAX_BPS_MAX)
-        if effective_from is None or bps is None:
-            return None
-        try:
-            schedule_date = date.fromisoformat(effective_from)
-        except ValueError:
-            return None
-        if previous is not None and schedule_date <= previous:
-            return None
-        previous = schedule_date
-        entries.append({"effective_from": schedule_date.isoformat(), "bps": bps})
+        previous = entry.effective_from
+        entries.append(
+            {
+                "effective_from": entry.effective_from.isoformat(),
+                "bps": float(entry.bps),
+            }
+        )
     return entries
 
 
@@ -402,6 +396,10 @@ def _exchange_cost_from_request(request: Mapping[str, Any]) -> str | None:
         )
         or "adjust_mode" not in request
         or "init_cash" not in account
+        # The canonical producer writes its resolved schedule, never the
+        # source-level ``None`` default request. A missing expansion is not
+        # sufficient evidence for a controlled comparison.
+        or cost.get("stamp_tax_schedule") is None
     ):
         return None
     return _exchange_cost_identity(
@@ -708,6 +706,24 @@ def _pipeline_config_report_conflicts(
         ):
             conflicts.append(label)
 
+    def runtime_controls(
+        *, provider_uri: Any, region: Any, data_adjust_mode: Any
+    ) -> tuple[str, str, str] | None:
+        """Apply the runtime's own canonical path and region normalization."""
+        try:
+            normalized = QlibRuntimeConfig(
+                provider_uri=provider_uri,
+                region=region,
+                data_adjust_mode=data_adjust_mode,
+            )
+        except (AttributeError, QlibRuntimeInitError, TypeError, ValueError):
+            return None
+        return (
+            normalized.provider_uri,
+            normalized.region,
+            normalized.data_adjust_mode,
+        )
+
     for field in (
         "instruments",
         "feature_handler",
@@ -740,8 +756,33 @@ def _pipeline_config_report_conflicts(
 
     for field in ("benchmark_code", "signal_to_execution_lag", "adjust_mode"):
         compare(field, config, field, backtest_config, field)
-    compare("provider_uri", config, "provider_uri", runtime, "provider_uri")
-    compare("region", config, "region", runtime, "region")
+    config_runtime = runtime_controls(
+        provider_uri=config.get("provider_uri"),
+        region=config.get("region"),
+        data_adjust_mode=config.get("adjust_mode"),
+    )
+    report_runtime = runtime_controls(
+        provider_uri=runtime.get("provider_uri"),
+        region=runtime.get("region"),
+        data_adjust_mode=runtime.get("data_adjust_mode"),
+    )
+    if config_runtime is None or report_runtime is None:
+        for label, config_key, report_key in (
+            ("provider_uri", "provider_uri", "provider_uri"),
+            ("region", "region", "region"),
+            ("data_adjust_mode", "adjust_mode", "data_adjust_mode"),
+        ):
+            if config_key in config and report_key in runtime:
+                conflicts.append(label)
+    else:
+        for label, configured, recorded in zip(
+            ("provider_uri", "region", "data_adjust_mode"),
+            config_runtime,
+            report_runtime,
+            strict=True,
+        ):
+            if configured != recorded:
+                conflicts.append(label)
     compare("init_cash", config, "init_cash", account, "init_cash")
     compare(
         "execution_price_kind",
@@ -755,18 +796,20 @@ def _pipeline_config_report_conflicts(
         compare(field, config, field, cost_model, field)
     compare("namechange_path", config, "namechange_path", st_mask, "namechange_path")
 
-    # A ``None`` config value means the producer expanded the canonical
-    # default schedule before writing provenance, so raw equality would make
-    # an unmodified valid artifact look inconsistent. An explicit schedule
-    # is comparable byte-for-value through the producer-written request.
-    if config.get("stamp_tax_schedule") is not None:
-        compare(
-            "stamp_tax_schedule",
-            config,
-            "stamp_tax_schedule",
-            cost_model,
-            "stamp_tax_schedule",
+    if "stamp_tax_schedule" in config and "stamp_tax_schedule" in cost_model:
+        configured_schedule = _stamp_tax_schedule_identity(
+            config["stamp_tax_schedule"]
         )
+        # Provenance must retain the producer-expanded schedule. Treat a
+        # report-side ``None`` as missing evidence rather than supplying a
+        # current default while reading a historical artifact.
+        recorded_schedule = (
+            _stamp_tax_schedule_identity(cost_model["stamp_tax_schedule"])
+            if cost_model["stamp_tax_schedule"] is not None
+            else None
+        )
+        if configured_schedule != recorded_schedule:
+            conflicts.append("stamp_tax_schedule")
     return tuple(dict.fromkeys(conflicts))
 
 

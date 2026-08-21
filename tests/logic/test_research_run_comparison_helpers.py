@@ -48,7 +48,8 @@ def _pipeline_report(*, information_ratio: float = 0.4) -> dict[str, object]:
                         "cost_model": {
                             "commission_rate": 0.0005,
                             "stamp_tax_schedule": [
-                                {"effective_from": "2008-09-19", "bps": 10.0}
+                                {"effective_from": "2008-09-19", "bps": 10.0},
+                                {"effective_from": "2023-08-28", "bps": 5.0},
                             ],
                             "slippage_bps": 5.0,
                             "min_cost": 5.0,
@@ -429,6 +430,58 @@ def test_pipeline_config_artifact_must_match_its_reported_run() -> None:
         assert result.eligible is False
         assert any("config.yaml 与 pipeline_report.json" in reason for reason in result.reasons)
         assert any(expected_conflict in reason for reason in result.reasons)
+
+
+def test_pipeline_config_report_crosscheck_normalizes_runtime_values(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = asdict(
+        PipelineConfig(
+            provider_uri=".",
+            region="CN",
+            instruments="csi300",
+            train_start="2020-01-01",
+            train_end="2022-12-31",
+            valid_start="2023-01-01",
+            valid_end="2023-06-30",
+            test_start="2023-07-01",
+            test_end="2023-12-31",
+        )
+    )
+    report = _pipeline_report()
+    runtime = report["backtest"]["provenance"]["config"]["runtime"]  # type: ignore[index]
+    runtime["provider_uri"] = str(tmp_path)  # type: ignore[index]
+    runtime["region"] = "cn"  # type: ignore[index]
+
+    run = _pipeline_run("normalized-runtime", config=config, report=report)
+
+    assert not any(issue.code == "config_report_mismatch" for issue in run.issues)
+
+
+def test_pipeline_config_report_crosscheck_compares_default_stamp_tax_schedule() -> None:
+    config = asdict(
+        PipelineConfig(
+            provider_uri="data/qlib_cn",
+            instruments="csi300",
+            train_start="2020-01-01",
+            train_end="2022-12-31",
+            valid_start="2023-01-01",
+            valid_end="2023-06-30",
+            test_start="2023-07-01",
+            test_end="2023-12-31",
+        )
+    )
+    report = _pipeline_report()
+    cost_model = report["backtest"]["provenance"]["config"]["exchange_config"]["cost_model"]  # type: ignore[index]
+    cost_model["stamp_tax_schedule"] = [  # type: ignore[index]
+        {"effective_from": "2008-09-19", "bps": 10.0}
+    ]
+
+    run = _pipeline_run("custom-schedule", config=config, report=report)
+
+    mismatch = next(issue for issue in run.issues if issue.code == "config_report_mismatch")
+    assert "stamp_tax_schedule" in mismatch.message
 
 
 def test_walk_forward_uses_existing_aggregate_and_fold_evidence_without_recalculation() -> None:
