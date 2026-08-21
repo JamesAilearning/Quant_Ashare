@@ -96,6 +96,14 @@ SHALL remain explicit and SHALL block controlled ordering.
 - **THEN** the engine refuses to continue or publish an aggregate report
 - **AND** it directs the operator to restart from one bundle generation
 
+#### Scenario: A bundle changes during a pipeline run
+
+- **WHEN** a provider calendar-content or rebuild identity changes after
+  pipeline feature construction begins and before its report is published
+- **THEN** the pipeline refuses to publish the report
+- **AND** its backtest provenance remains bound to the identities captured
+  before feature construction rather than restamping from the changed provider
+
 ### Requirement: Present existing evidence and precise read-only references
 
 For every selected run, the workbench SHALL display only values already present

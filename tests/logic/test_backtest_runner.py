@@ -122,6 +122,14 @@ class BacktestRunnerStructuralTests(unittest.TestCase):
                 predictions="dummy",
             )
 
+    def test_partial_captured_bundle_identity_is_rejected(self) -> None:
+        with self.assertRaisesRegex(BacktestRunnerError, "supplied together"):
+            BacktestRunner.run(
+                request=_make_request(),
+                predictions="dummy",
+                bundle_identity="calendar-a",
+            )
+
     def test_zero_lag_rejected_by_contract(self) -> None:
         # codex P1 on PR #241: lag=0 (same-day fill) would need a backward
         # restamp — look-ahead — while the canonical runner stamps every
@@ -1697,6 +1705,40 @@ class ProvenanceFingerprintTests(unittest.TestCase):
         self.assertNotEqual(
             before["config"]["runtime"]["bundle_build_identity"],
             after["config"]["runtime"]["bundle_build_identity"],
+        )
+
+    def test_provenance_keeps_the_pipeline_start_bundle_identity(self) -> None:
+        """A pipeline must not restamp its report from a later rebuild."""
+        runtime = QlibRuntimeConfig(
+            provider_uri="/tmp/bundle", region="cn",
+            data_adjust_mode=ADJUST_MODE_PRE,
+        )
+        with patch(
+            "src.core.backtest_runner.get_canonical_qlib_config",
+            return_value=runtime,
+        ), patch(
+            "src.core.backtest_runner.read_bundle_tag",
+            return_value="calendar-observed-after-build",
+        ), patch(
+            "src.core.backtest_runner.read_bundle_build_identity",
+            return_value="build-observed-after-build",
+        ):
+            provenance = BacktestRunner._build_provenance(
+                self._make_request(),
+                topk=50,
+                n_drop=5,
+                bundle_identity="calendar-captured-before-build",
+                bundle_build_identity="build-captured-before-build",
+            )
+
+        runtime_provenance = provenance["config"]["runtime"]
+        self.assertEqual(
+            runtime_provenance["bundle_identity"],
+            "calendar-captured-before-build",
+        )
+        self.assertEqual(
+            runtime_provenance["bundle_build_identity"],
+            "build-captured-before-build",
         )
 
     def test_fingerprint_changes_with_provider_uri(self) -> None:

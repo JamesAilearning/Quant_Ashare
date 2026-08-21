@@ -72,6 +72,13 @@ Pipeline and walk-forward reports share the same top-level
 `comparison_provenance` schema: Pipeline resolves its one canonical backtest
 record, while Walk-Forward resolves all fold records.
 
+Pipeline captures both provider identities immediately after canonical runtime
+initialization and before feature construction. It supplies that captured pair
+to canonical backtest provenance, then rechecks the live pair before the
+backtest and immediately before report publication. A changed calendar-content
+or rebuild identity aborts the run rather than publishing a report that binds
+model or prediction bytes from one generation to provenance from another.
+
 For pipeline rows, the read model also compares each complete resolved
 `config.yaml` with the producer-written overlapping report and canonical
 backtest fields.  A mismatch blocks ordering; configuration files are display

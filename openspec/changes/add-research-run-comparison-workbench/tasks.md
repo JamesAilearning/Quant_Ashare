@@ -5,6 +5,7 @@
 - [x] 1.3 Add focused tests for complete, mismatched, and missing-contract selections.
 - [x] 1.4 Record calendar-content and producer-written rebuild identities in new backtest provenance and feature-cache keys, validate them for controlled comparison, and bump/invalidate walk-forward resume and baseline-export evidence so corrected bytes cannot mix generations.
 - [x] 1.5 Resolve canonical official-backtest paths across walk-forward folds, cross-check complete pipeline configuration artifacts against their reports, and preserve rebased resumed-fold provenance paths.
+- [x] 1.6 Pin Pipeline bundle identities before feature construction, preserve that pair in backtest provenance, and reject provider changes before report publication.
 
 ## 2. Read-only workbench page
 

@@ -81,6 +81,7 @@ from src.core.run_catalog import (
 )
 from src.core.signal_analyzer import SignalAnalysisConfig, SignalAnalysisResult, SignalAnalyzer
 from src.core.visualizer import ResultVisualizer, VisualizerConfig
+from src.data._feature_dataset_cache import read_bundle_build_identity, read_bundle_tag
 from src.data.feature_dataset_builder import FeatureDatasetBuilder, FeatureDatasetConfig, FeatureDatasetResult
 
 # Re-export the shared sanitizer at the previous public symbol so
@@ -468,6 +469,14 @@ class Pipeline:
         # init_qlib_canonical is idempotent for same config, raises on mismatch
         init_qlib_canonical(requested_config)
 
+        # Capture both immutable provider identities before any feature bytes
+        # are read.  The feature build, model, and predictions must all refer
+        # to this one generation; rechecks at the backtest/report boundaries
+        # refuse to publish a report if an in-place rebuild intervenes.
+        bundle_identity, bundle_build_identity = cls._resolve_bundle_identities(
+            requested_config.provider_uri
+        )
+
         # Audit P2 (add-pit-analyzer-routing): ONE optional PIT provider for the
         # run (empty registry path -> None = legacy WARN path). Bound to THIS
         # runtime's labels so the provider's init is an idempotent no-op.
@@ -537,6 +546,12 @@ class Pipeline:
             evaluation_end=config.test_end,
         )
 
+        cls._assert_bundle_identities_unchanged(
+            provider_uri=requested_config.provider_uri,
+            expected_bundle_identity=bundle_identity,
+            expected_bundle_build_identity=bundle_build_identity,
+        )
+
         backtest_output = BacktestRunner.run(
             request=backtest_request,
             predictions=model_result.predictions,
@@ -572,6 +587,17 @@ class Pipeline:
             # so the audit lands with the run's other artifacts and a re-run
             # cannot overwrite it (Codex P2 on #223).
             st_audit_path=str(output_dir / "st_mask_audit.csv"),
+            # Keep report provenance bound to the generation captured before
+            # feature construction, never to a mutable provider read after
+            # model training/backtest execution.
+            bundle_identity=bundle_identity,
+            bundle_build_identity=bundle_build_identity,
+        )
+
+        cls._assert_bundle_identities_unchanged(
+            provider_uri=requested_config.provider_uri,
+            expected_bundle_identity=bundle_identity,
+            expected_bundle_build_identity=bundle_build_identity,
         )
 
         # Step 6: Factor analysis (optional)
@@ -737,6 +763,11 @@ class Pipeline:
 
         # Step 8: Write report
         report_path = str(output_dir / "pipeline_report.json")
+        cls._assert_bundle_identities_unchanged(
+            provider_uri=requested_config.provider_uri,
+            expected_bundle_identity=bundle_identity,
+            expected_bundle_build_identity=bundle_build_identity,
+        )
         try:
             cls._write_report(
                 report_path, config, feature_result, model_result,
@@ -868,6 +899,40 @@ class Pipeline:
             append_run_record(record)
         except Exception:  # noqa: BLE001 — catalog is best-effort
             _logger.debug("Run catalog append skipped.", exc_info=True)
+
+    @staticmethod
+    def _resolve_bundle_identities(provider_uri: str) -> tuple[str, str]:
+        """Read the canonical calendar and rebuild identities for one run."""
+        return (
+            read_bundle_tag(provider_uri),
+            read_bundle_build_identity(provider_uri),
+        )
+
+    @classmethod
+    def _assert_bundle_identities_unchanged(
+        cls,
+        *,
+        provider_uri: str,
+        expected_bundle_identity: str,
+        expected_bundle_build_identity: str,
+    ) -> None:
+        """Refuse to publish a pipeline report across bundle generations."""
+        observed_bundle_identity, observed_bundle_build_identity = (
+            cls._resolve_bundle_identities(provider_uri)
+        )
+        if (
+            observed_bundle_identity != expected_bundle_identity
+            or observed_bundle_build_identity != expected_bundle_build_identity
+        ):
+            raise PipelineError(
+                "Pipeline bundle identity changed during this run: "
+                f"expected calendar={expected_bundle_identity!r}, "
+                f"build={expected_bundle_build_identity!r}; observed "
+                f"calendar={observed_bundle_identity!r}, "
+                f"build={observed_bundle_build_identity!r}. Refusing to mix "
+                "feature, model, and backtest bytes from different bundle "
+                "generations; restart the run."
+            )
 
     @staticmethod
     def _make_run_dir(root_dir: Path, config: PipelineConfig) -> Path:
