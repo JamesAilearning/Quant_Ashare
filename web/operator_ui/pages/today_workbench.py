@@ -447,6 +447,9 @@ queue = build_today_decision_queue(
     update_time=update_time,
     update_matches_provider=update_matches_provider,
     update_running_class=update_running_class,
+    # 剩余预算决定「更新失败」排多严重 —— 队列不再对第一晚和第三晚说同一句话。
+    update_days_until_stale_floor=(
+        health.days_until_stale_floor if health is not None else None),
     signal=signal,
     jobs=all_jobs,
     jobs_error=jobs_error,

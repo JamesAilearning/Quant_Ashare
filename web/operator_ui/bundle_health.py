@@ -32,6 +32,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,49 @@ _log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_FILE = PROJECT_ROOT / "config.yaml"
+
+# 出单侧的陈旧硬闸:bundle 末日落后「外部今天」超过这么多**自然日**,
+# ``recommend()`` 直接拒绝打分(``RecommendationConfig.bundle_max_age_days``)。
+#
+# 这里钉一份而不是导入 —— 导入 ``src.inference.daily_recommend`` 会把整个
+# qlib + gym 拉进 Streamlit 进程。沿用 #454 为 artifact_schema_version 立下的
+# 惯例:UI 侧钉具名常量,再用一条测试**读生产者源码做字面对齐**,生产者一改
+# 而这边没跟就变红。
+BUNDLE_MAX_AGE_DAYS = 14
+
+# 待办队列把「更新失败」从 attention 升为 blocker 的界线。
+#
+# 取下限的一半是一条**写明的策略**,不是调出来的数字:到这一步,剩下的时间已经
+# 不比已经损失的多。从下限推导而不是另写一个字面量,下限一改它自动跟着改。
+BUDGET_HALF_SPENT_DAYS = BUNDLE_MAX_AGE_DAYS // 2
+
+# bundle 的末日是 A 股交易日。用 UTC 比会在午夜前后差一天,所以固定东八区 ——
+# 与 ``daily_recommend`` 因同一理由固定 ``_CN_TZ`` 一致。
+_CN_TZ = timezone(timedelta(hours=8))
+
+
+def today_cn() -> date:
+    """东八区的今天。所有陈旧度计算的默认「今天」,测试可覆盖。"""
+    return datetime.now(tz=_CN_TZ).date()
+
+
+def days_until_stale_floor(
+    tail_date: str | None, *, today: date | None = None,
+) -> int | None:
+    """距出单硬闸还剩几个自然日;末日未知时 ``None``。
+
+    这是**剩余预算**,不是我们发明的分级线:出单侧只认
+    ``bundle_max_age_days``,这里如实把它换算成操作人能直接读的一个数。
+    负数与零都保留原值,好让调用方区分「刚好用完」和「早就过了」。
+    """
+    if not tail_date:
+        return None
+    try:
+        tail = date.fromisoformat(tail_date)
+    except ValueError:
+        return None
+    return BUNDLE_MAX_AGE_DAYS - ((today or today_cn()) - tail).days
+
 
 # Status badges. Operators with screen readers / no-emoji terminals
 # still get the textual status name; the emoji is a glance-aid only.
@@ -70,6 +114,9 @@ class BundleHealthSummary:
     message: str
     tail_date: str | None
     instrument_count: int | None
+    #: 距出单硬闸还剩几个自然日；末日未知时 ``None``。
+    #: 这个数比任何颜色都有信息量：它是**剩余预算**。
+    days_until_stale_floor: int | None = None
     warnings: tuple[str, ...] = field(default_factory=tuple)
     errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -190,7 +237,9 @@ def resolve_default_provider_uri(
 # ---------------------------------------------------------------------------
 
 
-def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
+def summarise_bundle_health(
+    provider_uri: str | None, *, today: date | None = None,
+) -> BundleHealthSummary:
     """Inspect ``provider_uri`` and return a one-line health summary.
 
     The status is one of:
@@ -203,6 +252,10 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
       reader emitted warnings (e.g. missing ``calendars/`` or
       ``instruments/`` subdirs). Yellow badge.
     * ``"ok"`` — clean bundle with parseable metadata. Green badge.
+
+    新鲜度参与判定:预算用尽(``days_until_stale_floor <= 0``)时降为
+    ``error`` —— 那不是新阈值,是「出单此刻就会被拒」这个既成事实。
+    预算没用尽则不因陈旧改色;提前示警交给待办队列。
     """
     raw = (provider_uri or "").strip()
     if not raw:
@@ -243,9 +296,17 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
     # to the operator — only the badge + this message are), and
     # ``metadata.warnings`` text is passed through verbatim because it
     # originates in ``training_guards`` (already localised there).
+    remaining = days_until_stale_floor(tail_date_iso, today=today)
+
     parts: list[str] = []
     if tail_date_iso:
         parts.append(f"末日 {tail_date_iso}")
+    if remaining is not None:
+        # 无论绿黄红都写出来:操作人真正要的是这个数,不是颜色。
+        parts.append(
+            f"距出单下限还剩 {remaining} 天" if remaining > 0
+            else f"已越过出单下限 {-remaining} 天"
+        )
     if metadata.instrument_count is not None:
         parts.append(f"{metadata.instrument_count} 个标的")
     if metadata.warnings:
@@ -253,7 +314,10 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
             metadata.warnings[:2],
         ))
 
-    if metadata.warnings:
+    if remaining is not None and remaining <= 0:
+        # 出单此刻就会被 ``_assert_bundle_fresh`` 拒掉。
+        status = "error"
+    elif metadata.warnings:
         status = "warning"
     elif not parts:
         # Bundle exists, no errors / warnings, but also no metadata
@@ -270,6 +334,7 @@ def summarise_bundle_health(provider_uri: str | None) -> BundleHealthSummary:
         message=" | ".join(parts) if parts else "数据包可访问。",
         tail_date=tail_date_iso,
         instrument_count=metadata.instrument_count,
+        days_until_stale_floor=remaining,
         warnings=metadata.warnings,
         errors=metadata.errors,
     )
