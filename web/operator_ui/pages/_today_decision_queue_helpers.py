@@ -6,7 +6,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from web.operator_ui.bundle_health import BUDGET_HALF_SPENT_DAYS
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_review_progress_helpers import DailyReviewProgress
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
@@ -136,7 +135,9 @@ def build_today_decision_queue(
     update_time: str,
     update_matches_provider: bool | None,
     update_running_class: str | None,
-    update_days_until_stale_floor: int | None = None,
+    bundle_refuses_today: bool | None = None,
+    bundle_headroom_days: int | None = None,
+    bundle_max_age_days: int | None = None,
     signal: DailySignalSummary,
     jobs: Iterable[JobSummary],
     jobs_error: str | None,
@@ -211,25 +212,28 @@ def build_today_decision_queue(
         # The caller passes failed-only detail for terminal failures; a
         # successful historical update belongs in the existing summary card.
         #
-        # 严重度跟着**剩余预算**走,不是恒为 attention。一个只会说「注意」的
-        # 条目，在预算被吃掉一半时仍然只说「注意」——实测 2026-08-17/20/21
-        # 连续三次失败期间，队列全程 attention，而预算从 14 天掉到 6 天。
-        # 界线取下限的一半：到这一步，剩下的时间已经不比已经损失的多。
-        spent_half = (
-            update_days_until_stale_floor is not None
-            and update_days_until_stale_floor <= BUDGET_HALF_SPENT_DAYS
+        # 严重度跟着**出单侧自己的判定**走,不是恒为 attention。一个只会说
+        # 「注意」的条目,在第一晚和第三晚说的是同一句话——实测
+        # 2026-08-17/20/21 连续三次失败期间,队列全程 attention,而余量从
+        # 14 天掉到 6 天。
+        #
+        # 这里的三个入参全部来自 `_ops_cockpit_helpers.bundle_freshness`
+        # ——它用出单侧的时钟(宿主本地)、出单侧的边界(`behind > limit`,
+        # 14 天整仍接受)和出单侧日历所建之于的同一份 `calendars/day.txt`。
+        # 本模块**不自己算**任何一样,那正是 #461 首版三条 P1 的来源。
+        # 出单此刻就会被拒 —— 事实,不是阈值。
+        half_spent = (
+            bundle_headroom_days is not None
+            and bundle_max_age_days is not None
+            and bundle_headroom_days <= bundle_max_age_days // 2
         )
         detail = update_detail
-        if update_days_until_stale_floor is not None:
-            detail = (
-                f"{update_detail}"
-                f"（距出单下限还剩 {update_days_until_stale_floor} 天）"
-                if update_days_until_stale_floor > 0 else
-                f"{update_detail}"
-                f"（已越过出单下限 {-update_days_until_stale_floor} 天，出单会被拒）"
-            )
+        if bundle_refuses_today:
+            detail = f"{update_detail}（bundle 已过期，今天出单会被拒）"
+        elif bundle_headroom_days is not None:
+            detail = f"{update_detail}（距出单拒绝阈值余 {bundle_headroom_days} 天）"
         items.append(_item(
-            "blocker" if spent_half else "attention",
+            "blocker" if (bundle_refuses_today or half_spent) else "attention",
             "update:failed", "数据更新失败", detail,
             source_time=update_time, destination="run_center",
         ))

@@ -39,6 +39,11 @@ from web.operator_ui.pages._daily_review_progress_helpers import (
     DailyReviewProgress,
     summarise_daily_review_progress,
 )
+from web.operator_ui.pages._ops_cockpit_helpers import (
+    bundle_calendar_tail,
+    bundle_freshness,
+    recommender_integrity_check,
+)
 from web.operator_ui.pages._today_decision_queue_helpers import (
     TodayQueueItem,
     build_today_decision_queue,
@@ -237,6 +242,26 @@ if not provider.strip():
 else:
     provider_problem = unusable_path_reason(provider) or ""
 health: BundleHealthSummary | None = None
+# 出单侧对 bundle 陈旧的判定,**照抄生产运维页 ⑤ 的取法**，一个字节都不自己算:
+# 时钟用出单侧的宿主本地日(不是面向操作人的 CN 日历日)、边界用出单侧的
+# `behind > limit`(14 天整仍接受)、末日读 `calendars/day.txt`(不是
+# `summarise_bundle_health` 偏好的 `_fetch_integrity` 身份戳)。
+#
+# #461 首版在这里另写了一份,三个决策全错,三条 P1 —— 而这套判据早就存在、
+# 且被 `test_ops_cockpit_page_source.py` 的多条守卫钉着。
+_cal_tail = bundle_calendar_tail(provider)
+_integrity = recommender_integrity_check(provider)
+_freshness = bundle_freshness(
+    # 不传 today:默认就是出单侧那个时钟。让调用点无从写错,好过要求每个调用点
+    # 都记得写对。
+    tail_date=(
+        _cal_tail.tail.isoformat()
+        if _cal_tail.known and _cal_tail.tail else None),
+    provider_uri=provider,
+    message=_cal_tail.reason if not _cal_tail.known else "",
+    integrity_accepted=_integrity.accepted,
+    integrity_reason=_integrity.reason,
+)
 update_status: UpdateRunStatus | None = None
 update_matches_provider: bool | None = None
 update_error: str | None = None
@@ -447,9 +472,10 @@ queue = build_today_decision_queue(
     update_time=update_time,
     update_matches_provider=update_matches_provider,
     update_running_class=update_running_class,
-    # 剩余预算决定「更新失败」排多严重 —— 队列不再对第一晚和第三晚说同一句话。
-    update_days_until_stale_floor=(
-        health.days_until_stale_floor if health is not None else None),
+    # 「更新失败」排多严重,由**出单侧自己的**新鲜度判定说了算。
+    bundle_refuses_today=_freshness.refuses_today,
+    bundle_headroom_days=_freshness.headroom_days,
+    bundle_max_age_days=_freshness.max_age_days,
     signal=signal,
     jobs=all_jobs,
     jobs_error=jobs_error,

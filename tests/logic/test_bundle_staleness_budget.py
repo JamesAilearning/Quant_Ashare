@@ -1,25 +1,25 @@
-"""数据包新鲜度：剩余预算是一等公民（openspec 2026-08-22-bundle-staleness-in-health）。
+"""今日待办队列按**出单侧自己的**新鲜度判定给「数据更新失败」定严重度。
 
-出单侧对陈旧有硬闸（`bundle_max_age_days = 14`），而控制台的健康判定原本
-**完全不看**它：状态只由结构完整性决定。实测 2026-08-22 本机——bundle 末日
-2026-08-14、已 8 天、离下限只剩 6 天、夜间更新连续三晚失败，健康卡仍是
-`状态 ok`，队列仍是 `attention`。三晚里操作人的第一视图始终是绿的。
+（openspec 2026-08-22-bundle-staleness-in-health）
+
+起因：夜间更新连续三晚失败（2026-08-17 / 08-20 / 08-21，均 exit 11），而队列
+全程把它归为 `attention`，余量从 14 天掉到 6 天，第一视图始终不变。一个只会说
+「注意」的条目，在第一晚和第三晚说的是同一句话。
+
+**本 change 不新造任何新鲜度判据。** 仓库里已有 `_ops_cockpit_helpers`
+一套与出单侧逐字对齐的：时钟用宿主本地日、边界 `behind > limit`（14 天整仍
+接受）、末日读 `calendars/day.txt`。#461 首版在 `bundle_health` 里另写了一份，
+三个决策全错、三条 P1、并打红既有 26 条 —— 这些用例守的正是「不许再写第二份」。
 """
 
 from __future__ import annotations
 
+import ast
 import unittest
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
-from unittest import mock
 
-from web.operator_ui import bundle_health
-from web.operator_ui.bundle_health import (
-    BUDGET_HALF_SPENT_DAYS,
-    BUNDLE_MAX_AGE_DAYS,
-    days_until_stale_floor,
-)
+from web.operator_ui.pages._ops_cockpit_helpers import bundle_freshness
 from web.operator_ui.pages._today_decision_queue_helpers import (
     TodayQueueItem,
     build_today_decision_queue,
@@ -27,91 +27,8 @@ from web.operator_ui.pages._today_decision_queue_helpers import (
 from web.operator_ui.pages._today_workbench_helpers import DailySignalSummary
 
 _ROOT = Path(__file__).resolve().parents[2]
-
-
-class RemainingBudgetIsComputedNotGuessed(unittest.TestCase):
-    def test_the_floor_is_pinned_against_the_producer_source(self) -> None:
-        """下限值不重新发明。
-
-        沿用 #454 为 `artifact_schema_version` 立下的惯例：UI 侧钉具名常量，
-        用一条测试**读生产者源码做字面对齐**——导入 `daily_recommend` 会把整个
-        qlib + gym 拉进渲染进程。生产者改了而这边没跟，这条立刻红。
-        """
-        producer = (
-            _ROOT / "src" / "inference" / "daily_recommend.py"
-        ).read_text(encoding="utf-8")
-        self.assertEqual(BUNDLE_MAX_AGE_DAYS, 14)
-        self.assertIn("bundle_max_age_days: int = 14", producer)
-
-    def test_the_escalation_line_is_derived_from_the_floor(self) -> None:
-        """界线必须**从下限推导**，不是另写一个恰好相等的字面量。
-
-        只断言 `== BUNDLE_MAX_AGE_DAYS // 2` 分辨不出这两者：写死 `7` 在今天
-        与推导值相等，测试照样绿——变异测试实测确认过。要盯的性质是「派生」，
-        所以直接断言源码里写的就是那个推导式（与本仓 #444 用
-        `assertIn("canonical_dir_key(", body)` 钉「委托而非重写」同一手法）。
-        """
-        self.assertEqual(BUDGET_HALF_SPENT_DAYS, BUNDLE_MAX_AGE_DAYS // 2)
-        source = (
-            _ROOT / "web" / "operator_ui" / "bundle_health.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "BUDGET_HALF_SPENT_DAYS = BUNDLE_MAX_AGE_DAYS // 2", source,
-            "界线被写成了字面量——下限一改它就不会跟着改")
-
-    def test_budget_counts_down_in_calendar_days(self) -> None:
-        today = date(2026, 8, 22)
-        self.assertEqual(days_until_stale_floor("2026-08-22", today=today), 14)
-        self.assertEqual(days_until_stale_floor("2026-08-14", today=today), 6)
-        self.assertEqual(days_until_stale_floor("2026-08-08", today=today), 0)
-        self.assertEqual(days_until_stale_floor("2026-08-01", today=today), -7)
-
-    def test_an_unknown_tail_is_unknown_not_assumed(self) -> None:
-        today = date(2026, 8, 22)
-        for tail in (None, "", "not-a-date"):
-            with self.subTest(末日=tail):
-                self.assertIsNone(days_until_stale_floor(tail, today=today))
-
-
-class HealthGoesRedOnlyWhenServingWouldRefuse(unittest.TestCase):
-    """预算用尽 = 出单此刻就会被拒。这不是新阈值，是既成事实。
-
-    在 ``inspect_provider_metadata`` 这个缝上打桩，好让用例不必造一个真 bundle
-    ——被测的是判定，不是元数据读取。
-    """
-
-    def _summary(self, tail: date | None, *, today: date) -> object:
-        meta = SimpleNamespace(
-            coverage_end_date=tail, instrument_count=5795,
-            warnings=(), errors=(),
-        )
-        with mock.patch.object(
-            bundle_health, "inspect_provider_metadata", return_value=meta,
-        ):
-            return bundle_health.summarise_bundle_health("D:/fake", today=today)
-
-    def test_budget_left_does_not_change_the_colour(self) -> None:
-        # 这正是三晚故障期间的真实取值：末日 08-14、今天 08-22、还剩 6 天。
-        s = self._summary(date(2026, 8, 14), today=date(2026, 8, 22))
-        self.assertEqual(s.status, "ok")
-        self.assertEqual(s.days_until_stale_floor, 6)
-        self.assertIn("还剩 6 天", s.message)
-
-    def test_budget_exhausted_turns_red(self) -> None:
-        s = self._summary(date(2026, 8, 8), today=date(2026, 8, 22))
-        self.assertEqual(
-            s.status, "error", "预算已用尽（出单会被拒），健康卡还是绿的")
-        self.assertEqual(s.days_until_stale_floor, 0)
-
-    def test_past_the_floor_says_how_far_past(self) -> None:
-        s = self._summary(date(2026, 8, 1), today=date(2026, 8, 22))
-        self.assertEqual(s.status, "error")
-        self.assertIn("已越过出单下限 7 天", s.message)
-
-    def test_unknown_tail_is_not_assumed_fresh_or_stale(self) -> None:
-        s = self._summary(None, today=date(2026, 8, 22))
-        self.assertIsNone(s.days_until_stale_floor)
-        self.assertNotEqual(s.status, "error")
+_PAGE = _ROOT / "web" / "operator_ui" / "pages" / "today_workbench.py"
+_QUEUE = _ROOT / "web" / "operator_ui" / "pages" / "_today_decision_queue_helpers.py"
 
 
 def _queue(**over: object) -> tuple[TodayQueueItem, ...]:
@@ -142,33 +59,97 @@ def _failed_item(items: tuple[TodayQueueItem, ...]) -> TodayQueueItem:
     return found[0]
 
 
-class AFailedUpdateEscalatesAsTheBudgetDrains(unittest.TestCase):
-    """一个只会说「注意」的条目，在第一晚和第三晚说的是同一句话。"""
+def _verdict(tail: str, today: date) -> object:
+    """出单侧那套判据的裁决——用例一律经由它取值，不自己算天数。"""
+    return bundle_freshness(
+        today=today, tail_date=tail, provider_uri="X", max_age_days=14)
 
-    def test_plenty_of_budget_stays_attention(self) -> None:
+
+class TheQueueUsesTheServingVerdictNotItsOwnArithmetic(unittest.TestCase):
+    def test_the_page_asks_the_existing_freshness_helper(self) -> None:
+        """页面必须**调用**既有判据，而不是自己再算一遍。
+
+        断言的是 import 与调用，不是数值：数值相等在本机可能只是巧合（同一条
+        教训写在 `test_the_clock_matches_the_recommenders_not_the_operators`
+        里——本机就在 +08:00，两个时钟一致，带 bug 也能过）。
+        """
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "web.operator_ui.pages._ops_cockpit_helpers"
+            for alias in node.names
+        }
+        self.assertEqual(
+            {"bundle_calendar_tail", "bundle_freshness",
+             "recommender_integrity_check"},
+            imported,
+            "今日工作台没有复用既有的新鲜度判据",
+        )
+
+    def test_the_queue_module_computes_no_staleness_of_its_own(self) -> None:
+        # 第二道独立守卫：队列模块不许把任何陈旧度算术搬回自己家。
+        source = _QUEUE.read_text(encoding="utf-8")
+        for forbidden in ("date.today(", "datetime.now(", "BUNDLE_MAX_AGE_DAYS",
+                          "timezone(timedelta"):
+            with self.subTest(禁用=forbidden):
+                self.assertNotIn(forbidden, source)
+
+
+class AFailedUpdateEscalatesAsTheServingBudgetDrains(unittest.TestCase):
+    def test_plenty_of_headroom_stays_attention(self) -> None:
+        v = _verdict("2026-08-20", date(2026, 8, 22))          # 落后 2 天
         item = _failed_item(_queue(
-            update_days_until_stale_floor=BUDGET_HALF_SPENT_DAYS + 1))
+            bundle_refuses_today=v.refuses_today,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
         self.assertEqual(item.kind, "attention")
+        self.assertIn("余 12 天", item.detail)
 
     def test_half_the_budget_gone_becomes_a_blocker(self) -> None:
+        # 三晚故障第三晚的真实取值：末日 08-14、今天 08-22、落后 8 天、余 6 天。
+        v = _verdict("2026-08-14", date(2026, 8, 22))
         item = _failed_item(_queue(
-            update_days_until_stale_floor=BUDGET_HALF_SPENT_DAYS))
+            bundle_refuses_today=v.refuses_today,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
         self.assertEqual(
-            item.kind, "blocker",
-            "预算已用掉一半，队列还在说「注意」")
+            item.kind, "blocker", "预算已用掉一半，队列还在说「注意」")
+        self.assertIn("余 6 天", item.detail)
 
-    def test_past_the_floor_is_a_blocker_and_says_serving_would_refuse(self) -> None:
-        item = _failed_item(_queue(update_days_until_stale_floor=-2))
+    def test_the_boundary_day_is_the_recommenders_boundary(self) -> None:
+        """落后正好 14 天：出单侧**仍然接受**，所以不能说「会被拒」。
+
+        #461 首版在这里判红并写「出单此刻就会被拒」，比出单侧早了一整天。
+        """
+        v = _verdict("2026-08-08", date(2026, 8, 22))          # 落后 14 天
+        self.assertEqual(14, v.days_behind)
+        self.assertFalse(v.refuses_today, "恰好等于阈值，出单侧仍接受")
+        item = _failed_item(_queue(
+            bundle_refuses_today=v.refuses_today,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
+        self.assertNotIn("会被拒", item.detail)
+
+    def test_one_day_past_the_boundary_says_serving_refuses(self) -> None:
+        v = _verdict("2026-08-07", date(2026, 8, 22))          # 落后 15 天
+        self.assertTrue(v.refuses_today)
+        item = _failed_item(_queue(
+            bundle_refuses_today=v.refuses_today,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
         self.assertEqual(item.kind, "blocker")
-        self.assertIn("出单会被拒", item.detail)
+        self.assertIn("今天出单会被拒", item.detail)
 
-    def test_the_remaining_days_are_stated_in_the_item(self) -> None:
-        # 三晚故障里没有任何一处把这个数摆出来。
-        item = _failed_item(_queue(update_days_until_stale_floor=6))
-        self.assertIn("还剩 6 天", item.detail)
-
-    def test_an_unknown_budget_does_not_fabricate_severity(self) -> None:
-        item = _failed_item(_queue(update_days_until_stale_floor=None))
+    def test_an_unknown_verdict_does_not_fabricate_severity(self) -> None:
+        # 末日读不出来时（日历字节有歧义），既不假装新鲜也不假装陈旧。
+        v = _verdict("", date(2026, 8, 22))
+        self.assertFalse(v.known)
+        item = _failed_item(_queue(
+            bundle_refuses_today=v.refuses_today,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
         self.assertEqual(item.kind, "attention")
         self.assertEqual(item.detail, "抓取失败")
 
