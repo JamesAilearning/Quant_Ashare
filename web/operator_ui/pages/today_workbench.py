@@ -52,6 +52,7 @@ from web.operator_ui.pages._today_decision_queue_helpers import (
 )
 from web.operator_ui.pages._today_workbench_helpers import (
     DailySignalSummary,
+    failed_update_summary,
     summarise_daily_signal,
     summarise_operations,
 )
@@ -151,7 +152,7 @@ def _render_update_summary(
         _render_card(
             "上次数据更新",
             f"更新失败（exit {update.exit_code}）",
-            f"{update.exit_meaning}；失败阶段：{update.failed_stage or '未记录'}。",
+            failed_update_summary(update),
             color="negative",
         )
     return update, matches_provider, None
@@ -467,10 +468,7 @@ if update_status is not None:
         update_detail = update_status.detail or update_status.started_at or "状态记录未给出开始时间。"
         update_running_class = classify_running(update_status)
     elif update_status.kind == "finished" and not update_status.ok:
-        update_detail = (
-            f"{update_status.exit_meaning}；失败阶段："
-            f"{update_status.failed_stage or '未记录'}。"
-        )
+        update_detail = failed_update_summary(update_status)
 
 queue = build_today_decision_queue(
     provider_problem=provider_problem or None,

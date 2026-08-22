@@ -17,6 +17,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
+from web.operator_ui.update_status import UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
     VERDICT_MATCHES_INCUMBENT,
@@ -26,6 +27,23 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
+
+def failed_update_summary(status: UpdateRunStatus) -> str:
+    """失败运行的一行说明：退出码含义、死在哪个阶段、**为什么**。
+
+    失败卡片与今日待办队列都从这里取,不各写一份:它们此前是两段手写的同义
+    字符串,而唯一能让操作人动手的正是「为什么」那一段——两处分头演化,迟早
+    有一处漏掉它。
+
+    `detail` 空时**明说记录里没有原因**,不留白:留白读起来像「没有更多可说」,
+    而真相是「这次运行没把原因写下来」,两者对操作人的下一步完全不同。
+    """
+    reason = (status.detail or "").strip()
+    head = f"{status.exit_meaning}；失败阶段：{status.failed_stage or '未记录'}。"
+    if not reason:
+        return head + "状态记录未写下原因；请在运行中心查看日志。"
+    return head + f"原因：{reason}"
+
 
 @dataclass(frozen=True)
 class DailySignalSummary:

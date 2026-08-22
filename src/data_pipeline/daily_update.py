@@ -10,7 +10,7 @@ scheduler (Phase 4 — out of scope here) can tell where a run died:
     0  success
     2  configuration / setup error
     10 startup repair found an unrepairable bundle state
-    11 fetch failed hard (01 exit 1/2)
+    11 fetch failed hard (01 exited anything other than 0 or 3)
     12 fetch completed WITH HOLES and --allow-holey-fetch was not given
     13 active-stocks snapshot not refreshed to today (and no override)
     14 rebuild failed (02 registry / 05 bins / 03 membership / 04 universe)
@@ -53,8 +53,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -108,6 +110,107 @@ EXIT_SWAP = 16
 EXIT_ALREADY_RUNNING = 17  # CLI single-flight (阶段5 PR-P); see scripts/daily_update.py
 
 Runner = Callable[[list[str]], int]
+
+# ---------------------------------------------------------------- 阶段失败原因
+#
+# `Runner` 只让一个 int 穿过。于是 01 已经写好、并且**直接给出修法**的那句
+# "refusing narrower-scope merge ... Re-run the full range to extend it, or pass
+# --reset-manifest" 停在日志里,而操作人实际读的状态工件只拿到
+# "fetch failed hard (exit 1)"。2026-08-17/20/21 三晚连续失败,退出码全是 11,
+# 工件与 UI 三晚说的是同一句废话,真正的原因一次都没露面。
+#
+# 补法是在**编排器这一侧**给每次阶段调用套一个作用域内的日志捕获——七个脚本
+# 一行都不用改,而且七个阶段一视同仁(只补 fetch 就会在下一个阶段上重演)。
+_STAGE_DETAIL_MAX_CHARS = 1200
+
+# 捕获点必须是 `src`,不是真正的 root:`src.core.logger.setup_logging` 在
+# `logging.getLogger("src")` 上设了 `propagate = False`(为免重复输出),挂在真
+# root 上的 handler 一条记录都收不到——那会让这整套机制静默变成空转。
+_STAGE_LOG_ROOT = "src"
+
+
+class _StageErrorCollector(logging.Handler):
+    """收集一次阶段调用期间发出的 ERROR 行。"""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # 可观测性绝不允许改变运行结果。`logging.Handler.handle` 并不包住
+        # `emit`,这里抛出的异常会从阶段自己那句 `logger.error(...)` 里冒出去,
+        # 把一次**可诊断的失败**变成一次崩溃——正是本改动要消除的那种事。
+        # 所以这里吞掉一切:少一行详情可以接受,改变退出码不可以。
+        try:
+            self.lines.append(record.getMessage())
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+@contextmanager
+def _capture_stage_errors() -> Iterator[list[str]]:
+    """捕获**一个阶段运行期间**发出的 ERROR 行。
+
+    分辨「阶段自己报的原因」与「编排器对它的转述」靠的就是这个作用域,不靠
+    按 logger 名过滤:下面每一句 `_logger.error("Fetch FAILED ...")` 都在阶段
+    调用**返回之后**才发出,天然落在窗口外;而 `_verify_snapshot_refreshed` 把
+    原因记在自己函数体内,天然落在窗口内。
+
+    也**不该**按 logger 名过滤:阶段栽在它调用的某个 helper 模块里时,那条
+    ERROR 同样是这个阶段的失败原因。
+
+    作用域是**进程级**的:窗口开着时,同进程任何线程在 `src.*` 下报的 ERROR 都会
+    被收进来。编排器是单线程且由 single_flight 串行化的,所以这在生产里不构成
+    歧义;若将来有人让阶段并发,这里要先改。
+    """
+    collector = _StageErrorCollector()
+    logger = logging.getLogger(_STAGE_LOG_ROOT)
+    logger.addHandler(collector)
+    try:
+        yield collector.lines
+    finally:
+        # `finally` 而非 `except`:阶段抛异常时也必须摘下,否则 handler 会在
+        # 进程存活期间一直挂着,把后续每个阶段的错误都收进一个死列表。
+        logger.removeHandler(collector)
+
+
+def _stage_detail(summary: str, captured: Sequence[str]) -> str:
+    """把阶段自己的 ERROR 行折进状态工件的单行 `detail`。
+
+    `detail` 的契约是**一行**(它被渲染进表格单元格与卡片正文),所以内嵌换行
+    折成 `' / '` 而不是丢弃——traceback 的最后一帧往往正是有用的那半。
+
+    截断**必须声明**,不许静默。上限刻意远高于 `job_io._extract_failure_detail`
+    的 200:本改动要救的那句真实消息约 350 字符,而它的**后**半句才是修法
+    ("Re-run the full range to extend it, or pass --reset-manifest")——按 200 截
+    会精准地留下抱怨、切掉办法。
+
+    捕获为空时原样返回 `summary`:不知道就不编,绝不假装拿到了原因。
+    """
+    cleaned: list[str] = []
+    for line in captured:
+        folded = " / ".join(
+            part.strip() for part in str(line).splitlines() if part.strip())
+        if folded:
+            cleaned.append(folded)
+    if not cleaned:
+        return summary
+    kept: list[str] = []
+    used = 0
+    for line in cleaned:
+        # 第一条无论多长都要收下(否则一条超长消息会让详情整个消失,又回到
+        # 「只有退出码」的原点);它之后再超限就停,并如实报还剩几条。
+        if kept and used + len(line) > _STAGE_DETAIL_MAX_CHARS:
+            break
+        kept.append(line)
+        used += len(line) + 3  # " | " 分隔符
+    body = " | ".join(kept)
+    if len(body) > _STAGE_DETAIL_MAX_CHARS:
+        body = body[:_STAGE_DETAIL_MAX_CHARS] + "…（已截断，完整内容见日志）"
+    dropped = len(cleaned) - len(kept)
+    if dropped:
+        body = f"{body}（另有 {dropped} 条错误未列出，完整内容见日志）"
+    return f"{summary} — {body}"
 
 
 class DailyUpdateError(RuntimeError):
@@ -591,7 +694,11 @@ def _execute_daily_update(
     default loads the real numbered scripts). ``failed_stage`` is the stage key
     (``fetch`` / ``snapshot`` / ``registry`` / … / ``validate`` / ``swap`` /
     ``startup_repair``), ``None`` on success; ``detail`` is a one-line
-    human-readable summary for the status artifact.
+    human-readable summary for the status artifact — for the seven CLI-shaped
+    stages it carries the stage's OWN error line(s) across the ``Runner``
+    seam (see ``_capture_stage_errors``); ``startup_repair`` and ``swap`` are
+    deliberately NOT wrapped because their reason already arrives as the
+    caught exception and wrapping would print it twice.
     """
     active = dict(_default_runners())
     if runners:
@@ -679,7 +786,8 @@ def _execute_daily_update(
         )
 
     # Stage 1: fetch (01 --refresh-current). Exit 3 = completed-with-holes.
-    rc = active["fetch"](plan.fetch)
+    with _capture_stage_errors() as stage_errors:
+        rc = active["fetch"](plan.fetch)
     if rc == 3 and not config.allow_holey_fetch:
         _logger.error(
             "Fetch completed WITH HOLES (exit 3) and --allow-holey-fetch was "
@@ -687,17 +795,21 @@ def _execute_daily_update(
             "Re-run to self-heal the holes, or pass --allow-holey-fetch to "
             "build a research bundle from partial data."
         )
-        return EXIT_FETCH_HOLES, "fetch", (
-            "fetch completed with holes; --allow-holey-fetch not given")
+        return EXIT_FETCH_HOLES, "fetch", _stage_detail(
+            "fetch completed with holes; --allow-holey-fetch not given",
+            stage_errors)
     if rc not in (0, 3):
         _logger.error("Fetch FAILED (exit %d); aborting the update.", rc)
-        return EXIT_FETCH_HARD, "fetch", f"fetch failed hard (exit {rc})"
+        return EXIT_FETCH_HARD, "fetch", _stage_detail(
+            f"fetch failed hard (exit {rc})", stage_errors)
 
     # Stage 2: prove the active-stocks snapshot was refreshed today.
-    rc = _verify_snapshot_refreshed(config, run_date)
+    with _capture_stage_errors() as stage_errors:
+        rc = _verify_snapshot_refreshed(config, run_date)
     if rc != EXIT_OK:
-        return rc, "snapshot", (
-            "active-stocks snapshot not refreshed to the run date")
+        return rc, "snapshot", _stage_detail(
+            "active-stocks snapshot not refreshed to the run date",
+            stage_errors)
 
     # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04 -> 07;
     # 05 must precede 03/04/07 because its staging-promote REPLACES the output
@@ -705,12 +817,13 @@ def _execute_daily_update(
     # writes, so the atomic swap preserves the benchmark instruments (the
     # retired xlsx ingest wrote into LIVE and the swap erased them — audit E2).
     for stage in ("registry", "bins", "membership", "universe", "benchmark"):
-        rc = active[stage](getattr(plan, stage))
+        with _capture_stage_errors() as stage_errors:
+            rc = active[stage](getattr(plan, stage))
         if rc != 0:
             _logger.error("Rebuild stage %r FAILED (exit %d); the live bundle "
                           "is untouched.", stage, rc)
-            return EXIT_REBUILD, stage, (
-                f"rebuild stage {stage!r} failed (exit {rc})")
+            return EXIT_REBUILD, stage, _stage_detail(
+                f"rebuild stage {stage!r} failed (exit {rc})", stage_errors)
 
     # Stage 4: validate the STAGED bundle. Only a pass reaches the swap.
     # 06's exit convention: 0 = clean, 1 = WARNINGS ONLY (every check passed —
@@ -718,7 +831,8 @@ def _execute_daily_update(
     # check), >= 2 = a check FAILED. Warnings-only is a pass here (codex P1):
     # refusing to swap a valid bundle over a routine warning would wedge the
     # daily update permanently.
-    rc = active["validate"](plan.validate)
+    with _capture_stage_errors() as stage_errors:
+        rc = active["validate"](plan.validate)
     if rc == 1:
         _logger.warning(
             "Validation passed WITH WARNINGS (exit 1) on %s — swapping; "
@@ -729,8 +843,9 @@ def _execute_daily_update(
             "Validation FAILED (exit %d) on %s; NOT swapping — the live "
             "bundle stays as it was.", rc, new_dir(config.provider_dir),
         )
-        return EXIT_VALIDATE, "validate", (
-            f"validation failed (exit {rc}) on the staged bundle; not swapping")
+        return EXIT_VALIDATE, "validate", _stage_detail(
+            f"validation failed (exit {rc}) on the staged bundle; not swapping",
+            stage_errors)
 
     # Stage 5: atomic two-stage swap.
     try:
