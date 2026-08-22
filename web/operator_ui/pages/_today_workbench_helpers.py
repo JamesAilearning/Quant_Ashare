@@ -6,7 +6,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from web.operator_ui.incumbent import IncumbentIdentity
-from web.operator_ui.update_status import UpdateRunStatus
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
@@ -18,6 +17,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
+from web.operator_ui.update_status import UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
     VERDICT_MATCHES_INCUMBENT,

@@ -34,7 +34,6 @@ from src.core.logger import get_logger  # noqa: E402
 from src.data_pipeline.daily_update import (  # noqa: E402
     EXIT_FETCH_HARD,
     EXIT_FETCH_HOLES,
-    EXIT_OK,
     EXIT_REBUILD,
     EXIT_SNAPSHOT_STALE,
     EXIT_VALIDATE,
