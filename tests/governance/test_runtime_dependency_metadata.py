@@ -15,6 +15,15 @@ _WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "test.yml"
 _CI_EXTRAS = re.compile(r'pip install -e "\.\[([^\]]+)\]"')
 
 # 上界的形式：`<` / `<=` / `==`（精确钉）/ `~=`（兼容版本，蕴含上界）。
+#
+# `\s*\d` 那一段是**承重**的，见 `TheBoundPatternRequiresAnActualVersion`：
+# 它要求操作符后面紧跟数字，于是环境标记里的 `<` 骗不过它——PEP 508 的标记值
+# 必须加引号（`python_version<'3.11'`），`<` 之后是引号而不是数字。
+#
+# 曾一度为此加过一个「先砍掉 `;` 之后的标记」的辅助函数；一条「先证明前提」的
+# 用例证明那个洞根本不存在（正则本来就挡住了），于是删掉。留下的教训是：承重的
+# 是这一位，而当前依赖表里没有带标记的条目，所以它只能**直接对着正则**测——
+# 实测把 `\s*\d` 去掉，依赖表上的任何用例都抓不到。
 _UPPER_BOUND = re.compile(r"(<=?|==|~=)\s*\d")
 
 
@@ -29,6 +38,26 @@ def _requirement_block(text: str, group: str) -> list[str]:
     assert block is not None, f"pyproject 里找不到 extra 组 {group!r} —— 本守卫已失效"
     stripped = "\n".join(line.split("#", 1)[0] for line in block.group(1).splitlines())
     return re.findall(r'"([^"]+)"', stripped)
+
+
+class TheBoundPatternRequiresAnActualVersion(unittest.TestCase):
+    """直接对着 `_UPPER_BOUND` 测它的承重位。
+
+    依赖表上的用例覆盖不到这里：放宽这个正则只会让它**更宽容**，而现有条目
+    个个都带真上界，任何判定都不会改变（实测变异如此）。
+    """
+
+    def test_an_environment_marker_is_not_read_as_a_bound(self) -> None:
+        # 一条真正无上界的依赖，字面上却带着一个 `<`。
+        self.assertIsNone(_UPPER_BOUND.search("tomli; python_version<'3.11'"))
+
+    def test_a_lower_bound_alone_is_not_an_upper_bound(self) -> None:
+        self.assertIsNone(_UPPER_BOUND.search("pytest>=9.1"))
+
+    def test_every_real_upper_bound_form_is_recognised(self) -> None:
+        for requirement in ("pytest>=9.1,<9.2", "x<=2.0", "y==3.1.4", "z~=1.4"):
+            with self.subTest(约束=requirement):
+                self.assertIsNotNone(_UPPER_BOUND.search(requirement))
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):
@@ -92,6 +121,9 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
             req.split(">=")[0].split("<")[0].split("==")[0].strip(): req
             for req in _requirement_block(text, "dev")
         }
+        # 这三个名字是手写的，因为「判代码 vs 被代码使用」这条线无法从文件结构
+        # 推出来——它是判断，不是数据。pytest-cov 不在其中：`--cov` 只影响覆盖率
+        # 报告，不参与判定成败，大版本上界够用。
         for tool in ("pytest", "ruff", "mypy"):
             with self.subTest(工具=tool):
                 requirement = declared.get(tool)
@@ -114,11 +146,17 @@ class ThePinnedNumpyWindowIsStatedOnce(unittest.TestCase):
     def test_the_workflow_installs_exactly_what_pyproject_declares(self) -> None:
         project = _PYPROJECT.read_text(encoding="utf-8")
         workflow = _WORKFLOW.read_text(encoding="utf-8")
+        # 只在 `dependencies = [...]` 块里找：整份文件里搜的话，注释或别的 extra
+        # 里一个带引号的例子就可能先命中，守卫从此比对的是一个不相干的字符串。
+        requirements = _requirement_block(project, "dependencies")
         checked = 0
         for package in ("numpy", "scipy"):
             with self.subTest(包=package):
-                declared = re.search(rf'"({re.escape(package)}[><=,.\d]+)"', project)
-                self.assertIsNotNone(declared, f"pyproject 里找不到 {package} 约束")
+                matches = [r for r in requirements if r.startswith(package)]
+                self.assertEqual(
+                    1, len(matches), f"dependencies 里 {package} 约束应恰好一条")
+                declared = re.match(rf"({re.escape(package)}[><=,.\d]+)$", matches[0])
+                self.assertIsNotNone(declared, f"{package} 约束形状意外：{matches[0]}")
                 assert declared is not None
                 checked += 1
                 self.assertIn(
