@@ -88,6 +88,29 @@ class TheQueueUsesTheServingVerdictNotItsOwnArithmetic(unittest.TestCase):
             "今日工作台没有复用既有的新鲜度判据",
         )
 
+    def test_the_page_hands_the_queue_every_dimension_of_the_verdict(self) -> None:
+        """页面必须把裁决的**每一维**都传下去，不能只传年龄那一半。
+
+        直接调 `build_today_decision_queue` 的用例守不住这里：把页面调用里的
+        `bundle_integrity_accepted=` 删掉，那些用例照样全绿（实测变异 H）。
+        所以这条盯的是页面**实际传了哪些关键字**。
+        """
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"))
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "build_today_decision_queue"
+        ]
+        self.assertEqual(1, len(calls), "页面里应恰好一处队列调用")
+        passed = {kw.arg for kw in calls[0].keywords if kw.arg}
+        self.assertLessEqual(
+            {"bundle_refuses_today", "bundle_integrity_accepted",
+             "bundle_headroom_days", "bundle_max_age_days"},
+            passed,
+            "裁决有维度没传给队列 —— 少哪一维，队列就在那一维上瞎判",
+        )
+
     def test_the_queue_module_computes_no_staleness_of_its_own(self) -> None:
         # 第二道独立守卫：队列模块不许把任何陈旧度算术搬回自己家。
         source = _QUEUE.read_text(encoding="utf-8")
@@ -141,6 +164,37 @@ class AFailedUpdateEscalatesAsTheServingBudgetDrains(unittest.TestCase):
             bundle_max_age_days=v.max_age_days))
         self.assertEqual(item.kind, "blocker")
         self.assertIn("今天出单会被拒", item.detail)
+
+    def test_a_refused_integrity_stamp_blocks_even_with_fresh_dates(self) -> None:
+        """年龄与完整性是两道**独立**的门，只读年龄那一半会漏掉后者。
+
+        `_fetch_integrity.json` 缺失/损坏/标了 holey 时，出单侧的
+        `_assert_bundle_fetch_complete` 拒绝这个 bundle；而 `summarise_bundle_health`
+        刻意宽容（会吞掉坏戳回落到 legacy 元数据），可能仍报 ok。于是一个日期
+        很新的 bundle 会被显示成「注意」，而出单此刻其实拒绝它（codex #461 r2）。
+        """
+        v = _verdict("2026-08-21", date(2026, 8, 22))          # 落后 1 天，年龄没问题
+        self.assertFalse(v.refuses_today, "年龄这一门是过的")
+        item = _failed_item(_queue(
+            bundle_refuses_today=v.refuses_today,
+            bundle_integrity_accepted=False,                   # 完整性这一门不过
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
+        self.assertEqual(
+            item.kind, "blocker", "完整性被拒，队列却只说「注意」")
+        self.assertIn("完整性校验未通过", item.detail)
+
+    def test_unknown_integrity_does_not_fabricate_a_blocker(self) -> None:
+        # 未知不许伪造严重度：`BundleFreshness.usable` 在完整性未知时也是 False，
+        # 直接拿它当判据会把「不知道」升级成「阻塞」。
+        v = _verdict("2026-08-21", date(2026, 8, 22))
+        item = _failed_item(_queue(
+            bundle_refuses_today=v.refuses_today,
+            bundle_integrity_accepted=None,
+            bundle_headroom_days=v.headroom_days,
+            bundle_max_age_days=v.max_age_days))
+        self.assertEqual(item.kind, "attention")
+        self.assertNotIn("完整性", item.detail)
 
     def test_an_unknown_verdict_does_not_fabricate_severity(self) -> None:
         # 末日读不出来时（日历字节有歧义），既不假装新鲜也不假装陈旧。

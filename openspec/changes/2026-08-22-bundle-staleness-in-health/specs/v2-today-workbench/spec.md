@@ -29,6 +29,32 @@ warning: that one describes the bundle, this one describes a failure that
 nothing is repairing. It SHALL be derived from the reported threshold rather
 than written as its own literal.
 
+The verdict has more than one dimension and the queue SHALL consume all of
+them. Age and fetch integrity are separate gates in the recommender: a
+bundle dated today is still refused when its `_fetch_integrity.json` is
+missing, corrupt, or marks a holey fetch. Reading only the age half leaves
+such a bundle at attention while serving refuses it — and the health summary
+cannot cover for that, because it is deliberately forgiving and falls back to
+legacy metadata when the stamp is unreadable.
+
+An unknown integrity result SHALL NOT raise severity. `BundleFreshness.usable`
+is false on unknown as well as on refused, so consuming it directly would turn
+"we cannot tell" into "blocked".
+
+#### Scenario: a fresh bundle whose integrity gate refuses it
+
+- **GIVEN** a failed update, ample age headroom, and an integrity result of
+  refused
+- **WHEN** the queue is built
+- **THEN** the item is a blocker and says the integrity check failed
+
+#### Scenario: an integrity result that could not be determined
+
+- **GIVEN** a failed update, ample age headroom, and an unknown integrity
+  result
+- **WHEN** the queue is built
+- **THEN** the item stays attention
+
 #### Scenario: a failed update with most of the headroom intact
 
 - **GIVEN** a failed update and headroom above half the threshold

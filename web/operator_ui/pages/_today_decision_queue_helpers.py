@@ -136,6 +136,7 @@ def build_today_decision_queue(
     update_matches_provider: bool | None,
     update_running_class: str | None,
     bundle_refuses_today: bool | None = None,
+    bundle_integrity_accepted: bool | None = None,
     bundle_headroom_days: int | None = None,
     bundle_max_age_days: int | None = None,
     signal: DailySignalSummary,
@@ -221,7 +222,15 @@ def build_today_decision_queue(
         # ——它用出单侧的时钟(宿主本地)、出单侧的边界(`behind > limit`,
         # 14 天整仍接受)和出单侧日历所建之于的同一份 `calendars/day.txt`。
         # 本模块**不自己算**任何一样,那正是 #461 首版三条 P1 的来源。
-        # 出单此刻就会被拒 —— 事实,不是阈值。
+        # 出单侧**今天就会拒**——事实,不是阈值。年龄与完整性是两道独立的门,
+        # 都由出单侧自己的判据评出:只读年龄那一半,会让一个日期很新但
+        # `_fetch_integrity` 缺失/损坏/标了 holey 的 bundle 显示成「注意」,
+        # 而出单此刻其实拒绝它(codex #461 r2)。
+        #
+        # 不直接用 `BundleFreshness.usable`:它在完整性**未知**时也是 False,
+        # 而未知不许伪造严重度(本模块另有一条用例钉着)。
+        serving_refuses = (
+            bundle_refuses_today is True or bundle_integrity_accepted is False)
         half_spent = (
             bundle_headroom_days is not None
             and bundle_max_age_days is not None
@@ -230,10 +239,12 @@ def build_today_decision_queue(
         detail = update_detail
         if bundle_refuses_today:
             detail = f"{update_detail}（bundle 已过期，今天出单会被拒）"
+        elif bundle_integrity_accepted is False:
+            detail = f"{update_detail}（bundle 完整性校验未通过，今天出单会被拒）"
         elif bundle_headroom_days is not None:
             detail = f"{update_detail}（距出单拒绝阈值余 {bundle_headroom_days} 天）"
         items.append(_item(
-            "blocker" if (bundle_refuses_today or half_spent) else "attention",
+            "blocker" if (serving_refuses or half_spent) else "attention",
             "update:failed", "数据更新失败", detail,
             source_time=update_time, destination="run_center",
         ))

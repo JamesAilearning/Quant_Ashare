@@ -241,7 +241,9 @@ if not provider.strip():
     provider_problem = "未从 config.yaml 解析出 provider_uri。"
 else:
     provider_problem = unusable_path_reason(provider) or ""
-health: BundleHealthSummary | None = None
+# 先算健康摘要:它是新鲜度裁决的一个**输入**(见下),不是并列的另一个结论。
+health: BundleHealthSummary | None = (
+    None if provider_problem else summarise_bundle_health(provider))
 # 出单侧对 bundle 陈旧的判定,**照抄生产运维页 ⑤ 的取法**，一个字节都不自己算:
 # 时钟用出单侧的宿主本地日(不是面向操作人的 CN 日历日)、边界用出单侧的
 # `behind > limit`(14 天整仍接受)、末日读 `calendars/day.txt`(不是
@@ -257,8 +259,14 @@ _freshness = bundle_freshness(
     tail_date=(
         _cal_tail.tail.isoformat()
         if _cal_tail.known and _cal_tail.tail else None),
-    provider_uri=provider,
-    message=_cal_tail.reason if not _cal_tail.known else "",
+    provider_uri=health.provider_uri if health is not None else provider,
+    message=(
+        _cal_tail.reason if not _cal_tail.known
+        else (health.message if health is not None else "")),
+    # 健康摘要只能**扣分不能加分**:它刻意宽容,吞掉坏的 integrity 戳后仍可
+    # 能返回 ok,所以真正的闸是下面那个 integrity。
+    health_status=health.status if health is not None else "ok",
+    health_warnings=health.warnings if health is not None else (),
     integrity_accepted=_integrity.accepted,
     integrity_reason=_integrity.reason,
 )
@@ -270,8 +278,9 @@ data_col, update_col = st.columns(2)
 with data_col:
     if provider_problem:
         _render_card("数据包健康", "无法建立", provider_problem, color="negative")
+    elif health is None:
+        _render_card("数据包健康", "无法建立", "健康摘要不可用。", color="negative")
     else:
-        health = summarise_bundle_health(provider)
         health_value = health.tail_date or {
             "ok": "数据可读",
             "warning": "存在警告",
@@ -474,6 +483,7 @@ queue = build_today_decision_queue(
     update_running_class=update_running_class,
     # 「更新失败」排多严重,由**出单侧自己的**新鲜度判定说了算。
     bundle_refuses_today=_freshness.refuses_today,
+    bundle_integrity_accepted=_freshness.integrity_accepted,
     bundle_headroom_days=_freshness.headroom_days,
     bundle_max_age_days=_freshness.max_age_days,
     signal=signal,
