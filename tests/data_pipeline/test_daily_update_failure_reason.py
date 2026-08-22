@@ -308,20 +308,49 @@ class TheWindowSeparatesTheStageFromTheOrchestratorsNarration(unittest.TestCase)
 class CaptureNeverChangesTheRun(unittest.TestCase):
     """可观测性绝不允许改变运行结果——少一行详情可以，改退出码不可以。"""
 
+    def test_the_collector_swallows_a_record_it_cannot_render(self) -> None:
+        """collector 自己那一层：渲染不出来的记录绝不能从 `emit` 里抛出去。
+
+        直接喂记录，不经过 handler 链——这样断言的是**我这段代码的**保证，与
+        链上还挂着谁、那些 handler 各自的错误策略是什么，完全无关。
+        """
+        collector = du._StageErrorCollector()
+        record = logging.LogRecord(
+            name="src.scripts.data_pipeline.fetch_tushare", level=logging.ERROR,
+            pathname=__file__, lineno=1, msg="%d", args=("不是整数",), exc_info=None)
+        with self.assertRaises(TypeError):
+            record.getMessage()                      # 先证明这条记录确实渲染不出来
+        collector.emit(record)                       # 不许抛
+        self.assertEqual([], collector.lines, "渲染不出来就不该留下半条")
+
     def test_a_malformed_log_call_does_not_crash_the_run(self) -> None:
-        # `record.getMessage()` 会对畸形 args 抛 TypeError，而
-        # `logging.Handler.handle` 并不包住 `emit`：不吞掉的话，异常会从阶段
-        # 自己那句 `logger.error(...)` 冒出去，把可诊断的失败变成崩溃。
+        """整条链上：阶段发了一次畸形日志调用，运行照样给出退出码与兜底详情。
+
+        `logging.raiseExceptions` 在这里被临时关掉，因为**测试框架给链上多挂了
+        一个与生产不同的 handler**：pytest 的 `LogCaptureHandler.handleError` 写着
+        `if logging.raiseExceptions: raise`，故意把畸形日志调用变成测试失败（那是
+        个好守卫，只是这里的畸形调用是刻意的输入，不是被测代码的疏忽）。生产链上
+        只有项目自己的 `StreamHandler`（打印后继续）和本模块的 collector（吞掉），
+        没有任何重抛型 handler——关掉这个开关，正是把框架还原成生产的样子。
+
+        （实测：CI 的 pytest 9.1.1 会红，本机 9.0.3 不会。`pyproject.toml` 写的是
+        `pytest>=7.4`，CI 每次取最新，所以本机绿不代表 CI 绿。）
+        """
         def run(argv: list[str]) -> int:
             get_logger("src.scripts.data_pipeline.fetch_tushare").error("%d", "不是整数")
             return 1
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            cfg = _config(tmp)
-            _write_snapshot(cfg.tushare_dir)
-            _mk_bundle(cfg.provider_dir, "LIVE")
-            rc, stage, detail = du._execute_daily_update(
-                cfg, {**_runners(), "fetch": run})  # type: ignore[arg-type]
+        raise_exceptions = logging.raiseExceptions
+        logging.raiseExceptions = False
+        try:
+            with tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                cfg = _config(tmp)
+                _write_snapshot(cfg.tushare_dir)
+                _mk_bundle(cfg.provider_dir, "LIVE")
+                rc, stage, detail = du._execute_daily_update(
+                    cfg, {**_runners(), "fetch": run})  # type: ignore[arg-type]
+        finally:
+            logging.raiseExceptions = raise_exceptions
         self.assertEqual((EXIT_FETCH_HARD, "fetch"), (rc, stage))
         self.assertIn("fetch failed hard", detail, "详情丢了也得保住兜底那句")
 
