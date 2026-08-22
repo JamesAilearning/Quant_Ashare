@@ -49,6 +49,7 @@ from web.operator_ui.update_runner import (
     build_update_argv,
     calendar_gate_warning,
     default_log_path,
+    gate_today,
     launch_daily_update,
     log_tail,
     range_problem,
@@ -348,7 +349,8 @@ st.caption(
 
 _gate_warning = calendar_gate_warning(
     _provider_path,
-    today=datetime.now(tz=_CN_TZ).date(),
+    # 宿主本地日,不是东八区 —— 见 `gate_today` 的 docstring(#461 的第一条 P1)。
+    today=gate_today(),
     end_date=_end_input,
 )
 if _gate_warning is not None:

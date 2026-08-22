@@ -40,6 +40,7 @@ from web.operator_ui.update_runner import (  # noqa: E402
     build_update_argv,
     calendar_gate_warning,
     date_input_problem,
+    gate_today,
     launch_daily_update,
     range_problem,
 )
@@ -117,6 +118,99 @@ class TheRestatedGatePredicatesMatchTheOrchestrator(unittest.TestCase):
         self.assertEqual(3, national_day.weekday())
         self.assertFalse(runner._is_non_trading_day(national_day))
         self.assertFalse(orchestrator._run_date_is_non_trading(national_day))
+
+
+class TheGateClockIsTheOrchestratorsNotTheOperators(unittest.TestCase):
+    """判定用的「今天」必须与编排器同源:宿主本地 `date.today()`。
+
+    东八区是本仓库给**操作人可见时间戳**的约定,不是这个判定的时钟。混用正是
+    #461 三条 P1 里的第一条 —— 而本机就在 +08:00,两个时钟数值恰好一致,带着
+    那个 bug 一样全绿(本改动首版就是这么绿的)。
+
+    所以这里断言的是**取法**,不是数值:数值断言在这台机器上恒真,证明不了任何
+    东西。
+    """
+
+    _RUNNER_TREE = ast.parse(
+        (PROJECT_ROOT / "web" / "operator_ui" / "update_runner.py").read_text(
+            encoding="utf-8"))
+
+    def test_gate_today_returns_the_host_local_date(self) -> None:
+        body = [
+            node for node in ast.walk(self._RUNNER_TREE)
+            if isinstance(node, ast.FunctionDef) and node.name == "gate_today"
+        ]
+        self.assertEqual(1, len(body), "找不到 gate_today —— 本守卫已失效")
+        returns = [n for n in ast.walk(body[0]) if isinstance(n, ast.Return)]
+        self.assertEqual(1, len(returns))
+        self.assertEqual(
+            "date.today()", ast.unparse(returns[0].value),  # type: ignore[arg-type]
+            "日历闸的时钟不再是宿主本地日 —— 与编排器的 run_date 对不上了")
+
+    def test_the_orchestrator_takes_the_same_clock(self) -> None:
+        # 另一侧也钉住:编排器哪天改成带时区,这条会红,提醒两边一起改。
+        source = Path(orchestrator.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "run_date = config.now if config.now is not None else date.today()",
+            source,
+            "编排器的 run_date 取法变了 —— gate_today 要跟着改")
+
+    def test_the_page_asks_for_the_gate_clock_not_a_timezone(self) -> None:
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"))
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "calendar_gate_warning"
+        ]
+        self.assertEqual(1, len(calls), "页面里应恰好一处日历闸预警调用")
+        today = [kw for kw in calls[0].keywords if kw.arg == "today"]
+        self.assertEqual(1, len(today))
+        self.assertEqual(
+            "gate_today()", ast.unparse(today[0].value),
+            "页面自己选了时钟 —— 它会和编排器分头漂移")
+
+    def test_it_still_produces_a_date(self) -> None:
+        self.assertIsInstance(gate_today(), date)
+
+
+class BlankRangeInputsNeverReachTheChildArgv(unittest.TestCase):
+    """纯空白在 `range_problem` 眼里是「未指定」(合法),归一必须发生在 argv 侧。
+
+    不归一的话 `"  " or START_DATE` 会取到那两个空格(非空即真),argv 里就出现
+    `--start-date "  "` —— 一路流到 01 才炸。页面恰好先 strip 过,但启动器才是
+    被审计的边界,它必须自己站得住。
+    """
+
+    P = (Path("/data/prov"), Path("/data/tu"), Path("/data/reg.parquet"))
+
+    def test_whitespace_start_falls_back_to_the_floor(self) -> None:
+        self.assertIsNone(range_problem("  ", ""), "前提:纯空白被判为未指定")
+        self.assertEqual(
+            ["--start-date", START_DATE], build_update_argv(*self.P, start_date="  ")[-2:])
+
+    def test_whitespace_end_is_not_passed_at_all(self) -> None:
+        self.assertNotIn("--end-date", build_update_argv(*self.P, end_date="   "))
+
+    def test_padded_values_arrive_stripped(self) -> None:
+        # 制表符/换行用 chr() 写，不用转义序列：这条链路上的补丁脚本经由
+        # heredoc 时会把 `\t` 折成真制表符，本文件已经被折坏过一次。
+        argv = build_update_argv(
+            *self.P, start_date=" 20151001 ",
+            end_date=chr(9) + "20260821" + chr(10))
+        self.assertEqual(
+            ["--start-date", "20151001", "--end-date", "20260821"], argv[-4:])
+
+    def test_the_launcher_normalises_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _bundle(Path(tmp))
+            with mock.patch("subprocess.Popen") as popen:
+                popen.return_value = SimpleNamespace(pid=1)
+                launch_daily_update(
+                    provider, Path(tmp) / "tu", Path(tmp) / "reg.parquet",
+                    env=_ENV_OK, start_date="  ", end_date="  ")
+            argv = popen.call_args[0][0]
+        self.assertEqual(["--start-date", START_DATE], argv[-2:])
 
 
 # ---------------------------------------------------------------- argv

@@ -118,6 +118,19 @@ def _is_non_trading_day(day: date) -> bool:
     return day.weekday() >= 5
 
 
+def gate_today() -> date:
+    """日历闸眼里的「今天」。
+
+    宿主本地日,**不是**东八区:编排器用的是 `date.today()`,而生产 CLI 没有
+    `--now` 可以覆盖它。东八区是本仓库给**操作人可见时间戳**的约定,不是
+    这个判定的时钟 —— 两者混用正是 #461 三条 P1 里的第一条。
+
+    本机就在 +08:00,两个时钟数值恰好一致,带着这个 bug 一样全绿。所以守卫
+    钉的是**取法**(页面必须调本函数),不是数值。
+    """
+    return date.today()
+
+
 def _live_bundle_present(provider_dir: Path) -> bool:
     return (
         (provider_dir / "calendars" / "day.txt").exists()
@@ -212,6 +225,12 @@ def build_update_argv(
     偏离只能来自操作人的显式输入,而且页面显示的就是这里产出的 argv 本身
     (不是另抄一份措辞),所以偏离永远是看得见的,不是被夹带的。
     """
+    # 两端先归一再用:`range_problem` 把纯空白视为「未指定」(合法),若这里不
+    # 归一,`"  " or START_DATE` 会取到那两个空格(非空即真),argv 里就出现
+    # `--start-date "  "` —— 一路流到 01 才炸。页面恰好先 strip 过,但启动器
+    # 才是被审计的边界,它必须自己站得住(与范围校验在这里再做一遍同理)。
+    start = (start_date or "").strip()
+    end = (end_date or "").strip()
     argv = [
         python or sys.executable,
         str(UPDATE_SCRIPT),
@@ -224,10 +243,10 @@ def build_update_argv(
         "--reference-cases",
         str(REFERENCE_CASES),
         "--start-date",
-        start_date or START_DATE,
+        start or START_DATE,
     ]
-    if end_date:
-        argv += ["--end-date", end_date]
+    if end:
+        argv += ["--end-date", end]
     return argv
 
 
