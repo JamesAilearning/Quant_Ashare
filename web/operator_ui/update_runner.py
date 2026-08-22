@@ -22,11 +22,12 @@ Boundaries (openspec 2026-08-16-ui-run-center):
 from __future__ import annotations
 
 import contextlib
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.child_env import utf8_child_env
@@ -45,6 +46,10 @@ REFERENCE_CASES = PROJECT_ROOT / "tests" / "pit" / "reference_cases.yaml"
 # Mirrors the scheduler wrapper: the pipeline's own repair logic prunes
 # already-ingested days, so a fixed start date is a re-scan floor, not a
 # full refetch.
+#
+# 这是手动通道的**缺省**下限,不再是唯一可能的值:操作人可以显式改写
+# (见 `build_update_argv`)。缺省不变正是「本通道镜像调度器」那条不变式
+# 仍然成立的证据 —— tests 那边有一条 FULL-LIST 相等的守卫钉着它。
 START_DATE = "20180101"
 
 TOKEN_ENV_VAR = "TUSHARE_TOKEN"
@@ -55,6 +60,111 @@ _LOG_TAIL_CHARS = 4000
 # convention (``web/operator_ui/formatting.py``). Asia/Shanghai has no
 # DST, so the fixed offset is exact.
 _CN_TZ = timezone(timedelta(hours=8))
+
+
+# --------------------------------------------------------------- 抓取范围
+#
+# 为什么手动通道需要能改范围:2026-08-17/20/21 连续三晚失败,原因是一次
+# 收盘前的更宽范围抓取把 fetch manifest 撑到了 20151001 并记下未解决的洞,
+# 此后每一次 `--start-date 20180101` 都被 manifest 的范围守卫拒绝——它拒绝
+# 缩窄合并,因为更窄的范围不会重试范围外的洞。01 当时给出的修法就是「按完整
+# 范围重跑」,而这个页面**做不到**:范围是写死的。操作人只能去命令行。
+#
+# 同理,周末想补跑必须能传结束日期(见 `calendar_gate_warning`)。
+_DATE_SHAPE = re.compile(r"^\d{8}$")
+
+
+def date_input_problem(value: str, *, label: str) -> str | None:
+    """这一端的日期为什么不可用,或 None。空串 = 未指定,合法。
+
+    编排器与 01 对日期格式**零校验**:畸形值会一路流进 01 的 argv,直到
+    tushare 那头才炸——而那已经是一次约两小时运行的中途。所以在按钮之前拦。
+    """
+    text = value.strip()
+    if not text:
+        return None
+    if not _DATE_SHAPE.match(text):
+        return f"{label} 必须是 8 位 YYYYMMDD(收到 {text!r})"
+    try:
+        date(int(text[:4]), int(text[4:6]), int(text[6:]))
+    except ValueError:
+        # 20260231 / 20261301 都是 8 位数字,但都不是日期。
+        return f"{label} 不是一个真实日期(收到 {text!r})"
+    return None
+
+
+def range_problem(start_date: str, end_date: str) -> str | None:
+    """两端一起看:每一端各自合法,不代表这个区间合法。"""
+    for value, label in ((start_date, "开始日期"), (end_date, "结束日期")):
+        problem = date_input_problem(value, label=label)
+        if problem is not None:
+            return problem
+    start, end = start_date.strip(), end_date.strip()
+    if start and end and start > end:
+        # YYYYMMDD 定宽零填充,字典序就是时间序 —— 不需要解析成 date 再比。
+        return f"开始日期 {start} 晚于结束日期 {end}"
+    return None
+
+
+# 下面两条是 `src.data_pipeline.daily_update` 的判据,在这里**重述**:本模块与
+# 编排器的唯一耦合是 CLI 进程边界,不许 import 它(模块 docstring 与
+# tests/logic/test_update_runner.py 的边界守卫都钉着这一条)。
+#
+# 重述必然有漂移风险 —— 这个仓库刚为「同一件事写两处」付过学费。所以测试
+# 那边有一条**穷尽等价**守卫:导入真判据,逐日比对整整一年,任何一天不一致
+# 就红。这里不许「改进」它们(比如加上节假日):UI 要预警的是日历闸**会不会**
+# no-op,不是「今天是不是节假日」;判得比闸更宽,就是在预警一件不会发生的事。
+def _is_non_trading_day(day: date) -> bool:
+    return day.weekday() >= 5
+
+
+def gate_today() -> date:
+    """日历闸眼里的「今天」。
+
+    宿主本地日,**不是**东八区:编排器用的是 `date.today()`,而生产 CLI 没有
+    `--now` 可以覆盖它。东八区是本仓库给**操作人可见时间戳**的约定,不是
+    这个判定的时钟 —— 两者混用正是 #461 三条 P1 里的第一条。
+
+    本机就在 +08:00,两个时钟数值恰好一致,带着这个 bug 一样全绿。所以守卫
+    钉的是**取法**(页面必须调本函数),不是数值。
+    """
+    return date.today()
+
+
+def _live_bundle_present(provider_dir: Path) -> bool:
+    return (
+        (provider_dir / "calendars" / "day.txt").exists()
+        and (provider_dir / "instruments" / "all.txt").exists()
+        and (provider_dir / "features").exists()
+    )
+
+
+def calendar_gate_warning(
+    provider_dir: Path, *, today: date, end_date: str = '',
+) -> str | None:
+    """点下去会不会**什么都不做**,或 None。
+
+    交易日历闸的 no-op 是三个条件的**合取**:非交易日 且 没传结束日期 且
+    存在可用的 live bundle。只复现头一个,就会在「没有 live bundle,闸会放行
+    去 bootstrap」的情况下说错话。
+
+    这是**预警**不是拦截:no-op 无害,操作人可能就是要它。
+    """
+    if end_date.strip():
+        return None
+    if not _is_non_trading_day(today):
+        return None
+    if not _live_bundle_present(provider_dir):
+        # 闸此时**放行**,跑完整管线去 bootstrap 一个 bundle。
+        return None
+    weekday = "周六" if today.weekday() == 5 else "周日"
+    return (
+        f"{today.isoformat()} 是{weekday}。不填结束日期时,`daily_update` 的"
+        "交易日历闸会直接 no-op 并 exit 0 —— 不抓取、不重建、不切换,而状态"
+        "工件会记成一次**成功**。要在周末真正补跑,把结束日期填成你要抓到的"
+        "那一天(这是日历闸自己文档化的旁路;结束日期缺省本就等于运行日,"
+        "所以填今天 = 同样的抓取范围,只是不再 no-op)。"
+    )
 
 
 @dataclass(frozen=True)
@@ -102,13 +212,26 @@ def build_update_argv(
     registry_path: Path,
     *,
     python: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> list[str]:
-    """The exact argv the scheduler wrapper uses, as an argv list.
+    """The argv the scheduler wrapper uses, as an argv list.
 
     List-form argv needs no shell quoting — paths with spaces arrive as
     single arguments by construction.
+
+    不传范围时,产出的 argv 与调度器的**逐字相同** —— 「手动通道镜像调度器」
+    那条不变式说的正是这件事,tests 那边一条 FULL-LIST 相等的守卫原样钉着它。
+    偏离只能来自操作人的显式输入,而且页面显示的就是这里产出的 argv 本身
+    (不是另抄一份措辞),所以偏离永远是看得见的,不是被夹带的。
     """
-    return [
+    # 两端先归一再用:`range_problem` 把纯空白视为「未指定」(合法),若这里不
+    # 归一,`"  " or START_DATE` 会取到那两个空格(非空即真),argv 里就出现
+    # `--start-date "  "` —— 一路流到 01 才炸。页面恰好先 strip 过,但启动器
+    # 才是被审计的边界,它必须自己站得住(与范围校验在这里再做一遍同理)。
+    start = (start_date or "").strip()
+    end = (end_date or "").strip()
+    argv = [
         python or sys.executable,
         str(UPDATE_SCRIPT),
         "--tushare-dir",
@@ -120,8 +243,11 @@ def build_update_argv(
         "--reference-cases",
         str(REFERENCE_CASES),
         "--start-date",
-        START_DATE,
+        start or START_DATE,
     ]
+    if end:
+        argv += ["--end-date", end]
+    return argv
 
 
 def _blocking_run_status(provider_dir: Path) -> str | None:
@@ -154,6 +280,8 @@ def launch_daily_update(
     *,
     python: str | None = None,
     env: Mapping[str, str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> UpdateLaunch:
     """Launch one detached update run mirroring the scheduler.
 
@@ -183,6 +311,15 @@ def launch_daily_update(
                     "一次约 2 小时的后台运行(空串会被读成当前工作目录)。"
                 ),
             )
+    # 范围校验在这里**再做一遍**:页面已经拦过一次,但这个模块才是被审计的
+    # 那道边界(路径校验、token 预检都在这里),而它是可以被页面之外的调用方
+    # 使用的。一个畸形日期换来的是两小时后在 tushare 那头炸。
+    bad_range = range_problem(start_date or "", end_date or "")
+    if bad_range is not None:
+        return UpdateLaunch(
+            kind="bad_range",
+            error=f"抓取范围不可用:{bad_range}——拒绝把它交给一次约 2 小时的运行。",
+        )
     child_env = utf8_child_env(env)
     if not child_env.get(TOKEN_ENV_VAR, "").strip():
         return UpdateLaunch(
@@ -205,7 +342,8 @@ def launch_daily_update(
 
     log_path = default_log_path(provider_dir)
     cmd = build_update_argv(
-        provider_dir, tushare_dir, registry_path, python=python
+        provider_dir, tushare_dir, registry_path, python=python,
+        start_date=start_date, end_date=end_date,
     )
     # "launch attempt", not "launched": the marker is written BEFORE
     # Popen, and a failed spawn must not leave a line that misattributes
