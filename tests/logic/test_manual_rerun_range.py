@@ -120,6 +120,158 @@ class TheRestatedGatePredicatesMatchTheOrchestrator(unittest.TestCase):
         self.assertFalse(orchestrator._run_date_is_non_trading(national_day))
 
 
+class TheWarningLooksAtThePostRepairState(unittest.TestCase):
+    """闸之前先跑 `check_and_repair`，所以要看的是**修复之后**的状态。
+
+    live 目录不存在但 `.bak` 还在时，编排器会恢复（或在 `.bak` + `.new` 时完成
+    那次中断的切换），随后日历闸照样 no-op 并 exit 0。只看修复**前**的状态，
+    这个恢复序列上就会漏报——而那正是操作人最需要预警的时候（codex P2）。
+
+    `.new` / `.bak` 的命名与修复语义都是 UI 侧的**重述**，所以拿真的
+    `check_and_repair` 当 oracle 穷尽比一遍：兄弟目录在/不在、live 完整/残缺，
+    全部组合。
+    """
+
+    STATES = ("complete", "partial", "absent")
+
+    @staticmethod
+    def _skeleton(path: Path, state: str) -> None:
+        """按 `pit_validator._sanity_check_provider` 的骨架建目录。
+
+        `partial` = 保留日历脊但丢掉 `features/` —— 一次部分拷贝的样子，
+        也是「目录在、bundle 不可用」这一类的代表。
+        """
+        if state == "absent":
+            return
+        (path / "calendars").mkdir(parents=True, exist_ok=True)
+        (path / "calendars" / "day.txt").write_text("20260821", encoding="utf-8")
+        (path / "instruments").mkdir(parents=True, exist_ok=True)
+        (path / "instruments" / "all.txt").write_text("", encoding="utf-8")
+        if state == "complete":
+            (path / "features").mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def _setup(cls, root: Path, *, live: str, bak: str, new: str) -> Path:
+        provider = root / "my_cn_data_pit"
+        cls._skeleton(provider, live)
+        cls._skeleton(provider.with_name(provider.name + ".bak"), bak)
+        cls._skeleton(provider.with_name(provider.name + ".new"), new)
+        return provider
+
+    def test_it_agrees_with_the_orchestrator_on_every_sibling_layout(self) -> None:
+        """三态 × 三态 × 三态，全部拿真 `check_and_repair` 当 oracle 比一遍。
+
+        三态而不是在/不在：`.bak` 与 `.new` 都完整时，「看哪一个」没有区别，
+        于是把优先级弄反的变异**抓不到**（实测如此）。而 `check_and_repair` 在
+        两者都在时提升的是 `.new` —— 只有让 `.new` 残缺、`.bak` 完整，这条
+        优先级才显形。夹具太齐整，守卫就是空的。
+        """
+        checked = 0
+        for live in self.STATES:
+            for bak in self.STATES:
+                for new in self.STATES:
+                    with self.subTest(live=live, bak=bak, new=new), \
+                            tempfile.TemporaryDirectory() as tmp:
+                        provider = self._setup(
+                            Path(tmp), live=live, bak=bak, new=new)
+                        predicted = runner._effective_live_bundle_present(provider)
+                        # oracle：真的跑一遍修复，再问真的判据。
+                        orchestrator.check_and_repair(provider)
+                        actual = orchestrator._live_bundle_present(provider)
+                        self.assertEqual(
+                            actual, predicted,
+                            f"修复后状态判错：live={live} bak={bak} new={new}")
+                        checked += 1
+        self.assertEqual(27, checked, "没走满 3³ —— 本守卫已失效")
+
+    def test_the_staged_sibling_wins_when_both_are_present(self) -> None:
+        """两个兄弟目录都在时，修复提升的是 `.new`，不是 `.bak`。
+
+        这条把上面那个穷尽扫描里最容易被忽略的一格拎出来单说：`.new` 残缺、
+        `.bak` 完整 —— 修完 live 是**残缺**的，所以没有可用 bundle。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._setup(
+                Path(tmp), live="absent", bak="complete", new="partial")
+            self.assertFalse(
+                runner._effective_live_bundle_present(provider),
+                "看成了 .bak —— 但修复提升的是 .new")
+            orchestrator.check_and_repair(provider)
+            self.assertFalse(orchestrator._live_bundle_present(provider))
+
+    def test_a_recoverable_backup_still_gets_the_weekend_warning(self) -> None:
+        # 这条是 codex 指出的那个具体序列：live 没了、`.bak` 还在，
+        # 修复会把它恢复回来，闸随后 no-op —— 必须预警。
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._setup(Path(tmp), live="absent", bak="complete", new="absent")
+            self.assertFalse(provider.exists(), "前提：此刻没有 live bundle")
+            self.assertIsNotNone(
+                calendar_gate_warning(provider, today=SATURDAY),
+                "只看修复前的状态就会在这里漏报")
+
+    def test_a_lone_staging_dir_is_still_no_bundle(self) -> None:
+        # 只有 `.new` 时它会被删掉（无法证明验证过），闸放行去 bootstrap。
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._setup(Path(tmp), live="absent", bak="absent", new="complete")
+            self.assertIsNone(calendar_gate_warning(provider, today=SATURDAY))
+
+
+class TheRangeIsCheckedOnItsEffectiveEndpoints(unittest.TestCase):
+    """留空不等于「没有这一端」。
+
+    开始留空 = `START_DATE`（`build_update_argv` 会替上），结束留空 = 运行日
+    （编排器的 `end_date or run_date`）。只比字面输入的话，两种输入都会通过
+    校验，然后子进程带着一个**颠倒的区间**跑起来——而校验本来正是为了不让
+    这种事变成一份失败的运行工件（codex P2 ×2）。
+    """
+
+    TODAY = date(2026, 8, 22)
+
+    def test_a_blank_start_is_compared_as_the_default_floor(self) -> None:
+        problem = range_problem("", "20170101", today=self.TODAY)
+        self.assertIsNotNone(problem)
+        self.assertIn(START_DATE, str(problem), "没说清生效的开始日期是哪个")
+
+    def test_a_blank_end_is_compared_as_the_run_date(self) -> None:
+        problem = range_problem("20270101", "", today=self.TODAY)
+        self.assertIsNotNone(problem)
+        self.assertIn("20260822", str(problem), "没说清生效的结束日期是哪个")
+
+    def test_both_blank_is_the_scheduler_default_and_valid(self) -> None:
+        self.assertIsNone(range_problem("", "", today=self.TODAY))
+
+    def test_a_blank_end_with_a_past_start_stays_valid(self) -> None:
+        self.assertIsNone(range_problem("20151001", "", today=self.TODAY))
+
+    def test_a_start_equal_to_the_run_date_is_valid(self) -> None:
+        self.assertIsNone(range_problem("20260822", "", today=self.TODAY))
+
+    def test_the_launcher_refuses_the_implicit_reversal_without_spawning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = _bundle(Path(tmp))
+            with mock.patch("subprocess.Popen") as popen:
+                result = launch_daily_update(
+                    provider, Path(tmp) / "tu", Path(tmp) / "reg.parquet",
+                    env=_ENV_OK, start_date="20270101")
+            self.assertEqual("bad_range", result.kind)
+            popen.assert_not_called()
+
+    def test_the_page_hands_the_gate_clock_to_the_range_check(self) -> None:
+        # 页面若不传 `today`，`range_problem` 会自己取 —— 仍然正确，但两处取
+        # 时钟就是两次机会走岔。钉住页面把同一个时钟传下去。
+        tree = ast.parse(_PAGE.read_text(encoding="utf-8"))
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "range_problem"
+        ]
+        self.assertEqual(1, len(calls), "页面里应恰好一处范围校验")
+        today = [kw for kw in calls[0].keywords if kw.arg == "today"]
+        self.assertEqual(1, len(today), "页面没把日历闸的时钟传给范围校验")
+        self.assertEqual("gate_today()", ast.unparse(today[0].value))
+
+
 class TheGateClockIsTheOrchestratorsNotTheOperators(unittest.TestCase):
     """判定用的「今天」必须与编排器同源:宿主本地 `date.today()`。
 

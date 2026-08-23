@@ -93,16 +93,30 @@ def date_input_problem(value: str, *, label: str) -> str | None:
     return None
 
 
-def range_problem(start_date: str, end_date: str) -> str | None:
-    """两端一起看:每一端各自合法,不代表这个区间合法。"""
+def range_problem(
+    start_date: str, end_date: str, *, today: date | None = None,
+) -> str | None:
+    """两端一起看,而且比的是**生效值**,不是字面输入。
+
+    留空不等于「没有这一端」:开始留空 = `START_DATE`(`build_update_argv`
+    会替上),结束留空 = 运行日(编排器的 `end_date or run_date`)。只比字面值
+    的话,这两种输入都会通过校验,然后子进程带着一个**颠倒的区间**跑起来——
+    校验本来正是为了不让这种事变成一份失败的运行工件(codex P2 ×2):
+
+      · 开始留空 + 结束 20170101 → 生效 20180101..20170101
+      · 开始 20270101 + 结束留空 → 生效 20270101..(今天)
+    """
     for value, label in ((start_date, "开始日期"), (end_date, "结束日期")):
         problem = date_input_problem(value, label=label)
         if problem is not None:
             return problem
-    start, end = start_date.strip(), end_date.strip()
-    if start and end and start > end:
+    start = start_date.strip() or START_DATE
+    end = end_date.strip() or (today or gate_today()).strftime("%Y%m%d")
+    if start > end:
         # YYYYMMDD 定宽零填充,字典序就是时间序 —— 不需要解析成 date 再比。
-        return f"开始日期 {start} 晚于结束日期 {end}"
+        blank_start = "(留空,取缺省下限)" if not start_date.strip() else ""
+        blank_end = "(留空,取运行日)" if not end_date.strip() else ""
+        return (f"开始日期 {start}{blank_start} 晚于结束日期 {end}{blank_end}")
     return None
 
 
@@ -139,6 +153,28 @@ def _live_bundle_present(provider_dir: Path) -> bool:
     )
 
 
+def _effective_live_bundle_present(provider_dir: Path) -> bool:
+    """**修复之后**是否会有可用的 live bundle。
+
+    编排器在日历闸**之前**先跑 `check_and_repair`:live 目录不存在时,
+    `.bak` + `.new` 会完成那次中断的切换(`.new` 变成 live),只有 `.bak` 时
+    会从备份恢复 —— 两种情况修完都有 bundle,闸随后照样 no-op。只看修复
+    **前**的状态就会在这个恢复序列上漏报,而那正是操作人最需要预警的时候
+    (codex P2)。只有 `.new` 时它会被删掉(无法证明验证过),等于没有 bundle。
+
+    `.new` / `.bak` 的命名同样是**重述**(本模块不许 import 编排器),连同
+    修复语义一起由一条穷尽等价守卫钉住:它拿真的 `check_and_repair` 当
+    oracle,在临时目录里把兄弟目录的在/不在组合全跑一遍。
+    """
+    if provider_dir.exists():
+        return _live_bundle_present(provider_dir)
+    backup = provider_dir.with_name(provider_dir.name + ".bak")
+    staged = provider_dir.with_name(provider_dir.name + ".new")
+    if not backup.exists():
+        return False
+    return _live_bundle_present(staged if staged.exists() else backup)
+
+
 def calendar_gate_warning(
     provider_dir: Path, *, today: date, end_date: str = '',
 ) -> str | None:
@@ -148,13 +184,16 @@ def calendar_gate_warning(
     存在可用的 live bundle。只复现头一个,就会在「没有 live bundle,闸会放行
     去 bootstrap」的情况下说错话。
 
+    第三个条件看的是 `check_and_repair` **修复之后**的状态 —— 那一步在闸
+    之前跑,能把 `.bak`/`.new` 变回一个 live bundle。
+
     这是**预警**不是拦截:no-op 无害,操作人可能就是要它。
     """
     if end_date.strip():
         return None
     if not _is_non_trading_day(today):
         return None
-    if not _live_bundle_present(provider_dir):
+    if not _effective_live_bundle_present(provider_dir):
         # 闸此时**放行**,跑完整管线去 bootstrap 一个 bundle。
         return None
     weekday = "周六" if today.weekday() == 5 else "周日"

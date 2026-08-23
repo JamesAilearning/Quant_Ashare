@@ -331,7 +331,9 @@ with st.expander("抓取范围(缺省 = 调度器的那一组)"):
             "结束日期 YYYYMMDD(留空 = 运行日)", value="",
             key="run_center::end_date")
 
-_range_error = range_problem(_start_input, _end_input)
+# 传 `today`：结束日期留空时生效值就是运行日，只比字面输入会放过一个
+# 颠倒的区间（codex P2）。时钟与日历闸同源，见 `gate_today`。
+_range_error = range_problem(_start_input, _end_input, today=gate_today())
 if _range_error is not None:
     st.error(f"⚠ 抓取范围不可用:{_range_error}")
 
