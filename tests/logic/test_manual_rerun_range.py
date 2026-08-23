@@ -427,6 +427,28 @@ class AMalformedDateIsRefusedBeforeTheTwoHourRun(unittest.TestCase):
                 self.assertIsNotNone(problem)
                 self.assertIn("真实日期", str(problem))
 
+    def test_full_width_digits_are_refused(self) -> None:
+        r"""`\d` 与 `int()` 都收 Unicode 数字——粘贴进来的全角日期会溜过去。
+
+        而随后的顺序比较是**按字典序**比原串，全角码位远在 ASCII 之上：一个
+        数值上更早的结束日期会被判成更晚，颠倒的区间就这样交给了子进程
+        （codex P2）。所以形状检查必须是 ASCII-only。
+        """
+        full_width = chr(0xFF10) * 4 + "0101"      # ＯＯＯＯ0101 形状的全角
+        self.assertTrue(full_width[:4].isdigit(), "前提：Python 认它是数字")
+        for bad in (chr(0xFF12) + chr(0xFF10) + chr(0xFF12) + chr(0xFF16) + "0101",
+                    full_width):
+            with self.subTest(值=bad):
+                self.assertIsNotNone(
+                    date_input_problem(bad, label="结束日期"),
+                    "全角数字通过了形状检查")
+
+    def test_a_full_width_end_date_cannot_smuggle_a_reversed_range(self) -> None:
+        far_future_full_width = (
+            chr(0xFF12) + chr(0xFF10) + chr(0xFF12) + chr(0xFF16) + "0101")
+        self.assertIsNotNone(
+            range_problem("20270101", far_future_full_width, today=date(2026, 8, 22)))
+
     def test_a_leap_day_is_a_real_date(self) -> None:
         self.assertIsNone(date_input_problem("20280229", label="开始日期"))
         self.assertIsNotNone(date_input_problem("20260229", label="开始日期"))

@@ -71,7 +71,11 @@ _CN_TZ = timezone(timedelta(hours=8))
 # 范围重跑」,而这个页面**做不到**:范围是写死的。操作人只能去命令行。
 #
 # 同理,周末想补跑必须能传结束日期(见 `calendar_gate_warning`)。
-_DATE_SHAPE = re.compile(r"^\d{8}$")
+# `[0-9]` 而不是 `\d`：Python 的 `\d` 收 Unicode 数字，`int()` 也收，于是粘进来
+# 的全角 `２０２６０１０１` 能过形状检查、也能构造出 date；而随后的顺序比较是
+# **按字典序**比原串，全角码位远在 ASCII 之上，一个数值上更早的结束日期会被
+# 判成更晚，颠倒的区间就这样交给了子进程（codex P2）。
+_DATE_SHAPE = re.compile(r"^[0-9]{8}$")
 
 
 def date_input_problem(value: str, *, label: str) -> str | None:
