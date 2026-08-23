@@ -11,7 +11,25 @@
 ## 验证（每条要实测数字）
 
 - [x] `tests/governance/` 455 passed / 3 skipped / 830 subtests
-- [x] 变异 15 条全咬
+- [x] 变异 17 条全咬
+
+## codex 第二轮：一个 P1 + 两个 P2
+
+**P1 记录的范围与实际改动矛盾**：首个 commit 的正文把那六条 base 依赖列在
+「刻意不做」下，而后续 commit 给它们全加了上界。PR 描述同样还留着旧的
+Non-goals。规格与代码已经同步过了，**面向人的记录没有**——已改。
+
+**P2 重述比对不是整串**：`[><=,.\d]+` 那种字符类遇到类外字符就停，闭合引号
+又匹配不上，于是带环境标记的 `"numpy>=1.24,<2.0; python_version < '3.12'"`
+**整条从扫描里消失**。改为 `[^"]*` 吃到闭合引号、比整串。
+
+顺带把「重述应有几处」从魔法数 4 换成**推导**：凡是在项目之前装 qlib 的
+workflow（拿不到 pyproject 的约束，所以必须自己重述）都必须恰好重述一次。
+写死 4 的话，第三个 workflow 出现时少一处仍 ≥ 4，静默放行。
+
+**P2 安装行只查「文件里有一处能解析」**：同一个 workflow 里若还有第二条
+editable 安装（比如单引号写法装了另一组 extra），任一匹配会让它整个溜过去，
+那组 extra 就悄悄脱离覆盖面。改为**逐处**校验。
 - [x] `openspec validate --strict` valid
 - [x] 分目录：logic 4185 / data_pipeline 419 / pit 34；ruff clean
 - [ ] codex CLEAN + CI 绿 → STOP 等 merge

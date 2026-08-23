@@ -27,6 +27,11 @@ def _workflows() -> list[Path]:
 # 手抄的那张表挡不住「CI 以后多装一组，而守卫还盯着老的两组」。
 _CI_EXTRAS = re.compile(r'pip install -e "\.\[([^\]]+)\]"')
 
+# 重述之所以必要：qlib 从这个固定 commit 安装，且**在项目之前**——它拿不到
+# pyproject 的约束，所以每条装它的 workflow 都得自己把窗口写一遍。
+# 「哪些 workflow 该有重述」因此可以推导，不必写死一个处数。
+_QLIB_PIN = "git+https://github.com/microsoft/qlib.git@"
+
 # 上界的形式：`<` / `<=` / `==`（精确钉）/ `~=`（兼容版本，蕴含上界）。
 #
 # `\s*\d` 那一段是**承重**的，见 `TheBoundPatternRequiresAnActualVersion`：
@@ -132,15 +137,22 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         所以直接钉：凡是做 editable 安装的 workflow，它那行都必须读得出来。
         """
         unparsed = []
+        checked = 0
         for workflow in _workflows():
             text = workflow.read_text(encoding="utf-8")
-            if "pip install -e" not in text:
-                continue
-            if not _CI_EXTRAS.search(text):
-                unparsed.append(workflow.name)
+            # **逐处**看，不是「文件里有一处能解析就算过」：同一个 workflow 里
+            # 若还有第二条 editable 安装（比如单引号写法装了另一组 extra），
+            # 「任一匹配」会让它整个溜过去，那组 extra 就悄悄脱离覆盖面
+            # （codex P2）。
+            for occurrence in re.finditer(r"pip install -e\s+\S+", text):
+                checked += 1
+                if not _CI_EXTRAS.search(occurrence.group(0)):
+                    unparsed.append(f"{workflow.name}: {occurrence.group(0)}")
+        self.assertGreaterEqual(
+            checked, 2, "一处 editable 安装都没找到 —— 本守卫已失效")
         self.assertEqual(
             [], unparsed,
-            "这些 workflow 的 editable 安装行读不出 extras —— 覆盖面在这里静默塌了")
+            "这些 editable 安装行读不出 extras —— 覆盖面在这里静默塌了")
 
     def test_every_dependency_ci_installs_has_an_upper_bound(self) -> None:
         groups = self._ci_installed_groups()
@@ -225,19 +237,34 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
                 1, len(matches), f"dependencies 里 {package} 约束应恰好一条")
             declared[package] = matches[0]
 
-        checked = 0
-        for workflow in _workflows():
+        # 期望处数从**为什么要重述**推出来，不写魔法数：qlib 在项目之前安装，
+        # 拿不到 pyproject 的约束，所以凡是装 qlib 的 workflow 都必须自己把这
+        # 两个窗口重述一次——恰好一次。写死一个 4，第三个 workflow 出现时它就
+        # 兜不住了（少一处仍 ≥ 4，静默放行）。
+        pinning = [
+            w for w in _workflows()
+            if _QLIB_PIN in w.read_text(encoding="utf-8")
+        ]
+        self.assertGreaterEqual(
+            len(pinning), 1, "没有 workflow 在项目之前装 qlib —— 本守卫已失效")
+        for workflow in pinning:
             text = workflow.read_text(encoding="utf-8")
             for package, constraint in declared.items():
-                for restated in re.findall(
-                        rf'"({re.escape(package)}[><=,.\d]+)"', text):
-                    checked += 1
+                with self.subTest(workflow=workflow.name, 包=package):
+                    # `[^"]*` 一直吃到闭合引号，比的是**整串**。用
+                    # `[><=,.\d]+` 那种字符类会在遇到类外字符时停下，闭合引号
+                    # 又匹配不上，于是整条重述**从扫描里消失**——带环境标记的
+                    # `"numpy>=1.24,<2.0; python_version < '3.12'"` 就是这样溜
+                    # 过去的：它换了解析结果，守卫却一声不吭（codex P2）。
+                    restated = re.findall(
+                        rf'"({re.escape(package)}[^"]*)"', text)
                     self.assertEqual(
-                        constraint, restated,
+                        1, len(restated),
+                        f"{workflow.name} 在项目之前装 qlib，却没有恰好一处 "
+                        f"{package} 窗口")
+                    self.assertEqual(
+                        constraint, restated[0],
                         f"{workflow.name} 重述的 {package} 窗口与 pyproject 不一致")
-        self.assertGreaterEqual(
-            checked, 4,
-            "重述处数不足 —— 本守卫已失效（应有两个 workflow × 两个包）")
 
     def test_the_workflows_are_discovered_not_named(self) -> None:
         # 先证明发现本身没落空，也证明它确实看到了不止一个文件：
