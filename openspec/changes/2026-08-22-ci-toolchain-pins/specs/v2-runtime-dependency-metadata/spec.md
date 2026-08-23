@@ -52,7 +52,9 @@ the rest of the base list, nor to the tools that judge.
 
 Any dependency window restated outside `pyproject.toml` SHALL be kept
 byte-identical to the declaration, enforced by a test that scans EVERY workflow
-rather than a named one.
+rather than a named one, and the install command that resolves qlib before the
+project SHALL itself carry both windows. Only executable content SHALL be
+scanned — a commented-out command is not an install.
 
 The numpy and scipy windows are inlined in the CI workflows because qlib is
 installed BEFORE the project and therefore cannot pick the constraint up from
@@ -72,4 +74,15 @@ that actually produces the anchor.
 #### Scenario: the scan covers workflows nobody listed
 - **WHEN** a new workflow restates one of these windows
 - **THEN** it is checked automatically, because the test discovers workflows
-  instead of naming them
+  instead of naming them — regardless of what that workflow installs
+
+#### Scenario: the constraint sits on the command that needs it
+- **WHEN** the pre-project qlib install drops a window while the same string
+  still appears elsewhere in that workflow
+- **THEN** the governance test fails, because the unconstrained first resolve is
+  what produces the incompatible environment
+
+#### Scenario: a commented-out command is not an install
+- **WHEN** a workflow carries an installation line inside a shell comment
+- **THEN** it contributes nothing to the derived coverage and cannot by itself
+  turn the governance test red

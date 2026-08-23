@@ -11,6 +11,27 @@ _PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 _WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
 
 
+_SHELL_COMMENT = re.compile(r"(^|\s)#.*$")
+
+
+def _executable_text(workflow: Path) -> str:
+    """workflow 里**会被执行**的部分——剔掉 shell 注释。
+
+    正则直接跑在原始文本上时，一句 `# pip install -e ".[research]"` 会被当成
+    真安装（于是 research 组那些无上界的依赖让治理变红），反过来把一条真安装
+    注释掉又会让它的 extra 留在集合里。纯文档性的改动不该有能力把 CI 弄红，
+    也不该有能力让覆盖面悄悄缩水（codex P2）。
+
+    切的是「行首或空白之后的 `#`」，所以 URL 里的 `#` 不会被误伤。
+    """
+    kept = []
+    for raw in workflow.read_text(encoding="utf-8").splitlines():
+        line = _SHELL_COMMENT.sub("", raw)
+        if line.strip():
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def _workflows() -> list[Path]:
     """全部 workflow —— 不点名任何一个。
 
@@ -101,7 +122,7 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         found = [
             group
             for workflow in _workflows()
-            for group in _CI_EXTRAS.findall(workflow.read_text(encoding="utf-8"))
+            for group in _CI_EXTRAS.findall(_executable_text(workflow))
         ]
         assert found, "workflow 里找不到 extras 安装行 —— 本守卫已失效"
         return {name.strip() for group in found for name in group.split(",")}
@@ -139,7 +160,7 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         unparsed = []
         checked = 0
         for workflow in _workflows():
-            text = workflow.read_text(encoding="utf-8")
+            text = _executable_text(workflow)
             # **逐处**看，不是「文件里有一处能解析就算过」：同一个 workflow 里
             # 若还有第二条 editable 安装（比如单引号写法装了另一组 extra），
             # 「任一匹配」会让它整个溜过去，那组 extra 就悄悄脱离覆盖面
@@ -237,34 +258,59 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
                 1, len(matches), f"dependencies 里 {package} 约束应恰好一条")
             declared[package] = matches[0]
 
-        # 期望处数从**为什么要重述**推出来，不写魔法数：qlib 在项目之前安装，
-        # 拿不到 pyproject 的约束，所以凡是装 qlib 的 workflow 都必须自己把这
-        # 两个窗口重述一次——恰好一次。写死一个 4，第三个 workflow 出现时它就
-        # 兜不住了（少一处仍 ≥ 4，静默放行）。
-        pinning = [
-            w for w in _workflows()
-            if _QLIB_PIN in w.read_text(encoding="utf-8")
+        # 扫**全部** workflow，不按 qlib URL 过滤。按 URL 过滤时，一个为别的
+        # 安装路径重述同一窗口的新 workflow 永远不会被检查——而「新 workflow
+        # 重述了窗口就要自动被查」正是本 change 自己写下的场景（codex P2）。
+        checked = 0
+        for workflow in _workflows():
+            text = _executable_text(workflow)
+            for package, constraint in declared.items():
+                # `[^"]*` 一直吃到闭合引号，比的是**整串**。用
+                # `[><=,.\d]+` 那种字符类会在遇到类外字符时停下，闭合引号
+                # 又匹配不上，于是整条重述**从扫描里消失**——带环境标记的
+                # `"numpy>=1.24,<2.0; python_version < '3.12'"` 就是这样溜
+                # 过去的：它换了解析结果，守卫却一声不吭（codex P2）。
+                for restated in re.findall(
+                        rf'"({re.escape(package)}[^"]*)"', text):
+                    checked += 1
+                    self.assertEqual(
+                        constraint, restated,
+                        f"{workflow.name} 重述的 {package} 窗口与 pyproject 不一致")
+        self.assertGreaterEqual(
+            checked, 1, "一处重述都没找到 —— 本守卫已失效")
+
+    def test_the_qlib_install_command_carries_both_windows(self) -> None:
+        """约束必须挂在**装 qlib 的那条命令上**，不是同一个文件的某处。
+
+        上一条只问「这个 workflow 里有没有一处一致的重述」。qlib 那条命令若把
+        numpy/scipy 参数弄丢，而同一文件别处（另一条命令、甚至一段注释）仍留着
+        那两个串，它照样绿——而 `test.yml` 自己记着：没有约束的首次解析会装出
+        numpy-2 era 的 scipy，随后的降级会打断 `qlib.backtest` 的 import 链
+        （codex P1）。约束的作用点是那条命令，判据也必须落在那条命令上。
+        """
+        project = _PYPROJECT.read_text(encoding="utf-8")
+        requirements = _requirement_block(project, "dependencies")
+        declared = {}
+        for package in ("numpy", "scipy"):
+            matches = [r for r in requirements if r.startswith(package)]
+            self.assertEqual(1, len(matches), f"{package} 约束应恰好一条")
+            declared[package] = matches[0]
+
+        commands = [
+            line
+            for workflow in _workflows()
+            for line in _executable_text(workflow).splitlines()
+            if _QLIB_PIN in line
         ]
         self.assertGreaterEqual(
-            len(pinning), 1, "没有 workflow 在项目之前装 qlib —— 本守卫已失效")
-        for workflow in pinning:
-            text = workflow.read_text(encoding="utf-8")
+            len(commands), 1, "没有在项目之前装 qlib 的命令 —— 本守卫已失效")
+        for command in commands:
             for package, constraint in declared.items():
-                with self.subTest(workflow=workflow.name, 包=package):
-                    # `[^"]*` 一直吃到闭合引号，比的是**整串**。用
-                    # `[><=,.\d]+` 那种字符类会在遇到类外字符时停下，闭合引号
-                    # 又匹配不上，于是整条重述**从扫描里消失**——带环境标记的
-                    # `"numpy>=1.24,<2.0; python_version < '3.12'"` 就是这样溜
-                    # 过去的：它换了解析结果，守卫却一声不吭（codex P2）。
-                    restated = re.findall(
-                        rf'"({re.escape(package)}[^"]*)"', text)
-                    self.assertEqual(
-                        1, len(restated),
-                        f"{workflow.name} 在项目之前装 qlib，却没有恰好一处 "
-                        f"{package} 窗口")
-                    self.assertEqual(
-                        constraint, restated[0],
-                        f"{workflow.name} 重述的 {package} 窗口与 pyproject 不一致")
+                with self.subTest(包=package, 命令=command.strip()[:60]):
+                    self.assertIn(
+                        f'"{constraint}"', command,
+                        f"装 qlib 的那条命令没带上 {package} 窗口 —— "
+                        f"无约束的首次解析会装出不兼容的环境")
 
     def test_the_workflows_are_discovered_not_named(self) -> None:
         # 先证明发现本身没落空，也证明它确实看到了不止一个文件：
