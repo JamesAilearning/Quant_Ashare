@@ -46,9 +46,13 @@ from web.operator_ui.recommend_runner import run_daily_recommend
 from web.operator_ui.update_progress import FetchProgress, last_fetch_progress
 from web.operator_ui.update_runner import (
     START_DATE,
+    build_update_argv,
+    calendar_gate_warning,
     default_log_path,
+    gate_today,
     launch_daily_update,
     log_tail,
+    range_problem,
 )
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
@@ -306,13 +310,53 @@ if _watching:
 
 _tushare_dir = _provider_path.parent / "tushare_raw"
 _update_registry = Path(anchored_to_repo(resolve_delisted_registry()))
-st.caption(
-    f"启动参数(镜像调度器):`--provider-dir {_provider_path}` · "
-    f"`--tushare-dir {_tushare_dir}` · "
-    f"`--delisted-registry {_update_registry}` · "
-    f"`--reference-cases tests/pit/reference_cases.yaml` · "
-    f"`--start-date {START_DATE}`"
+
+# 抓取范围:折叠起来,因为**缺省就是调度器的那一组**,改它是一次刻意的偏离。
+# 需要能改的两个真实场景:
+#   · fetch manifest 已被一次更宽的抓取撑大并记了洞,此后按缺省下限跑会被
+#     范围守卫拒绝(2026-08-17/20/21 连续三晚),01 给的修法是「按完整范围重跑」;
+#   · 周末要补跑,必须传结束日期才能绕过交易日历闸(见下方预警)。
+with st.expander("抓取范围(缺省 = 调度器的那一组)"):
+    st.caption(
+        "开始日期是**重扫下限**不是全量重抓 —— 管线自己会剪掉已入库的日子。"
+        "结束日期留空 = 抓到运行日当天(与调度器一致)。"
+    )
+    _range_start, _range_end = st.columns(2)
+    with _range_start:
+        _start_input = st.text_input(
+            "开始日期 YYYYMMDD", value=START_DATE,
+            key="run_center::start_date")
+    with _range_end:
+        _end_input = st.text_input(
+            "结束日期 YYYYMMDD(留空 = 运行日)", value="",
+            key="run_center::end_date")
+
+# 传 `today`：结束日期留空时生效值就是运行日，只比字面输入会放过一个
+# 颠倒的区间（codex P2）。时钟与日历闸同源，见 `gate_today`。
+_range_error = range_problem(_start_input, _end_input, today=gate_today())
+if _range_error is not None:
+    st.error(f"⚠ 抓取范围不可用:{_range_error}")
+
+# 预览的是 `build_update_argv` **产出的那个 argv 本身**,不是另抄一份措辞:
+# 手抄的预览与真正执行的参数会分头漂移,而这里恰恰是「显示的必须就是要跑的」。
+_preview_argv = build_update_argv(
+    _provider_path, _tushare_dir, _update_registry,
+    start_date=_start_input.strip() or None,
+    end_date=_end_input.strip() or None,
 )
+st.caption(
+    "启动参数(缺省即镜像调度器):"
+    + " · ".join(f"`{part}`" for part in _preview_argv[2:])
+)
+
+_gate_warning = calendar_gate_warning(
+    _provider_path,
+    # 宿主本地日,不是东八区 —— 见 `gate_today` 的 docstring(#461 的第一条 P1)。
+    today=gate_today(),
+    end_date=_end_input,
+)
+if _gate_warning is not None:
+    st.warning(f"⚠ {_gate_warning}")
 
 _col_refresh, _col_launch = st.columns(2)
 with _col_refresh:
@@ -328,14 +372,18 @@ with _col_launch:
         "🚀 后台启动数据更新",
         key="run_center::launch_update",
         type="primary",
-        disabled=_running_fresh,
+        # 范围不合法就不让点:畸形日期要到两小时后才在 tushare 那头炸。
+        # 日历闸预警**不**禁用按钮 —— no-op 无害,操作人可能就是要它。
+        disabled=_running_fresh or _range_error is not None,
         use_container_width=True,
     )
 if _refresh_clicked:
     st.toast(f"已重读状态工件({_read_at:%H:%M:%S})")
 if _launch_clicked:
     _launch = launch_daily_update(
-        _provider_path, _tushare_dir, _update_registry
+        _provider_path, _tushare_dir, _update_registry,
+        start_date=_start_input.strip() or None,
+        end_date=_end_input.strip() or None,
     )
     # 结果暂存 + 整页 rerun:守望者的注册发生在本行**之上**,所以本次
     # 脚本运行里设的等待标记要等下一轮才生效。立刻 rerun 让它当场生效,
