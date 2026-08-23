@@ -1,0 +1,563 @@
+# 基本面 GP 挖掘战役 · 预注册协议（阶段8 基本面方向）
+#
+# 签署 = #446 merge；本文件 merge 后不可修改，任何偏离走新提案
+# （与 pv_incremental.yaml 同款纪律）。
+# 本文件是**被代码读取的机器件**，不是说明文档：
+#   * 已接线 —— `scripts/research/fundamental_gp_campaign.py` 的
+#     `load_frozen_plan()` 在 mine / starter-check / record-baseline /
+#     promote 四个子命令启动时加载并校验本文件（protocol_id、
+#     holdout 未揭盲、窗口纪律、晋升判据不得偏离），任一不符即拒。
+#     战役的**唯一**入口就是该脚本（裸 CLI 因缺注入工厂本就拒跑）。
+#   * 治理钉 —— tests/governance/test_fundamental_gp_freeze.py 经**真
+#     loader** 加载战役 preset，逐字段与本文件对账。
+#   * 尚未接线 —— 独立的预注册门 `fundamental_prereg_gate.py` 与演练
+#     脚本属后继 PR（见台账 open_items）。**在它落地之前，本文件不得
+#     声称受门保护**；此处如实记账，与 promotion.production_consumer_wired
+#     同款处理（codex #446 自审 P2：此前本段以现在时断言"门在读本文件"，
+#     而同包台账写着门属后继 PR —— 协议正文与自己的台账互相打脸）。
+#
+# 与已收束战役的关系（都不是本役的重复）：
+#   * quality_profitability_v1（C1/C2/C3 三个**手写**候选，Gate-4A 全批
+#     FWER = CLEAN_NEGATIVE 已收束）—— 本役搜索的是 GP **育出**的表达式，
+#     那三个只在链路验证里作确定性求值样本，不进本役候选族。
+#   * pv_incremental_v1（量价 GP，晋升门配对 INDISTINGUISHABLE 不晋升）——
+#     本役换的是**数据源**（财报 PIT），不是搜索机制。
+#
+# 点火前置（全部已具备，PR #433 / #437 / #439 / #441）：
+#   桥 + 三件套防线、终端注册与终端层同期强制、注入缝与工厂行为身份、
+#   双侧双次内容指纹、链路验证批次（本文件"实测锚点"段的数字出处）。
+
+protocol_id: fundamental_gp_v1
+signed_at_pr: 446
+
+# ---------------------------------------------------------------------------
+# 宇宙
+# ---------------------------------------------------------------------------
+universe:
+  instruments: csi800
+  # 金融业排除：操作人 2026-08-17 签收的 120 只（快照 20260817，规则 =
+  # financial_issuers_from_industry 稳定行业名单）。名单本体冻结在
+  # config/factor_mining/fundamental_gp_v1.yaml 的 financial_exclusions，
+  # 其 sha256 由治理测试钉死；view 与宇宙掩码消费**同一份持久化名单**。
+  ex_financials: true
+  ex_financials_count: 120
+  ex_financials_sha256: "38f03bf1133538f49dc022129b4c569188923cc101a53ff9e6612c0e6fef1e41"
+
+# ---------------------------------------------------------------------------
+# 终端集（冻结）—— 逐字段按 CSI800 实测覆盖率地板取舍
+# ---------------------------------------------------------------------------
+# 出处: src/research/financial_pit_coverage_floors.py::CSI800_COVERAGE_FLOORS
+# （Step-A 全量实测，docs/research/gate3_step_a_pit_coverage_report.md）。
+# 取舍规则：有效性门 fitness.coverage_min = 0.8，低于它的字段结构性无效。
+terminals:
+  # 17 个 charter 字段 × 2 期代（当期 + __prior）= 34 个终端。
+  # 量价终端**不在本役白名单内**：本役问的是"财报数据本身能不能产出
+  # 净正、低换手的因子"，混入量价会让换手判据失去鉴别力（见 adjudication）。
+  # 与量价的增量比较属**后继战役**，在本役晋升门以配对形式回答。
+  charter_fields:
+    - revenue                        # floor 0.98
+    - total_revenue                  # floor 0.98
+    - oper_cost                      # floor 0.98
+    - sell_exp                       # floor 0.96
+    - admin_exp                      # floor 0.98
+    - rd_exp                         # floor 0.87 —— 高于 coverage_min 0.8；
+                                     #   IS 起点 2019 之后为单列制 regime，
+                                     #   窗内口径一致（见 windows 注）
+    - fin_exp                        # floor 0.98
+    - total_assets                   # floor 0.98
+    - total_hldr_eqy_inc_min_int     # floor 0.98
+    - total_hldr_eqy_exc_min_int     # floor 0.98
+    - accounts_receiv                # floor 0.96
+    - inventories                    # floor 0.96
+    - prepayment                     # floor 0.97
+    - accounts_pay                   # floor 0.96
+    - adv_receipts                   # floor 0.34 —— 单用必被 coverage_min 拒
+    - contract_liab                  # floor 0.12 —— 同上
+    - n_cashflow_act                 # floor 0.98
+  prior_generation: true             # 每个字段带 $X__prior（Δ 形因子的前提）
+  n_terminals: 34
+  # 明令排除：as-of 覆盖 0.03，任何引用它的表达式结构性无效（coverage_min
+  # 0.8），进白名单只会浪费 GP 预算育无效式。与 quality_profitability 决策
+  # 一致（该包用 fin_exp 作融资成本代理，理由同为 int_exp 覆盖过低）。
+  excluded:
+    int_exp: {csi800_floor: 0.03, reason: below_coverage_min}
+  # adv_receipts / contract_liab 保留在白名单内**只因 coalesce**：二者
+  # 单独 0.34 / 0.12，coalesce 后实测 0.97（CSI800_ADV_CONTRACT_COALESCE_FLOOR）。
+  # 跨 2020 预收→合同负债重分类，二者是**一个逻辑输入**。有效性门负责
+  # 拒掉单用形态 —— 不靠白名单手工裁剪。
+  coalesce_pair: [adv_receipts, contract_liab]
+  coalesce_floor: 0.97
+
+# ---------------------------------------------------------------------------
+# 算子集（冻结）
+# ---------------------------------------------------------------------------
+operators_baseline_28: true          # grammar.V1_OPERATORS 逐字
+operators_amended: [coalesce]        # OpenSpec 修订入册（#441）：冻结 C3 形
+                                     # 公式的 merge-then-difference 需要
+ts_cov_excluded: true
+
+# ---------------------------------------------------------------------------
+# 窗口
+# ---------------------------------------------------------------------------
+windows:
+  # 2019 起点 = R&D 单列制会计 regime 边界，与 quality_profitability 的
+  # primary_start 同源（该包决策记录②：2018 及以前研发费用未单列，
+  # 口径不一致）。本役含 rd_exp 终端，故必须落在 regime 内。
+  is_start: "2019-01-01"             # GP 唯一可见窗
+  is_end: "2022-12-31"
+  oos_start: "2023-01-01"            # 幸存者一次性评估
+  oos_end: "2024-12-31"
+  holdout_year: 2025                 # 盲态；单向揭盲仅限晋升终裁
+  forbidden_from: "2026-01-01"       # 与生产重叠段，挖掘全程禁用
+
+# ---------------------------------------------------------------------------
+# 度量
+# ---------------------------------------------------------------------------
+metric:
+  forward_return_price: close        # close_exec_to_close_next
+  forward_horizon: 1
+  # 繁殖目标与裁决目标必须同一个（pv 战役 PV-DP-3 的教训）。
+
+fitness:
+  # v1 缺省组合，逐值冻结。
+  #
+  # 本段的冻结是**穷尽的**：经真 loader 加载后，凡是取值偏离
+  # `FitnessConfig` dataclass 缺省的字段，**都必须**在本段列名 —— 否则
+  # 治理钉红。单向遍历（只查"协议点名的键在 preset 里一致"）挡不住
+  # preset 单方面加一个协议没点名的键：`ic_term` 是**公式形状选择器**
+  # （fitness.py 的 abs_rank_ic 分支返回 |rank_ic| − 复杂度罚，下面五个
+  # 逐值冻结的权重当场全部不参与），`min_names_per_day` 是薄日门。
+  # 加一行就能换掉繁殖判据而协议一字未改（codex #446 自审 P1）。
+  w_ic: 1.0
+  w_ir: 0.5
+  w_rankic: 0.5
+  w_turnover: 0.2
+  w_corr: 0.8
+  w_complexity: 0.01
+  coverage_min: 0.8
+  # 正交惩罚**本役关闭**：本役先回答"财报数据能不能产出东西"，
+  # 增量性由晋升门的配对检验回答，不在育种期优化。
+  # （pv_incremental 开启它是因为那役本身就是增量战役。）
+  w_orthogonality: 0.0
+  # 已知偏置，写进协议以免事后当发现：w_complexity = 0.01/节点意味着
+  # GP **系统性偏好短表达式**。链路验证实测：34 节点的冻结 C3 吃 0.34
+  # 复杂度惩罚，比 6 节点的 C1 整个 fitness 的量级还大 5 倍
+  # （C1 fitness −0.0719 / C3 −0.3573，rank_ir 分别 −0.0726 / −0.0651）。
+  # 推论有二，都写死在判据里：
+  #   (a) 长的手写 charter 公式与 GP 育出的短式**不可用 fitness 互比**；
+  #   (b) 本役主判据因此绝不用 fitness 或 IC —— 用净超额 + 换手。
+  complexity_bias_acknowledged: true
+
+# ---------------------------------------------------------------------------
+# 搜索预算与随机性（可复现性 + 多重检验家族规模）
+# ---------------------------------------------------------------------------
+# 这些字段此前只在 preset 里、协议一个字没提，于是一个自称"签署后不可
+# 修改"的预注册包，其 RNG 种子与搜索预算落在冻结范围之外（codex #446
+# 自审 P1）。其中 pool_top_k 不是无害的规模旋钮：miner 用它在**持久化
+# 前**按 fitness 硬截断因子池，被截掉的候选永远进不到 OOS —— 而
+# gate_F_A.scope = all_oos_evaluated_candidates 正是以"进过 OOS 的候选
+# 数"定义 FWER 家族 N 的。把它改小，自举 max-t 的门槛当场下移，而协议
+# 一个字都没违反。
+#
+# 与 fitness 段同样是**穷尽**冻结：经真 loader 加载后偏离 dataclass
+# 缺省的 GPConfig 字段都必须在此列名。
+# 已知强度上限（如实记账，勿高估）：run 目录里的每一件都是伪造者可以
+# 一并改写的。`data_definition_sha256` / `search_definition_sha256` 的
+# 比对方式是"记录值 vs 就地重算"，两者都住在 run 目录内 —— 实测**改值 +
+# 重算摘要写回即可通过**。因此这三道检查（两个摘要 + 池截断算术）拦得住
+# **粗心的局部改动**，拦不住成体系伪造。
+#
+# 其中 `pool_top_k` 与 `full_pool_size_pre_truncation` 连粗心改动都拦不
+# 全：它们不在任何摘要覆盖范围内，同时改这两个值可使截断算术自洽
+# （codex #446 r16 P1）。池文件的实际条数是唯一不需重算即可读到的证据，
+# 但它只能证明"存了多少"，证明不了"截断前有多少"。
+#
+# 真正的闭合需要一个**run 目录之外**的锚点（把 run_id + 池内容摘要在挖矿
+# 时记进版本控制的台账）—— 属预注册门那一步，见台账 open_items O3。
+# 在它落地之前，本协议**不声称**这些字段防篡改。
+search:
+  seed: 20260818
+  population_size: 500
+  n_generations: 50
+  tournament_size: 3
+  elite_frac: 0.05
+  p_crossover: 0.7
+  p_mutate_subtree: 0.15
+  p_mutate_point: 0.1
+  p_mutate_const: 0.05
+  max_depth: 6
+  min_depth: 2
+  pool_top_k: 200
+
+# ---------------------------------------------------------------------------
+# 裁决 —— 两道门
+# ---------------------------------------------------------------------------
+adjudication:
+  # 判据点火前锁死；冻结后不得改。
+
+  gate_F_A:
+    # 因子层：OOS 上的多重检验，与 pv_incremental / Gate-4A 同款机器。
+    scope: all_oos_evaluated_candidates
+    method: full_batch_block_bootstrap_max_statistic
+    statistic: one_sided_max_t        # 带符号 t 的单侧 max，非 |t|
+    n_boot: 10000
+    block_len_days: 21
+    quantile: 0.95
+    hard_floor_t: 2.85                # A 股门槛（Hou-Qiao-Zhang 2024）
+    # 短窗 trial 的处置（codex #446 自审 P2）：此前写作"出族单报"，与
+    # 台账 effective_trials_rule（N = 所有 status=evaluated 的 OOS 试验，
+    # 唯一排除项是挖掘期就被拒的表达式）互相矛盾 —— 一个 n_days=100 的
+    # 候选**是**被 OOS 评估过的，按台账进 N、按协议出族，两种做法都能
+    # 引用冻结文件为据，而 N 决定的正是 F_A 落在哪个态上的门槛。
+    #
+    # 归一取**保守**的一侧：短窗 trial **留在家族 N 内**（照常参与自举
+    # max-t 零分布的构造，家族更大 → 门槛更高），但**不具备幸存者资格**
+    # （不得被宣称为通过双门槛的因子），另行单报。排除它们会缩小 N、
+    # 压低门槛，方向是宽松的。
+    per_trial_min_n_days: 120
+    short_window_trial_policy: in_family_not_eligible
+    # F_A 的状态表（此前聚合表引用了 sparse_only 却从未定义它 ——
+    # 未来的裁决器只能自行发明状态转移，或把"全族稀疏"当成"无幸存者"
+    # 从而产出 CLEAN_NEGATIVE，codex #446 r4 P1）。状态名与战役层裁决
+    # 语刻意不同名，与 F_B 同款分层纪律。
+    states:
+      has_survivors:
+        when: >-
+          至少一个够资格的 trial（n_days >= per_trial_min_n_days）的观测
+          t >= max(自举分位门槛, hard_floor_t)
+        action: to_gate_F_B
+      no_survivors:
+        when: >-
+          存在够资格的 trial，但无一过双门槛
+        action: reject
+      sparse_only:
+        when: >-
+          **没有任何** trial 够资格（全族 n_days < per_trial_min_n_days）
+        action: no_verdict
+    also_report:
+      - coverage
+      - temporal_stability
+      - na_conditional_coverage
+      - cross_sectional_monotonicity
+
+  gate_F_B:
+    # 晋升层：只在 F_A 有幸存者时进行。**主判据 = 净超额 + 换手**
+    # （操作人 2026-08-17 批准：不能只看 IC）。
+    only_if: "gate_F_A = has_survivors"
+    # 评估单位 = **F_A 幸存者构成的整池**，不是逐候选（codex #446 r5 P1）。
+    # 配对检验比的是两个模型臂：基线 = 现役；处理 = 现役 + 本池全部幸存者
+    # 作为特征。一次配对 → 一个净超额、一个换手比 → **恰好一个** F_B 态，
+    # 聚合表因此不会同时匹配两个裁决语。
+    #
+    # 为什么是池级而不是候选级：晋升本身就是池级的
+    # （promote.py 组装 survivor_pool 整体写生产版本），逐候选跑配对再
+    # 挑一个"最好的"等于在裁决时选样 —— 预注册的意义正是排除这种自由度。
+    # 池内构成由 F_A 与相关性过滤决定，冻结后不得手工增删。
+    evaluation_unit: survivor_pool_as_one_arm
+    # 池的构成必须**完全确定**，否则裁决器可以在看到 OOS 结果后保留
+    # 不同子集，从而移动配对净超额乃至 F_B 裁决（codex #446 r8 P1）。
+    # 逐项冻结（值即 ValidationCriteria/filter_correlated 的现行语义，
+    # 由治理钉子与代码对账）：
+    pool_construction:
+      filter: src/factor_mining/validator.py::filter_correlated
+      max_pool_correlation: 0.6        # 严格 > 即剔除
+      # 扫描顺序：fitness 降序，同分以**规范表达式串的 sha256** 升序
+      # 打破。绝不用 expr_hash —— 那是 Python 加盐 hash，跨进程/
+      # PYTHONHASHSEED 变化，同一批工件在两次执行里会保留不同的相关
+      # 幸存者，"确定性冻结"是假的（codex #446 r9 P1）。
+      ordering: [fitness_desc, canonical_expr_sha256_asc]
+      # 相关性在**全窗**面板上算（非仅 OOS），与实现一致：只用 OOS
+      # 算会让池随 OOS 段长度变化。
+      correlation_window: full_panel
+      # 逐对相关的观测取交集掩码（joint_obs_mask），避免覆盖率不同的
+      # 两个因子被不同样本量的相关系数比较。
+      pairwise_obs: joint_obs_mask
+      manual_edits_forbidden: true
+      # 晋升配置**不得覆盖**本段（codex #446 自审 P1）。此前只钉了
+      # `ValidationCriteria` 的 dataclass 缺省值，而真正生效的值来自
+      # 晋升配置的 `criteria:` 段（promote._load_config 原样 **kwargs
+      # 展开，该段没有未知键检查）—— 操作人 dry-run 看到"只留下 2 个
+      # 因子"，加一行 `criteria: {max_pool_correlation: 0.95}` 重跑，
+      # 池变大、配对处理臂随之改变、F_B 裁决跟着动。而池是在 OOS 验证
+      # **之后**才组装的，这就是本段开头声称已经关掉的那个自由度。
+      #
+      # 机器保证：campaign 脚本的 promote 子命令在启动时把晋升配置的
+      # criteria 段与下面这张表逐值比对，任一偏离即拒。
+      # 注意本表**不含** max_pool_correlation：它只写在上面
+      # `max_pool_correlation:` 一处，运行时守卫从那里读。冻结表里再抄
+      # 一份就成了本协议自立的"门槛单点"规则的反例（codex #446 自审 r2）。
+      # 同理 is_oos_split_date 不在表内：它不是可调阈值而是窗口边界，
+      # 守卫钉死它 == windows.oos_start。
+      promotion_criteria_frozen:
+        min_oos_ir: 0.3
+        min_oos_rank_ic_mean: 0.02
+        min_obs_per_segment: 30
+        warmup_days: 0
+      # 相关性求值失败 = 无法确定性构造池 → **拒绝**，不得把"没滤成"
+      # 当作"滤过了"（旧实现把非 KeyError 异常与非 DataFrame 返回都
+      # 当作保留该因子，方向是宽松的，codex #446 r9 P1）。
+      evaluation_failure_policy: refuse
+    primary_metric: paired_daily_net_excess
+    # 净 = return − benchmark − cost；成本模型 conservative 20bps 单边，
+    # 跑前钉死，与 CSI800 两役同口径。
+    cost_model: conservative_20bps
+    ruler: moving_block_bootstrap_CI  # 与现役 ruler 同 block 长 / seed
+    shared_between_arms:
+      - pit_data_version
+      - universe_membership
+      - folds
+      - embargo
+      - benchmark
+      - rebalance_cadence_days
+      - rebalance_phase
+      - rebalance_anchor
+    # 换手口径：分子与分母是**两个不同的量**，各自命名真实生产者。
+    # 早先只写一个 `turnover_definition: sleeve_turnover_...` 并声称
+    # 「与 CSI800 veto③ 同一纯函数」—— 那句只对分母成立：veto③ 的
+    # sleeve_turnover 吃的是 positions（权重 ½·Σ|Δw|），而门槛锚点里
+    # 的 1.2 出自因子**分值**的逐日 |Δ|，两者不可通约（codex #446
+    # 自审 r2 P1）。
+    turnover_definition:
+      numerator_producer: src/factor_mining/evaluator.py::_turnover_daily
+      denominator_producer: >-
+        src/core/attribution_sleeve_loader.py::sleeve_turnover
+      annualization_days: 238
+      # 为什么可以相除：两者都是"单边、逐交易日变动、按同一 ×238 年化"
+      # 的量，只是一个量信号排名的变动、一个量组合权重的变动。比值不是
+      # 无量纲等价物，而是一句**相对静止程度**的陈述：「池的信号翻得比
+      # 现役组合实际翻仓慢多少」。门槛锚点 1.2 / 6.49 = 0.18 就是按这个
+      # 口径算的，不换算、不假装同量纲。
+      units_differ_intentionally: true
+      # K 个幸存者 → 一个标量：取**逐因子年化信号换手的最大值**。
+      # evaluation_unit 是整池一条臂，若用均值，一个高频翻仓的因子会被
+      # 池里其余低换手因子稀释掉，而 F_B 高换手态存在的理由正是抓这种
+      # 因子。取 max 是 fail-closed 的一侧。
+      pool_aggregation: max_over_survivors
+    # **比值的分子与分母写死**（codex #446 自审 P1）：只写一个
+    # "turnover_ratio <= 门槛" 而不说谁除以谁，会留下两种互斥读法，
+    # 且各自废掉一个状态 ——
+    #   * 读成「处理臂组合换手 ÷ 基线臂组合换手」：两臂 cadence 由
+    #     shared_between_arms 钉成相同、只差特征，比值必然 ≈1.0 —— 于是
+    #     state_table 里那个通往 WIN 的态结构性不可达；
+    #   * 读成下面这个：只有池真的靠翻仓兑现收益时才落到另一个赢家态，
+    #     正是该态被引入的本意。
+    # 裁决器在看到 OOS 之后任选一种，正是预注册要消灭的自由度。
+    # 取后者：它就是下面 threshold_anchor 实际计算的那个量。
+    turnover_ratio:
+      numerator: survivor_pool_signal_turnover_one_way_annualized_238
+      denominator: incumbent_production_sleeve_turnover_one_way_annualized_238
+      # 分子按**日频**口径年化：量的是信号本身的翻仓速度，与执行
+      # cadence 无关。分母是现役**实际执行**的 sleeve 换手（N5 周频）。
+      # 两者 cadence 不同是**有意**的保守取向：比值 < 1 的读法是
+      # 「即便按日频执行，池的翻仓也低于现役的实际翻仓」。
+      #
+      # 注意 shared_between_arms 里的 rebalance 三字段约束**不**作用于
+      # 本比值，它约束的是配对净超额的两个臂（同 cadence 才可比）。
+      # 这两件事此前混在一句注释里，是上面那个歧义的来源。
+      cadence_note: numerator_daily_annualized_denominator_as_executed
+    turnover_ratio_max: 0.5
+    # 门槛来源（实测锚点，非拍脑袋）：链路验证实测三个冻结起步因子的
+    # 日换手 0.0049 / 0.0055 / 0.0066 → 年化单边约 1.2；现役 N5 csi800
+    # 实测 6.49（降换手战役 veto③ 读数）。纯财报因子约在参照的 0.18 倍，
+    # 该门槛因此**不卡住真正的低换手因子**，只在 GP 育出靠翻仓兑现
+    # 收益的东西时咬人 —— 包括面板自身制造伪换手的失效模式。
+
+    # 状态裁决（**池级**，见 evaluation_unit；仿 pv_incremental.fwer.tri_state
+    # 的结构）。操作人 2026-08-18 批准了多状态而非二分的形态：高换手
+    # 赢家是真发现，不该被静默丢弃，也不该自动晋升；随后裁尺的
+    # indistinguishable 独立成一个状态（codex #446 r6）。
+    #
+    # **状态数只写在 state_count 这一个结构字段里**，正文一律不重述 ——
+    # 重述必漂移，这份协议已经在 ledger 摘要与本段各漂移过一次
+    # （codex #446 r7/r8 P2）。治理钉子禁止正文出现裸的「N 态」计数。
+    # 状态表**互斥且穷尽**：足量前提写进除"证据不足"之外的每一个
+    # 谓词，而不是靠"优先级"的口头约定 —— 无先后规定的话，一个只有
+    # 100 天的负净超额会同时匹配"净超额为负"与"证据不足"，未来的
+    # 裁决器可以任选一个，等于让证据不足的批次拿到方向性结论
+    # （codex #446 r1 P1）。注释用描述而非状态名指代，理由见聚合表处。
+    # 状态数的唯一记载处（治理钉子与 state_table 长度对账）。
+    state_count: 5
+    sufficiency: "n_days >= per_trial_min_n_days AND positions 齐备"
+    # 判据由**裁尺的三值裁决**驱动，不是点估计：裁尺的红线原文是
+    # "never a point-estimate winner"（src/core/comparison.py），CI 跨零
+    # 即 indistinguishable。我原先的谓词只看 net_excess > 0，等于让
+    # 抽样噪声把池推进晋升门 —— 与 pv 战役的收束读数（配对
+    # INDISTINGUISHABLE → 不晋升）直接矛盾（codex #446 r6 P1）。
+    ruler_verdict_source: "src/core/comparison.py 三值裁决（同 block 长 / seed）"
+    state_table:
+      ruler_indistinguishable:
+        # 状态名带 ruler_ 前缀：裁决语 INDISTINGUISHABLE 是战役层的，
+        # 门内状态不得与它同名（分层命名的绝对规则，治理钉子机器查）。
+        # 点估计正但 CI 跨零 —— 统计上与基线无法区分。**不晋升**，
+        # 也不判方向阴性：这是"本窗功率不足以分辨"，与"确实不赚钱"
+        # 是两回事（裁尺在 indistinguishable 时强制附诊断读数）。
+        when: "sufficiency AND ruler_verdict == indistinguishable"
+        action: reject
+        note: "战役层聚合为 INDISTINGUISHABLE。附裁尺强制的功率诊断。"
+      net_negative:
+        # 名字不叫 clean_negative：那是**战役层**裁决语，含义是"因子层
+        # 就没信号"（F_A 无幸存者）。F_A 有幸存者却在这里净超额 <= 0
+        # 是**另一个发现** —— 有 IC 却赚不到钱，成本把它吃掉了（pv 战役
+        # "IC 升而毛 IR 降"正是这一类）。同名会让裁决器把两种相反的
+        # 幸存者状态记成同一个结论（codex #446 r2 P1）。
+        when: "sufficiency AND ruler_verdict == treatment_worse"
+        action: reject
+        note: "扣成本后不赚钱。战役层聚合为 SIGNAL_WITHOUT_NET。"
+      survivors_low_turnover:
+        when: "sufficiency AND ruler_verdict == treatment_better AND turnover_ratio <= turnover_ratio_max"
+        action: promote_gate
+        note: "论点成立形态：净正且确由低换手机制兑现。"
+      significant_high_turnover:
+        when: "sufficiency AND ruler_verdict == treatment_better AND turnover_ratio > turnover_ratio_max"
+        action: operator_decision
+        note: >-
+          信号真实但**不是本役论点的机制** —— 净正靠的不是低换手。
+          不自动晋升，也不构成方向关门；升级操作人裁决。
+          （同时必须复核：高换手是否来自面板的伪换手，即桥/掩码缺陷，
+          而非因子本身 —— 链路验证已证明管道在起步三因子上不制造
+          伪换手，但 GP 育出的式子可能触发别的路径。）
+      insufficient_evidence:
+        # 状态名与战役层裁决语 NO_VERDICT 刻意不同名（动作仍是
+        # no_verdict）—— 与 pv_incremental 的惯例一致（状态 sparse_only
+        # → 动作 no_verdict）。门内状态与裁决语分层命名是绝对规则，
+        # 治理钉子机器检查，不留"语义相同所以可以同名"的例外。
+        when: "NOT sufficiency"
+        action: no_verdict
+        note: "稀疏或数据缺失不构成裁决（fail-closed，不猜）。"
+
+# 战役层终裁 = 两门结果的**聚合表**。每个组合恰好落进一个裁决语。
+# 门内状态与裁决语分属两层，永不同名，也不直接当裁决语用（某些状态的
+# **动作**与裁决语同名，那是动作不是状态）。
+#
+# 状态名的唯一定义处是 adjudication 的 gate_F_A.states 与
+# gate_F_B.state_table —— 这里**不重复枚举**：此前的枚举在新增
+# ruler_indistinguishable 后漏了它，读者据此实现聚合会把该结果当未定义
+# （codex #446 r11 P2）。与 falsifier 改"引用而非重述"、状态数改
+# state_count 单点记载是同一条原则：会漂移的重述一律删掉。
+verdict_rules:
+  # 足量前提在**每一层**都要显式写出：F_B 那层加了 sufficiency 而这里
+  # 没加，则"全族都稀疏"时 F_A 既是 sparse_only 又"无幸存者"，
+  # CLEAN_NEGATIVE 与 NO_VERDICT 同时匹配 —— 证据不足被裁成方向阴性
+  # （codex #446 r3 P1；与 r2 在 F_B 层修的是同一个缺陷，我只修了一层）。
+  CLEAN_NEGATIVE:
+    when: "F_A = no_survivors"
+    means: "因子层就没信号。方向阴性，有效排除。与已收束战役同名同义。"
+  SIGNAL_WITHOUT_NET:
+    when: "F_A = has_survivors AND F_B = net_negative"
+    means: >-
+      因子层有信号、策略层扣成本后不赚钱 —— 与 CLEAN_NEGATIVE **不是**
+      同一个结论，不得混记。这是本役最可能的形态之一（pv 战役的
+      "IC 升而毛 IR 降"是同类读数），须单独入账并复盘成本结构。
+  INDISTINGUISHABLE:
+    when: "F_A = has_survivors AND F_B = ruler_indistinguishable"
+    means: >-
+      因子层有信号，策略层与基线**统计上无法区分**（CI 跨零）。不晋升，
+      但也不关门 —— 这是功率问题，不是"不赚钱"的证据。与
+      SIGNAL_WITHOUT_NET 必须分开记账（pv 战役正是这个形态收束的）。
+  WIN:
+    when: "F_A = has_survivors AND F_B = survivors_low_turnover"
+    means: "论点成立：净正且确由低换手机制兑现。进晋升实操。"
+  OPERATOR_DECISION:
+    when: "F_A = has_survivors AND F_B = significant_high_turnover"
+    means: "信号真实但非低换手机制。不自动晋升，也不构成方向关门。"
+  REFUSE:
+    when: "数据契约失败（见 falsifier.setup_failure_refuse）"
+    means: >-
+      门层拒绝，**早于任何裁决**：实验没做成，不产生方向性结论，也不
+      消耗 holdout。修数据/防线后重跑。
+  NO_VERDICT:
+    when: "F_A = sparse_only OR F_B = insufficient_evidence"
+    means: "证据不足，不得声称任何方向（fail-closed）。"
+
+promotion:
+  manual_only: true
+  # 生产物化消费者尚未接线：含财报终端的池写入生产目录目前由
+  # promote._refuse_fundamental_pool_in_production **可执行拒绝**挡住
+  # （早于 mkdir）。晋升实操须先落地那个后继 change。
+  production_consumer_wired: false
+
+holdout_unblinded: false             # 单向标志；翻转仅限晋升终裁签字
+
+# ---------------------------------------------------------------------------
+# PIT 数据契约
+# ---------------------------------------------------------------------------
+pit_data_contract:
+  view: src/research/financial_pit_view.py
+  bridge: src/research/fundamental_panel.py
+  as_of_rule: disclosure_of_record_available_from_trade_date
+  missing_policy: missing_stays_missing      # 禁填补，不禁服务真实可用的旧期
+  cross_endpoint_alignment: terminal_level_union_mask
+  prior_period: calendar_adjacent_quarter_end
+  # 已知的弱信号，写进协议以免被当保证：oper_cost 交叉核对在 A 股金融股
+  # 上不成立 —— 链路验证实测 **28 条** financial_has_oper_cost 分歧
+  # （券商/多元金融确实申报营业成本）。行业名单是主规则，oper_cost 只是
+  # 交叉核对；分歧逐条报告不解决（spec: v2-financial-pit-contract）。
+  exclusion_cross_check_is_weak_signal: true
+  exclusion_cross_check_disagreements_at_link_check: 28
+
+# ---------------------------------------------------------------------------
+# 实测锚点（链路验证批次，run 20260817T133006-20260817-73b31a09）
+# ---------------------------------------------------------------------------
+# 这些数字**不构成任何因子裁决**（无 prereg 门、2 年 IS 窗、无 OOS），
+# 只作本协议参数的证据基础，逐条可回溯到 starter_factor_report.json。
+link_check_evidence:
+  run_window: "2021-01-01..2022-12-31"
+  panel_shape: [485, 964]
+  fundamental_terminals: 22          # 该批次只用 11 字段 × 2 期代
+  panel_build_marginal_seconds_per_day: 0.86
+  mine_wallclock_seconds: 1025.4
+  starter_check_wallclock_seconds: 482.0
+  coverage_observed: {C1_GPA: 0.9928, asset_growth: 0.9956, C3_cash_based_OP: 0.9495}
+  turnover_daily_observed: {C1_GPA: 0.0055, asset_growth: 0.0049, C3_cash_based_OP: 0.0066}
+  rank_ic_mean_observed:
+    C1_GPA: -0.011862950049470897
+    asset_growth: -0.008976871647367497
+    C3_cash_based_OP: -0.007631585807496477
+  # 三个 IC 皆微负 —— **不构成阴性证据**（2 年、单一 regime、IS 内、
+  # 无行业中性化、无多重检验）。与下方诚实先验一致，如此而已。
+
+# ---------------------------------------------------------------------------
+# 可证伪条件 / 诚实先验
+# ---------------------------------------------------------------------------
+# 可证伪条件分两类，**不得混为一谈**：方向阴性（财报这条路走不通）与
+# 论点证伪（走得通，但不是靠低换手）。把后者也算成"有效阴性"会与
+# 聚合表直接打架 —— 那里 OPERATOR_DECISION 明写"不构成方向关门"
+# （codex #446 r5 P1）。
+falsifier:
+  setup_failure_refuse:
+    # 数据契约破了 = **没有做成有效实验**，不构成任何反对本方向的证据。
+    # 把它算成方向阴性会用一个坏掉的实验关掉一条研究方向（codex #446
+    # r6 P1）。门层 REFUSE，早于任何裁决语。
+    conditions: >-
+      财报 PIT 无法证明公告日/首披/修订（防线 (i)(ii)(iii) 任一失守，
+      含泄漏金丝雀存活）；终端覆盖跌破实测地板；store/日历内容指纹
+      漂移；工厂行为身份不符。
+    verdict: REFUSE
+  # 下面两类**只引用门内状态名，绝不重述条件** —— 重述就会漂移：
+  # r6 把状态表改成裁尺驱动后，这里残留的点估计描述("净超额 > 0")
+  # 让 CI 跨零 + 高换手的结果同时被判 INDISTINGUISHABLE 和"论点证伪"
+  # （codex #446 r7 P1）。条件的唯一定义处是 adjudication 的状态表。
+  directional_negative:
+    # 判为方向阴性 = 实验**做成了**，而本役这条路在本协议下不通。
+    # 对应裁决语 CLEAN_NEGATIVE / SIGNAL_WITHOUT_NET。
+    states: ["F_A = no_survivors", "F_B = net_negative"]
+  thesis_falsified_not_direction:
+    # 论点（"赢面在低换手"）被证伪，但方向**没有**关门 —— 财报数据确实
+    # 产出了裁尺认可的净正结果，只是机制不是低换手。对应
+    # OPERATOR_DECISION。注意 CI 跨零属 ruler_indistinguishable，
+    # **不在此列**（那是功率问题，论点未被证伪）。
+    states: ["F_B = significant_high_turnover"]
+    required_follow_up: >-
+      须复核高换手来自因子本身还是面板的伪换手（桥/掩码缺陷）；链路
+      验证已证明管道在起步三因子上不制造伪换手，但 GP 育出的式子可能
+      触发别的路径。复核结论入台账后再谈晋升。
+
+honesty_envelope: >-
+  诚实先验：A 股基本面因子整体偏弱，首轮很可能阴性 —— 那是有效结果。
+  本役论点是**低换手**而非高 IC：财报数据季频更新，换手结构上就低
+  （链路验证实测年化约 1.2 vs 现役 6.49），成本节省是可能的赢面来源。
+  但低换手只是**必要条件** —— 若 alpha 确为零，低换手只意味着亏得慢。
+  量价线（pv_incremental）已收 INDISTINGUISHABLE，其最值钱的读数是
+  "IC 升而毛 IR 降"；本役换数据源不换机制，没有理由先验乐观。
+  所有候选/变体/失败试验必进 research ledger；无记录不得声称已校正
+  选择偏差。

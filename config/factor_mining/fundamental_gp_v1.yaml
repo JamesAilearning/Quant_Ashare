@@ -1,0 +1,285 @@
+# 基本面 GP 挖掘战役 · 搜索批次配置（阶段8 基本面方向）
+#
+# 本文件的每个语义字段都由 docs/prereg/fundamental_gp_v1.yaml 冻结，且由
+# tests/governance/test_fundamental_gp_freeze.py 逐条比对——改这里而不改
+# 冻结件（或反之）会让治理测试红。
+#
+# 点火（操作人；CPU 任务，非 GPU）——**必须**经 campaign 脚本，裸 CLI
+# （python -m src.factor_mining.miner）会因缺注入工厂而拒跑：
+#     python -m scripts.research.fundamental_gp_campaign mine \
+#         --config config/factor_mining/fundamental_gp_v1.yaml
+#
+# 窗口铁律：end_date 止于 IS 尾 2022-12-31。OOS（2023-01-01
+# 起）、holdout（2025）、forbidden（2026-01-01 起）
+# 绝不进本配置——GP 唯一可见窗就是 IS。
+
+# 与冻结协议的**绑定**：campaign 脚本的 mine 子命令见到它就加载
+# docs/prereg/fundamental_gp_v1.yaml 并逐字段校验（窗口 / 宇宙 / 排除集 /
+# 终端 / 算子 / fitness 与 search 的穷尽冻结 / pool_top_k），任一偏离即
+# 拒。没有它，--config 指向哪份文件是自由的 —— 治理钉只能保证仓库里这
+# 份 preset 与协议一致，保证不了这次 run 用的就是它。
+protocol_id: fundamental_gp_v1
+
+run_id: null
+output_dir: output/factor_mining/fundamental_gp_v1
+pool_top_k: 200
+
+data:
+  mode: pit
+  pit_provider_uri: "${QUANT_PROVIDER_URI:-D:/qlib_data/my_cn_data_pit}"
+  delisted_registry_path: "${QUANT_DELISTED_REGISTRY:-D:/qlib_data/tushare_raw/delisted_registry.parquet}"
+  universe_name: csi800
+  start_date: "2019-01-01"
+  end_date: "2022-12-31"
+  forward_horizon: 1
+  forward_return_price: close
+  # 量价侧留空 = 既有 V1 十二终端照常进面板（forward return 与覆盖率
+  # 分母需要它们），但它们**不进 GP 采样白名单**（见 gp.allowed_terminals）：
+  # 本役协议冻结的搜索空间只含财报终端。面板成分与搜索空间是两件事，
+  # 由两个字段分别表达 —— 正因为白名单不再从面板键推导，这份 preset
+  # 才能如实描述实验（治理钉 test_the_search_space_carries_no_price_volume_terminal
+  # 断言白名单与 V1 量价终端零交集）。
+  fields: []
+  # --- 基本面腿（四元组）---
+  fundamental_store_root: "${QUANT_FIN_STORE:-D:/qlib_data/financial_pit_raw}"
+  fundamental_calendar_path: "${QUANT_FIN_CALENDAR:-D:/qlib_data/my_cn_data_pit/calendars/day.txt}"
+  # 17 个 charter 字段（int_exp 按实测覆盖 0.03 明令排除）；工厂恒带
+  # __prior 期代 → 面板 34 个财报终端。
+  fundamental_fields:
+    - revenue
+    - total_revenue
+    - oper_cost
+    - sell_exp
+    - admin_exp
+    - rd_exp
+    - fin_exp
+    - total_assets
+    - total_hldr_eqy_inc_min_int
+    - total_hldr_eqy_exc_min_int
+    - accounts_receiv
+    - inventories
+    - prepayment
+    - accounts_pay
+    - adv_receipts
+    - contract_liab
+    - n_cashflow_act
+  # 金融排除集：120 只，操作人 2026-08-17 签收（快照 20260817）。
+  # 签收即冻结；与 fundamental_link_check.yaml 同一份名单，摘要由治理
+  # 测试双向钉死。
+  financial_exclusions:
+    - SZ000001
+    - SZ000166
+    - SZ000415
+    - SZ000532
+    - SZ000563
+    - SZ000567
+    - SZ000617
+    - SZ000686
+    - SZ000712
+    - SZ000728
+    - SZ000750
+    - SZ000776
+    - SZ000783
+    - SZ000987
+    - SZ001227
+    - SZ001236
+    - SZ002142
+    - SZ002423
+    - SZ002500
+    - SZ002647
+    - SZ002670
+    - SZ002673
+    - SZ002736
+    - SZ002797
+    - SZ002807
+    - SZ002839
+    - SZ002926
+    - SZ002936
+    - SZ002939
+    - SZ002945
+    - SZ002948
+    - SZ002958
+    - SZ002961
+    - SZ002966
+    - SZ300059
+    - SH600000
+    - SH600015
+    - SH600016
+    - SH600030
+    - SH600036
+    - SH600053
+    - SH600061
+    - SH600095
+    - SH600109
+    - SH600120
+    - SH600155
+    - SH600318
+    - SH600369
+    - SH600390
+    - SH600517
+    - SH600621
+    - SH600643
+    - SH600816
+    - SH600830
+    - SH600864
+    - SH600901
+    - SH600906
+    - SH600908
+    - SH600909
+    - SH600918
+    - SH600919
+    - SH600926
+    - SH600927
+    - SH600928
+    - SH600958
+    - SH600999
+    - SH601009
+    - SH601059
+    - SH601066
+    - SH601077
+    - SH601099
+    - SH601108
+    - SH601128
+    - SH601136
+    - SH601162
+    - SH601166
+    - SH601169
+    - SH601187
+    - SH601198
+    - SH601211
+    - SH601229
+    - SH601236
+    - SH601288
+    - SH601318
+    - SH601319
+    - SH601328
+    - SH601336
+    - SH601375
+    - SH601377
+    - SH601398
+    - SH601456
+    - SH601528
+    - SH601555
+    - SH601577
+    - SH601601
+    - SH601628
+    - SH601658
+    - SH601665
+    - SH601688
+    - SH601696
+    - SH601788
+    - SH601818
+    - SH601825
+    - SH601838
+    - SH601860
+    - SH601878
+    - SH601881
+    - SH601901
+    - SH601916
+    - SH601939
+    - SH601963
+    - SH601988
+    - SH601990
+    - SH601995
+    - SH601997
+    - SH601998
+    - SH603093
+    - SH603123
+    - SH603300
+    - SH603323
+
+gp:
+  # 终端白名单 = 17 charter 字段 x 2 期代 = 34（int_exp 按实测覆盖
+  # 0.03 明令排除）。量价终端在面板里但不在此列 —— 协议冻结的搜索
+  # 空间是财报侧。
+  allowed_terminals:
+    - $revenue
+    - $revenue__prior
+    - $total_revenue
+    - $total_revenue__prior
+    - $oper_cost
+    - $oper_cost__prior
+    - $sell_exp
+    - $sell_exp__prior
+    - $admin_exp
+    - $admin_exp__prior
+    - $rd_exp
+    - $rd_exp__prior
+    - $fin_exp
+    - $fin_exp__prior
+    - $total_assets
+    - $total_assets__prior
+    - $total_hldr_eqy_inc_min_int
+    - $total_hldr_eqy_inc_min_int__prior
+    - $total_hldr_eqy_exc_min_int
+    - $total_hldr_eqy_exc_min_int__prior
+    - $accounts_receiv
+    - $accounts_receiv__prior
+    - $inventories
+    - $inventories__prior
+    - $prepayment
+    - $prepayment__prior
+    - $accounts_pay
+    - $accounts_pay__prior
+    - $adv_receipts
+    - $adv_receipts__prior
+    - $contract_liab
+    - $contract_liab__prior
+    - $n_cashflow_act
+    - $n_cashflow_act__prior
+  # 战役规模（与 pv_incremental_v1 同量级）。链路验证批次用的 40x3 只
+  # 验链路，不构成搜索。
+  population_size: 500
+  n_generations: 50
+  tournament_size: 3
+  elite_frac: 0.05
+  p_crossover: 0.7
+  p_mutate_subtree: 0.15
+  p_mutate_point: 0.10
+  p_mutate_const: 0.05
+  max_depth: 6
+  min_depth: 2
+  seed: 20260818
+  # 完整算子白名单 = 基线 28 + coalesce（OpenSpec 修订入册，#441）。
+  # 缺省（空）= 基线 28：注册表增长不会拓宽任何未显式声明的搜索。
+  allowed_operators:
+    - abs
+    - add
+    - cs_demean
+    - cs_rank
+    - cs_winsorize
+    - cs_zscore
+    - div_safe
+    - log_safe
+    - mul
+    - neg
+    - sign
+    - sqrt_safe
+    - sub
+    - ts_argmax
+    - ts_argmin
+    - ts_corr
+    - ts_decay_linear
+    - ts_delta
+    - ts_kurt
+    - ts_max
+    - ts_mean
+    - ts_min
+    - ts_pctchange
+    - ts_rank
+    - ts_skew
+    - ts_std
+    - ts_sum
+    - where
+    - coalesce
+
+fitness:
+  w_ic: 1.0
+  w_ir: 0.5
+  w_rankic: 0.5
+  w_turnover: 0.2
+  w_corr: 0.8
+  w_complexity: 0.01
+  coverage_min: 0.8
+  # 正交惩罚本役关闭（增量性由晋升门配对回答，不在育种期优化）。
+  w_orthogonality: 0.0
