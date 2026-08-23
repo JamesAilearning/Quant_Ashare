@@ -40,17 +40,29 @@ arrives as the caught exception and is already in `detail`.
 - **THEN** the run still returns the stage's exit code, `detail` falls back to
   the exit-code summary, and no exception escapes
 
-#### Scenario: nothing captured means nothing invented
+#### Scenario: nothing captured means nothing invented, and says so
 - **WHEN** a stage fails without logging any ERROR
-- **THEN** `detail` is exactly the exit-code summary, with no fabricated reason
+- **THEN** `detail` carries the exit-code summary unchanged plus a marker saying
+  the stage recorded no reason, so a reader can tell a fallback from a captured
+  cause
+
+Without the marker a reader cannot distinguish the two and renders the summary
+as if it were the reason — dressing up "we only have an exit code" as an
+explanation, which is worse than saying nothing.
+
+#### Scenario: a failed validation check is logged at ERROR
+- **WHEN** the PIT validator records a check that did not pass
+- **THEN** it logs that check and its error text at ERROR level, so the capture
+  window carries it; warnings stay at INFO because warnings-only is a pass
 
 ### Requirement: The composed detail SHALL stay one line and SHALL declare truncation
 
 `detail` SHALL remain a single line, folding embedded newlines rather than
 dropping the text around them, and SHALL be bounded. When lines are dropped to
-respect the bound, `detail` SHALL state how many were dropped and where the
-full text lives. The bound SHALL be large enough to carry a stage's remedy
-sentence, not merely its complaint.
+respect the bound, `detail` SHALL keep BOTH the first and the last captured
+line and SHALL state how many middle lines were dropped and where the full text
+lives. The bound SHALL be large enough to carry a stage's remedy sentence, not
+merely its complaint.
 
 The message this exists for is about 350 characters and its SECOND half is the
 remedy, so the 200-character cap used for the Jobs page table cell would keep
@@ -60,9 +72,16 @@ the complaint and cut the fix.
 - **WHEN** a captured error contains newlines
 - **THEN** `detail` contains every non-empty part on one line
 
-#### Scenario: dropped lines are counted out loud
+#### Scenario: dropped lines are counted out loud, and the ends survive
 - **WHEN** the captured errors exceed the bound
-- **THEN** `detail` names how many lines were not listed and points at the log
+- **THEN** `detail` keeps the first and last lines, names how many middle lines
+  were not listed, and points at the log
+
+A stage's first ERROR is usually WHY and its last is usually WHAT TO DO — 01's
+hole report is exactly that shape, ending with "Re-run with the same
+--output-dir to fill the holes". Filling from the front until the budget runs
+out drops precisely the remedy, which is the same "keep the complaint, cut the
+fix" failure this requirement rejects the 200-character cap for.
 
 #### Scenario: a single over-long error is kept rather than dropped
 - **WHEN** the first captured line alone exceeds the bound

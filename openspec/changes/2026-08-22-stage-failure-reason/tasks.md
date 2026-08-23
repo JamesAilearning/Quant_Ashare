@@ -10,9 +10,29 @@
 
 ## 验证（每条要实测数字）
 
-- [x] 生产者守卫 28 条 + 7 subtests
-- [x] 消费端与退出码守卫 9 条 + 3 subtests
-- [x] 变异 20 条全部被咬（含「捕获点挂错 logger」这条静默空转变异）
+- [x] 生产者守卫 30 条 + 8 subtests
+- [x] 消费端与退出码守卫 15 条 + 4 subtests
+- [x] 变异 28 条全部被咬（含「捕获点挂错 logger」这条静默空转变异）
+
+## codex 第一轮：三条 P2，全部属实
+
+| | 问题 | 根子 |
+|---|---|---|
+| P2 | 截断从头填到超限就停，把 01 hole report 最后那句 "Re-run with the same --output-dir" 切掉 | **正是我反对 200 字符上限时用的那个论据**，我自己在另一处又犯了 |
+| P2 | `PITValidator._log_summary` 全部用 INFO，包括失败检查的 error 文本 → validate 阶段一条都收不到 | 只验了假 runner（它自己发 ERROR），没验真实校验路径 |
+| P2 | 阶段一条 ERROR 都没记时，`detail` 是裸摘要，读侧渲染成「原因：fetch failed hard (exit 1)」 | 把「只有退出码」伪装成一条解释——比不说更糟 |
+
+修法：
+
+- 截断改为**保头尾**：第一条通常是为什么，最后一条通常是怎么办；丢中间并报数
+- 校验器把**失败的**检查按 ERROR 记（警告仍 INFO——警告-only 在本项目里是 PASS）
+- 兜底串附一个标记，读侧据此把「没有原因」与「有原因」分开；标记串两侧各声明
+  一次（两模块刻意不互相 import），配一条一致性守卫，与 `STATUS_SCHEMA_VERSION`
+  同样的处理
+
+codex 点名要「用真实校验日志行为、而不是假 runner」写回归——照做了：直接调真的
+`_log_summary`，并端到端验它那句话走进 `detail`。同样，「用一个静默失败的 runner
+走完整链路」而不是伪造一个空 `detail`，也照做了。
 - [x] 分目录实测：data_pipeline 447 / governance 446 / pit 34 / logic 4194
 - [x] ruff clean；mypy --strict 231 文件 0 error
 - [x] `openspec validate --strict` valid

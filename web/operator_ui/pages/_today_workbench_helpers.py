@@ -17,7 +17,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
-from web.operator_ui.update_status import UpdateRunStatus
+from web.operator_ui.update_status import NO_REASON_MARK, UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
     VERDICT_MATCHES_INCUMBENT,
@@ -37,11 +37,20 @@ def failed_update_summary(status: UpdateRunStatus) -> str:
 
     `detail` 空时**明说记录里没有原因**,不留白:留白读起来像「没有更多可说」,
     而真相是「这次运行没把原因写下来」,两者对操作人的下一步完全不同。
+
+    而 `detail` **非空也不等于有原因**:阶段一条 ERROR 都没记时,写入侧存的是
+    退出码摘要本身(例如 `fetch failed hard (exit 1)`)并附上一个标记。把它当成
+    原因渲染成「原因:fetch failed hard (exit 1)」,是把「只有退出码」伪装成一条
+    解释——比不说更糟(codex #462)。所以这里认那个标记,只在真有捕获内容时才用
+    「原因」二字。
     """
     reason = (status.detail or "").strip()
     head = f"{status.exit_meaning}；失败阶段：{status.failed_stage or '未记录'}。"
     if not reason:
         return head + "状态记录未写下原因；请在运行中心查看日志。"
+    if reason.endswith(NO_REASON_MARK):
+        return head + reason[: -len(NO_REASON_MARK)].strip() + \
+            "。该阶段未在日志中留下原因；请在运行中心查看日志。"
     return head + f"原因：{reason}"
 
 

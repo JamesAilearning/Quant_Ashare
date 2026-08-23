@@ -15,9 +15,14 @@
 from __future__ import annotations
 
 import ast
+import logging
 import re
+import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
+
+import pandas as pd
 
 import src.data_pipeline.daily_update as du
 from web.operator_ui.pages._today_workbench_helpers import failed_update_summary
@@ -99,6 +104,136 @@ class BothConsumersReadTheSameLine(unittest.TestCase):
         ]
         self.assertEqual(1, len(cards), "找不到失败卡片——本守卫已失效")
         self.assertIn("failed_update_summary", ast.unparse(cards[0]))
+
+
+class AFailedValidationCheckIsLoggedAsAnError(unittest.TestCase):
+    """校验器把失败的检查按 ERROR 记——级别在这里不只是显示问题。
+
+    `daily_update` 捕获阶段失败原因时只收 ERROR 记录。失败的检查若记成 INFO，
+    一次普通的契约失败在状态工件里就只剩 `validation failed (exit N)`，操作人
+    还是得去翻日志——本改动等于在这个阶段上白做（codex #462）。
+
+    这里调**真的** `PITValidator._log_summary`，不用假 runner 自己发 ERROR：
+    要验的正是真实校验路径的日志行为。
+    """
+
+    @staticmethod
+    def _levels_for(passed: bool) -> list[int]:
+        from src.data.pit.pit_validator import (
+            CheckResult,
+            PITValidationReport,
+            PITValidator,
+        )
+        report = PITValidationReport(
+            checks=[CheckResult(
+                name="calendar spine", code="A", passed=passed,
+                errors=[] if passed else ["3 sessions missing from day.txt"],
+                warnings=["reference case absent"])],
+            provider_dir=Path("X"),
+        )
+        seen: list[int] = []
+        probe = logging.Handler()
+        probe.emit = lambda record: seen.append(record.levelno)  # type: ignore[method-assign]
+        logger = logging.getLogger("src")
+        logger.addHandler(probe)
+        try:
+            PITValidator._log_summary(report)
+        finally:
+            logger.removeHandler(probe)
+        return seen
+
+    def test_a_failed_check_reaches_error_level(self) -> None:
+        self.assertIn(
+            logging.ERROR, self._levels_for(passed=False),
+            "失败的检查记成了 INFO —— 阶段失败原因的捕获收不到它")
+
+    def test_a_passing_check_stays_at_info(self) -> None:
+        # 全过时不许把摘要吵成 ERROR：那会让捕获收进一堆无关内容。
+        self.assertNotIn(logging.ERROR, self._levels_for(passed=True))
+
+    def test_the_captured_reason_survives_into_the_artifact(self) -> None:
+        """端到端：校验失败的那句话要走到 `detail` 里。"""
+        import src.data_pipeline.daily_update as du
+        from src.data.pit.pit_validator import (
+            CheckResult,
+            PITValidationReport,
+            PITValidator,
+        )
+        report = PITValidationReport(
+            checks=[CheckResult(name="calendar spine", code="A", passed=False,
+                                errors=["3 sessions missing from day.txt"])],
+            provider_dir=Path("X"),
+        )
+        with du._capture_stage_errors() as captured:
+            PITValidator._log_summary(report)
+        detail = du._stage_detail("validation failed (exit 2)", captured)
+        self.assertIn("3 sessions missing", detail)
+
+
+class TheNoReasonMarkIsStatedOnceOnEachSide(unittest.TestCase):
+    """写入侧与读侧刻意不互相 import，所以标记串在两处各声明一次。
+
+    与 `STATUS_SCHEMA_VERSION` 同样的处理：重复是必要的，零一致性测试不是——
+    两处分头改一个字，读侧就再也认不出兜底串，工作台又会把「只有退出码」当成
+    原因渲染出来。
+    """
+
+    def test_both_sides_declare_the_same_mark(self) -> None:
+        import src.data_pipeline.daily_update as du
+        from web.operator_ui.update_status import NO_REASON_MARK
+        self.assertEqual(du._NO_REASON_MARK, NO_REASON_MARK)
+
+    def test_the_mark_is_not_empty(self) -> None:
+        # 空串会让 `endswith` 恒真，读侧从此把每一条原因都说成「没有原因」。
+        from web.operator_ui.update_status import NO_REASON_MARK
+        self.assertTrue(NO_REASON_MARK.strip())
+
+
+class AFallbackSummaryIsNotDressedUpAsAReason(unittest.TestCase):
+    """阶段一条 ERROR 都没记时，读侧不许说「原因：<退出码摘要>」。
+
+    那是把「我们只有一个退出码」伪装成一条解释——比不说更糟：操作人会以为
+    这就是原因，而不去翻日志（codex #462）。
+    """
+
+    def _silent_failure_line(self) -> str:
+        """从一个**什么都不记**的失败阶段走完整条链路，而不是伪造一个空 detail。"""
+        import src.data_pipeline.daily_update as du
+
+        def silent(argv: list[str]) -> int:
+            return 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = du.DailyUpdateConfig(
+                tushare_dir=root / "raw", provider_dir=root / "provider",
+                delisted_registry=root / "raw" / "reg.parquet",
+                reference_cases=root / "cases.yaml", now=date(2026, 6, 10),
+            )
+            (cfg.tushare_dir).mkdir(parents=True, exist_ok=True)
+            pd.DataFrame({"ts_code": ["000001.SZ"], "name": ["平安银行"],
+                          "snapshot_date": ["20260610"]}).to_parquet(
+                cfg.tushare_dir / "active_stocks.parquet")
+            for sub in ("calendars", "instruments", "features"):
+                (cfg.provider_dir / sub).mkdir(parents=True, exist_ok=True)
+            (cfg.provider_dir / "calendars" / "day.txt").write_text("L", encoding="utf-8")
+            (cfg.provider_dir / "instruments" / "all.txt").write_text("", encoding="utf-8")
+            runners = {s: (lambda argv: 0) for s in (
+                "fetch", "registry", "bins", "membership", "universe",
+                "benchmark", "validate")}
+            runners["fetch"] = silent
+            _, _, detail = du._execute_daily_update(cfg, runners)  # type: ignore[arg-type]
+        return failed_update_summary(_status(detail))
+
+    def test_a_silent_failure_says_no_reason_was_recorded(self) -> None:
+        line = self._silent_failure_line()
+        self.assertNotIn("原因：", line, "把退出码摘要当成原因端了出来")
+        self.assertIn("未在日志中留下原因", line)
+        self.assertIn("日志", line)
+
+    def test_the_exit_code_summary_is_still_shown(self) -> None:
+        # 不说「原因」不等于把摘要也吞掉：它仍是操作人手里唯一的线索。
+        self.assertIn("fetch failed hard", self._silent_failure_line())
 
 
 class TheThreeExitCodeTablesAgree(unittest.TestCase):

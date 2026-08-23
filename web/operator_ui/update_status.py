@@ -29,6 +29,17 @@ STATUS_FILENAME = "daily_update_status.json"
 # OTHER version is corrupt here — never interpreted with v1 semantics.
 STATUS_SCHEMA_VERSION = 1
 
+# Mirrors ``src/data_pipeline/daily_update.py``'s ``_NO_REASON_MARK`` —
+# same deliberate duplication as the schema version above (the two
+# modules never import each other), pinned by the same logic test.
+#
+# The writer appends this to ``detail`` when the failing stage logged no
+# ERROR at all, so ``detail`` carries only the exit-code summary. Without
+# the marker a reader cannot tell that apart from a real captured reason,
+# and would render "原因：fetch failed hard (exit 1)" — dressing up "we
+# only have an exit code" as an explanation.
+NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行日志）"
+
 # Exit-code → one-line Chinese meaning, mirroring the runbook table in
 # docs/runbook_daily_update_scheduling.md (the canonical exit-code reference).
 # All THREE copies (here / the runbook / daily_update.py's module docstring)

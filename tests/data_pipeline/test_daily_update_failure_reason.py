@@ -408,20 +408,54 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
             self.assertIn(part, got, "折行时丢内容——traceback 最后一帧往往正是有用的那半")
 
     def test_nothing_captured_means_nothing_invented(self) -> None:
-        self.assertEqual("摘要", du._stage_detail("摘要", []))
-        self.assertEqual("摘要", du._stage_detail("摘要", ["", "   ", "\n"]))
+        """不知道就不编——但也要**说出**自己不知道。
+
+        只返回裸摘要的话，读侧无法把它与一条真原因区分开，于是工作台会渲染成
+        「原因：fetch failed hard (exit 1)」，把「只有退出码」伪装成一条解释
+        （codex）。所以兜底串末尾带一个标记，内容仍是摘要本身，一个字没编。
+        """
+        for captured in ([], ["", "   ", chr(10)]):
+            with self.subTest(捕获=captured):
+                got = du._stage_detail("摘要", captured)
+                self.assertTrue(got.startswith("摘要"))
+                self.assertTrue(got.endswith(du._NO_REASON_MARK))
+                self.assertNotIn(" — ", got, "没有原因却摆出了「摘要 — 原因」的形状")
 
     def test_multiple_error_lines_are_all_carried(self) -> None:
         got = du._stage_detail("摘要", ["为什么失败", "怎么修"])
         self.assertIn("为什么失败", got)
         self.assertIn("怎么修", got, "只留最后一条会丢掉「为什么」，只留第一条会丢掉「怎么办」")
 
-    def test_truncation_is_declared_and_counts_what_was_dropped(self) -> None:
+    def test_truncation_keeps_both_ends_and_counts_the_middle(self) -> None:
+        """丢的必须是**中间**：第一条通常是为什么，最后一条通常是怎么办。
+
+        只从头填到超限就停，恰好把修法切掉——而「留下抱怨、切掉办法」正是本
+        改动反对 200 字符上限时用的那个论据（codex）。
+        """
         got = du._stage_detail("摘要", ["x" * 500, "y" * 500, "z" * 500])
-        self.assertIn("y" * 500, got, "还装得下的那条被无谓丢了")
-        self.assertNotIn("z" * 500, got)
-        self.assertIn("另有 1 条", got, "静默丢弃读起来像「就这些」")
+        self.assertIn("x" * 500, got, "头没了")
+        self.assertIn("z" * 500, got, "尾没了 —— 修法通常就在这一条")
+        self.assertNotIn("y" * 500, got)
+        self.assertIn("中间另有 1 条", got, "静默丢弃读起来像「就这些」")
         self.assertIn("见日志", got)
+
+    def test_a_hole_report_keeps_its_header_and_its_remedy(self) -> None:
+        """用 01 的 `_log_hole_report` 真实形状来测。
+
+        它发的是：一行表头 → 每个端点一行 → 最多二十条明细 → 最后一条
+        "Re-run with the same --output-dir to fill the holes"。修法在最后。
+        """
+        lines = (
+            ["=== HOLES (300) — fetch is INCOMPLETE ==="]
+            + [f"  daily  hole {i} " + "x" * 60 for i in range(30)]
+            + ["Re-run with the same --output-dir to fill the holes "
+               "(the manifest records them)."]
+        )
+        got = du._stage_detail("fetch completed with holes", lines)
+        self.assertIn("HOLES (300)", got, "表头没了 —— 那是「有多严重」")
+        self.assertIn("Re-run with the same --output-dir", got,
+                      "修法没了 —— 这正是本改动要救的那半句")
+        self.assertIn("中间另有", got)
 
     def test_a_single_over_long_line_is_kept_not_dropped(self) -> None:
         # 第一条无论多长都要收下：否则一条超长消息会让详情整个消失，

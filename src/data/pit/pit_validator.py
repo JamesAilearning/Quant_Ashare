@@ -636,9 +636,17 @@ class PITValidator:
         for c in report.checks:
             status = "PASS " if c.passed else "FAIL "
             warn = f" ({len(c.warnings)} warning{'s' if len(c.warnings)!=1 else ''})" if c.warnings else ""
-            _logger.info("  [%s] %s — %s%s", c.code, status, c.name, warn)
+            # A FAILED check is an error — log it at ERROR. The level is not
+            # merely cosmetic here: ``daily_update`` carries a failing stage's
+            # reason into the run-status artifact by collecting the ERROR
+            # records that stage emits, and at INFO an ordinary contract
+            # failure leaves the operator with nothing but
+            # ``validation failed (exit N)`` (codex).
+            # Warnings stay INFO: warnings-only is a PASS here (exit 1).
+            log = _logger.info if c.passed else _logger.error
+            log("  [%s] %s — %s%s", c.code, status, c.name, warn)
             for e in c.errors:
-                _logger.info("        ERROR: %s", e)
+                log("        ERROR: %s", e)
             for w in c.warnings:
                 _logger.info("        WARN:  %s", w)
         _logger.info("Exit code: %d", report.exit_code)

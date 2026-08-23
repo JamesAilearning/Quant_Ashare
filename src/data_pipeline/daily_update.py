@@ -123,6 +123,10 @@ Runner = Callable[[list[str]], int]
 # 一行都不用改,而且七个阶段一视同仁(只补 fetch 就会在下一个阶段上重演)。
 _STAGE_DETAIL_MAX_CHARS = 1200
 
+# 阶段一条 ERROR 都没记时,`detail` 末尾附这句。读侧据此把「没有原因」
+# 与「有原因」分开:否则工作台会把兜底串本身当成原因渲染出来。
+_NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行日志）"
+
 # 捕获点必须是 `src`,不是真正的 root:`src.core.logger.setup_logging` 在
 # `logging.getLogger("src")` 上设了 `propagate = False`(为免重复输出),挂在真
 # root 上的 handler 一条记录都收不到——那会让这整套机制静默变成空转。
@@ -185,7 +189,9 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     ("Re-run the full range to extend it, or pass --reset-manifest")——按 200 截
     会精准地留下抱怨、切掉办法。
 
-    捕获为空时原样返回 `summary`:不知道就不编,绝不假装拿到了原因。
+    捕获为空时返回 `summary` 并**明说该阶段没在日志里留下原因**:不知道就不编,
+    但也不能让读侧把这句兜底串当成原因 —— 那会让工作台显示「原因:fetch
+    failed hard (exit 1)」,把「只有退出码」伪装成一条解释(codex P2)。
 
     **不成对代理必须在这里消掉。** `_record_status` 以 `ensure_ascii=False`
     序列化,一个不成对代理会让写盘抛 UnicodeEncodeError;它按「可观测性失败不
@@ -207,22 +213,33 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
         if folded:
             cleaned.append(folded)
     if not cleaned:
-        return summary
+        return f"{summary}{_NO_REASON_MARK}"
+    # 头尾都要留。第一条通常是**为什么**,最后一条通常是**怎么办** —— 01 的
+    # `_log_hole_report` 就是这个形状:一行表头、每个端点一行、最多二十条明细,
+    # 最后才是 "Re-run with the same --output-dir to fill the holes"。只从头
+    # 填到超限就停,恰好把修法切掉,而「留下抱怨、切掉办法」正是本改动反对 200
+    # 字符上限时用的那个论据(codex P2)。
+    tail = cleaned[-1] if len(cleaned) > 1 else None
+    head_source = cleaned[:-1] if tail is not None else cleaned
+    budget = _STAGE_DETAIL_MAX_CHARS - (len(tail) + 3 if tail is not None else 0)
     kept: list[str] = []
     used = 0
-    for line in cleaned:
+    for line in head_source:
         # 第一条无论多长都要收下(否则一条超长消息会让详情整个消失,又回到
-        # 「只有退出码」的原点);它之后再超限就停,并如实报还剩几条。
-        if kept and used + len(line) > _STAGE_DETAIL_MAX_CHARS:
+        # 「只有退出码」的原点);它之后再超限就停,并如实报中间漏了几条。
+        if kept and used + len(line) > budget:
             break
         kept.append(line)
         used += len(line) + 3  # " | " 分隔符
-    body = " | ".join(kept)
+    dropped = len(head_source) - len(kept)
+    parts = list(kept)
+    if dropped:
+        parts.append(f"（中间另有 {dropped} 条错误未列出，完整内容见日志）")
+    if tail is not None:
+        parts.append(tail)
+    body = " | ".join(parts)
     if len(body) > _STAGE_DETAIL_MAX_CHARS:
         body = body[:_STAGE_DETAIL_MAX_CHARS] + "…（已截断，完整内容见日志）"
-    dropped = len(cleaned) - len(kept)
-    if dropped:
-        body = f"{body}（另有 {dropped} 条错误未列出，完整内容见日志）"
     return f"{summary} — {body}"
 
 
