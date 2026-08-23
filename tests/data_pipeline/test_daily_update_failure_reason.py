@@ -457,6 +457,26 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
                       "修法没了 —— 这正是本改动要救的那半句")
         self.assertIn("中间另有", got)
 
+    def test_a_long_first_error_never_eats_the_remedy(self) -> None:
+        """收尾的安全截断只压**头部**。
+
+        对拼好的整串做 `[:上限]` 是从右边切，而尾巴恰恰在右边——首条 ERROR
+        本身很长时，那一刀会把刚刚特意留下的修法削掉一截甚至整条（codex）。
+        「首条无论多长都要收下」不能变成「首条挤掉尾条」。
+        """
+        remedy = ("Re-run with the same --output-dir to fill the holes "
+                  "(the manifest records them).")
+        got = du._stage_detail("fetch completed with holes", ["E" * 1150, remedy])
+        self.assertIn(remedy, got, "修法被收尾的截断切掉了")
+        self.assertIn("已截断", got, "头部压缩了却没声明")
+        self.assertTrue(got.startswith("fetch completed with holes — EEE"))
+
+    def test_a_remedy_longer_than_the_budget_still_wins(self) -> None:
+        # 退化情形：尾条自己就撑满预算。它是修法，优先保它，头部只留一句交代。
+        got = du._stage_detail("摘要", ["x" * 100, "R" * 1500])
+        self.assertGreater(got.count("R"), 1000)
+        self.assertIn("未列出", got, "头部被丢掉却没交代")
+
     def test_a_single_over_long_line_is_kept_not_dropped(self) -> None:
         # 第一条无论多长都要收下：否则一条超长消息会让详情整个消失，
         # 又回到「只有退出码」的原点。

@@ -127,6 +127,13 @@ _STAGE_DETAIL_MAX_CHARS = 1200
 # 与「有原因」分开:否则工作台会把兜底串本身当成原因渲染出来。
 _NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行日志）"
 
+# 头部被压缩时附这句。截断必须声明,不许静默。
+_TRUNCATED_MARK = "…（已截断，完整内容见日志）"
+
+# 尾条(通常是修法)很长时,头部预算会被压到 0。留这么多字符,至少还能认出
+# 「是什么错」,而不是只剩一句修法悬在那里。
+_MIN_HEAD_CHARS = 120
+
 # 捕获点必须是 `src`,不是真正的 root:`src.core.logger.setup_logging` 在
 # `logging.getLogger("src")` 上设了 `propagate = False`(为免重复输出),挂在真
 # root 上的 handler 一条记录都收不到——那会让这整套机制静默变成空转。
@@ -220,8 +227,17 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     # 填到超限就停,恰好把修法切掉,而「留下抱怨、切掉办法」正是本改动反对 200
     # 字符上限时用的那个论据(codex P2)。
     tail = cleaned[-1] if len(cleaned) > 1 else None
+    if tail is not None and len(tail) >= _STAGE_DETAIL_MAX_CHARS:
+        # 尾条自己就撑满了预算:它是修法,优先保它,头部只留一句交代。
+        return (f"{summary} — （前面的错误未列出，完整内容见日志） | "
+                f"{tail[:_STAGE_DETAIL_MAX_CHARS]}{_TRUNCATED_MARK}")
     head_source = cleaned[:-1] if tail is not None else cleaned
-    budget = _STAGE_DETAIL_MAX_CHARS - (len(tail) + 3 if tail is not None else 0)
+    # 头部预算 = 上限减去为尾条预留的位置。`_MIN_HEAD_CHARS` 兜住尾条很长时
+    # 预算被压到 0 的情形:头部至少要留下能认出「是什么错」的一截。
+    budget = max(
+        _STAGE_DETAIL_MAX_CHARS - (len(tail) + 3 if tail is not None else 0),
+        _MIN_HEAD_CHARS,
+    )
     kept: list[str] = []
     used = 0
     for line in head_source:
@@ -235,11 +251,13 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     parts = list(kept)
     if dropped:
         parts.append(f"（中间另有 {dropped} 条错误未列出，完整内容见日志）")
-    if tail is not None:
-        parts.append(tail)
-    body = " | ".join(parts)
-    if len(body) > _STAGE_DETAIL_MAX_CHARS:
-        body = body[:_STAGE_DETAIL_MAX_CHARS] + "…（已截断，完整内容见日志）"
+    # 收尾的安全截断只压**头部**。对拼好的整串做 `[:上限]` 是从右边切,而尾巴
+    # 恰恰在右边 —— 首条 ERROR 本身很长时,那一刀会把刚刚特意留下的修法削掉
+    # 一截甚至整条(codex)。首条无论多长都要收下的规则,不能变成「首条挤掉尾条」。
+    head_text = " | ".join(parts)
+    if len(head_text) > budget:
+        head_text = head_text[:budget] + _TRUNCATED_MARK
+    body = " | ".join(p for p in (head_text, tail) if p)
     return f"{summary} — {body}"
 
 
