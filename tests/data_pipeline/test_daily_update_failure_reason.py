@@ -442,6 +442,61 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
         self.assertIn("原因", got)
 
 
+class ACapturedReasonNeverCostsTheWholeStatusRecord(unittest.TestCase):
+    """携带原因绝不能反过来把整份状态记录弄丢。
+
+    `_record_status` 以 ``ensure_ascii=False`` 序列化：一个不成对代理会让写盘
+    抛 UnicodeEncodeError，而它按「可观测性失败不改变退出码」的契约吞掉那个
+    异常——代价是**整份记录写不出来**，UI 继续显示上一次的记录，操作人以为
+    什么都没跑。那正是本改动要消除的那种「看不见发生了什么」，只是换了个更
+    隐蔽的形式。
+
+    在本改动之前 `detail` 只承载编排器自己写的常量串与异常消息，这条路几乎
+    走不到；现在它承载阶段记进日志的**任意文本**，而 ``surrogateescape``
+    （Python 解码文件系统路径的方式）恰恰产出代理。
+    """
+
+    # 一个真实来源：文件系统路径按 surrogateescape 解出来的字节。
+    BAD_PATH = b"D:/qlib_data/bad\xff.parquet".decode("utf-8", "surrogateescape")
+
+    def test_the_premise_a_raw_surrogate_would_lose_the_record(self) -> None:
+        # 先证明前提，否则下面那条用例是真空的。
+        self.assertTrue(any(0xDC80 <= ord(c) <= 0xDCFF for c in self.BAD_PATH))
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "status.json"
+            du._record_status(target, {"detail": self.BAD_PATH})
+            self.assertFalse(target.exists(), "原始代理本来是写不出去的")
+
+    def test_a_stage_logging_a_surrogate_still_lands_its_status(self) -> None:
+        def run(argv: list[str]) -> int:
+            get_logger("src.scripts.data_pipeline.fetch_tushare").error(
+                "cannot read %s", self.BAD_PATH)
+            return 1
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            cfg = _config(tmp)
+            _write_snapshot(cfg.tushare_dir)
+            _mk_bundle(cfg.provider_dir, "LIVE")
+            du.run_daily_update(cfg, {**_runners(), "fetch": run})  # type: ignore[arg-type]
+            record = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(encoding="utf-8"))
+        self.assertEqual("finished", record["state"], "整份记录被那个代理弄丢了")
+        self.assertEqual(EXIT_FETCH_HARD, record["exit_code"])
+        self.assertIn("cannot read", record["detail"], "原因没带上")
+
+    def test_the_odd_byte_leaves_a_readable_trace(self) -> None:
+        # `backslashreplace` 而非 `replace`：后者只留一个问号，把「这里原本有个
+        # 诡异字节」这条线索也抹掉了。
+        detail = du._stage_detail("摘要", [f"cannot read {self.BAD_PATH}"])
+        self.assertFalse(any(0xDC80 <= ord(c) <= 0xDCFF for c in detail))
+        self.assertIn("udcff", detail)
+
+    def test_ordinary_non_ascii_is_untouched(self) -> None:
+        # 消毒不许殃及中文/emoji —— 那是日志里的常客。
+        detail = du._stage_detail("摘要", ["抓取失败：额度耗尽 ✅"])
+        self.assertIn("抓取失败：额度耗尽 ✅", detail)
+
+
 class StagesWhoseReasonAlreadyArrivesAreLeftAlone(unittest.TestCase):
     """`startup_repair` 与 `swap` 的原因来自被捕获的异常对象本身。
 

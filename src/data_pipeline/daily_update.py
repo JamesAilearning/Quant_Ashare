@@ -186,11 +186,24 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     会精准地留下抱怨、切掉办法。
 
     捕获为空时原样返回 `summary`:不知道就不编,绝不假装拿到了原因。
+
+    **不成对代理必须在这里消掉。** `_record_status` 以 `ensure_ascii=False`
+    序列化,一个不成对代理会让写盘抛 UnicodeEncodeError;它按「可观测性失败不
+    改变退出码」的契约吞掉那个异常 —— 代价是**整份状态记录写不出来**,UI 继续
+    显示上一次的记录,操作人以为什么都没跑。
+
+    在本改动之前 `detail` 只承载编排器自己写的常量串与异常消息,这条路几乎走
+    不到;现在它承载**阶段记进日志的任意文本**,而 `surrogateescape`(Python
+    解码文件系统路径的方式)恰恰产出代理。少几个字符可以接受,把整份记录弄丢
+    不可以 —— 那正是本改动要消除的那种「操作人看不见发生了什么」。
     """
     cleaned: list[str] = []
     for line in captured:
+        # 用 `backslashreplace` 而不是 `replace`:前者留下可读的反斜杠转义残迹,
+        # 后者只留一个问号,把「这里原本有个诡异字节」这条线索也一并抹掉。
+        safe = str(line).encode("utf-8", "backslashreplace").decode("utf-8")
         folded = " / ".join(
-            part.strip() for part in str(line).splitlines() if part.strip())
+            part.strip() for part in safe.splitlines() if part.strip())
         if folded:
             cleaned.append(folded)
     if not cleaned:
