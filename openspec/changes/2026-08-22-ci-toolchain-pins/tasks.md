@@ -10,10 +10,35 @@
 
 ## 验证（每条要实测数字）
 
-- [x] `tests/governance/` 453 passed / 3 skipped / 831 subtests
-- [x] 变异 10 条全咬
+- [x] `tests/governance/` 455 passed / 3 skipped / 830 subtests
+- [x] 变异 15 条全咬
 - [x] `openspec validate --strict` valid
+- [x] 分目录：logic 4185 / data_pipeline 419 / pit 34；ruff clean
 - [ ] codex CLEAN + CI 绿 → STOP 等 merge
+
+## codex 第一轮：三个 P1 + 一个 P2，全部属实
+
+| | 问题 | 根子 |
+|---|---|---|
+| P1 | `pytest-cov` 给的是 `<8`，7.2 照样漂进来，而断言的名单把它排除了 | 我用「`--cov` 不参与判定成败」自圆其说——它是 pytest 插件，挂进同一次运行 |
+| P1 | 守卫只读 `test.yml`，而 `regen-baseline.yml` 独立抄了同一组 numpy/scipy 窗口 | **点名一个文件**。而那条工作流正是产出 REGEN-2 确定性锚的路径 |
+| P1 | `pip install -e ".[dev,ui]"` 也解析 base 依赖，而遍历只走 extra | **规格正文说「每一条」，实现只做了一半，且守卫全绿** |
+| P2 | `<10.0` 能通过「小版本粒度」检查 | 我只查了「上界带两段数字」 |
+
+三条修法都不是打补丁，是把判据抬到正确层次：
+
+- 判代码的工具**不再手写名单**——`dev` 组按定义装的就是这批工具，覆盖面由结构给出
+- workflow **不再点名**——扫遍 `.github/workflows/*.yml`，谁重述了窗口谁就得逐字一致
+- 覆盖面 = **base + workflow 安装行里的 extra**，而不只是 extra
+
+## 两条「变异没抓到」的处置
+
+- **G**（安装行改格式）：扫单文件时集合会变空、断言当场炸；扫全部之后另一个
+  workflow 仍能解析，这一个的覆盖面**静默缩水**。补：凡做 editable 安装的
+  workflow，那行都必须解析得出。
+- **N**（遍历退回只走 extra）：base 依赖现在个个有上界，移除覆盖面不改变任何
+  判定。补法不是再加一层 AST 去盯测试（那是 detector-of-detector），而是让上界
+  检查**对自己实际用到的覆盖面作证**——用它手里那个变量断言。
 
 ## 自审留档：一次被自己证伪的「发现」
 

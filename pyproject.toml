@@ -25,12 +25,19 @@ dependencies = [
   # for the qlib install step).
   "scipy>=1.10,<1.14",
   "pandas>=2.0,<2.3",
-  "pyarrow>=14",
-  "ruamel.yaml>=0.17",
-  "PyYAML>=6.0",
-  "matplotlib>=3.7",
-  "optuna>=3.0",
-  "python-dateutil>=2.8",
+  # 这六条与上面三条同理：CI 的 `pip install -e ".[dev,ui]"` 会把 base 依赖
+  # 一并解析安装，无上界就意味着它们任何一个发新版都可能把 CI 打红，而与当天
+  # 的 PR 无关。它们是被代码**使用**的库（不是判代码的工具），所以给大版本
+  # 上界；`ruamel.yaml` 还是 0.x，它的破坏轴是小版本，故按小版本给。
+  # 取值都在 CI 实测版本之上，对当前解析结果是无操作：
+  #   pyarrow 25.0.1 · ruamel.yaml 0.19.1 · PyYAML 6.0.3
+  #   matplotlib 3.11.1 · optuna 4.9.0 · python-dateutil 2.9.0
+  "pyarrow>=14,<26",
+  "ruamel.yaml>=0.17,<0.20",
+  "PyYAML>=6.0,<7",
+  "matplotlib>=3.7,<4",
+  "optuna>=3.0,<5",
+  "python-dateutil>=2.8,<3",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +52,7 @@ dev = [
   # 这样「本机装的」与「CI 装的」是同一个，而不是各取所需——否则本机全绿仍然
   # 什么都不证明。
   "pytest>=9.1,<9.2",
-  "pytest-cov>=7.1,<8",
+  "pytest-cov>=7.1,<7.2",
   "ruff>=0.16,<0.17",     # ruff 还是 0.x：小版本才是它的破坏轴
   "mypy>=2.3,<2.4",
 ]
