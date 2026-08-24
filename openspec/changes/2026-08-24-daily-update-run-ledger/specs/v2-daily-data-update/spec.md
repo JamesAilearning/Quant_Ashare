@@ -62,9 +62,10 @@ the derived value.
 
 `run_daily_update` SHALL write one boundary line into the shared log at the
 start of every non-dry run, carrying a full date-and-time stamp and the
-normalized provider directory. A reader SHALL be able to attribute the log
-lines that follow a boundary to that run, and SHALL report attribution as
-UNKNOWN when no boundary is visible in the window it read rather than guessing.
+normalized provider directory. A reader SHALL attribute the log lines that
+follow a boundary to that run ONLY when every boundary in the window it read
+names this provider, and SHALL report attribution as UNKNOWN otherwise —
+including when no boundary is visible at all — rather than guessing.
 
 The shared log's own lines carry only `HH:MM:SS` with no date, so "21:00
 yesterday" and "21:00 today" are indistinguishable in the data. Four heuristics
@@ -84,9 +85,16 @@ the duplication this repository keeps paying for.
 - **THEN** the log gains one line carrying a full timestamp and the normalized
   provider directory, before any stage runs
 
-#### Scenario: lines after a boundary belong to that run
-- **WHEN** a reader finds a boundary in the text it read
-- **THEN** the lines after it are attributed to that run with certainty
+#### Scenario: lines after a boundary belong to that run when nobody else wrote
+- **WHEN** every boundary in the text a reader examined names this provider
+- **THEN** the lines after the last one are attributed to that run with
+  certainty, because a provider never runs concurrently with itself
+
+#### Scenario: a concurrent sibling makes attribution unknown in both orders
+- **WHEN** another provider's boundary appears in the window — whether it is the
+  LAST boundary, or an EARLIER one whose run may still be writing progress
+- **THEN** attribution is reported as unknown, because progress lines carry no
+  provider of their own and the log cannot say whether that run has ended
 
 #### Scenario: no boundary in the window means unknown, not a guess
 - **WHEN** the window a reader examined contains no boundary

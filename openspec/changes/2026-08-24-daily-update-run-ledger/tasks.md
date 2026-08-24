@@ -21,12 +21,34 @@
 
 ## 验证（实测数字）
 
-- [x] 写侧守卫 **18 条 + 7 subtests**；读侧/UI 守卫 **25 条 + 7 subtests**
-- [x] 变异 **15 条全咬**
-- [x] 分目录：logic **4271** / data_pipeline **437** / governance **517** / pit **34**
+- [x] 写侧守卫 **18 条 + 7 subtests**；读侧/UI 守卫 **38 条 + 12 subtests**
+- [x] 变异累计 **20 条全咬**
+- [x] 分目录：logic **4284** / data_pipeline **437** / governance **517** / pit **34**
 - [x] ruff clean；mypy --strict **232 文件 0 error**
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
+
+## codex 第二轮：一个 P1 + 一个 P2
+
+**P1 反向交错——边界排序推不出归属。** 第一轮我把判据改成「最后一条边界是
+我们的就算数」。它在反向交错下仍然说错话：B 先起跑（边界 B），A 随后起跑
+（边界 A，成了最后一条），而 **B 仍在跑**——B 的进度行不会再带一条边界，于是
+它们落在边界 A 之后，被当成 A 的。
+
+判据因此抬到**独占**：窗口里的边界**全部**是我们的，才谈得上归属。进度行本身
+不带 provider，靠边界排序推不出来；而同一个 provider 不会与自己并发（单飞锁是
+per-provider），所以「边界全是我们的」就足以断定其后的行也是我们的。代码反而
+更短了。
+
+codex 另给了两条出路——给进度行打 provider 标记、或每个 provider 写自己的
+日志。**两条都在生产编排器的阶段语义那一侧，本轮不碰**（本 change 的硬约束就是
+阶段语义零改动）。要放松这条判据，得先另起一个改动。
+
+**P2 台账缺一条跨字段不变式。** `exit_code: 0` 配 `failed_stage: "fetch"` 自相
+矛盾，而只查字段类型的话它原样通过，`LedgerRun.ok` 会把它渲染成一次**成功**的
+运行。状态工件 reader 早已钉住同一条不变式（`update_status` 里 exit_code 与
+failed_stage 互相印证），这里照抄，不另立一套；顺带补齐它另外两条：字段**缺席**
+不等于 `null`（`.get()` 会把缺席读成成功），空串不是阶段名。
 
 ## codex 第一轮：一个 P1 + 两个 P2
 

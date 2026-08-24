@@ -183,6 +183,65 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
                 1, read_ledger(path, provider_dir=provider).malformed,
                 "未来版本的记录没有被计成读不了")
 
+    def test_a_success_carrying_a_failed_stage_is_not_a_run(self) -> None:
+        """`exit_code: 0` 配 `failed_stage: "fetch"` 自相矛盾。
+
+        只查字段类型的话这行原样通过，而 `LedgerRun.ok` 会把它渲染成一次
+        **成功**的运行——把损坏的数据讲成事实（codex 第二轮 P2）。状态工件
+        reader 早已钉住同一条不变式，这里照抄，不另立一套。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(
+                0, self._one(provider, path, exit_code=0, failed_stage="fetch"))
+
+    def test_a_failure_without_a_failed_stage_is_not_a_run(self) -> None:
+        # 另一半：非零退出码却没有失败阶段。写入侧两边都不会产。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(
+                0, self._one(provider, path, exit_code=11, failed_stage=None))
+
+    def test_an_absent_failed_stage_is_not_read_as_success(self) -> None:
+        """字段**缺席**与 `null` 不是一回事——前者说明这行不是写入侧产的。
+
+        `record.get(...)` 会把缺席读成 None，于是一条缺字段的失败记录会被
+        当成成功。状态工件 reader 同样把缺席单列（它报 `absent`）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            record = {**_record(provider, exit_code=0)}
+            del record["failed_stage"]
+            _write(path, [record])
+            self.assertEqual(
+                0, len(read_ledger(path, provider_dir=provider).runs))
+
+    def test_an_empty_failed_stage_is_not_a_stage_name(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(0, self._one(provider, path, failed_stage=""))
+
+    def test_both_well_formed_outcomes_are_still_read(self) -> None:
+        # 反面：合法的成功与合法的失败都必须**读得进来**，否则上面五条只是
+        # 「什么都不认」的副产品。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            _write(path, [_record(provider, exit_code=0),
+                          _record(provider, exit_code=11)])
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual(2, len(history.runs))
+        self.assertEqual(0, history.malformed)
+
     def test_a_boolean_exit_code_is_not_a_failed_run(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
@@ -345,14 +404,43 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertFalse(
             got.attributed, "把别人的进度当成了我们的，且说成「已确定」")
 
-    def test_our_boundary_last_still_attributes(self) -> None:
-        # 反面：别人的边界在**前**、我们的在后 —— 仍然确定。
+    def test_an_earlier_foreign_boundary_also_defeats_attribution(self) -> None:
+        """**反向交错**：别人先起跑、我们后起跑，别人仍在写。
+
+        B 起跑（边界 B），A 随后起跑（边界 A，成了最后一条），而 B **仍在跑**
+        ——B 的进度行不会再带一条边界，于是它们落在边界 A 之后。「最后一条边界
+        是我们的就算数」在这里会把 B 的进度说成 A 的（codex 第二轮 P1）。
+
+        判据因此是**独占**：窗口里的边界全是我们的，才谈得上归属。
+        """
         with tempfile.TemporaryDirectory() as t:
             provider, other = Path(t) / "prov", Path(t) / "other"
             provider.mkdir()
             other.mkdir()
             text = chr(10).join([
                 self._boundary(other, "2026-08-24T20:00:00+08:00"),
+                self._boundary(provider, "2026-08-24T20:30:00+08:00"),
+                # 别人那次运行**没有结束**，它的进度行继续落在我们的边界之后。
+                f"20:31:00{_PROGRESS_LINE}",
+            ])
+            got = last_fetch_progress_for_run(text, provider_dir=provider)
+        self.assertFalse(
+            got.attributed,
+            "别人先起跑、仍在写时，把它的进度说成了我们的「已确定」")
+        self.assertIsNotNone(got.progress, "说不知道归属，不等于连进度也丢掉")
+
+    def test_only_our_own_boundaries_still_attribute(self) -> None:
+        """反面：窗口里全是我们自己的边界 —— 仍然确定。
+
+        否则「独占」会退化成「永远说不知道」，那不是更诚实，是没用。同一个
+        provider 不会与自己并发（单飞锁 per-provider），所以这一段是安全的。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            text = chr(10).join([
+                self._boundary(provider, "2026-08-23T20:00:00+08:00"),
+                f"20:01:00{_PROGRESS_LINE}",
                 self._boundary(provider, "2026-08-24T20:30:00+08:00"),
                 f"20:31:00{_PROGRESS_LINE}",
             ])

@@ -122,8 +122,18 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # `bool` 是 `int` 的子类，必须显式排除，否则 True/False 会被当成退出码。
     if isinstance(exit_code, bool) or not isinstance(exit_code, int):
         return False
-    stage = record.get("failed_stage")
-    if stage is not None and not isinstance(stage, str):
+    # `failed_stage` 必须**在场**：缺字段与 `null` 在这里不是一回事，前者说明
+    # 这行不是写入侧产的。写入侧在每个终态都落这个字段（成功 null、失败带阶段）。
+    if "failed_stage" not in record:
+        return False
+    stage = record["failed_stage"]
+    if stage is not None and not (isinstance(stage, str) and stage):
+        return False
+    # 跨字段不变式，照抄状态工件 reader 已有的那一条：退出码与失败阶段互相印证。
+    # 只查字段类型的话，`exit_code: 0` 配 `failed_stage: "fetch"` 这种自相矛盾
+    # 的行会原样通过，而 `LedgerRun.ok` 会把它渲染成一次**成功**的运行——把
+    # 损坏的数据讲成事实（codex 第二轮 P2）。
+    if (exit_code == 0) != (stage is None):
         return False
     return all(isinstance(record.get(key), str) for key in _REQUIRED_TEXT)
 

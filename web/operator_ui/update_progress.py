@@ -164,24 +164,35 @@ class AttributedProgress:
 def _current_segment(log_text: str, provider_key: str) -> tuple[int, str] | None:
     """本 provider 当前那一段的起点:(边界结束的字符位置, 起跑时刻)。
 
-    取**任意 provider** 的最后一条边界,然后才问它是不是我们的——不是「跳过
-    别人的、找我们最后一条」。差别是决定性的:
+    判据是**独占**:窗口里的边界**全部**是我们的,才谈得上归属。
 
-    兄弟 bundle **共用同一条日志**(`default_log_path` 取的是
+    上一版是「最后一条边界是我们的就算数」。那条规则在**反向交错**下会说错话:
+    B 先起跑(边界 B),A 随后起跑(边界 A,成了最后一条),而 B **仍在跑**——B
+    的进度行不会再带一条边界,于是它们落在边界 A 之后,被当成 A 的,还是以
+    「归属已确定」的口气(codex 第二轮 P1)。
+
+    前提是实的:兄弟 bundle **共用同一条日志**(`default_log_path` 取的是
     ``<provider 父目录>/logs/daily_update.log``),而单飞锁是 **per-provider** 的
-    (`single_flight.lock_path_for`)——两个 provider **可以同时在跑**,它们的行
-    会交错。跳过别人的边界去用我们那条更早的,就会把交错进来的**别人的**进度
-    当成我们的,而且是以「归属已确定」的口气说出来(codex P1)。
+    (`single_flight.lock_path_for`)——两个 provider **可以同时在跑**,行会交错。
 
-    所以:最后一条边界是我们的 → 它之后的行属于我们;是别人的 → **不知道**。
+    所以判据抬到「这段窗口里只有我们一个写者」:进度行本身不带 provider,靠
+    边界排序推不出归属;而**同一个 provider 不会与自己并发**(单飞锁),因此
+    「边界全是我们的」就足以断定其后的行也是我们的。窗口里出现别人的边界,
+    那次运行有没有结束这份日志答不了——如实说不知道。
+
+    要把这条判据放松回「最后一条是我们的」,得先让写入侧给进度行本身打上
+    provider 标记,或让每个 provider 写自己的日志。两者都在**生产编排器**的
+    阶段语义那一侧,不在本改动的范围内。
     """
-    last = None
-    for match in _BOUNDARY_RE.finditer(log_text):
-        last = match
-    if last is None:
+    boundaries = list(_BOUNDARY_RE.finditer(log_text))
+    if not boundaries:
         return None
-    if os.path.normcase(last.group("provider").strip()) != provider_key:
+    if any(
+        os.path.normcase(match.group("provider").strip()) != provider_key
+        for match in boundaries
+    ):
         return None
+    last = boundaries[-1]
     return last.end(), last.group("started")
 
 
