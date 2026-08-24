@@ -9,44 +9,15 @@ from pathlib import Path
 
 import yaml
 
+try:                                    # Python 3.11+
+    import tomllib
+except ModuleNotFoundError:             # 3.10 —— `requires-python` 仍收 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 _WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
 
-
-_SHELL_COMMENT = re.compile(r"(^|\s)#.*$")
-
-
-def _run_lines(workflow: Path) -> list[str]:
-    """workflow 里**真正会执行**的命令行。
-
-    这里换掉了一串越描越细的字面规则。此前是「拿原始文本跑正则」，然后被逐条
-    指出漏洞：注释掉的命令算不算（不算）、`name: Document pip install …` 这种
-    元数据字段算不算（不算）、单引号写的参数认不认（要认）。每补一条都只是往
-    同一堆字符串规则上再加一条，而下一种写法总还在后面（codex 连续三条 P2）。
-
-    所以改成按结构解析：YAML 取到 `steps[].run`，那才是会执行的东西；元数据
-    字段天然被排除。行内注释仍要剔——它在 `run` 里确实是注释。
-    """
-    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-    lines: list[str] = []
-    for job in (document or {}).get("jobs", {}).values():
-        for step in (job or {}).get("steps", []) or []:
-            script = (step or {}).get("run")
-            if not isinstance(script, str):
-                continue
-            for raw in script.splitlines():
-                line = _SHELL_COMMENT.sub("", raw)
-                if line.strip():
-                    lines.append(line)
-    return lines
-
-
-#: POSIX shell 的命令分隔符 —— 一个**闭集**，由 shell 语法定义，不是我在
-#: 枚举写法。一条物理行可以串起好几条命令，把它们当成一条来看，就会让
-#: `pip install git+…qlib… && pip install "numpy…"` 通过检查：两个约束确实
-#: 都在这一行里，但 qlib 那次解析仍然是无约束的（codex P1）。
-_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 
 #: 本地项目安装的**目标**：`.` 或 `.[组,组]`。认目标而不认 flag —— pip 支持
 #: `-e` / `--editable`，也支持不带任何 flag 的 `pip install ".[research]"`。
@@ -54,33 +25,164 @@ _COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 #: 什么样，与用了哪种写法无关（codex P2）。
 _LOCAL_TARGET = re.compile(r"^\.(?:\[(?P<extras>[^\]]+)\])?$")
 
+#: 命令分隔符。POSIX shell 在这些记号处结束一条命令——由语法定义，不是我在
+#: 枚举写法。分组括号**不在其中**：`(` 在 `$(` 里是展开的一部分，不是边界。
+_SEPARATORS = ("&&", "||", ";;", ";", "|", "&")
 
-def _commands(line: str) -> list[list[str]]:
-    """把一条 shell 行切成**若干条命令**，每条是一串实参。
 
-    用 `shlex` 切词而不是再写一版引号正则：单引号、双引号、混写都由它统一
-    处理。切不动的行（引号不配对之类）当作没有可识别命令，而不是让守卫炸掉
-    ——它不是本守卫要管的事。
+class UnlexableShell(ValueError):
+    """这段 `run` 读不下去。
+
+    **响亮**，不是当作「没有命令」。此前读不懂就静默返回空，于是守卫在那一段
+    上是空的、且空得看不出来——codex 连着两轮命中的正是这个：相邻分隔符
+    （`…qlib@sha&&pip install "numpy…"`，`shlex` 会切出 `…sha&&pip` 一个词）
+    与行末续行（一条 `pip install -e` 用反斜杠续到下一行，`shlex` 直接抛）。
     """
-    try:
-        tokens = shlex.split(line, posix=True)
-    except ValueError:
-        return []
-    commands: list[list[str]] = [[]]
-    for token in tokens:
-        if token in _COMMAND_SEPARATORS:
-            commands.append([])
-        else:
-            commands[-1].append(token)
-    return [command for command in commands if command]
+
+
+def _split_commands(script: str) -> list[str]:
+    """把一段 shell 脚本切成命令的**原文**片段。
+
+    这里是本文件第三次、也是最后一次改判据的层次：从「正则找字面形态」到
+    「`shlex` 切词后找分隔符 token」，再到**按词法扫描**。前两者都是用近似
+    手段做词法分析——`shlex` 是**分词器**，它不知道命令在哪里结束，于是
+    `a&&b` 这种没有空格的合法写法会被切成一个词，而续行让它当场抛异常。
+
+    扫描认的是 POSIX 的词法构件，一个有限的闭集：单引号、双引号、反斜杠转义、
+    注释、行末续行、here-document，以及上面那组分隔符。此外的一切都只是字符。
+    读不下去就抛 `UnlexableShell`，不静默跳过。
+    """
+    segments: list[str] = []
+    buffer: list[str] = []
+    pending_heredocs: list[str] = []
+    index = 0
+    size = len(script)
+
+    def flush() -> None:
+        segment = "".join(buffer).strip()
+        if segment:
+            segments.append(segment)
+        buffer.clear()
+
+    def skip_heredoc_bodies(start: int) -> int:
+        """从行尾出发，吞掉挂起的 here-document 正文。"""
+        position = start
+        for delimiter in pending_heredocs:
+            while True:
+                end = script.find("\n", position)
+                line = script[position:end if end != -1 else size]
+                if line.strip() == delimiter:
+                    position = size if end == -1 else end + 1
+                    break
+                if end == -1:
+                    raise UnlexableShell(f"here-document {delimiter!r} 没有收尾")
+                position = end + 1
+        pending_heredocs.clear()
+        return position
+
+    while index < size:
+        char = script[index]
+        if char == "'":
+            end = script.find("'", index + 1)
+            if end == -1:
+                raise UnlexableShell("单引号没有闭合")
+            buffer.append(script[index:end + 1])
+            index = end + 1
+            continue
+        if char == '"':
+            cursor = index + 1
+            while cursor < size and script[cursor] != '"':
+                cursor += 2 if script[cursor] == "\\" else 1
+            if cursor >= size:
+                raise UnlexableShell("双引号没有闭合")
+            buffer.append(script[index:cursor + 1])
+            index = cursor + 1
+            continue
+        if char == "\\":
+            if index + 1 < size and script[index + 1] == "\n":
+                index += 2                       # 行末续行：整个消失
+                continue
+            buffer.append(script[index:index + 2])
+            index += 2
+            continue
+        if char == "#" and (not buffer or buffer[-1][-1:].isspace()):
+            end = script.find("\n", index)
+            index = size if end == -1 else end   # 注释到行尾为止，换行留给下面
+            continue
+        if script.startswith("<<", index):
+            cursor = index + 2
+            if script[cursor:cursor + 1] == "-":
+                cursor += 1
+            while script[cursor:cursor + 1] in (" ", "\t"):
+                cursor += 1
+            word = ""
+            while cursor < size and not script[cursor].isspace():
+                word += script[cursor]
+                cursor += 1
+            if not word:
+                raise UnlexableShell("here-document 没有定界词")
+            pending_heredocs.append(word.strip("'\""))
+            index = cursor
+            continue
+        if char == "\n":
+            flush()
+            index = skip_heredoc_bodies(index + 1) if pending_heredocs else index + 1
+            continue
+        separator = next(
+            (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
+        if separator is not None:
+            flush()
+            index += len(separator)
+            continue
+        buffer.append(char)
+        index += 1
+
+    flush()
+    if pending_heredocs:
+        raise UnlexableShell(f"here-document {pending_heredocs[0]!r} 没有收尾")
+    return segments
+
+
+def _commands(script: str) -> list[list[str]]:
+    """把一段 shell 切成若干条命令，每条是一串实参。
+
+    词法器已经保证每个片段里的引号是配平的，`shlex` 在这里只负责去引号与
+    分词——引号形态（单/双/不加）由它统一处理。
+    """
+    return [
+        args for segment in _split_commands(script)
+        if (args := shlex.split(segment, posix=True))
+    ]
+
+
+def _run_scripts(workflow: Path) -> list[str]:
+    """workflow 里**真正会执行**的那些 `run` 块。
+
+    按结构解析：YAML 取到 `steps[].run`，那才是会执行的东西；`name:` 之类的
+    元数据字段天然被排除（codex 早前一条 P2）。注释、续行、引号都交给词法器。
+    """
+    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    scripts: list[str] = []
+    for job in (document or {}).get("jobs", {}).values():
+        for step in (job or {}).get("steps", []) or []:
+            script = (step or {}).get("run")
+            if isinstance(script, str):
+                scripts.append(script)
+    return scripts
+
+
+def _workflow_commands(workflow: Path) -> list[list[str]]:
+    """这个 workflow 里全部会执行的命令。"""
+    return [
+        command for script in _run_scripts(workflow)
+        for command in _commands(script)
+    ]
 
 
 def _pip_installs(workflow: Path) -> list[list[str]]:
-    """这个 workflow 里所有 `pip install …` 命令（已按分隔符拆开）。"""
+    """这个 workflow 里所有 `pip install …` 命令。"""
     return [
-        command
-        for line in _run_lines(workflow)
-        for command in _commands(line)
+        command for command in _workflow_commands(workflow)
         if "pip" in command and "install" in command
     ]
 
@@ -143,25 +245,34 @@ def _local_target(command: list[str]) -> re.Match[str] | None:
 _UPPER_BOUND = re.compile(r"(<=?|==|~=)\s*\d")
 
 
+def _optional_groups(text: str) -> dict[str, list[str]]:
+    """`[project.optional-dependencies]` 下声明的各组。"""
+    project = tomllib.loads(text).get("project", {})
+    return project.get("optional-dependencies", {})
+
+
 def _requirement_block(text: str, group: str) -> list[str]:
-    r"""取出某个组里声明的依赖串。
+    """取出某个组里声明的依赖串。
 
-    注释要在**定位块之前**剥掉。此前是先用正则圈出 `[...]` 再剥注释，于是注释
-    里任何一个 `]`（比如一句提到 `.[dev,ui]` 的说明）都会让非贪婪匹配提前收
-    尾——`dependencies` 只读到 9 条里的 3 条、`ui` 读到 0 条，而整体计数下限
-    仍然满足，守卫就这样**静默缩水**了。这正是本文件一路在替别处修的那种毛病。
+    **解析 TOML**，不再在文本上找 `"…"`。此前那版只认双引号，而 TOML 的字符串
+    字面量还有单引号形式（以及三引号）：一条 `'new-tool>=1'` 会整条从扫描里
+    消失，而同组里别的双引号条目让「读到了东西」这个下限照样满足——守卫在那
+    一条上是空的（codex P2）。
 
-    `\[` 之后不强求换行：`[build-system].requires` 写在一行上。
+    在此之前它还栽过一次：正则圈块时注释里一个 `]` 让匹配提前收尾，
+    `dependencies` 只读到 9 条里的 3 条。同一个位置两次栽在「拿文本近似结构」
+    上，所以这次换成真解析——注释、引号形态、单行/多行列表就此都不再是特例。
     """
-    stripped = "\n".join(
-        line.split("#", 1)[0] for line in text.splitlines())
-    block = re.search(
-        rf"^{re.escape(group)} = \[(.*?)\]", stripped,
-        re.MULTILINE | re.DOTALL)
-    assert block is not None, f"pyproject 里找不到组 {group!r} —— 本守卫已失效"
-    found = re.findall(r'"([^"]+)"', block.group(1))
+    if group == _BUILD_REQUIRES:
+        found = tomllib.loads(text).get("build-system", {}).get(_BUILD_REQUIRES)
+    elif group == _RUNTIME_DEPENDENCIES:
+        found = tomllib.loads(text).get("project", {}).get(_RUNTIME_DEPENDENCIES)
+    else:
+        found = _optional_groups(text).get(group)
     assert found, f"组 {group!r} 一条依赖都没读到 —— 本守卫已失效"
-    return found
+    assert all(isinstance(item, str) for item in found), (
+        f"组 {group!r} 里有非字符串条目 —— 本守卫已失效")
+    return list(found)
 
 
 class TheBoundPatternRequiresAnActualVersion(unittest.TestCase):
@@ -184,22 +295,32 @@ class TheBoundPatternRequiresAnActualVersion(unittest.TestCase):
                 self.assertIsNotNone(_UPPER_BOUND.search(requirement))
 
 
-class TheRequirementBlockReaderIsNotFooledByBrackets(unittest.TestCase):
-    """注释里的 `]` 不许把依赖列表提前截断。
+class TheRequirementReaderParsesTOMLNotText(unittest.TestCase):
+    """依赖表按 **TOML 解析**读，不在文本上找 `"…"`。
 
-    这条直接对着 helper 测，因为整体计数下限兜不住它：`dependencies` 从 9 条
-    缩到 3 条、`ui` 缩到 0 条，总数仍然过线，守卫**静默缩水**（实测如此）。
+    这个位置栽过两次：注释里一个 `]` 让正则提前收尾（`dependencies` 9 条只读到
+    3 条），以及只认双引号、单引号字面量整条消失。两次都是「拿文本近似结构」，
+    而两次都躲过了整体计数下限——那正是**静默缩水**的形状。
+
+    fixture 用完整合法的 TOML（带表头），不是片段：读法换成真解析之后，片段
+    fixture 会把这些用例变成「测另一个东西」。
     """
 
     SNIPPET = (
+        '[build-system]\n'
+        'requires = ["setuptools>=68,<90", "wheel>=0.40,<1"]\n'
+        '\n'
+        '[project]\n'
         'dependencies = [\n'
         '  "alpha>=1,<2",\n'
         '  # 说明里提到 `.[dev,ui]` —— 这个 `]` 不该终结列表\n'
         '  "beta>=2,<3",\n'
         ']\n'
+        '\n'
+        '[project.optional-dependencies]\n'
         'ui = [\n'
         '  # 开头就是一句含 `.[x]` 的说明\n'
-        '  "gamma>=3,<4",\n'
+        "  'gamma>=3,<4',\n"          # TOML 的**单引号**字面量，同样合法
         ']\n'
     )
 
@@ -208,19 +329,23 @@ class TheRequirementBlockReaderIsNotFooledByBrackets(unittest.TestCase):
             ["alpha>=1,<2", "beta>=2,<3"],
             _requirement_block(self.SNIPPET, "dependencies"))
 
-    def test_a_leading_comment_with_a_bracket_is_survivable(self) -> None:
+    def test_a_single_quoted_requirement_is_read(self) -> None:
+        # 只认双引号的话这条整条消失，而「读到了东西」的下限由别组满足。
         self.assertEqual(["gamma>=3,<4"], _requirement_block(self.SNIPPET, "ui"))
 
     def test_a_single_line_list_is_read(self) -> None:
         self.assertEqual(
             ["setuptools>=68,<90", "wheel>=0.40,<1"],
-            _requirement_block(
-                'requires = ["setuptools>=68,<90", "wheel>=0.40,<1"]\n', "requires"))
+            _requirement_block(self.SNIPPET, "requires"))
 
     def test_an_empty_read_is_loud(self) -> None:
         # 读到空说明结构变了 —— 那是「守卫失效」，不许当成「已覆盖」。
         with self.assertRaises(AssertionError):
-            _requirement_block('dependencies = [\n]\n', "dependencies")
+            _requirement_block('[project]\ndependencies = []\n', "dependencies")
+
+    def test_a_missing_group_is_loud(self) -> None:
+        with self.assertRaises(AssertionError):
+            _requirement_block('[project]\ndependencies = ["a<1"]\n', "nope")
 
 
 class AShellLineIsSplitIntoCommands(unittest.TestCase):
@@ -244,11 +369,84 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
                 self.assertEqual(2, len(_commands(f"pip install a {sep} pip install b")))
 
     def test_a_quoted_separator_is_not_a_separator(self) -> None:
-        # 引号里的 `&&` 是实参的一部分，不是命令边界 —— `shlex` 已经处理好。
+        # 引号里的 `&&` 是实参的一部分，不是命令边界。
         self.assertEqual(1, len(_commands('echo "a && b"')))
 
-    def test_an_unbalanced_quote_yields_no_commands_not_a_crash(self) -> None:
-        self.assertEqual([], _commands('pip install "unclosed'))
+    def test_separators_need_no_surrounding_whitespace(self) -> None:
+        """`a&&b` 是合法写法，而 `shlex` 会把它切成**一个词**。
+
+        分词器不知道命令在哪里结束——它切词。于是
+        `pip install git+…@sha&&pip install "numpy…"` 会被当成一条命令，qlib
+        那次无约束的解析就此通过检查（codex 第六轮 P1）。
+        """
+        got = _commands(f'pip install {self.QLIB}&&pip install "numpy>=1.24,<2.0"')
+        self.assertEqual(2, len(got), "没有空格的 `&&` 没被认成命令边界")
+        self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
+        self.assertIn(self.QLIB, got[0], "qlib 参数被 `&&` 粘走了")
+
+    def test_a_line_continuation_keeps_one_command(self) -> None:
+        """行末反斜杠续行：命令跨了物理行，判据不许跟着断。
+
+        按物理行切的话，续行那半没有 `pip install`，于是它点名的 extra 悄悄
+        脱离覆盖面；而 `shlex` 遇到孤立的反斜杠会直接抛（codex 第六轮 P2）。
+        """
+        got = _commands('pip install -e \\\n  ".[research]"')
+        self.assertEqual(1, len(got), "续行把一条命令切成了两条")
+        self.assertEqual(["pip", "install", "-e", ".[research]"], got[0])
+
+    def test_a_comment_is_not_a_command_but_a_hash_in_a_word_is_not_a_comment(
+            self) -> None:
+        self.assertEqual([], _commands('  # pip install -e ".[research]"'))
+        # URL 片段里的 `#` 不是注释 —— 它前面不是空白。
+        self.assertEqual(
+            ["pip", "install", "git+https://x/y.git#egg=z"],
+            _commands("pip install git+https://x/y.git#egg=z")[0])
+
+    def test_a_heredoc_body_is_data_not_commands(self) -> None:
+        """here-document 的正文是**数据**，不是命令。
+
+        `regen-baseline.yml` 里就有一段 `python - <<\'EOF\'`。不认这个构件，
+        正文里的 Python 引号会把整段读崩；而崩了就静默跳过的话，那个 step
+        里真正的命令也一并从覆盖面里消失。
+        """
+        script = "\n".join([
+            "python - <<\'EOF\'",
+            "print(\"pip install -e nonsense\")",
+            "EOF",
+            'pip install -e ".[dev]"',
+        ])
+        got = _commands(script)
+        self.assertEqual([["python", "-"], ["pip", "install", "-e", ".[dev]"]], got)
+
+    def test_an_unbalanced_quote_is_loud(self) -> None:
+        """读不下去要**响亮**。
+
+        静默返回空，守卫在那一段上就是空的、且空得看不出来——那正是这两轮
+        被连着命中的形状。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands('pip install "unclosed')
+        with self.assertRaises(UnlexableShell):
+            _commands("python - <<EOF\nnever closed\n")
+
+
+class EveryWorkflowIsFullyLexed(unittest.TestCase):
+    """真实 workflow 必须**全部**读得下来。
+
+    上一条把「读不懂」变成响亮的异常；这一条是它的另一半：仓库里现有的
+    workflow 不许有读不下来的 `run` 块，否则那个 step 的命令从覆盖面里消失。
+    """
+
+    def test_every_run_block_lexes(self) -> None:
+        for workflow in _workflows():
+            with self.subTest(workflow=workflow.name):
+                for script in _run_scripts(workflow):
+                    _commands(script)
+
+    def test_the_workflows_really_contain_commands(self) -> None:
+        # 先证明前提：全都读成空的话，上一条会真空地绿着。
+        total = sum(len(_workflow_commands(w)) for w in _workflows())
+        self.assertGreaterEqual(total, 10, f"只读出 {total} 条命令 —— 覆盖面塌了")
 
 
 class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
@@ -282,9 +480,11 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):
     def test_tushare_extra_is_declared_for_shipped_integration(self) -> None:
-        text = _PYPROJECT.read_text(encoding="utf-8")
-        self.assertIn("tushare = [", text)
-        self.assertIn('"tushare>=', text)
+        requirements = _requirement_block(
+            _PYPROJECT.read_text(encoding="utf-8"), "tushare")
+        self.assertTrue(
+            any(r.startswith("tushare>=") for r in requirements),
+            f"tushare 组里没有 tushare 本身：{requirements}")
 
 
 class EverythingCIInstallsIsBounded(unittest.TestCase):
@@ -330,13 +530,11 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         # 先证明推导本身没落空：一个空集合会让下面那条用例真空地绿着。
         extras = self._ci_extras()
         self.assertGreaterEqual(len(extras), 1)
-        text = _PYPROJECT.read_text(encoding="utf-8")
+        declared = _optional_groups(_PYPROJECT.read_text(encoding="utf-8"))
         for extra in sorted(extras):
             with self.subTest(extra=extra):
-                # `^` 必须带 MULTILINE：不带的话它只匹配整个文件的开头，
-                # 于是这条守卫会对每一个 extra 都红，且红得毫无信息。
-                found = re.search(rf"^{re.escape(extra)} = \[", text, re.MULTILINE)
-                self.assertIsNotNone(found, f"CI 装了 pyproject 未声明的 extra: {extra}")
+                self.assertIn(
+                    extra, declared, f"CI 装了 pyproject 未声明的 extra: {extra}")
 
     def test_every_editable_install_line_is_parseable(self) -> None:
         """每一条 editable 安装行都必须解析得出 extras。
@@ -456,8 +654,8 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         # 重述了窗口就要自动被查」正是本 change 自己写下的场景（codex P2）。
         checked = 0
         for workflow in _workflows():
-            for line in _run_lines(workflow):
-                for token in [t for c in _commands(line) for t in c]:
+            for command in _workflow_commands(workflow):
+                for token in command:
                     package = _restated_package(token, declared)
                     if package is None:
                         continue
@@ -497,8 +695,7 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         commands = [
             (workflow.name, command)
             for workflow in _workflows()
-            for line in _run_lines(workflow)
-            for command in _commands(line)
+            for command in _workflow_commands(workflow)
             if any(token.startswith(_QLIB_PIN) for token in command)
         ]
         self.assertGreaterEqual(

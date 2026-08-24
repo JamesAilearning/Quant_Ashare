@@ -8,9 +8,11 @@ Project metadata SHALL declare an upper version bound for every dependency the
 CI workflows install — the build-system requirements, the base dependencies, AND
 every extra they name — and a test SHALL enforce this by deriving the covered
 groups from the workflows' own install commands rather than from a hand-written
-list. Workflow scanning SHALL read the executable `run` blocks, split each line into
-its constituent shell commands, and compare tokenised arguments — never raw file
-text, and never a whole physical line as if it were one command. A local-project
+list. Project metadata SHALL be read by PARSING TOML, and workflow `run` blocks by
+LEXING shell, so that quoting style, comments, line continuations, here-documents
+and command separators are handled by one model of the syntax rather than by
+accumulated text rules; content the lexer cannot read SHALL fail loudly rather
+than be skipped. A local-project
 install SHALL be recognised by its TARGET (`.` or `.[extras]`), not by which
 editable spelling precedes it. Dependencies that JUDGE the
 code (the test runner and its plugins, the type checker, the linter) SHALL be
@@ -46,6 +48,21 @@ broke a text-level pattern in turn; the guard therefore parses `run` blocks out
 of the YAML and shell-tokenises them, so quoting style and non-executable
 metadata stop being special cases.
 
+Tokenising is not the same as lexing, and that difference cost two further
+rounds. `shlex` splits WORDS; it does not know where a command ends. It returns
+`…qlib.git@sha&&pip` as a single word for the whitespace-free form, and it
+raises outright on a trailing-backslash continuation — and in both cases the
+guard's answer was to skip silently, so the coverage was empty exactly where it
+mattered. The guard therefore scans the shell's own lexical constructs — a
+finite set: single quotes, double quotes, backslash escapes, comments, line
+continuations, here-documents, and the command separators — and refuses loudly
+what it cannot read.
+
+The same distinction applies to the metadata side: matching `"…"` in
+`pyproject.toml` reads only ONE of TOML's string syntaxes, so a single-quoted
+requirement disappears from the scan while the other entries keep the "we read
+something" floor satisfied. The file is parsed as TOML instead.
+
 Runtime dependencies already carried upper bounds for numpy / scipy / pandas for
 exactly this reason; the gap was that the reasoning had never been extended to
 the rest of the base list, nor to the tools that judge.
@@ -54,6 +71,11 @@ the rest of the base list, nor to the tools that judge.
 - **WHEN** any requirement in the base list, or in an extra a workflow installs,
   carries no upper bound
 - **THEN** the governance test fails and names the requirement
+
+#### Scenario: both TOML string syntaxes are read
+- **WHEN** a requirement is declared with TOML's single-quoted literal syntax
+  rather than double quotes
+- **THEN** it is checked like any other, because the file is parsed as TOML
 
 #### Scenario: the covered groups follow the workflows
 - **WHEN** a workflow changes which extras it installs
@@ -119,3 +141,25 @@ that actually produces the anchor.
   quotes, or none
 - **THEN** it is compared the same way, because the command is shell-tokenised
   before comparison
+
+#### Scenario: a separator needs no surrounding whitespace
+- **WHEN** two commands are joined without spaces, as in
+  `pip install <qlib>&&pip install "numpy…"`
+- **THEN** they are still two commands, because the boundary is found by
+  scanning the text rather than by looking for a separator among split words
+
+#### Scenario: a command continued across lines stays one command
+- **WHEN** an install is written with a trailing backslash and continues on the
+  next line
+- **THEN** the extras it names still enter the derived coverage
+
+#### Scenario: a here-document body is data, not commands
+- **WHEN** a step feeds a script to an interpreter via `<<`
+- **THEN** the body is not read as shell, and the real commands in that step
+  remain covered
+
+#### Scenario: unreadable shell is refused, not skipped
+- **WHEN** a `run` block cannot be lexed — an unclosed quote, an unterminated
+  here-document
+- **THEN** the governance test fails saying so, because a guard that silently
+  reads nothing is empty in a way nobody can see
