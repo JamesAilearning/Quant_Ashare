@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# 上界同理适用于**构建依赖**：`pip install -e .` 缺省用隔离构建，pip 会
+# 独立解析这两条（CI 实测装到 setuptools 84.0.0，本机 82.0.1）。无上界
+# 就意味着一次 setuptools 大版本能在与当天 PR 无关的时刻把构建打断。
+requires = ["setuptools>=68,<90", "wheel>=0.40,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]

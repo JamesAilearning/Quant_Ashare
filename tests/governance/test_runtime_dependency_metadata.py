@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PYPROJECT = PROJECT_ROOT / "pyproject.toml"
@@ -14,22 +17,42 @@ _WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
 _SHELL_COMMENT = re.compile(r"(^|\s)#.*$")
 
 
-def _executable_text(workflow: Path) -> str:
-    """workflow 里**会被执行**的部分——剔掉 shell 注释。
+def _run_lines(workflow: Path) -> list[str]:
+    """workflow 里**真正会执行**的命令行。
 
-    正则直接跑在原始文本上时，一句 `# pip install -e ".[research]"` 会被当成
-    真安装（于是 research 组那些无上界的依赖让治理变红），反过来把一条真安装
-    注释掉又会让它的 extra 留在集合里。纯文档性的改动不该有能力把 CI 弄红，
-    也不该有能力让覆盖面悄悄缩水（codex P2）。
+    这里换掉了一串越描越细的字面规则。此前是「拿原始文本跑正则」，然后被逐条
+    指出漏洞：注释掉的命令算不算（不算）、`name: Document pip install …` 这种
+    元数据字段算不算（不算）、单引号写的参数认不认（要认）。每补一条都只是往
+    同一堆字符串规则上再加一条，而下一种写法总还在后面（codex 连续三条 P2）。
 
-    切的是「行首或空白之后的 `#`」，所以 URL 里的 `#` 不会被误伤。
+    所以改成按结构解析：YAML 取到 `steps[].run`，那才是会执行的东西；元数据
+    字段天然被排除。行内注释仍要剔——它在 `run` 里确实是注释。
     """
-    kept = []
-    for raw in workflow.read_text(encoding="utf-8").splitlines():
-        line = _SHELL_COMMENT.sub("", raw)
-        if line.strip():
-            kept.append(line)
-    return "\n".join(kept)
+    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    lines: list[str] = []
+    for job in (document or {}).get("jobs", {}).values():
+        for step in (job or {}).get("steps", []) or []:
+            script = (step or {}).get("run")
+            if not isinstance(script, str):
+                continue
+            for raw in script.splitlines():
+                line = _SHELL_COMMENT.sub("", raw)
+                if line.strip():
+                    lines.append(line)
+    return lines
+
+
+def _tokens(line: str) -> list[str]:
+    """把一条命令切成实参。
+
+    用 `shlex` 而不是再写一版引号正则：单引号、双引号、混写都由它统一处理，
+    「再补一种引号写法」这条路就此关掉。切不动的行（引号不配对之类）当作没有
+    可识别实参，而不是让守卫炸掉——它不是本守卫要管的事。
+    """
+    try:
+        return shlex.split(line, posix=True)
+    except ValueError:
+        return []
 
 
 def _workflows() -> list[Path]:
@@ -44,14 +67,47 @@ def _workflows() -> list[Path]:
     assert found, "找不到任何 workflow —— 本守卫已失效"
     return found
 
-# ``pip install -e ".[dev,ui]"`` —— CI 到底装了哪些 extra，从 workflow 读，不手抄。
-# 手抄的那张表挡不住「CI 以后多装一组，而守卫还盯着老的两组」。
-_CI_EXTRAS = re.compile(r'pip install -e "\.\[([^\]]+)\]"')
-
 # 重述之所以必要：qlib 从这个固定 commit 安装，且**在项目之前**——它拿不到
 # pyproject 的约束，所以每条装它的 workflow 都得自己把窗口写一遍。
 # 「哪些 workflow 该有重述」因此可以推导，不必写死一个处数。
 _QLIB_PIN = "git+https://github.com/microsoft/qlib.git@"
+
+# pyproject 里承载 requirement 的三处（标准定的闭集）：
+#   PEP 518 `[build-system].requires` · PEP 621 `[project].dependencies` ·
+#   `[project.optional-dependencies].<组名>`
+# 前两处 CI 每次安装都会解析，第三处按 workflow 点名的组。
+_BUILD_REQUIRES = "requires"
+_RUNTIME_DEPENDENCIES = "dependencies"
+
+# `pip install -e ".[dev,ui]"` 里那个 `.[...]` 实参 —— 从切好的 token 上认，
+# 不再从整行文本上正则匹配，于是单引号/双引号/不加引号都一视同仁。
+_EDITABLE_TARGET = re.compile(r"^\.\[([^\]]+)\]$")
+
+
+def _restated_package(token: str, declared: dict[str, str]) -> str | None:
+    """这个实参是不是某个受钉包的版本约束？是则返回包名。
+
+    只看「以包名开头、紧跟一个版本运算符」，避免把 `numpydoc` 之类同前缀的
+    别的包误当成重述。
+    """
+    for package in declared:
+        rest = token[len(package):]
+        if token.startswith(package) and rest[:1] in ("<", ">", "=", "~", "!"):
+            return package
+    return None
+
+
+def _editable_extras(line: str) -> list[str]:
+    """这条命令里 editable 安装点名的 extra 组（可能有多条命令、多组）。"""
+    tokens = _tokens(line)
+    groups = []
+    for index, token in enumerate(tokens):
+        if token != "-e" or index + 1 >= len(tokens):
+            continue
+        matched = _EDITABLE_TARGET.match(tokens[index + 1])
+        if matched:
+            groups.append(matched.group(1))
+    return groups
 
 # 上界的形式：`<` / `<=` / `==`（精确钉）/ `~=`（兼容版本，蕴含上界）。
 #
@@ -67,16 +123,24 @@ _UPPER_BOUND = re.compile(r"(<=?|==|~=)\s*\d")
 
 
 def _requirement_block(text: str, group: str) -> list[str]:
-    """取出某个 extra 组里声明的依赖串。
+    r"""取出某个组里声明的依赖串。
 
-    先按行砍掉 ``#`` 之后的注释再抓引号——否则注释里随手写的一个带引号的例子
-    会被当成一条真依赖，让守卫对着不存在的东西较劲。
+    注释要在**定位块之前**剥掉。此前是先用正则圈出 `[...]` 再剥注释，于是注释
+    里任何一个 `]`（比如一句提到 `.[dev,ui]` 的说明）都会让非贪婪匹配提前收
+    尾——`dependencies` 只读到 9 条里的 3 条、`ui` 读到 0 条，而整体计数下限
+    仍然满足，守卫就这样**静默缩水**了。这正是本文件一路在替别处修的那种毛病。
+
+    `\[` 之后不强求换行：`[build-system].requires` 写在一行上。
     """
+    stripped = "\n".join(
+        line.split("#", 1)[0] for line in text.splitlines())
     block = re.search(
-        rf"^{re.escape(group)} = \[\n(.*?)^\]", text, re.MULTILINE | re.DOTALL)
-    assert block is not None, f"pyproject 里找不到 extra 组 {group!r} —— 本守卫已失效"
-    stripped = "\n".join(line.split("#", 1)[0] for line in block.group(1).splitlines())
-    return re.findall(r'"([^"]+)"', stripped)
+        rf"^{re.escape(group)} = \[(.*?)\]", stripped,
+        re.MULTILINE | re.DOTALL)
+    assert block is not None, f"pyproject 里找不到组 {group!r} —— 本守卫已失效"
+    found = re.findall(r'"([^"]+)"', block.group(1))
+    assert found, f"组 {group!r} 一条依赖都没读到 —— 本守卫已失效"
+    return found
 
 
 class TheBoundPatternRequiresAnActualVersion(unittest.TestCase):
@@ -97,6 +161,45 @@ class TheBoundPatternRequiresAnActualVersion(unittest.TestCase):
         for requirement in ("pytest>=9.1,<9.2", "x<=2.0", "y==3.1.4", "z~=1.4"):
             with self.subTest(约束=requirement):
                 self.assertIsNotNone(_UPPER_BOUND.search(requirement))
+
+
+class TheRequirementBlockReaderIsNotFooledByBrackets(unittest.TestCase):
+    """注释里的 `]` 不许把依赖列表提前截断。
+
+    这条直接对着 helper 测，因为整体计数下限兜不住它：`dependencies` 从 9 条
+    缩到 3 条、`ui` 缩到 0 条，总数仍然过线，守卫**静默缩水**（实测如此）。
+    """
+
+    SNIPPET = (
+        'dependencies = [\n'
+        '  "alpha>=1,<2",\n'
+        '  # 说明里提到 `.[dev,ui]` —— 这个 `]` 不该终结列表\n'
+        '  "beta>=2,<3",\n'
+        ']\n'
+        'ui = [\n'
+        '  # 开头就是一句含 `.[x]` 的说明\n'
+        '  "gamma>=3,<4",\n'
+        ']\n'
+    )
+
+    def test_a_bracket_in_a_comment_does_not_end_the_list(self) -> None:
+        self.assertEqual(
+            ["alpha>=1,<2", "beta>=2,<3"],
+            _requirement_block(self.SNIPPET, "dependencies"))
+
+    def test_a_leading_comment_with_a_bracket_is_survivable(self) -> None:
+        self.assertEqual(["gamma>=3,<4"], _requirement_block(self.SNIPPET, "ui"))
+
+    def test_a_single_line_list_is_read(self) -> None:
+        self.assertEqual(
+            ["setuptools>=68,<90", "wheel>=0.40,<1"],
+            _requirement_block(
+                'requires = ["setuptools>=68,<90", "wheel>=0.40,<1"]\n', "requires"))
+
+    def test_an_empty_read_is_loud(self) -> None:
+        # 读到空说明结构变了 —— 那是「守卫失效」，不许当成「已覆盖」。
+        with self.assertRaises(AssertionError):
+            _requirement_block('dependencies = [\n]\n', "dependencies")
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):
@@ -122,20 +225,28 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         found = [
             group
             for workflow in _workflows()
-            for group in _CI_EXTRAS.findall(_executable_text(workflow))
+            for line in _run_lines(workflow)
+            for group in _editable_extras(line)
         ]
         assert found, "workflow 里找不到 extras 安装行 —— 本守卫已失效"
         return {name.strip() for group in found for name in group.split(",")}
 
     @classmethod
     def _ci_installed_groups(cls) -> list[str]:
-        """`pip install -e ".[dev,ui]"` 装的是 **base 依赖 + 这些 extra**。
+        """`pip install -e ".[dev,ui]"` 会解析的**全部**声明。
 
-        首版只遍历 extra，于是 base 里那六条无上界的依赖（pyarrow / optuna
-        …）照样可以漂移，而守卫全绿——与本 change 那条「CI 装的每一条都要有
-        上界」的规范正文直接矛盾（codex P1）。
+        这里不再一类一类地补。此前是 extra（首版）→ base 依赖（第二轮）→
+        构建依赖（第三轮），每轮由 codex 指出又少了一类——**根子是我在枚举
+        「CI 装了什么」，而不是从声明本身推**。
+
+        pyproject 里能承载 requirement 的位置是**标准定的闭集**，只有三处：
+        PEP 518 的 `[build-system].requires`、PEP 621 的
+        `[project].dependencies`、以及 `[project.optional-dependencies]` 下的
+        各组。前两处 CI 每次都会解析（`pip install -e .` 缺省走隔离构建，
+        pip 独立解析 build-system.requires），extra 则按 workflow 实际点名的
+        那些。
         """
-        return ["dependencies", *sorted(cls._ci_extras())]
+        return [_BUILD_REQUIRES, _RUNTIME_DEPENDENCIES, *sorted(cls._ci_extras())]
 
     def test_the_extras_are_discovered_not_assumed(self) -> None:
         # 先证明推导本身没落空：一个空集合会让下面那条用例真空地绿着。
@@ -160,15 +271,20 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         unparsed = []
         checked = 0
         for workflow in _workflows():
-            text = _executable_text(workflow)
             # **逐处**看，不是「文件里有一处能解析就算过」：同一个 workflow 里
-            # 若还有第二条 editable 安装（比如单引号写法装了另一组 extra），
-            # 「任一匹配」会让它整个溜过去，那组 extra 就悄悄脱离覆盖面
-            # （codex P2）。
-            for occurrence in re.finditer(r"pip install -e\s+\S+", text):
+            # 若还有第二条 editable 安装，「任一匹配」会让它整个溜过去，那组
+            # extra 就悄悄脱离覆盖面（codex P2）。
+            for line in _run_lines(workflow):
+                tokens = _tokens(line)
+                if "-e" not in tokens:
+                    continue
                 checked += 1
-                if not _CI_EXTRAS.search(occurrence.group(0)):
-                    unparsed.append(f"{workflow.name}: {occurrence.group(0)}")
+                target = tokens[tokens.index("-e") + 1:tokens.index("-e") + 2]
+                # 合法目标只有两种：裸 `.`（不点名 extra）或 `.[组,组]`。
+                # 其他形状说明这条命令的 extra 读不出来，覆盖面在此静默缩水。
+                if not target or not (
+                        target[0] == "." or _EDITABLE_TARGET.match(target[0])):
+                    unparsed.append(f"{workflow.name}: {line.strip()}")
         self.assertGreaterEqual(
             checked, 2, "一处 editable 安装都没找到 —— 本守卫已失效")
         self.assertEqual(
@@ -182,10 +298,12 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         # _groups()` 的用例挡不住——它测的是那个方法，不是这里用了什么；而
         # 「覆盖面塌了」在当前数据上没有任何用例会红，因为每条 base 依赖现在
         # 都已有上界（实测变异如此）。
-        self.assertIn(
-            "dependencies", groups,
-            "覆盖面里没有 base 依赖 —— `pip install -e \".[dev,ui]\"` 会把它们"
-            "一并装上，漏掉就等于放它们自由漂移（codex P1）")
+        self.assertLessEqual(
+            {_BUILD_REQUIRES, _RUNTIME_DEPENDENCIES}, set(groups),
+            "覆盖面漏了 pyproject 承载 requirement 的位置 —— "
+            "`pip install -e \".[dev,ui]\"` 会解析 base 依赖，缺省的隔离构建"
+            "还会独立解析 build-system.requires；漏掉哪一处，那一处就自由漂移"
+            "（codex 两轮 P1，每轮少一类）")
         text = _PYPROJECT.read_text(encoding="utf-8")
         unbounded = []
         checked = 0
@@ -263,18 +381,19 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         # 重述了窗口就要自动被查」正是本 change 自己写下的场景（codex P2）。
         checked = 0
         for workflow in _workflows():
-            text = _executable_text(workflow)
-            for package, constraint in declared.items():
-                # `[^"]*` 一直吃到闭合引号，比的是**整串**。用
-                # `[><=,.\d]+` 那种字符类会在遇到类外字符时停下，闭合引号
-                # 又匹配不上，于是整条重述**从扫描里消失**——带环境标记的
-                # `"numpy>=1.24,<2.0; python_version < '3.12'"` 就是这样溜
-                # 过去的：它换了解析结果，守卫却一声不吭（codex P2）。
-                for restated in re.findall(
-                        rf'"({re.escape(package)}[^"]*)"', text):
+            for line in _run_lines(workflow):
+                for token in _tokens(line):
+                    package = _restated_package(token, declared)
+                    if package is None:
+                        continue
                     checked += 1
+                    # 比的是**整个实参**。此前从整行文本上用字符类匹配，遇到
+                    # 类外字符就停、闭合引号又对不上，带环境标记的重述整条从
+                    # 扫描里消失；而只认双引号又会漏掉单引号写法（codex 两条
+                    # P2）。切成 token 之后，引号形态由 `shlex` 统一处理，比对
+                    # 的是实参本身。
                     self.assertEqual(
-                        constraint, restated,
+                        declared[package], token,
                         f"{workflow.name} 重述的 {package} 窗口与 pyproject 不一致")
         self.assertGreaterEqual(
             checked, 1, "一处重述都没找到 —— 本守卫已失效")
@@ -297,19 +416,19 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
             declared[package] = matches[0]
 
         commands = [
-            line
+            (workflow.name, _tokens(line))
             for workflow in _workflows()
-            for line in _executable_text(workflow).splitlines()
-            if _QLIB_PIN in line
+            for line in _run_lines(workflow)
+            if any(token.startswith(_QLIB_PIN) for token in _tokens(line))
         ]
         self.assertGreaterEqual(
             len(commands), 1, "没有在项目之前装 qlib 的命令 —— 本守卫已失效")
-        for command in commands:
+        for name, tokens in commands:
             for package, constraint in declared.items():
-                with self.subTest(包=package, 命令=command.strip()[:60]):
+                with self.subTest(包=package, workflow=name):
                     self.assertIn(
-                        f'"{constraint}"', command,
-                        f"装 qlib 的那条命令没带上 {package} 窗口 —— "
+                        constraint, tokens,
+                        f"{name} 里装 qlib 的那条命令没带上 {package} 窗口 —— "
                         f"无约束的首次解析会装出不兼容的环境")
 
     def test_the_workflows_are_discovered_not_named(self) -> None:

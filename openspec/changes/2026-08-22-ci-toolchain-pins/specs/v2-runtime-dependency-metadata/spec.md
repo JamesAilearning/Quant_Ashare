@@ -5,9 +5,11 @@
 ### Requirement: Every dependency CI installs SHALL declare an upper version bound
 
 Project metadata SHALL declare an upper version bound for every dependency the
-CI workflows install — the base dependencies AND every extra they name — and a
-test SHALL enforce this by deriving the covered groups from the workflows' own
-install lines rather than from a hand-written list. Dependencies that JUDGE the
+CI workflows install — the build-system requirements, the base dependencies, AND
+every extra they name — and a test SHALL enforce this by deriving the covered
+groups from the workflows' own install commands rather than from a hand-written
+list. Workflow scanning SHALL read the executable `run` blocks and compare
+shell-tokenised arguments, not raw file text. Dependencies that JUDGE the
 code (the test runner and its plugins, the type checker, the linter) SHALL be
 bounded at the NEXT minor version; libraries the code merely uses MAY be bounded
 at the major version.
@@ -24,8 +26,22 @@ major-only bound wearing a minor's clothes — so the ceiling is required to be
 exactly the floor's next minor.
 
 `pip install -e ".[dev,ui]"` resolves the base dependency list as well as the
-named extras, so a guard that walks only the extras leaves the base list free to
-drift while reporting success.
+named extras, and pip's default isolated build resolves `[build-system].requires`
+on top of that, so a guard that walks only the extras leaves both free to drift
+while reporting success.
+
+The covered set is not enumerated category by category — that is how the gap
+kept reappearing (extras, then the base list, then the build requirements).
+pyproject can carry requirements in exactly three standard-defined places: PEP
+518's `[build-system].requires`, PEP 621's `[project].dependencies`, and the
+groups under `[project.optional-dependencies]`. That closed set is what the
+guard walks.
+
+Scanning raw workflow text is likewise not refined rule by rule. A comment, a
+step `name:` carrying an example command, and a single-quoted argument each
+broke a text-level pattern in turn; the guard therefore parses `run` blocks out
+of the YAML and shell-tokenises them, so quoting style and non-executable
+metadata stop being special cases.
 
 Runtime dependencies already carried upper bounds for numpy / scipy / pandas for
 exactly this reason; the gap was that the reasoning had never been extended to
@@ -82,7 +98,14 @@ that actually produces the anchor.
 - **THEN** the governance test fails, because the unconstrained first resolve is
   what produces the incompatible environment
 
-#### Scenario: a commented-out command is not an install
-- **WHEN** a workflow carries an installation line inside a shell comment
-- **THEN** it contributes nothing to the derived coverage and cannot by itself
+#### Scenario: only executable content counts as an install
+- **WHEN** a workflow carries an installation line inside a shell comment, or a
+  step `name:` that merely quotes such a command
+- **THEN** neither contributes to the derived coverage and neither can by itself
   turn the governance test red
+
+#### Scenario: quoting style is not a special case
+- **WHEN** a workflow restates a pinned window with single quotes, double
+  quotes, or none
+- **THEN** it is compared the same way, because the command is shell-tokenised
+  before comparison
