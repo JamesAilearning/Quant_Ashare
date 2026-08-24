@@ -103,6 +103,31 @@ def ledger_path_for_provider(provider_dir: Path) -> Path:
     return resolved.with_name(f"{resolved.name}.{LEDGER_FILENAME}")
 
 
+#: v1 行必须齐备的字段（`failed_stage` 允许 null，单列在下面判）。
+_REQUIRED_TEXT = ("run_date", "started_at", "finished_at", "detail")
+
+
+def _is_valid_v1(record: dict[str, object]) -> bool:
+    """这行是不是一条**可解释的** v1 记录。
+
+    不校验就把任何带对 provider 的 JSON 对象当成一次运行渲染出去：一条未来
+    版本的记录、或 ``exit_code: true`` 这种（`isinstance(True, int)` 在 Python
+    里为真！），都会被显示成一次**失败的运行**——把损坏的数据讲成事实，比
+    报「读不了」糟得多（codex P2）。与状态工件 reader 同样的处理：版本不对就
+    不用 v1 语义去解释它。
+    """
+    if record.get("schema_version") != LEDGER_SCHEMA_VERSION:
+        return False
+    exit_code = record.get("exit_code")
+    # `bool` 是 `int` 的子类，必须显式排除，否则 True/False 会被当成退出码。
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        return False
+    stage = record.get("failed_stage")
+    if stage is not None and not isinstance(stage, str):
+        return False
+    return all(isinstance(record.get(key), str) for key in _REQUIRED_TEXT)
+
+
 def _describes(record: object, provider_key: str) -> bool:
     """这行记录描述的是不是**这个** provider？
 
@@ -154,16 +179,17 @@ def read_ledger(
         if not _describes(record, provider_key):
             foreign += 1
             continue
-        exit_code = record.get("exit_code")
+        if not _is_valid_v1(record):
+            # 版本不对或字段不齐 —— 记成读不了，而不是拿 v1 语义硬解释它。
+            malformed += 1
+            continue
         runs.append(LedgerRun(
-            run_date=str(record.get("run_date") or ""),
-            started_at=str(record.get("started_at") or ""),
-            finished_at=str(record.get("finished_at") or ""),
-            exit_code=exit_code if isinstance(exit_code, int) else None,
-            failed_stage=(
-                record.get("failed_stage")
-                if isinstance(record.get("failed_stage"), str) else None),
-            detail=str(record.get("detail") or ""),
+            run_date=record["run_date"],
+            started_at=record["started_at"],
+            finished_at=record["finished_at"],
+            exit_code=record["exit_code"],
+            failed_stage=record.get("failed_stage"),
+            detail=record["detail"],
         ))
     return LedgerHistory(
         kind="ok", path=path,

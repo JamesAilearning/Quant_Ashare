@@ -187,8 +187,18 @@ def _render_recent_runs(provider_dir: Path) -> None:
     if history.kind == "unreadable":
         st.caption(f"近期运行：运行台账读不了 —— {history.error}")
         return
+    notes = []
+    if history.malformed:
+        notes.append(f"{history.malformed} 行读不了")
+    if history.foreign:
+        notes.append(f"{history.foreign} 行属于别的 provider")
+    note_text = f"（{'；'.join(notes)}）" if notes else ""
     if not history.runs:
-        st.caption(f"近期运行：台账里还没有属于本 provider 的记录（`{path.name}`）。")
+        # 计数必须**在这条分支里也说出来**：整份台账全坏时 `runs` 同样为空，
+        # 而只说「还没有记录」会把一份损坏的历史讲成良性的空历史（codex P2）。
+        st.caption(
+            f"近期运行：台账里还没有属于本 provider 的可用记录"
+            f"（`{path.name}`）。{note_text}")
         return
     marks = " ".join(
         ("✅" if run.ok else "❌") + (run.run_date[5:] or "?") for run in history.runs)
@@ -198,15 +208,7 @@ def _render_recent_runs(provider_dir: Path) -> None:
         tail = f" —— **最近连续 {streak} 次失败**"
     elif streak == 1:
         tail = " —— 最近一次失败"
-    notes = []
-    if history.malformed:
-        notes.append(f"{history.malformed} 行读不了")
-    if history.foreign:
-        notes.append(f"{history.foreign} 行属于别的 provider")
-    st.caption(
-        f"近期运行（新→旧）：{marks}{tail}。"
-        + (f"（{'；'.join(notes)}）" if notes else "")
-    )
+    st.caption(f"近期运行（新→旧）：{marks}{tail}。{note_text}")
 
 
 def _render_queue_item(item: TodayQueueItem) -> None:

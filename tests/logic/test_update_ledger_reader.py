@@ -160,6 +160,56 @@ class OneBadLineDoesNotPoisonTheLedger(unittest.TestCase):
                 "unreadable", read_ledger(blocked, provider_dir=provider).kind)
 
 
+class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
+    """带对 provider 的 JSON 对象**不等于**一条可解释的运行记录。
+
+    不校验就把未来版本的记录、或 `exit_code: true` 这种（`isinstance(True, int)`
+    在 Python 里为真！）显示成一次**失败的运行**——把损坏的数据讲成事实，比
+    报「读不了」糟得多（codex P2）。
+    """
+
+    def _one(self, provider: Path, path: Path, **override: object) -> int:
+        record = {**_record(provider, exit_code=11), **override}
+        _write(path, [record])
+        return len(read_ledger(path, provider_dir=provider).runs)
+
+    def test_a_future_schema_version_is_not_read_with_v1_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(0, self._one(provider, path, schema_version=2))
+            self.assertEqual(
+                1, read_ledger(path, provider_dir=provider).malformed,
+                "未来版本的记录没有被计成读不了")
+
+    def test_a_boolean_exit_code_is_not_a_failed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(0, self._one(provider, path, exit_code=True))
+
+    def test_missing_or_mistyped_fields_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            for override in ({"run_date": None}, {"started_at": 123},
+                             {"detail": []}, {"failed_stage": 7},
+                             {"exit_code": "11"}):
+                with self.subTest(改动=override):
+                    self.assertEqual(0, self._one(provider, path, **override))
+
+    def test_a_wellformed_v1_record_still_reads(self) -> None:
+        # 前提：上面那些拒绝不是因为整条路径坏了。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            self.assertEqual(1, self._one(provider, path))
+
+
 # ---------------------------------------------------------------- 连败与耗时
 
 class TheRunsAreOrderedNewestFirstAndTheStreakIsCounted(unittest.TestCase):
@@ -272,6 +322,44 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             got = last_fetch_progress_for_run(text, provider_dir=provider)
         self.assertFalse(got.attributed, "采纳了别的 provider 的边界")
 
+    def test_a_foreign_boundary_after_ours_defeats_attribution(self) -> None:
+        """别人的边界排在我们后面时，**不知道**，而不是回头用我们那条旧的。
+
+        兄弟 bundle 共用同一条日志（`default_log_path` 取
+        `<provider 父目录>/logs/daily_update.log`），而单飞锁是 per-provider 的
+        ——两个 provider **可以同时在跑**，行会交错。跳过别人的边界去用我们更
+        早那条，就会把交错进来的**别人的**进度当成我们的，还以「归属已确定」
+        的口气说出来（codex P1）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider, other = Path(t) / "prov", Path(t) / "other"
+            provider.mkdir()
+            other.mkdir()
+            text = chr(10).join([
+                self._boundary(provider, "2026-08-24T20:30:00+08:00"),
+                f"20:31:00{_PROGRESS_LINE}",
+                self._boundary(other, "2026-08-24T20:35:00+08:00"),
+                "  daily year=2026 progress: 9999/9999 tickers (written=9999, skipped=0)",
+            ])
+            got = last_fetch_progress_for_run(text, provider_dir=provider)
+        self.assertFalse(
+            got.attributed, "把别人的进度当成了我们的，且说成「已确定」")
+
+    def test_our_boundary_last_still_attributes(self) -> None:
+        # 反面：别人的边界在**前**、我们的在后 —— 仍然确定。
+        with tempfile.TemporaryDirectory() as t:
+            provider, other = Path(t) / "prov", Path(t) / "other"
+            provider.mkdir()
+            other.mkdir()
+            text = chr(10).join([
+                self._boundary(other, "2026-08-24T20:00:00+08:00"),
+                self._boundary(provider, "2026-08-24T20:30:00+08:00"),
+                f"20:31:00{_PROGRESS_LINE}",
+            ])
+            got = last_fetch_progress_for_run(text, provider_dir=provider)
+        self.assertTrue(got.attributed)
+        self.assertEqual("2026-08-24T20:30:00+08:00", got.boundary_stamp)
+
     def test_the_latest_of_several_boundaries_wins(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
@@ -342,6 +430,28 @@ class TheWorkbenchReproducesTheLedger(unittest.TestCase):
         self.assertIn("missing", strip)
         self.assertIn("unreadable", strip)
         self.assertIn("还没有运行台账", strip)
+
+    def test_an_all_corrupt_ledger_is_not_shown_as_benign_emptiness(self) -> None:
+        """整份台账全坏时 `runs` 也是空的 —— 那条分支必须一起说出计数。
+
+        只说「还没有记录」会把一份**损坏的**历史讲成良性的空历史（codex P2）。
+        """
+        fn = next(
+            node for node in ast.walk(self._TREE)
+            if isinstance(node, ast.FunctionDef) and node.name == "_render_recent_runs")
+        # 用 AST 精确取**那一个分支的分支体**。按文本位置切会把后面那条正常
+        # caption 也圈进来，`note_text` 在那里出现，于是断言真空地绿着
+        # （实测变异如此）。
+        branches = [
+            node for node in ast.walk(fn)
+            if isinstance(node, ast.If) and "not history.runs" in ast.unparse(node.test)
+        ]
+        self.assertEqual(1, len(branches), "找不到空态分支 —— 本守卫已失效")
+        body = "".join(ast.unparse(stmt) for stmt in branches[0].body)
+        self.assertIn("note_text", body, "空分支没有带上计数")
+        # 计数必须在**进入**空分支之前就拼好，否则那条分支拿不到它。
+        whole = ast.unparse(fn)
+        self.assertLess(whole.index("note_text ="), whole.index("if not history.runs"))
 
     def test_the_strip_discloses_malformed_and_foreign_counts(self) -> None:
         strip = ast.unparse(next(

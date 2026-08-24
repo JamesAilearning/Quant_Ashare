@@ -161,19 +161,28 @@ class AttributedProgress:
     boundary_stamp: str = ""
 
 
-def _last_boundary(log_text: str, provider_key: str) -> tuple[int, str] | None:
-    """窗口里**最后一条**属于该 provider 的边界:(它结束的字符位置, 起跑时刻)。
+def _current_segment(log_text: str, provider_key: str) -> tuple[int, str] | None:
+    """本 provider 当前那一段的起点:(边界结束的字符位置, 起跑时刻)。
 
-    从后往前找:日志是追加的,最后一条边界就是最近一次运行。别的 provider 的
-    边界跳过——它证明不了本 provider 的任何事。
+    取**任意 provider** 的最后一条边界,然后才问它是不是我们的——不是「跳过
+    别人的、找我们最后一条」。差别是决定性的:
+
+    兄弟 bundle **共用同一条日志**(`default_log_path` 取的是
+    ``<provider 父目录>/logs/daily_update.log``),而单飞锁是 **per-provider** 的
+    (`single_flight.lock_path_for`)——两个 provider **可以同时在跑**,它们的行
+    会交错。跳过别人的边界去用我们那条更早的,就会把交错进来的**别人的**进度
+    当成我们的,而且是以「归属已确定」的口气说出来(codex P1)。
+
+    所以:最后一条边界是我们的 → 它之后的行属于我们;是别人的 → **不知道**。
     """
-    found: tuple[int, str] | None = None
+    last = None
     for match in _BOUNDARY_RE.finditer(log_text):
-        stamped = match.group("provider").strip()
-        if os.path.normcase(stamped) != provider_key:
-            continue
-        found = (match.end(), match.group("started"))
-    return found
+        last = match
+    if last is None:
+        return None
+    if os.path.normcase(last.group("provider").strip()) != provider_key:
+        return None
+    return last.end(), last.group("started")
 
 
 def last_fetch_progress_for_run(
@@ -181,12 +190,12 @@ def last_fetch_progress_for_run(
 ) -> AttributedProgress:
     """取最后一条 fetch 进度,并说清它属不属于最近一次运行。
 
-    找得到边界:只在**边界之后**那段里取进度,归属确定。
-    找不到边界:退回全窗口取进度,并如实说无法归属——边界落地之前就是这个
-    行为,不是退步。
+    最后一条边界是我们的:只在它之后那段里取进度,归属确定。
+    最后一条边界是别人的、或窗口里根本没有边界:退回全窗口取进度,并如实说
+    无法归属——边界落地之前就是这个行为,不是退步。
     """
     provider_key = os.path.normcase(str(provider_dir.resolve()))
-    boundary = _last_boundary(log_text, provider_key)
+    boundary = _current_segment(log_text, provider_key)
     if boundary is None:
         return AttributedProgress(
             progress=last_fetch_progress(log_text), attributed=False)
