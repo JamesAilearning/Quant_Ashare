@@ -125,7 +125,11 @@ class PagePlacementTests(unittest.TestCase):
         # 非 running 时最后一条进度行是**上一次**运行的残留。放在 running
         # 分支之外，就是把旧进度当成当前进度。
         running_at = self.src.index('elif _status.kind == "running":')
-        progress_at = self.src.index("_progress = _read_progress()")
+        # 锚串随读取器返回类型变化更新（它现在带上归属）。**断言未变**：
+        # 进度仍必须只在 running 分支内渲染 —— 非 running 时那条是上一次
+        # 运行的残留。旧锚 `_progress = _read_progress()` 现在会先匹配到
+        # 后面的 `_baseline_progress = _read_progress()`，定位到分支之外。
+        progress_at = self.src.index("_attributed = _read_progress()")
         next_branch = self.src.index("elif _status.ok:")
         self.assertLess(running_at, progress_at)
         self.assertLess(progress_at, next_branch)

@@ -25,16 +25,35 @@ fetch 只是六个阶段(修复/fetch/snapshot/rebuild/validate/swap)里的第�
 * 试过「用 mtime 当日期锚点往回推断跨天」:24 小时的间隔与 30 分钟的间隔在
   时分秒上长得一模一样。
 
-结论是**结构性的**:靠这份日志做不到精确归属。所以本模块只回答「日志尾部
-最后一条进度行是什么、它带的时刻是几点」,**归属留给页面如实披露**,而不是
-用启发式假装消除不确定性(codex #450 r1/r2)。要精确归属,得先让写入侧落一个
-**带日期**的运行边界——那是另一个改动,不在本模块的承诺里。
+结论是**结构性的**:靠这份日志本身做不到精确归属。所以本模块曾只回答「日志
+尾部最后一条进度行是什么、它带的时刻是几点」,归属留给页面如实披露,而不是用
+启发式假装消除不确定性(codex #450 r1/r2)。
+
+## 边界落地之后(2026-08-24-daily-update-run-ledger)
+
+上面那段的最后一句是「要精确归属,得先让写入侧落一个**带日期**的运行边界——
+那是另一个改动」。**那个改动做了**:`run_daily_update` 现在在每次(非 dry-run)
+运行开始时往日志里写一行
+
+    [daily_update] run started <ISO8601 +08:00> provider=<normalized>
+
+于是本模块多回答一个问题:**这条进度属不属于某次运行**。判据不再是启发式,
+而是那条边界——它之后的行属于它,就这么简单。
+
+两件事**仍然不做**:
+
+* 窗口里找不到边界时**不去扩大读取直到找到**。一次两小时运行的日志无界增长,
+  那条路通向没有上界的读取。此时如实报「无法归属」——也就是边界落地之前的
+  行为,没有退步。
+* 别的 provider 留下的边界**不采纳**(照抄状态工件的身份推理,codex #434 r18)。
 """
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 #: 与 ``fetcher`` 的格式串一一对应:
 #: ``"  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)"``
@@ -44,8 +63,23 @@ _PROGRESS_RE = re.compile(
     r"\(written=(?P<written>\d+),\s*skipped=(?P<skipped>\d+)\)"
 )
 
-#: 行首的挂钟。只到秒、不含日期——这正是归属做不到精确的原因。
+#: 行首的挂钟。只到秒、不含日期——这正是**日志行本身**归属做不到精确的原因。
 _CLOCK_RE = re.compile(r"^(?P<clock>\d{2}:\d{2}:\d{2})")
+
+# Mirrors src/data_pipeline/daily_update.py RUN_BOUNDARY_MARK. Duplicated by
+# design (web/ must not import the pipeline layer); the logic test pins the two
+# to the same value.
+RUN_BOUNDARY_MARK = "[daily_update] run started"
+
+#: 边界行。logger 会在前面加上自己的 `HH:MM:SS [name] LEVEL — ` 前缀,所以这里
+#: 只在行内**搜**标记,不锚定行首。
+# `re.MULTILINE` 是**承重**的:不带它,`$` 只在整串末尾匹配,于是只有当边界恰好
+# 是最后一行时才找得到——而边界之后必然还有阶段输出,也就是说它在真实日志里
+# 几乎永远匹配不上。
+_BOUNDARY_RE = re.compile(
+    re.escape(RUN_BOUNDARY_MARK) + r"\s+(?P<started>\S+)\s+provider=(?P<provider>.*)$",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -105,4 +139,60 @@ def last_fetch_progress(log_text: str) -> FetchProgress | None:
         written=int(hit.group("written")),
         skipped=int(hit.group("skipped")),
         at=clock.group("clock") if clock else "",
+    )
+
+
+@dataclass(frozen=True)
+class AttributedProgress:
+    """一条进度,以及**它属不属于**所问的那次运行。
+
+    `attributed=False` 不代表「不属于」,而是**不知道**——读到的窗口里没有边界。
+    两者对操作人的下一步不同,所以分开说,不合并成一个乐观的布尔。
+    """
+
+    progress: FetchProgress | None
+    attributed: bool
+    #: 边界**自己**带的那个戳,来自日志里那条边界本身。
+    #:
+    #: 刻意避开状态工件里那个「起跑时刻」字段的名字:在本模块里,那个名字指的是
+    #: 一个被证伪并被守卫明令禁掉的启发式——拿进度行的时刻去跟它比,以此推断
+    #: 归属(`test_the_module_does_not_grow_an_attribution_guess_back`)。这里的
+    #: 戳不参与任何比较,只是把「是哪一次运行」说给读者听。
+    boundary_stamp: str = ""
+
+
+def _last_boundary(log_text: str, provider_key: str) -> tuple[int, str] | None:
+    """窗口里**最后一条**属于该 provider 的边界:(它结束的字符位置, 起跑时刻)。
+
+    从后往前找:日志是追加的,最后一条边界就是最近一次运行。别的 provider 的
+    边界跳过——它证明不了本 provider 的任何事。
+    """
+    found: tuple[int, str] | None = None
+    for match in _BOUNDARY_RE.finditer(log_text):
+        stamped = match.group("provider").strip()
+        if os.path.normcase(stamped) != provider_key:
+            continue
+        found = (match.end(), match.group("started"))
+    return found
+
+
+def last_fetch_progress_for_run(
+    log_text: str, *, provider_dir: Path,
+) -> AttributedProgress:
+    """取最后一条 fetch 进度,并说清它属不属于最近一次运行。
+
+    找得到边界:只在**边界之后**那段里取进度,归属确定。
+    找不到边界:退回全窗口取进度,并如实说无法归属——边界落地之前就是这个
+    行为,不是退步。
+    """
+    provider_key = os.path.normcase(str(provider_dir.resolve()))
+    boundary = _last_boundary(log_text, provider_key)
+    if boundary is None:
+        return AttributedProgress(
+            progress=last_fetch_progress(log_text), attributed=False)
+    end, started = boundary
+    return AttributedProgress(
+        progress=last_fetch_progress(log_text[end:]),
+        attributed=True,
+        boundary_stamp=started,
     )

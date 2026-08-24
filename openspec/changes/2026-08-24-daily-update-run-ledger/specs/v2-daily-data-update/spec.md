@@ -1,0 +1,102 @@
+# Delta for v2-daily-data-update
+
+## ADDED Requirements
+
+### Requirement: 每次运行 SHALL 向只可追加的运行台账追加一行
+
+`run_daily_update` SHALL append one JSON line per run to
+`<provider_dir>.daily_update_ledger.jsonl` at the run's terminal state, and
+SHALL NEVER rewrite or truncate that file. The line SHALL carry the schema
+version, the normalized `provider_dir` that identifies whose run it was, the
+run date, the start and finish timestamps, the exit code, the failing stage key
+(`null` on success) and the `detail`. The path SHALL be derived from the
+provider directory's name with NO command-line override.
+
+The run-status artifact is a SINGLE file rewritten by every run, so the operator can
+only ever see the LAST run. Three consecutive nightly failures (2026-08-17 /
+08-20 / 08-21) went unnoticed until the third because nothing recorded the
+PATTERN; the queue's severity escalation infers pressure from the bundle's date,
+which only advances on success and is therefore indirect evidence at best.
+
+The ledger does not replace the status artifact: that one answers "how did THIS
+run go", the ledger answers "what shape have the recent runs had".
+
+Elapsed time SHALL NOT be stored: it is the difference of two timestamps the
+line already carries, and a third stored copy is one more place to diverge from
+the derived value.
+
+#### Scenario: a terminal run appends exactly one line
+- **WHEN** the orchestrator reaches any terminal state, success or failure,
+  including the non-trading-day no-op
+- **THEN** exactly one line is appended and no earlier line is altered
+
+#### Scenario: history survives across runs
+- **WHEN** several runs complete in sequence
+- **THEN** every one of them is still readable in order, unlike the status
+  artifact which retains only the last
+
+#### Scenario: a dry run records nothing
+- **WHEN** the run is a `--dry-run`
+- **THEN** no ledger line is appended, because a dry run mutates nothing
+
+#### Scenario: a run that never enters the orchestrator records nothing
+- **WHEN** the CLI exits on a configuration error or on the single-flight
+  conflict
+- **THEN** no ledger line is appended, so a refused second run cannot pollute
+  the history of the run holding the lock
+
+#### Scenario: a torn tail cannot swallow the new line
+- **WHEN** a previous process died mid-write leaving a final line without its
+  newline
+- **THEN** the new line still lands as its own readable line, the fragment
+  stays isolated as its own malformed line, and the new entry is not fused onto
+  it
+
+#### Scenario: a ledger failure never changes the exit code
+- **WHEN** the ledger append fails for any reason
+- **THEN** the failure is logged as an ERROR and the run's exit code is
+  unchanged — the ledger is observability, never a canonical input, and no
+  module inside `src/` outside `src/data_pipeline/daily_update.py` consumes it
+
+### Requirement: 每次运行 SHALL 在日志里落一个带日期的运行边界
+
+`run_daily_update` SHALL write one boundary line into the shared log at the
+start of every non-dry run, carrying a full date-and-time stamp and the
+normalized provider directory. A reader SHALL be able to attribute the log
+lines that follow a boundary to that run, and SHALL report attribution as
+UNKNOWN when no boundary is visible in the window it read rather than guessing.
+
+The shared log's own lines carry only `HH:MM:SS` with no date, so "21:00
+yesterday" and "21:00 today" are indistinguishable in the data. Four heuristics
+were tried and rejected on that ground — discarding by log mtime, treating a
+wall-clock regression as a boundary, requiring the progress stamp to be at or
+after the start stamp, and inferring a day rollover from mtime — and the
+conclusion recorded in `update_progress` was structural: precise attribution
+needs the WRITER to emit a dated boundary first.
+
+No closing marker is written. A segment ends where the next one begins or at
+end of file, and whether a run finished — and how — is already answered by the
+status artifact and the ledger; a third statement of the same fact is exactly
+the duplication this repository keeps paying for.
+
+#### Scenario: the boundary carries a date and the provider
+- **WHEN** a non-dry run starts
+- **THEN** the log gains one line carrying a full timestamp and the normalized
+  provider directory, before any stage runs
+
+#### Scenario: lines after a boundary belong to that run
+- **WHEN** a reader finds a boundary in the text it read
+- **THEN** the lines after it are attributed to that run with certainty
+
+#### Scenario: no boundary in the window means unknown, not a guess
+- **WHEN** the window a reader examined contains no boundary
+- **THEN** attribution is reported as unknown, matching the behaviour that
+  existed before this change rather than substituting a heuristic
+
+#### Scenario: another provider's boundary is not adopted
+- **WHEN** the boundary names a different provider directory
+- **THEN** it is not treated as this provider's run boundary
+
+#### Scenario: a dry run writes no boundary
+- **WHEN** the run is a `--dry-run`
+- **THEN** no boundary is written

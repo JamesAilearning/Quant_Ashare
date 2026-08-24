@@ -43,7 +43,10 @@ from web.operator_ui.pages._run_center_helpers import (
     await_window_expired,
 )
 from web.operator_ui.recommend_runner import run_daily_recommend
-from web.operator_ui.update_progress import FetchProgress, last_fetch_progress
+from web.operator_ui.update_progress import (
+    AttributedProgress,
+    last_fetch_progress_for_run,
+)
 from web.operator_ui.update_runner import (
     START_DATE,
     build_update_argv,
@@ -91,17 +94,18 @@ _LAST_LAUNCH_KEY = "run_center::last_launch"
 _SESSION_STATE = cast(MutableMapping[str, object], st.session_state)
 
 
-def _read_progress() -> FetchProgress | None:
-    """日志尾部最后一条 fetch 进度。整页与片段**共用这一个读取器**。
+def _read_progress() -> AttributedProgress:
+    """日志尾部最后一条 fetch 进度 + **它属不属于**最近一次运行。
 
-    两处各写一份正是它们会分叉的方式(#442 r1/r3/r4 在这一页上连栽三次)。
+    整页与片段**共用这一个读取器**——两处各写一份正是它们会分叉的方式
+    (#442 r1/r3/r4 在这一页上连栽三次)。
 
-    **不判断它属于哪一次运行**:日志行只带时分秒、不含日期,计划任务的运行
-    也不写带日期的起始横幅,所以「昨天 21:00」与「今天 21:00」不可区分
-    (codex #450 r1/r2 连着证伪了三种启发式)。归属由下面的文案**如实披露**,
-    不用推断假装消除它。
+    归属现在由**运行边界**判定,不再靠推断:写入侧每次运行都会落一行带日期的
+    边界(2026-08-24-daily-update-run-ledger)。读到的窗口里找不到边界时,如实
+    说不知道——那正是边界落地之前的行为,不是退步。
     """
-    return last_fetch_progress(log_tail(default_log_path(_provider_path)))
+    return last_fetch_progress_for_run(
+        log_tail(default_log_path(_provider_path)), provider_dir=_provider_path)
 
 
 def _status_signature(
@@ -203,17 +207,26 @@ elif _status.kind == "running":
     # 仍留在文件尾。在非 running 时显示它,等于把**上一次**运行的进度当成
     # 当前进度——那是撒谎。陈旧/不可核实的 running 反而最该显示:昨晚那次
     # 断在 fetch 2400/5883,这一行正是唯一能说清「断在哪」的东西。
-    _progress = _read_progress()
-    if _progress is not None:
+    _attributed = _read_progress()
+    _progress = _attributed.progress
+    _scope = (
+        "分母是该端点该年的票数,不是整轮进度(fetch 只是六个阶段中的一个)。")
+    if _progress is None:
+        st.caption("⏳ 日志尾部没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
+    elif _attributed.attributed:
         st.caption(
-            f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
-            f"本次运行始于 **{_status.started_at or '?'}** —— 日志行只带时分秒、"
-            "不含日期,**无法证明这条属于本次运行**(也可能是上一次留下的),"
-            "请对着两个时刻自行判断。分母是该端点该年的票数,不是整轮进度"
-            "(fetch 只是六个阶段中的一个)。"
+            f"⏳ 本次运行的最后一条进度:{_progress.describe()}。"
+            f"归属由运行边界确定(该次运行始于 "
+            f"**{_attributed.boundary_stamp}**),不是推断出来的。{_scope}"
         )
     else:
-        st.caption("⏳ 日志尾部没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
+        # 窗口里没读到边界 —— 不知道就说不知道,不拿启发式顶上。
+        st.caption(
+            f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
+            f"本次运行始于 **{_status.started_at or '?'}** —— 读到的日志窗口里"
+            "**没有运行边界**,因此**无法证明这条属于本次运行**(也可能是上一次"
+            f"留下的),请对着两个时刻自行判断。{_scope}"
+        )
 elif _status.ok:
     st.success(
         f"🟢 上次更新成功(exit 0):run_date={_status.run_date},"

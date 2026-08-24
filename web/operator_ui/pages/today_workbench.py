@@ -55,6 +55,11 @@ from web.operator_ui.pages._today_workbench_helpers import (
     summarise_daily_signal,
     summarise_operations,
 )
+from web.operator_ui.update_ledger import (
+    consecutive_failures,
+    ledger_path_for_provider,
+    read_ledger,
+)
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
     RUNNING_STALE,
@@ -155,6 +160,53 @@ def _render_update_summary(
             color="negative",
         )
     return update, matches_provider, None
+
+
+def _render_recent_runs(provider_dir: Path) -> None:
+    """近几次更新运行的形态 —— 让「连着栽」一眼可见。
+
+    2026-08-17 / 08-20 / 08-21 连着三晚失败，拖到第三晚才被发现。队列的严重度
+    是从出单侧的陈旧度裁决推的，而那个裁决看的是 bundle 日期——**bundle 日期只
+    在成功时才动**，所以它对「连败」只是间接证据。这条带直接把台账里记下的
+    形态摆出来。
+
+    只**复现**台账记下的东西，不自造任何判定：谁失败、失败在哪一阶段，都是写入
+    侧当时写下的。
+    """
+    try:
+        path = ledger_path_for_provider(provider_dir)
+    except ValueError as exc:
+        st.caption(f"近期运行：无法定位运行台账 —— {exc}")
+        return
+    history = read_ledger(path, provider_dir=provider_dir)
+    if history.kind == "missing":
+        # 空条带与「台账不在」对操作人长得一样，除非页面说出是哪一种 ——
+        # 这一页已经为「留白读起来像没有更多可说」付过一次学费。
+        st.caption(f"近期运行：还没有运行台账（`{path.name}`）——首次运行之后才会有。")
+        return
+    if history.kind == "unreadable":
+        st.caption(f"近期运行：运行台账读不了 —— {history.error}")
+        return
+    if not history.runs:
+        st.caption(f"近期运行：台账里还没有属于本 provider 的记录（`{path.name}`）。")
+        return
+    marks = " ".join(
+        ("✅" if run.ok else "❌") + (run.run_date[5:] or "?") for run in history.runs)
+    streak = consecutive_failures(history)
+    tail = ""
+    if streak >= 2:
+        tail = f" —— **最近连续 {streak} 次失败**"
+    elif streak == 1:
+        tail = " —— 最近一次失败"
+    notes = []
+    if history.malformed:
+        notes.append(f"{history.malformed} 行读不了")
+    if history.foreign:
+        notes.append(f"{history.foreign} 行属于别的 provider")
+    st.caption(
+        f"近期运行（新→旧）：{marks}{tail}。"
+        + (f"（{'；'.join(notes)}）" if notes else "")
+    )
 
 
 def _render_queue_item(item: TodayQueueItem) -> None:
@@ -314,6 +366,8 @@ with update_col:
         update_status, update_matches_provider, update_error = _render_update_summary(
             Path(provider)
         )
+        # 摘要说「这一次」，条带说「最近几次」—— 后者才看得出连败。
+        _render_recent_runs(Path(provider))
 
 identity_col, signal_col = st.columns(2)
 incumbent_detail = ""
