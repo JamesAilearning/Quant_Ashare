@@ -14,7 +14,9 @@ and command separators are handled by one model of the syntax rather than by
 accumulated text rules; content the lexer cannot read SHALL fail loudly rather
 than be skipped. A local-project
 install SHALL be recognised by its TARGET (`.` or `.[extras]`), not by which
-editable spelling precedes it. Dependencies that JUDGE the
+editable spelling precedes it, and a pip invocation by its EXECUTABLE — `pip`
+with pip's own version-suffix naming scheme, path-prefixed or via `python -m
+pip` — not by one literal spelling. Dependencies that JUDGE the
 code (the test runner and its plugins, the type checker, the linter) SHALL be
 bounded at the NEXT minor version; libraries the code merely uses MAY be bounded
 at the major version.
@@ -129,6 +131,12 @@ that actually produces the anchor.
   no editable flag at all
 - **THEN** the extras it names enter the checked coverage the same way, because
   the target is what identifies the install
+
+#### Scenario: every pip executable spelling is covered
+- **WHEN** a workflow invokes pip as `pip`, `pip3`, `pip3.X`, with a path
+  prefix, or through `python -m pip`
+- **THEN** the install enters the derived coverage the same way, while
+  lookalikes such as `pipx` do not
 
 #### Scenario: only executable content counts as an install
 - **WHEN** a workflow carries an installation line inside a shell comment, or a

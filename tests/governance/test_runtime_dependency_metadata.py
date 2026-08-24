@@ -179,11 +179,31 @@ def _workflow_commands(workflow: Path) -> list[list[str]]:
     ]
 
 
+#: pip 自己的可执行体命名规则：`pip`、`pip3`、`pip3.12`。这是 pip 安装器写
+#: 死的方案（`pip` + 解释器版本后缀），不是我在枚举拼写。
+_PIP_EXECUTABLE = re.compile(r"^pip[\d.]*$")
+
+
+def _is_pip_install(command: list[str]) -> bool:
+    """这条命令是不是一次 pip 安装。
+
+    认**可执行体**，不认 `pip` 一种拼写——`pip3 install ".[research]"` 同样
+    合法，只匹配字面 `pip` 会把它整条排除在推导覆盖面之外，而现有 workflow
+    让计数断言照样绿着（codex P2；与「认目标不认 flag」同一课）。路径前缀取
+    basename，`python -m pip …` 由裸 `pip` token 覆盖。
+    """
+    for index, token in enumerate(command):
+        name = token.replace("\\", "/").rsplit("/", 1)[-1]
+        if _PIP_EXECUTABLE.match(name):
+            return "install" in command[index + 1:]
+    return False
+
+
 def _pip_installs(workflow: Path) -> list[list[str]]:
-    """这个 workflow 里所有 `pip install …` 命令。"""
+    """这个 workflow 里所有 pip 安装命令。"""
     return [
         command for command in _workflow_commands(workflow)
-        if "pip" in command and "install" in command
+        if _is_pip_install(command)
     ]
 
 
@@ -476,6 +496,36 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
 
     def test_a_third_party_install_is_not_a_local_target(self) -> None:
         self.assertIsNone(_local_target(_commands("pip install pytest")[0]))
+
+
+class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
+    """认**可执行体**，不认 `pip` 一种拼写。
+
+    `pip3 install ".[research]"` 是合法写法；只匹配字面 `pip` 会把它整条排除
+    在推导覆盖面之外——research 组那些无上界的依赖就此脱离守卫，而现有
+    workflow 让计数断言照样绿着（codex P2）。与「认目标不认 flag」同一课，
+    这次轮到可执行体：pip 的命名方案（`pip` + 版本后缀）是它安装器写死的，
+    不是开放集合。
+    """
+
+    def test_every_executable_spelling_is_recognised(self) -> None:
+        for line in ('pip install ".[research]"',
+                     'pip3 install ".[research]"',
+                     'pip3.12 install ".[research]"',
+                     '/usr/local/bin/pip3 install ".[research]"',
+                     'python -m pip install ".[research]"',
+                     'python3 -m pip install ".[research]"'):
+            with self.subTest(写法=line):
+                self.assertTrue(_is_pip_install(_commands(line)[0]),
+                                "这种 pip 写法没被认出来 —— 覆盖面在此静默缩水")
+
+    def test_a_lookalike_executable_is_not_pip(self) -> None:
+        # `pipx install` 装的是隔离环境里的应用，不是项目依赖。
+        self.assertFalse(_is_pip_install(_commands("pipx install ruff")[0]))
+
+    def test_install_must_follow_the_executable(self) -> None:
+        self.assertFalse(_is_pip_install(_commands("pip download numpy")[0]))
+        self.assertFalse(_is_pip_install(_commands("echo install pip")[0]))
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):
