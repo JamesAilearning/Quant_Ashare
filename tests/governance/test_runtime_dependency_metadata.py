@@ -42,17 +42,47 @@ def _run_lines(workflow: Path) -> list[str]:
     return lines
 
 
-def _tokens(line: str) -> list[str]:
-    """把一条命令切成实参。
+#: POSIX shell 的命令分隔符 —— 一个**闭集**，由 shell 语法定义，不是我在
+#: 枚举写法。一条物理行可以串起好几条命令，把它们当成一条来看，就会让
+#: `pip install git+…qlib… && pip install "numpy…"` 通过检查：两个约束确实
+#: 都在这一行里，但 qlib 那次解析仍然是无约束的（codex P1）。
+_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "|", "&"})
 
-    用 `shlex` 而不是再写一版引号正则：单引号、双引号、混写都由它统一处理，
-    「再补一种引号写法」这条路就此关掉。切不动的行（引号不配对之类）当作没有
-    可识别实参，而不是让守卫炸掉——它不是本守卫要管的事。
+#: 本地项目安装的**目标**：`.` 或 `.[组,组]`。认目标而不认 flag —— pip 支持
+#: `-e` / `--editable`，也支持不带任何 flag 的 `pip install ".[research]"`。
+#: 一个个去认 flag 是「字面形态」那条老路，每补一个下一个还在后面；而目标长
+#: 什么样，与用了哪种写法无关（codex P2）。
+_LOCAL_TARGET = re.compile(r"^\.(?:\[(?P<extras>[^\]]+)\])?$")
+
+
+def _commands(line: str) -> list[list[str]]:
+    """把一条 shell 行切成**若干条命令**，每条是一串实参。
+
+    用 `shlex` 切词而不是再写一版引号正则：单引号、双引号、混写都由它统一
+    处理。切不动的行（引号不配对之类）当作没有可识别命令，而不是让守卫炸掉
+    ——它不是本守卫要管的事。
     """
     try:
-        return shlex.split(line, posix=True)
+        tokens = shlex.split(line, posix=True)
     except ValueError:
         return []
+    commands: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _COMMAND_SEPARATORS:
+            commands.append([])
+        else:
+            commands[-1].append(token)
+    return [command for command in commands if command]
+
+
+def _pip_installs(workflow: Path) -> list[list[str]]:
+    """这个 workflow 里所有 `pip install …` 命令（已按分隔符拆开）。"""
+    return [
+        command
+        for line in _run_lines(workflow)
+        for command in _commands(line)
+        if "pip" in command and "install" in command
+    ]
 
 
 def _workflows() -> list[Path]:
@@ -79,11 +109,6 @@ _QLIB_PIN = "git+https://github.com/microsoft/qlib.git@"
 _BUILD_REQUIRES = "requires"
 _RUNTIME_DEPENDENCIES = "dependencies"
 
-# `pip install -e ".[dev,ui]"` 里那个 `.[...]` 实参 —— 从切好的 token 上认，
-# 不再从整行文本上正则匹配，于是单引号/双引号/不加引号都一视同仁。
-_EDITABLE_TARGET = re.compile(r"^\.\[([^\]]+)\]$")
-
-
 def _restated_package(token: str, declared: dict[str, str]) -> str | None:
     """这个实参是不是某个受钉包的版本约束？是则返回包名。
 
@@ -97,17 +122,13 @@ def _restated_package(token: str, declared: dict[str, str]) -> str | None:
     return None
 
 
-def _editable_extras(line: str) -> list[str]:
-    """这条命令里 editable 安装点名的 extra 组（可能有多条命令、多组）。"""
-    tokens = _tokens(line)
-    groups = []
-    for index, token in enumerate(tokens):
-        if token != "-e" or index + 1 >= len(tokens):
-            continue
-        matched = _EDITABLE_TARGET.match(tokens[index + 1])
+def _local_target(command: list[str]) -> re.Match[str] | None:
+    """这条 pip install 命令装的是不是**本地项目**；是则返回目标的匹配。"""
+    for token in command:
+        matched = _LOCAL_TARGET.match(token)
         if matched:
-            groups.append(matched.group(1))
-    return groups
+            return matched
+    return None
 
 # 上界的形式：`<` / `<=` / `==`（精确钉）/ `~=`（兼容版本，蕴含上界）。
 #
@@ -202,6 +223,63 @@ class TheRequirementBlockReaderIsNotFooledByBrackets(unittest.TestCase):
             _requirement_block('dependencies = [\n]\n', "dependencies")
 
 
+class AShellLineIsSplitIntoCommands(unittest.TestCase):
+    """一条物理行可以串起好几条命令，判据必须落在**那条**命令上。
+
+    `pip install git+…qlib… && pip install "numpy>=1.24,<2.0"` 里，两个约束
+    确实都在这一行；但 qlib 那次解析仍然是无约束的——正是本守卫要拦的那条路
+    （codex P1）。分隔符取 POSIX shell 的**闭集**，不是我在枚举写法。
+    """
+
+    QLIB = "git+https://github.com/microsoft/qlib.git@abc123"
+
+    def test_a_compound_line_becomes_separate_commands(self) -> None:
+        got = _commands(f'pip install {self.QLIB} && pip install "numpy>=1.24,<2.0"')
+        self.assertEqual(2, len(got), "整行被当成了一条命令")
+        self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
+
+    def test_every_posix_separator_splits(self) -> None:
+        for sep in ("&&", "||", ";", "|", "&"):
+            with self.subTest(分隔符=sep):
+                self.assertEqual(2, len(_commands(f"pip install a {sep} pip install b")))
+
+    def test_a_quoted_separator_is_not_a_separator(self) -> None:
+        # 引号里的 `&&` 是实参的一部分，不是命令边界 —— `shlex` 已经处理好。
+        self.assertEqual(1, len(_commands('echo "a && b"')))
+
+    def test_an_unbalanced_quote_yields_no_commands_not_a_crash(self) -> None:
+        self.assertEqual([], _commands('pip install "unclosed'))
+
+
+class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
+    """认**目标**，不认 flag。
+
+    pip 支持 `-e` / `--editable`，也支持不带任何 flag 的
+    `pip install ".[research]"`。一个个去认 flag 是「字面形态」那条老路，每补
+    一个下一个还在后面；而目标长什么样与用了哪种写法无关（codex P2）。
+    """
+
+    def test_every_spelling_finds_the_same_extras(self) -> None:
+        for line in ('pip install -e ".[dev,ui]"',
+                     'pip install --editable ".[dev,ui]"',
+                     "pip install '.[dev,ui]'",
+                     "pip install .[dev,ui]"):
+            with self.subTest(写法=line):
+                matched = _local_target(_commands(line)[0])
+                self.assertIsNotNone(matched, "这种写法没被认出来")
+                assert matched is not None
+                self.assertEqual("dev,ui", matched.group("extras"))
+
+    def test_a_bare_dot_is_a_local_install_without_extras(self) -> None:
+        matched = _local_target(_commands("pip install -e .")[0])
+        self.assertIsNotNone(matched)
+        assert matched is not None
+        self.assertIsNone(matched.group("extras"))
+
+    def test_a_third_party_install_is_not_a_local_target(self) -> None:
+        self.assertIsNone(_local_target(_commands("pip install pytest")[0]))
+
+
 class RuntimeDependencyMetadataTests(unittest.TestCase):
     def test_tushare_extra_is_declared_for_shipped_integration(self) -> None:
         text = _PYPROJECT.read_text(encoding="utf-8")
@@ -222,12 +300,12 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
 
     @staticmethod
     def _ci_extras() -> set[str]:
-        found = [
-            group
-            for workflow in _workflows()
-            for line in _run_lines(workflow)
-            for group in _editable_extras(line)
-        ]
+        found = []
+        for workflow in _workflows():
+            for command in _pip_installs(workflow):
+                matched = _local_target(command)
+                if matched is not None and matched.group("extras"):
+                    found.append(matched.group("extras"))
         assert found, "workflow 里找不到 extras 安装行 —— 本守卫已失效"
         return {name.strip() for group in found for name in group.split(",")}
 
@@ -271,25 +349,22 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
         unparsed = []
         checked = 0
         for workflow in _workflows():
-            # **逐处**看，不是「文件里有一处能解析就算过」：同一个 workflow 里
-            # 若还有第二条 editable 安装，「任一匹配」会让它整个溜过去，那组
+            # **逐条命令**看，不是「文件里有一处能解析就算过」：同一个 workflow
+            # 里若还有第二条本地项目安装，「任一匹配」会让它整个溜过去，那组
             # extra 就悄悄脱离覆盖面（codex P2）。
-            for line in _run_lines(workflow):
-                tokens = _tokens(line)
-                if "-e" not in tokens:
+            for command in _pip_installs(workflow):
+                # 只看装**本地项目**的那些：`pip install pytest` 之类装的是
+                # 第三方包，不点名任何 extra，与覆盖面无关。
+                if not any(token.startswith(".") for token in command):
                     continue
                 checked += 1
-                target = tokens[tokens.index("-e") + 1:tokens.index("-e") + 2]
-                # 合法目标只有两种：裸 `.`（不点名 extra）或 `.[组,组]`。
-                # 其他形状说明这条命令的 extra 读不出来，覆盖面在此静默缩水。
-                if not target or not (
-                        target[0] == "." or _EDITABLE_TARGET.match(target[0])):
-                    unparsed.append(f"{workflow.name}: {line.strip()}")
+                if _local_target(command) is None:
+                    unparsed.append(f"{workflow.name}: {' '.join(command)}")
         self.assertGreaterEqual(
-            checked, 2, "一处 editable 安装都没找到 —— 本守卫已失效")
+            checked, 2, "一处本地项目安装都没找到 —— 本守卫已失效")
         self.assertEqual(
             [], unparsed,
-            "这些 editable 安装行读不出 extras —— 覆盖面在这里静默塌了")
+            "这些本地项目安装读不出目标 —— 覆盖面在这里静默塌了")
 
     def test_every_dependency_ci_installs_has_an_upper_bound(self) -> None:
         groups = self._ci_installed_groups()
@@ -382,7 +457,7 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         checked = 0
         for workflow in _workflows():
             for line in _run_lines(workflow):
-                for token in _tokens(line):
+                for token in [t for c in _commands(line) for t in c]:
                     package = _restated_package(token, declared)
                     if package is None:
                         continue
@@ -415,11 +490,16 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
             self.assertEqual(1, len(matches), f"{package} 约束应恰好一条")
             declared[package] = matches[0]
 
+        # **逐条命令**，不是逐行：一条物理行可以用 `&&` 串起好几条命令，
+        # 把整行当成一条来看，`pip install git+…qlib… && pip install "numpy…"`
+        # 就会通过 —— 两个约束确实都在这一行里，但 qlib 那次解析仍然是无约束
+        # 的，正是本守卫要拦的那条路（codex P1）。
         commands = [
-            (workflow.name, _tokens(line))
+            (workflow.name, command)
             for workflow in _workflows()
             for line in _run_lines(workflow)
-            if any(token.startswith(_QLIB_PIN) for token in _tokens(line))
+            for command in _commands(line)
+            if any(token.startswith(_QLIB_PIN) for token in command)
         ]
         self.assertGreaterEqual(
             len(commands), 1, "没有在项目之前装 qlib 的命令 —— 本守卫已失效")

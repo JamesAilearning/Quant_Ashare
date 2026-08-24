@@ -8,8 +8,11 @@ Project metadata SHALL declare an upper version bound for every dependency the
 CI workflows install — the build-system requirements, the base dependencies, AND
 every extra they name — and a test SHALL enforce this by deriving the covered
 groups from the workflows' own install commands rather than from a hand-written
-list. Workflow scanning SHALL read the executable `run` blocks and compare
-shell-tokenised arguments, not raw file text. Dependencies that JUDGE the
+list. Workflow scanning SHALL read the executable `run` blocks, split each line into
+its constituent shell commands, and compare tokenised arguments — never raw file
+text, and never a whole physical line as if it were one command. A local-project
+install SHALL be recognised by its TARGET (`.` or `.[extras]`), not by which
+editable spelling precedes it. Dependencies that JUDGE the
 code (the test runner and its plugins, the type checker, the linter) SHALL be
 bounded at the NEXT minor version; libraries the code merely uses MAY be bounded
 at the major version.
@@ -94,9 +97,16 @@ that actually produces the anchor.
 
 #### Scenario: the constraint sits on the command that needs it
 - **WHEN** the pre-project qlib install drops a window while the same string
-  still appears elsewhere in that workflow
+  still appears elsewhere in that workflow — including later on the SAME
+  physical line, joined by a shell operator
 - **THEN** the governance test fails, because the unconstrained first resolve is
   what produces the incompatible environment
+
+#### Scenario: every local-project install spelling is covered
+- **WHEN** a workflow installs the project with `-e`, with `--editable`, or with
+  no editable flag at all
+- **THEN** the extras it names enter the checked coverage the same way, because
+  the target is what identifies the install
 
 #### Scenario: only executable content counts as an install
 - **WHEN** a workflow carries an installation line inside a shell comment, or a
