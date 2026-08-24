@@ -116,7 +116,11 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     报「读不了」糟得多（codex P2）。与状态工件 reader 同样的处理：版本不对就
     不用 v1 语义去解释它。
     """
-    if record.get("schema_version") != LEDGER_SCHEMA_VERSION:
+    version = record.get("schema_version")
+    # 钉**类型**再比值：JSON 的 `true` 与 `1.0` 在 Python 里都 `== 1`，只比值
+    # 会拿 v1 语义去解释一条版本字段本身就坏掉的行（codex P2）。状态 reader
+    # 对 exit_code 用的同一招（bool 是 int 的子类）。
+    if type(version) is not int or version != LEDGER_SCHEMA_VERSION:
         return False
     exit_code = record.get("exit_code")
     # `bool` 是 `int` 的子类，必须显式排除，否则 True/False 会被当成退出码。

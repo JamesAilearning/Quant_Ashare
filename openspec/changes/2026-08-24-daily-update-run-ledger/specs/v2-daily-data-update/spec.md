@@ -63,9 +63,12 @@ the derived value.
 `run_daily_update` SHALL write one boundary line into the shared log at the
 start of every non-dry run, carrying a full date-and-time stamp and the
 normalized provider directory. A reader SHALL attribute the log lines that
-follow a boundary to that run ONLY when every boundary in the window it read
-names this provider, and SHALL report attribution as UNKNOWN otherwise —
-including when no boundary is visible at all — rather than guessing.
+follow a boundary to that run ONLY when the window it read covers the WHOLE log
+AND every boundary in it names this provider, and SHALL report attribution as
+UNKNOWN otherwise — including when no boundary is visible at all, and including
+when the window is truncated — rather than guessing. Absence of a foreign
+boundary from a truncated window is not evidence of absence: an earlier-started
+sibling whose boundary fell outside the window may still be writing.
 
 The shared log's own lines carry only `HH:MM:SS` with no date, so "21:00
 yesterday" and "21:00 today" are indistinguishable in the data. Four heuristics
@@ -86,9 +89,17 @@ the duplication this repository keeps paying for.
   provider directory, before any stage runs
 
 #### Scenario: lines after a boundary belong to that run when nobody else wrote
-- **WHEN** every boundary in the text a reader examined names this provider
+- **WHEN** the examined window covers the whole log and every boundary in it
+  names this provider
 - **THEN** the lines after the last one are attributed to that run with
   certainty, because a provider never runs concurrently with itself
+
+#### Scenario: a truncated window never claims exclusivity
+- **WHEN** the window a reader examined does not cover the whole log — the
+  normal case for a tail read of a growing log
+- **THEN** attribution is reported as unknown even if every visible boundary
+  names this provider, because an earlier sibling's boundary may lie outside
+  the window while its run is still writing
 
 #### Scenario: a concurrent sibling makes attribution unknown in both orders
 - **WHEN** another provider's boundary appears in the window — whether it is the

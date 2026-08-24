@@ -55,6 +55,7 @@ from web.operator_ui.update_runner import (
     gate_today,
     launch_daily_update,
     log_tail,
+    log_window,
     range_problem,
 )
 from web.operator_ui.update_status import (
@@ -101,11 +102,12 @@ def _read_progress() -> AttributedProgress:
     (#442 r1/r3/r4 在这一页上连栽三次)。
 
     归属现在由**运行边界**判定,不再靠推断:写入侧每次运行都会落一行带日期的
-    边界(2026-08-24-daily-update-run-ledger)。读到的窗口里找不到边界时,如实
-    说不知道——那正是边界落地之前的行为,不是退步。
+    边界(2026-08-24-daily-update-run-ledger)。读到的窗口里找不到边界、或窗口
+    没盖住整份日志时,如实说不知道——那正是边界落地之前的行为,不是退步。
     """
+    text, complete = log_window(default_log_path(_provider_path))
     return last_fetch_progress_for_run(
-        log_tail(default_log_path(_provider_path)), provider_dir=_provider_path)
+        text, provider_dir=_provider_path, window_complete=complete)
 
 
 def _status_signature(

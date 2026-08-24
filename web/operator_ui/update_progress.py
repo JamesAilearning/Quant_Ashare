@@ -197,16 +197,24 @@ def _current_segment(log_text: str, provider_key: str) -> tuple[int, str] | None
 
 
 def last_fetch_progress_for_run(
-    log_text: str, *, provider_dir: Path,
+    log_text: str, *, provider_dir: Path, window_complete: bool,
 ) -> AttributedProgress:
     """取最后一条 fetch 进度,并说清它属不属于最近一次运行。
 
-    最后一条边界是我们的:只在它之后那段里取进度,归属确定。
-    最后一条边界是别人的、或窗口里根本没有边界:退回全窗口取进度,并如实说
-    无法归属——边界落地之前就是这个行为,不是退步。
+    窗口完整且其中的边界全是我们的:只在最后一条边界之后取进度,归属确定。
+    否则退回全窗口取进度,并如实说无法归属——边界落地之前就是这个行为,
+    不是退步。
+
+    ``window_complete`` 是**必填**的:独占判据只在「我看到了全部」时成立。
+    窗口是截断的(真实日志几乎总是——`log_tail` 只取尾部几千字符),「窗口里
+    看不到别人的边界」证明不了别人不存在:更早起跑、仍在写的兄弟 provider
+    的边界可能正好落在窗口之外,它随后的进度行照样交错进来(codex 第三轮
+    P1,同一根因的第三种形态)。把这个参数设成缺省值,就是邀请调用方把截断
+    当成完整。
     """
     provider_key = os.path.normcase(str(provider_dir.resolve()))
-    boundary = _current_segment(log_text, provider_key)
+    boundary = (
+        _current_segment(log_text, provider_key) if window_complete else None)
     if boundary is None:
         return AttributedProgress(
             progress=last_fetch_progress(log_text), attributed=False)

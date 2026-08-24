@@ -30,6 +30,7 @@ from web.operator_ui.update_progress import (
     RUN_BOUNDARY_MARK,
     last_fetch_progress_for_run,
 )
+from web.operator_ui.update_runner import log_window
 
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKBENCH = _ROOT / "web" / "operator_ui" / "pages" / "today_workbench.py"
@@ -242,6 +243,21 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
         self.assertEqual(2, len(history.runs))
         self.assertEqual(0, history.malformed)
 
+    def test_a_boolean_or_float_schema_version_is_not_v1(self) -> None:
+        """JSON 的 `true` 与 `1.0` 在 Python 里都 `== 1`。
+
+        只比值不钉类型,一条版本字段本身就坏掉的行会被拿 v1 语义硬解释
+        (codex P2)。与 exit_code 的 bool 排除同一课:先钉类型再比值。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    self.assertEqual(
+                        0, self._one(provider, path, schema_version=version))
+
     def test_a_boolean_exit_code_is_not_a_failed_run(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
@@ -343,7 +359,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 self._boundary(provider, "2026-08-24T20:30:01+08:00"),
                 f"20:31:00{_PROGRESS_LINE}",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertTrue(got.attributed)
         self.assertEqual("2026-08-24T20:30:01+08:00", got.boundary_stamp)
 
@@ -355,7 +372,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 f"21:00:00{_PROGRESS_LINE}",
                 self._boundary(provider, "2026-08-24T20:30:01+08:00"),
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertIsNone(got.progress, "边界之前那条被当成了本次的")
         self.assertTrue(got.attributed)
 
@@ -365,7 +383,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider = Path(t) / "prov"
             provider.mkdir()
             got = last_fetch_progress_for_run(
-                f"21:00:00{_PROGRESS_LINE}", provider_dir=provider)
+                f"21:00:00{_PROGRESS_LINE}", provider_dir=provider, window_complete=True)
         self.assertFalse(got.attributed)
         self.assertIsNotNone(got.progress, "没有边界不该连进度也丢掉")
 
@@ -378,7 +396,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 self._boundary(other, "2026-08-23T09:00:00+08:00"),
                 f"09:01:00{_PROGRESS_LINE}",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertFalse(got.attributed, "采纳了别的 provider 的边界")
 
     def test_a_foreign_boundary_after_ours_defeats_attribution(self) -> None:
@@ -400,7 +419,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 self._boundary(other, "2026-08-24T20:35:00+08:00"),
                 "  daily year=2026 progress: 9999/9999 tickers (written=9999, skipped=0)",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertFalse(
             got.attributed, "把别人的进度当成了我们的，且说成「已确定」")
 
@@ -423,7 +443,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 # 别人那次运行**没有结束**，它的进度行继续落在我们的边界之后。
                 f"20:31:00{_PROGRESS_LINE}",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertFalse(
             got.attributed,
             "别人先起跑、仍在写时，把它的进度说成了我们的「已确定」")
@@ -444,7 +465,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 self._boundary(provider, "2026-08-24T20:30:00+08:00"),
                 f"20:31:00{_PROGRESS_LINE}",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertTrue(got.attributed)
         self.assertEqual("2026-08-24T20:30:00+08:00", got.boundary_stamp)
 
@@ -458,10 +480,32 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 self._boundary(provider, "2026-08-24T20:30:01+08:00"),
                 "  daily year=2026 progress: 5000/5883 tickers (written=5000, skipped=0)",
             ])
-            got = last_fetch_progress_for_run(text, provider_dir=provider)
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
         self.assertEqual("2026-08-24T20:30:01+08:00", got.boundary_stamp)
         assert got.progress is not None
         self.assertEqual(5000, got.progress.done)
+
+    def test_a_truncated_window_never_claims_exclusivity(self) -> None:
+        """窗口没盖住整份日志时,「看不到别人的边界」证明不了别人不存在。
+
+        兄弟 provider B 起得足够早,它的边界已滚出尾部窗口,而 B 仍在写——
+        窗口里只剩我们的边界,独占检查通过,B 的进度被说成「确定是我们的」
+        (codex 第三轮 P1,同一根因的第三种形态)。所以独占判据只在
+        ``window_complete=True`` 时启用;截断窗口一律如实说不知道。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            text = chr(10).join([
+                self._boundary(provider, "2026-08-24T20:30:00+08:00"),
+                f"20:31:00{_PROGRESS_LINE}",
+            ])
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=False)
+        self.assertFalse(
+            got.attributed, "截断窗口里声称了独占 —— 窗外的兄弟边界不可见")
+        self.assertIsNotNone(got.progress, "说不知道归属，不等于连进度也丢掉")
 
     def test_a_boundary_mid_file_is_found(self) -> None:
         """边界之后必然还有阶段输出，所以它几乎永远不是最后一行。
@@ -478,7 +522,54 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 f"20:31:00{_PROGRESS_LINE}",
             ])
             self.assertTrue(
-                last_fetch_progress_for_run(text, provider_dir=provider).attributed)
+                last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True).attributed)
+
+
+class TheWindowReaderTellsWhetherItSawEverything(unittest.TestCase):
+    """`log_window` 的第二个返回值是归属判断的前提，必须真。
+
+    谎报「完整」，下游的独占判据就建立在半份日志上——那正是被 codex 命中的
+    形状。谎报「截断」，归属永远不知道，特性空转。两个方向都要钉。
+    """
+
+    def test_a_small_log_is_read_completely(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t) / "x.log"
+            path.write_text("line-a\nline-b\n", encoding="utf-8")
+            text, complete = log_window(path)
+        self.assertTrue(complete)
+        self.assertIn("line-a", text)
+
+    def test_a_log_bigger_than_the_window_is_reported_truncated(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t) / "x.log"
+            path.write_text(
+                "\n".join(f"row {i}" for i in range(4000)), encoding="utf-8")
+            text, complete = log_window(path, chars=200)
+        self.assertFalse(complete, "窗口没盖住整份日志却声称完整")
+        self.assertLessEqual(len(text), 200)
+
+    def test_a_missing_log_is_complete_emptiness(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            text, complete = log_window(Path(t) / "absent.log")
+        self.assertEqual("", text)
+        self.assertTrue(complete, "空日志是完整读完了的——没有窗外可言")
+
+    def test_the_page_passes_the_window_verdict_through(self) -> None:
+        # 调用点必须把 log_window 的判定原样交给归属函数——自填 True 就把
+        # 整条前提废了。AST 取 `_read_progress` 的函数体来钉。
+        source = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                  ).read_text(encoding="utf-8")
+        fn = next(
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_read_progress")
+        body = ast.unparse(fn)
+        self.assertIn("log_window(", body, "调用点没用 log_window")
+        self.assertIn("window_complete=complete", body,
+                      "窗口完整性判定没有原样传下去")
+        self.assertNotIn("window_complete=True", body,
+                         "调用点自填了 True —— 截断被当成了完整")
 
 
 # ---------------------------------------------------------------- 工作台条带
