@@ -457,6 +457,69 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
                       "修法没了 —— 这正是本改动要救的那半句")
         self.assertIn("中间另有", got)
 
+    def test_the_cap_holds_on_the_returned_detail_across_the_grid(self) -> None:
+        """上限落在**最终返回值**上，不是某个中间片段。
+
+        此前只给 `body` 记账，而摘要、分隔符、截断标记都在预算之外，于是返回串
+        照样能超过上限——与规格里「`detail` 本身有界」那条直接矛盾（codex）。
+        单点用例很难暴露这种记账错误：它只在某几段长度刚好凑到一起时才越界。
+        所以扫一片网格。
+        """
+        remedy = ("Re-run with the same --output-dir to fill the holes "
+                  "(the manifest records them).")
+        summary = "fetch completed with holes"
+        over, silent = [], []
+        checked = 0
+        for first in (10, 500, 1100, 1150, 1199, 1250, 3000):
+            for count in (1, 2, 3, 8, 40):
+                for tail in (0, 80, 600, 1190, 1400):
+                    lines = (["E" * first] + ["x" * 50] * (count - 1)
+                             + ([remedy[:tail]] if tail else []))
+                    got = du._stage_detail(summary, lines)
+                    checked += 1
+                    if len(got) > du._STAGE_DETAIL_MAX_CHARS:
+                        over.append((first, count, tail, len(got)))
+                    head = lines[:-1] if len(lines) > 1 else lines
+                    if len(head) > 1 and not all(line in got for line in head):
+                        if "中间另有" not in got:
+                            silent.append((first, count, tail))
+        self.assertEqual(175, checked, "网格没走满 —— 本守卫已失效")
+        self.assertEqual([], over, "返回值超过了上限（记账漏了摘要/分隔符/标记）")
+        self.assertEqual([], silent, "丢了头行却没报数 —— 读起来像「就这些」")
+
+    def test_the_count_notice_is_budgeted_before_a_line_is_kept(self) -> None:
+        """报数那句要**先**占位，别多收一行然后再把它截掉。
+
+        截断分支已经能单独保住报数，所以少了这次预留也不会丢信息——差别在
+        输出质量：不预留就会多收一条、随后触发截断，读者看到一个本可以避免的
+        「已截断」。实测判别点：同一组输入，预留时 733 字符且无截断标记，不预留
+        时 747 字符并带上标记。
+
+        这条直接测那个性质，因为网格用例覆盖不到它：两种走法都不越界、也都保住
+        了报数（实测变异如此）。
+        """
+        # 四条：前三条进头部（第三条才让 candidate 成为真前缀，预留分支才生效），
+        # 末条是尾巴。长度取在「加上报数就超预算、不加则不超」的边界上。
+        got = du._stage_detail("S", ["A" * 600, "B" * 480, "C" * 300, "T" * 100])
+        self.assertIn("中间另有", got)
+        self.assertNotIn(
+            "已截断", got,
+            "多收了一条随后又截掉 —— 报数的位置该在收行之前就留出来")
+
+    def test_the_dropped_count_survives_an_over_long_first_error(self) -> None:
+        """报数那句不许被截断吃掉。
+
+        它排在头部之后，裁拼好的头部整串会把它一并切掉——而首条独自超预算时，
+        「中间还漏了几条」恰恰是此刻唯一还能说的信息（codex）。
+        """
+        remedy = "Re-run with the same --output-dir to fill the holes."
+        got = du._stage_detail(
+            "fetch completed with holes", ["E" * 1150, "y" * 300, remedy])
+        self.assertIn("中间另有", got, "报数被截断吃掉了")
+        self.assertIn(remedy, got, "修法也没了")
+        self.assertIn("已截断", got)
+        self.assertLessEqual(len(got), du._STAGE_DETAIL_MAX_CHARS)
+
     def test_a_long_first_error_never_eats_the_remedy(self) -> None:
         """收尾的安全截断只压**头部**。
 

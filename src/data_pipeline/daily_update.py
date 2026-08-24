@@ -130,6 +130,13 @@ _NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行�
 # 头部被压缩时附这句。截断必须声明,不许静默。
 _TRUNCATED_MARK = "…（已截断，完整内容见日志）"
 
+# 摘要与各段之间、以及各段彼此之间的分隔。它也要计进预算 —— 只给内容记账、
+# 把分隔符和标记留在账外,正是「返回值超上限」的来源。
+_JOIN = " — "
+
+# 尾条几乎吃满预算时,头部只剩这一句交代。
+_HEAD_ELIDED = "（前面的错误未列出，完整内容见日志）"
+
 # 尾条(通常是修法)很长时,头部预算会被压到 0。留这么多字符,至少还能认出
 # 「是什么错」,而不是只剩一句修法悬在那里。
 _MIN_HEAD_CHARS = 120
@@ -185,6 +192,10 @@ def _capture_stage_errors() -> Iterator[list[str]]:
         logger.removeHandler(collector)
 
 
+def _dropped_notice(count: int) -> str:
+    return f"（中间另有 {count} 条错误未列出，完整内容见日志）"
+
+
 def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     """把阶段自己的 ERROR 行折进状态工件的单行 `detail`。
 
@@ -221,44 +232,64 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
             cleaned.append(folded)
     if not cleaned:
         return f"{summary}{_NO_REASON_MARK}"
-    # 头尾都要留。第一条通常是**为什么**,最后一条通常是**怎么办** —— 01 的
-    # `_log_hole_report` 就是这个形状:一行表头、每个端点一行、最多二十条明细,
-    # 最后才是 "Re-run with the same --output-dir to fill the holes"。只从头
-    # 填到超限就停,恰好把修法切掉,而「留下抱怨、切掉办法」正是本改动反对 200
-    # 字符上限时用的那个论据(codex P2)。
+    # 上限落在**最终返回值**上,不是某个中间片段。此前只给 `body` 记账,而
+    # `summary`、分隔符、截断标记都在预算之外,于是返回串照样能超过上限——与
+    # 规格里「`detail` 本身有界」那条直接矛盾(codex)。所有会出现在结果里的
+    # 东西,在切之前先预留。
+    #
+    # 头尾都要留:第一条通常是**为什么**,最后一条通常是**怎么办**。01 的
+    # `_log_hole_report` 就是这个形状——表头、每端点一行、最多二十条明细,最后
+    # 才是 "Re-run with the same --output-dir to fill the holes"。
     tail = cleaned[-1] if len(cleaned) > 1 else None
-    if tail is not None and len(tail) >= _STAGE_DETAIL_MAX_CHARS:
-        # 尾条自己就撑满了预算:它是修法,优先保它,头部只留一句交代。
-        return (f"{summary} — （前面的错误未列出，完整内容见日志） | "
-                f"{tail[:_STAGE_DETAIL_MAX_CHARS]}{_TRUNCATED_MARK}")
     head_source = cleaned[:-1] if tail is not None else cleaned
-    # 头部预算 = 上限减去为尾条预留的位置。`_MIN_HEAD_CHARS` 兜住尾条很长时
-    # 预算被压到 0 的情形:头部至少要留下能认出「是什么错」的一截。
-    budget = max(
-        _STAGE_DETAIL_MAX_CHARS - (len(tail) + 3 if tail is not None else 0),
-        _MIN_HEAD_CHARS,
+    budget = _STAGE_DETAIL_MAX_CHARS - len(summary) - len(_JOIN)
+    if tail is not None:
+        if budget - len(tail) - len(_JOIN) < _MIN_HEAD_CHARS:
+            # 尾条自己就吃掉了几乎全部预算:它是修法,优先保它,头部只留一句
+            # 交代。尾条本身仍要被裁进上限内。
+            room = budget - len(_HEAD_ELIDED) - len(_JOIN)
+            kept_tail = tail if len(tail) <= room else (
+                tail[: max(room - len(_TRUNCATED_MARK), 0)] + _TRUNCATED_MARK)
+            return f"{summary}{_JOIN}{_HEAD_ELIDED}{_JOIN}{kept_tail}"
+        budget -= len(tail) + len(_JOIN)
+
+    # 报数那句也要**先**预留:它是在收行之后才拼上去的,不预留的话它会把头部
+    # 顶出上限,随后被切掉——于是「中间漏了几条」这个信息恰好丢失(codex)。
+    # 按最坏情况(全部头行都被丢)预留,数字宽度不会再变大。
+    notice_room = (
+        len(_dropped_notice(len(head_source))) + len(_JOIN)
+        if len(head_source) > 1 else 0
     )
     kept: list[str] = []
-    used = 0
     for line in head_source:
+        candidate = kept + [line]
+        # 还有没收下的行时,才需要留报数的位置。
+        reserve = notice_room if len(candidate) < len(head_source) else 0
         # 第一条无论多长都要收下(否则一条超长消息会让详情整个消失,又回到
-        # 「只有退出码」的原点);它之后再超限就停,并如实报中间漏了几条。
-        if kept and used + len(line) > budget:
+        # 「只有退出码」的原点);它之后再超限就停。
+        if kept and len(_JOIN.join(candidate)) + reserve > budget:
             break
         kept.append(line)
-        used += len(line) + 3  # " | " 分隔符
     dropped = len(head_source) - len(kept)
     parts = list(kept)
     if dropped:
-        parts.append(f"（中间另有 {dropped} 条错误未列出，完整内容见日志）")
-    # 收尾的安全截断只压**头部**。对拼好的整串做 `[:上限]` 是从右边切,而尾巴
-    # 恰恰在右边 —— 首条 ERROR 本身很长时,那一刀会把刚刚特意留下的修法削掉
-    # 一截甚至整条(codex)。首条无论多长都要收下的规则,不能变成「首条挤掉尾条」。
-    head_text = " | ".join(parts)
+        parts.append(_dropped_notice(dropped))
+    head_text = _JOIN.join(parts)
     if len(head_text) > budget:
-        head_text = head_text[:budget] + _TRUNCATED_MARK
-    body = " | ".join(p for p in (head_text, tail) if p)
-    return f"{summary} — {body}"
+        # 只压头部:对拼好的整串做 `[:上限]` 是从右边切,而尾巴恰恰在右边。
+        #
+        # 而且裁的是**第一条**,不是拼好的头部整串:报数那句排在它后面,裁整串
+        # 会把报数一并切掉——「中间漏了几条」恰恰是此刻唯一还能说的信息
+        # (codex)。首条独自超预算时,能保住的就只有「它是什么错」的开头 +
+        # 「还漏了几条」+ 修法。
+        notice = parts[-1] if dropped else ""
+        reserved = (len(notice) + len(_JOIN)) if notice else 0
+        room = max(budget - reserved - len(_TRUNCATED_MARK), 0)
+        head_text = kept[0][:room] + _TRUNCATED_MARK
+        if notice:
+            head_text = head_text + _JOIN + notice
+    body = _JOIN.join(p for p in (head_text, tail) if p)
+    return f"{summary}{_JOIN}{body}"
 
 
 class DailyUpdateError(RuntimeError):

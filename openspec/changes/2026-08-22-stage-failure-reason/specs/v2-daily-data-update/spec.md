@@ -58,7 +58,8 @@ explanation, which is worse than saying nothing.
 ### Requirement: The composed detail SHALL stay one line and SHALL declare truncation
 
 `detail` SHALL remain a single line, folding embedded newlines rather than
-dropping the text around them, and SHALL be bounded. When lines are dropped to
+dropping the text around them, and the bound SHALL apply to the COMPOSED value —
+summary, separators, and every marker included — not to one component of it. When lines are dropped to
 respect the bound, `detail` SHALL keep BOTH the first and the last captured
 line and SHALL state how many middle lines were dropped and where the full text
 lives. The bound SHALL be large enough to carry a stage's remedy sentence, not
@@ -82,6 +83,12 @@ hole report is exactly that shape, ending with "Re-run with the same
 --output-dir to fill the holes". Filling from the front until the budget runs
 out drops precisely the remedy, which is the same "keep the complaint, cut the
 fix" failure this requirement rejects the 200-character cap for.
+
+#### Scenario: the dropped-line count survives the truncation
+- **WHEN** the first retained error alone overruns the budget and later errors
+  were dropped
+- **THEN** the count of dropped lines is still present, because the first line
+  is what gets sliced rather than the assembled head
 
 #### Scenario: a single over-long error is kept rather than dropped
 - **WHEN** the first captured line alone exceeds the bound
