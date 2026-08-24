@@ -468,7 +468,7 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
         remedy = ("Re-run with the same --output-dir to fill the holes "
                   "(the manifest records them).")
         summary = "fetch completed with holes"
-        over, silent = [], []
+        over, silent, evicted = [], [], []
         checked = 0
         for first in (10, 500, 1100, 1150, 1199, 1250, 3000):
             for count in (1, 2, 3, 8, 40):
@@ -483,7 +483,11 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
                     if len(head) > 1 and not all(line in got for line in head):
                         if "中间另有" not in got:
                             silent.append((first, count, tail))
+                    # 首条永远要在（哪怕只剩开头一截）——它是「为什么」。
+                    if len(lines) > 1 and not got.startswith(summary + " — E"):
+                        evicted.append((first, count, tail))
         self.assertEqual(175, checked, "网格没走满 —— 本守卫已失效")
+        self.assertEqual([], evicted, "首条错误被挤掉了 —— 那是「为什么」")
         self.assertEqual([], over, "返回值超过了上限（记账漏了摘要/分隔符/标记）")
         self.assertEqual([], silent, "丢了头行却没报数 —— 读起来像「就这些」")
 
@@ -534,11 +538,27 @@ class TheDetailStaysOneLineAndTruncationIsDeclared(unittest.TestCase):
         self.assertIn("已截断", got, "头部压缩了却没声明")
         self.assertTrue(got.startswith("fetch completed with holes — EEE"))
 
-    def test_a_remedy_longer_than_the_budget_still_wins(self) -> None:
-        # 退化情形：尾条自己就撑满预算。它是修法，优先保它，头部只留一句交代。
-        got = du._stage_detail("摘要", ["x" * 100, "R" * 1500])
-        self.assertGreater(got.count("R"), 1000)
-        self.assertIn("未列出", got, "头部被丢掉却没交代")
+    def test_a_remedy_longer_than_the_budget_does_not_evict_the_cause(self) -> None:
+        """尾条撑满预算时，首条**不许**被整个换掉。
+
+        此前那条退化分支把首条替换成一句「前面的错误未列出」——而首条通常正是
+        「为什么」，规格写的却是首尾都要留；它还顺手把中间的报数也省了
+        （codex）。改成裁尾条、两端各留一份。
+        """
+        got = du._stage_detail("摘要", ["CAUSE-" + "x" * 100, "R" * 1500])
+        self.assertIn("CAUSE-", got, "首条被整个换掉了 —— 那是「为什么」")
+        self.assertGreater(got.count("R"), 900, "尾条也得留住主体")
+        self.assertIn("已截断", got)
+        self.assertLessEqual(len(got), du._STAGE_DETAIL_MAX_CHARS)
+
+    def test_a_long_tail_still_leaves_room_for_the_dropped_count(self) -> None:
+        # 三条以上时，裁尾条要连报数的位置一起留出来。
+        got = du._stage_detail(
+            "摘要", ["CAUSE-" + "x" * 400, "mid" * 30, "R" * 1100])
+        self.assertIn("CAUSE-", got)
+        self.assertIn("中间另有", got, "报数被尾条挤掉了")
+        self.assertIn("RRRR", got)
+        self.assertLessEqual(len(got), du._STAGE_DETAIL_MAX_CHARS)
 
     def test_a_single_over_long_line_is_kept_not_dropped(self) -> None:
         # 第一条无论多长都要收下：否则一条超长消息会让详情整个消失，

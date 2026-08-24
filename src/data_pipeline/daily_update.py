@@ -134,8 +134,6 @@ _TRUNCATED_MARK = "…（已截断，完整内容见日志）"
 # 把分隔符和标记留在账外,正是「返回值超上限」的来源。
 _JOIN = " — "
 
-# 尾条几乎吃满预算时,头部只剩这一句交代。
-_HEAD_ELIDED = "（前面的错误未列出，完整内容见日志）"
 
 # 尾条(通常是修法)很长时,头部预算会被压到 0。留这么多字符,至少还能认出
 # 「是什么错」,而不是只剩一句修法悬在那里。
@@ -243,15 +241,6 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     tail = cleaned[-1] if len(cleaned) > 1 else None
     head_source = cleaned[:-1] if tail is not None else cleaned
     budget = _STAGE_DETAIL_MAX_CHARS - len(summary) - len(_JOIN)
-    if tail is not None:
-        if budget - len(tail) - len(_JOIN) < _MIN_HEAD_CHARS:
-            # 尾条自己就吃掉了几乎全部预算:它是修法,优先保它,头部只留一句
-            # 交代。尾条本身仍要被裁进上限内。
-            room = budget - len(_HEAD_ELIDED) - len(_JOIN)
-            kept_tail = tail if len(tail) <= room else (
-                tail[: max(room - len(_TRUNCATED_MARK), 0)] + _TRUNCATED_MARK)
-            return f"{summary}{_JOIN}{_HEAD_ELIDED}{_JOIN}{kept_tail}"
-        budget -= len(tail) + len(_JOIN)
 
     # 报数那句也要**先**预留:它是在收行之后才拼上去的,不预留的话它会把头部
     # 顶出上限,随后被切掉——于是「中间漏了几条」这个信息恰好丢失(codex)。
@@ -260,6 +249,19 @@ def _stage_detail(summary: str, captured: Sequence[str]) -> str:
         len(_dropped_notice(len(head_source))) + len(_JOIN)
         if len(head_source) > 1 else 0
     )
+
+    if tail is not None:
+        # 尾条很长时**裁尾条**,而不是把头部整个换成一句交代。此前那条退化分支
+        # 会丢掉首条错误——首条通常正是「为什么」,而规格写的是首尾都要留;它还
+        # 顺手把报数也省了(codex)。两端各留一份,信息就都在。
+        #
+        # 这里**不必**再为报数预留:头部那侧的填充循环已经留了,而真到了要截断
+        # 的地步,截断分支会把报数单独拼回去。再减一次只让头部少约 28 字符,
+        # 不改变任何信息——实测变异「去掉这一项」无一用例会红,所以它是冗余的。
+        room = budget - _MIN_HEAD_CHARS - len(_JOIN)
+        if len(tail) > room:
+            tail = tail[: max(room - len(_TRUNCATED_MARK), 0)] + _TRUNCATED_MARK
+        budget -= len(tail) + len(_JOIN)
     kept: list[str] = []
     for line in head_source:
         candidate = kept + [line]

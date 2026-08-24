@@ -90,6 +90,12 @@ fix" failure this requirement rejects the 200-character cap for.
 - **THEN** the count of dropped lines is still present, because the first line
   is what gets sliced rather than the assembled head
 
+#### Scenario: an over-long remedy does not evict the cause
+- **WHEN** the last captured line alone would consume almost the whole budget
+- **THEN** it is trimmed so the first line still gets its minimum share, rather
+  than the head being replaced wholesale — the first line is usually the cause,
+  and this requirement asks for both ends
+
 #### Scenario: a single over-long error is kept rather than dropped
 - **WHEN** the first captured line alone exceeds the bound
 - **THEN** it is kept and marked truncated, so the artifact never falls back to
