@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -189,7 +189,7 @@ class BootstrapGateSemantics(unittest.TestCase):
 # ∈ [700,745]；valid = 训终后第 3 个交易日起 +3 个日历月回拉；test 为
 # 内嵌诊断段（非晋升证据），点火须待 bundle 尾 ≥ 2026-11-02。
 _M4_WINDOWS = (("2024-07-01", "2026-06-30"), ("2026-07-03", "2026-09-30"),
-               ("2026-10-13", "2026-10-30"))
+               ("2026-10-12", "2026-10-30"))
 #: 六个窗口键之外，m4 必须与 m3 **逐字同族**——preset 的头注承诺如此，
 #: 治理在此作证（codex #466 P2：没有钉，之后一笔「顺手调参」静默失效
 #: 预注册）。
@@ -209,6 +209,25 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
         self.assertEqual(train, (cfg["train_start"], cfg["train_end"]))
         self.assertEqual(valid, (cfg["valid_start"], cfg["valid_end"]))
         self.assertEqual(test, (cfg["test_start"], cfg["test_end"]))
+
+    def test_window_boundaries_survive_calendar_arithmetic(self) -> None:
+        """字面钉之外的日历自检（codex #466 P2：只重复字面测不出算错）。
+
+        交易日推算依赖官方休市安排（2026 国庆 = 10-01..10-07 休市、10-08
+        开市，上交所 2025-12-22 通知）——那部分进不了 stdlib，出处钉在
+        preset 头注；此处管 stdlib 能管的：六个边界都得是周内日（周末边界
+        必错），且「点火须 bundle 尾 ≥ 2026-11-02」必须等于 test_end 之后
+        第一个周内日（T+1 结算日主张与数字互证，防改一处漏一处）。
+        """
+        cfg = self._m4()
+        for key in _WINDOW_KEYS:
+            day = date.fromisoformat(cfg[key])
+            self.assertLess(day.weekday(), 5, f"{key}={cfg[key]} 落在周末")
+        settlement = date.fromisoformat(cfg["test_end"]) + timedelta(days=1)
+        while settlement.weekday() >= 5:
+            settlement += timedelta(days=1)
+        self.assertEqual(date(2026, 11, 2), settlement,
+                         "头注的点火下限与 test_end 的 T+1 算术对不上")
 
     def test_serving_pins_arithmetic(self) -> None:
         cfg = self._m4()
