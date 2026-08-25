@@ -15,6 +15,16 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十八轮：一个 P1 + 一个 P2 —— -t 附着形态、我写出的 && 残句
+
+**P1 `-t/tmp/detached`。** `--target` 的短形态接受附着值（optparse 规则，
+codex 实测 pip 解析器接受）——只认长拼写会漏。目的地检测补 `-t` 裸/附着。
+
+**P2 又一处规格自相矛盾。** && 在 r26 翻面后，同一 delta 里「`&&` chains
+stay accepted」残句还在——同一输入两个相反的契约。按防线纪律全 change 目录
+扫了 && 陈述：修掉两处活性残留（301 残句、169 场景例句按新语义改写），
+tasks 各轮留档是历史记录不动。
+
 ## codex 第二十七轮：一个 P1 —— 改了目的地的安装不进 import path
 
 `pip install --target=/tmp/detached <窗口> <qlib-pin>`：pip 文档定义

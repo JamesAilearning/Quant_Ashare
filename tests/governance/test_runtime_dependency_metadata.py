@@ -807,13 +807,20 @@ _DESTINATION_OPTIONS = ("--target", "--root", "--prefix")
 
 
 def _redirected_destination(command: list[str]) -> bool:
-    """这条安装是否被改了目的地——presence 记账前必查。"""
-    return any(
-        token in _DESTINATION_OPTIONS
-        or any(token.startswith(f"{option}=")
-               for option in _DESTINATION_OPTIONS)
-        for token in command
-    )
+    """这条安装是否被改了目的地——presence 记账前必查。
+
+    `--target` 的短形态 `-t` 接受**附着**值（`-t/tmp/detached`，optparse
+    规则，codex 实测 pip 解析器接受）——只认长拼写会漏（codex P1）。
+    """
+    for token in command:
+        if token in _DESTINATION_OPTIONS or token == "-t":
+            return True
+        if any(token.startswith(f"{option}=")
+               for option in _DESTINATION_OPTIONS):
+            return True
+        if token.startswith("-t") and not token.startswith("--") and len(token) > 2:
+            return True
+    return False
 
 
 def _credited(command: list[str]) -> list[str]:
@@ -1864,9 +1871,13 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
         （--target/--root/--prefix），裸形态与 `=` 连写都不记账。
         """
         for extra in ("--target=/tmp/detached", "--target /tmp/detached",
+                      "-t /tmp/detached", "-t/tmp/detached",
                       "--root=/tmp/r", "--prefix=/tmp/p"):
             with self.subTest(option=extra):
-                line = f"pip install {extra} {self.QLIB}"
+                # 选项放在 pin **之后**（codex 原例）：放在前面时 pin 会被
+                # 裸选项遮挡规则顺手排除，目的地检测测不到自己（变异 DJ
+                # 实测被遮蔽）——反例要只击中它要测的判据。
+                line = f"pip install {self.QLIB} {extra}"
                 self.assertEqual([], _qlib_pin_installs(_commands(line)),
                                  "改了目的地的安装被记成了 presence")
         self.assertEqual(

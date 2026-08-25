@@ -165,10 +165,11 @@ that actually produces the anchor.
   before comparison
 
 #### Scenario: a separator needs no surrounding whitespace
-- **WHEN** two commands are joined without spaces, as in
-  `pip install <qlib>&&pip install "numpy…"`
-- **THEN** they are still two commands, because the boundary is found by
-  scanning the text rather than by looking for a separator among split words
+- **WHEN** two commands are joined without spaces — `echo a&&echo b`, or an
+  install form like `pip install <qlib>&&pip install "numpy…"`
+- **THEN** the boundary is still found (scanning the text, not looking for a
+  separator among split words) — after which the install form is refused by
+  the AND-chain rule while non-install chains split normally
 
 #### Scenario: a command continued across lines stays one command
 - **WHEN** an install is written with a trailing backslash and continues on the
@@ -298,8 +299,11 @@ that actually produces the anchor.
   the body may never run)
 - **THEN** the lexer or classifier refuses loudly instead of counting a
   command whose execution the text cannot establish — control flow and
-  variable evaluation are not modelled, `&&` chains stay accepted because
-  every segment either runs or fails the step loudly
+  variable evaluation are not modelled — and `&&` lists were LATER shown to
+  swallow inner failures under `-e` too, so installs inside them are refused
+  by the piped-or-AND-chained scenario above; this clause records the original
+  narrower rule only for `;`-separated and standalone commands, which remain
+  the only forms whose execution is established
 
 #### Scenario: a conditionally-skipped step does not satisfy presence
 - **WHEN** the qlib install sits in a step (or job) carrying `if:` — GitHub
@@ -340,8 +344,9 @@ that actually produces the anchor.
 - **WHEN** the qlib install carries `--target`, `--root` or `--prefix` (bare
   or `=`-joined) — pip's destination options place the package outside the
   later pytest process's import path
-- **THEN** it earns no presence credit, so the per-job guard fails loudly for
-  the missing importable install
+- **THEN** it earns no presence credit — the attached short form
+  `-t/tmp/detached` included — so the per-job guard fails loudly for the
+  missing importable install
 
 #### Scenario: qlib is installed before pytest, with a guarantee
 - **WHEN** the only guaranteed qlib install in a job sits AFTER a pytest step
