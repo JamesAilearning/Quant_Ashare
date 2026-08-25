@@ -28,6 +28,18 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十轮：两个 P2 —— 戳要精确回环、身份要 resolve 不动点
+
+**戳解析得动还不够。** fromisoformat 接受紧凑型、周历、`Z` 后缀——写入侧
+永不产。与 run_date 同一处置：与 `datetime.isoformat()` 产出精确回环，不
+回环 = corrupt_boundary。
+
+**身份词法归一化还不够。** 绝对的符号链接别名（/data/current）是 normpath
+不动点，而写入侧 `_norm` 会 resolve 出真身——别名行是被篡改/损坏的，不是
+「别人的」。判据抬到与写入侧同一函数级（resolve+normcase 不动点）；本机
+不存在的路径 resolve 只做词法归一化，外来 provider 合法行不受影响。行为
+测试需符号链接权限（无则 skip），resolve 在场另有源码钉。
+
 ## codex 第十九轮：两个 P2 —— 探针也要非阻塞、边界戳要验形
 
 **残尾探针先于追加阻塞。** 上一轮把追加改成了非阻塞，而它**前面**的残尾

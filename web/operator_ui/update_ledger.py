@@ -165,8 +165,14 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # 「别人的」，而它不是别人的，是坏的（codex P2）：验它是 normcase∘normpath
     # 的不动点且为绝对路径，不是就计 malformed。
     stamped = str(record["provider_dir"])
+    # 词法归一化（normpath）还不够：绝对的**符号链接别名**（/data/current）
+    # 是 normpath 不动点，而写入侧的 `_norm` 会 resolve 出真身
+    # （/data/provider）——这种行不是「别人的」，是被篡改/损坏的
+    # （codex P2）。判据抬到与写入侧同一函数级：resolve+normcase 的不动点。
+    # 本机不存在的路径 resolve 只做词法归一化，外来 provider 的合法行不受
+    # 影响。
     if not os.path.isabs(stamped) or stamped != os.path.normcase(
-            os.path.normpath(stamped)):
+            str(Path(stamped).resolve())):
         return False
     try:
         # `date.fromisoformat` 还接受 `20260825`、`2026-W35-2` 这类写入侧

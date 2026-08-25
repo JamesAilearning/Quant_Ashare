@@ -65,8 +65,10 @@ the derived value.
 - **WHEN** a boundary line's timestamp is garbage — corruption or legacy
   decoding — while its provider field still matches
 - **THEN** attribution is reported unknown with the corrupt-boundary reason,
-  never asserted from a stamp the writer could not have produced (the writer
-  emits only timezone-aware ISO stamps)
+  never asserted from a stamp the writer could not have produced — the stamp
+  must round-trip exactly through `datetime.isoformat()`, since
+  `fromisoformat` alone also accepts compact, week-date and `Z` spellings the
+  writer never emits
 
 #### Scenario: a non-regular target cannot hang or hijack the append
 - **WHEN** the derived ledger path has been pre-created as a FIFO or another
@@ -131,9 +133,10 @@ the derived value.
   is its identity
 
 #### Scenario: a non-normalized provider identity is corruption, not a foreign run
-- **WHEN** a row's `provider_dir` is not the normalized absolute form the
-  writer's `_norm` exclusively produces — a relative path, an un-normalized
-  spelling
+- **WHEN** a row's `provider_dir` is not the resolved, normcased absolute
+  form the writer's `_norm` exclusively produces — a relative path, an
+  un-normalized spelling, or an absolute SYMLINK ALIAS that lexical
+  normalization cannot see through
 - **THEN** the row counts as malformed instead of being described as another
   provider's run, which would disguise ledger corruption as foreign history
 

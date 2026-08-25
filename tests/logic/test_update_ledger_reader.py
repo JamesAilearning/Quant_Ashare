@@ -295,6 +295,41 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
             history = read_ledger(path, provider_dir=provider)
         self.assertEqual((1, 0), (history.malformed, history.foreign))
 
+    def test_a_symlink_alias_identity_is_corrupt_not_foreign(self) -> None:
+        """绝对的符号链接别名是 normpath 不动点，但不是写入侧的产出。
+
+        写入侧 `_norm` 会 resolve 出真身——别名行是被篡改/损坏的，不是
+        「别人的」（codex P2）。无符号链接权限的机器上 skip，另有 resolve
+        源码钉兜底。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            real = Path(t) / "real_provider"
+            real.mkdir()
+            alias = Path(t) / "current"
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except OSError:
+                self.skipTest("本机无符号链接权限")
+            path = ledger_path_for_provider(provider)
+            stamped = os.path.normcase(str(alias))   # 词法归一但未 resolve
+            _write(path, [{**_record(provider, exit_code=0),
+                           "provider_dir": stamped}])
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual((1, 0), (history.malformed, history.foreign),
+                         "符号链接别名身份被说成了别人的运行")
+
+    def test_the_identity_check_resolves_not_just_normalises(self) -> None:
+        # 源码钉：行为测试在无符号链接权限的机器上会 skip——resolve 在场
+        # 必须钉得住（退回 normpath 即红）。
+        import inspect as _inspect
+
+        import web.operator_ui.update_ledger as ledger_mod
+        src = _inspect.getsource(ledger_mod._is_valid_v1)
+        self.assertIn(".resolve()", src,
+                      "身份检查退回了词法归一化——符号链接别名会混进 foreign")
+
     def test_a_non_normalized_provider_identity_is_corrupt_not_foreign(
             self) -> None:
         """写入侧的 `_norm` 只产归一化绝对路径。
@@ -771,7 +806,10 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider = Path(t) / "prov"
             provider.mkdir()
             line = f"20:31:00{_PROGRESS_LINE}"
-            for stamp in ("ץȡ�", "2026-08-24T20:30:00"):
+            for stamp in ("ץȡ�", "2026-08-24T20:30:00",
+                          # 解析得动但写入侧永不产的拼写（codex P2）：
+                          "20260825T203000+08:00",
+                          "2026-08-24T20:30:00Z"):
                 with self.subTest(stamp=stamp):
                     text = chr(10).join([
                         f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} {stamp} "

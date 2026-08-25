@@ -203,11 +203,15 @@ def _current_segment(
         # 坏字节/遗留编码洗出来的乱码当成「起跑时刻」，run_center 的不一致
         # 分支随即以确定口气宣布进度属于那次「运行」（codex P2）。戳验不过
         # 的边界 = 日志损坏，归属整体不可断——与台账坏行同一处置。
+        raw = match.group("started")
         try:
-            stamp = datetime.fromisoformat(match.group("started"))
+            stamp = datetime.fromisoformat(raw)
         except ValueError:
             return None, "corrupt_boundary"
-        if stamp.tzinfo is None:
+        # 解析得动还不够：fromisoformat 接受 `20260825T203000+08:00`、
+        # 周历、`Z` 后缀等写入侧永不产的拼写（codex P2）。要求与
+        # `datetime.isoformat()` 的产出**精确回环**——写入侧只产这种。
+        if stamp.tzinfo is None or stamp.isoformat() != raw:
             return None, "corrupt_boundary"
     if any(
         os.path.normcase(match.group("provider").strip()) != provider_key
