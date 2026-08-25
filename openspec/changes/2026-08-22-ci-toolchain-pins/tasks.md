@@ -15,6 +15,20 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十三轮：两个 P1 —— 管道吞失败、job 是隔离 runner
+
+**P1 管道里的安装。** `pip install <qlib> | tee log` 的退出码是 tee 的——
+pip 失败被吞、步骤照样绿（codex 以 sh -e 实测）。与 `||` 同族：执行结果无法
+确立即响亮。实现上管道两侧片段都打 piped 标记（左侧标记要在 flush **之前**
+落到当前片段——首版改了 segments[-1] 打错对象，试跑当场抓到）；非安装管道
+照常拆分。
+
+**P1 job 是隔离 runner。** A job 装的 qlib，B job 一个字节拿不到——presence
+摊到 workflow 层，「装在别的 job 里」蒙混过关。`_job_commands` 按 job 分组，
+presence 逐 job 评估（job 内 pytest 看全部步骤、qlib 看无条件步骤）。本仓
+每 workflow 单 job，接线退化在干净数据上不可测（变异 CS）——照 CE 先例补
+调用点源码钉，复验咬住。
+
 ## codex 第二十二轮：一个 P1 + 一个 P2 —— 我上一轮接线的真 bug、词中间的重定向
 
 **P1 是我 r22 的接线错误。** pytest 检测与 qlib 在场共用了无条件集——而

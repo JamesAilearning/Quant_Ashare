@@ -54,17 +54,19 @@ def _split_commands(script: str) -> list[str]:
     注释、行末续行、here-document，以及上面那组分隔符。此外的一切都只是字符。
     读不下去就抛 `UnlexableShell`，不静默跳过。
     """
-    segments: list[str] = []
+    segments: list[tuple[str, bool]] = []
+    piped: list[bool] = [False]          # 当前片段是否与管道相邻
     buffer: list[str] = []
     pending_heredocs: list[tuple[str, bool]] = []
     index = 0
     size = len(script)
 
-    def flush() -> None:
+    def flush(next_piped: bool = False) -> None:
         segment = "".join(buffer).strip()
         if segment:
-            segments.append(segment)
+            segments.append((segment, piped[0]))
         buffer.clear()
+        piped[0] = next_piped
 
     def _heredoc_delimiter(word: str) -> tuple[str, bool]:
         """对定界词做 POSIX 引号移除：返回（生效定界词, 是否有引号）。
@@ -255,6 +257,15 @@ def _split_commands(script: str) -> list[str]:
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
+            if separator == "|":
+                # 管道两侧都记为 piped：`pip install <qlib> | tee log` 的
+                # 退出码是 tee 的——pip 失败被吞、步骤照样绿（codex P1，
+                # sh -e 实测继续执行）。左侧此刻还在 buffer 里——标记要在
+                # flush **之前**落到当前片段上，右侧由 next_piped 接力。
+                piped[0] = True
+                flush(next_piped=True)
+                index += len(separator)
+                continue
             if separator == "||":
                 # `a || b` 的 b 只在 a **失败**时运行——a 成功则 b 从未执行
                 # 而步骤照样绿。把 b 当独立命令数，会把一条从不运行的
@@ -311,12 +322,21 @@ def _commands(script: str) -> list[list[str]]:
     """把一段 shell 切成若干条命令，每条是一串实参。
 
     词法器已经保证每个片段里的引号是配平的，`shlex` 在这里只负责去引号与
-    分词——引号形态（单/双/不加）由它统一处理；重定向随后剥离。
+    分词；重定向随后剥离。**管道相邻的片段若是 pip 安装即响亮**：管道的
+    退出码属于最后一段，安装失败可被下游吞掉——执行结果无法确立，与 `||`
+    同族（codex P1）。
     """
-    return [
-        args for segment in _split_commands(script)
-        if (args := _strip_redirections(shlex.split(segment, posix=True)))
-    ]
+    out: list[list[str]] = []
+    for segment, piped in _split_commands(script):
+        args = _strip_redirections(shlex.split(segment, posix=True))
+        if not args:
+            continue
+        if piped and _is_pip_install(args):
+            raise UnlexableShell(
+                "管道中的 pip 安装——失败可被下游命令的退出码吞掉，执行"
+                "结果无法确立；请拆出管道或另起步骤")
+        out.append(args)
+    return out
 
 
 def _environment_keys(document: object) -> list[str]:
@@ -368,6 +388,30 @@ def _run_scripts(
                 continue
             scripts.append(script)
     return scripts
+
+
+def _job_commands(
+    workflow: Path, *, unconditional_only: bool = False,
+) -> list[tuple[str, list[list[str]]]]:
+    """按 **job** 分组的命令。jobs 跑在**隔离的 runner** 上——A job 装的
+    qlib，B job 一个字节也拿不到；presence 判据摊到 workflow 一层会让
+    「装在别的 job 里」蒙混过关（codex P1）。"""
+    document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    jobs: list[tuple[str, list[list[str]]]] = []
+    for name, job in ((document or {}).get("jobs") or {}).items():
+        job = job or {}
+        job_conditional = "if" in job
+        commands: list[list[str]] = []
+        for step in job.get("steps", []) or []:
+            step = step or {}
+            script = step.get("run")
+            if not isinstance(script, str):
+                continue
+            if unconditional_only and (job_conditional or "if" in step):
+                continue
+            commands.extend(_commands(script))
+        jobs.append((str(name), commands))
+    return jobs
 
 
 def _workflow_commands(
@@ -903,8 +947,9 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
 
     def test_every_posix_separator_splits(self) -> None:
-        # `||` 不在此列：右侧执行无法确立，整段响亮拒读（见下一个用例）。
-        for sep in ("&&", ";", "|", "&"):
+        # `||` 不在此列（右侧执行无法确立，整段响亮）；`|` 也不在——管道
+        # 里的**安装**响亮，非安装管道由专门用例覆盖。
+        for sep in ("&&", ";", "&"):
             with self.subTest(分隔符=sep):
                 self.assertEqual(2, len(_commands(f"pip install a {sep} pip install b")))
 
@@ -1153,6 +1198,55 @@ jobs:
         with self.assertRaises(UnlexableShell):
             _commands('true || pip install "numpy>=1.24,<2.0"')
         self.assertEqual(2, len(_commands("pip install a && pip install b")))
+
+    def test_a_piped_install_is_refused(self) -> None:
+        """`pip install <qlib> | tee log` 的退出码是 tee 的。
+
+        pip 失败被吞、步骤照样绿（sh -e 实测继续执行）——把管道段当独立命令
+        数就是把失败可吞的安装当 presence 保证（codex P1，与 `||` 同族）。
+        非安装的管道照常拆分。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands("pip install x | tee install.log")
+        with self.assertRaises(UnlexableShell):
+            _commands("echo start | pip install x")
+        self.assertEqual(
+            [["echo", "hi"], ["wc", "-l"]], _commands("echo hi | wc -l"))
+
+    def test_presence_is_evaluated_per_job(self) -> None:
+        """jobs 是隔离 runner——A job 装的 qlib，B job 拿不到。
+
+        摊到 workflow 层，「装在别的 job 里」蒙混过关（codex P1）。
+        """
+        import tempfile as _tf
+        doc = """
+jobs:
+  install-only:
+    steps:
+      - run: pip install git+https://github.com/microsoft/qlib.git@{sha}
+  test-only:
+    steps:
+      - run: pytest tests/
+""".format(sha="a" * 40)
+        with _tf.TemporaryDirectory() as t:
+            wf = Path(t) / "w.yml"
+            wf.write_text(doc, encoding="utf-8")
+            jobs = dict(_job_commands(wf))
+            unconditional = dict(_job_commands(wf, unconditional_only=True))
+        self.assertTrue(
+            _pytest_without_qlib(jobs["test-only"],
+                                 unconditional["test-only"]),
+            "别的 job 里的 qlib 被当成了本 job 的 presence")
+        self.assertFalse(_runs_pytest(jobs["install-only"]))
+        # 接线钉：真数据守卫必须真按 job 分组——本仓每个 workflow 只有一个
+        # job，接线退回 workflow 摊平在干净数据上测不出（变异 CS 实测），
+        # 只能钉调用点源码。
+        import inspect as _inspect
+        guard_src = _inspect.getsource(
+            EveryPytestWorkflowInstallsQlibItself
+            .test_each_pytest_workflow_carries_its_own_install)
+        self.assertIn("_job_commands(workflow", guard_src,
+                      "presence 守卫没有按 job 分组评估")
 
     def test_a_variable_executable_is_refused(self) -> None:
         # `INSTALLER=pip` 后的 `$INSTALLER install …` 真的执行 pip——展开值
@@ -1529,15 +1623,17 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
         pytest_workflows = 0
         offenders = []
         for workflow in _workflows():
-            # pytest 检测扫**全部**步骤（条件腿也要 qlib）；qlib 在场只数
-            # **无条件**步骤——`if:` 可跳过的安装不是安装（codex 两条 P1）。
-            everything = _workflow_commands(workflow)
-            if _runs_pytest(everything):
-                pytest_workflows += 1
-                if _pytest_without_qlib(
-                        everything,
-                        _workflow_commands(workflow, unconditional_only=True)):
-                    offenders.append(workflow.name)
+            # 判据按 **job** 评估——jobs 是隔离 runner，别的 job 装的
+            # qlib 到不了这里（codex P1）。job 内：pytest 看全部步骤，qlib
+            # 在场只看无条件步骤。
+            unconditional = dict(
+                _job_commands(workflow, unconditional_only=True))
+            for job_name, job_all in _job_commands(workflow):
+                if _runs_pytest(job_all):
+                    pytest_workflows += 1
+                    if _pytest_without_qlib(
+                            job_all, unconditional.get(job_name, [])):
+                        offenders.append(f"{workflow.name}:{job_name}")
         self.assertEqual([], offenders, "这些 workflow 跑 pytest 却不装 qlib")
         self.assertGreaterEqual(
             pytest_workflows, 1, "一个跑 pytest 的 workflow 都没发现——覆盖面塌了")

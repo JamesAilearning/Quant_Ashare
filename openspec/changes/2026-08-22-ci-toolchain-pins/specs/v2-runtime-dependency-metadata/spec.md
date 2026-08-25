@@ -266,12 +266,20 @@ that actually produces the anchor.
   qlib-pin presence check, which a dry-run carrying the pin and both windows
   would otherwise satisfy while qlib stays absent
 
+#### Scenario: a piped install is refused
+- **WHEN** a pip install sits in a pipeline — `pip install <qlib> | tee log` —
+  where the exit status belongs to the last segment and a failed install can
+  be swallowed
+- **THEN** it is refused loudly, in the same execution-cannot-be-established
+  family as `||`; pipelines without installs keep splitting normally
+
 #### Scenario: a workflow that runs pytest installs qlib itself
-- **WHEN** the qlib install is removed from a workflow that invokes pytest,
-  while another workflow in the repository still carries one
-- **THEN** the governance test fails for THAT workflow — the floor is
-  per-workflow, because `pytest.importorskip("qlib")` turns a missing install
-  into silently green test legs
+- **WHEN** the qlib install is removed from a JOB that invokes pytest, while
+  another job or workflow in the repository still carries one
+- **THEN** the governance test fails for THAT job — jobs run on isolated
+  runners, so an install in a sibling job never reaches the pytest job, and
+  `pytest.importorskip("qlib")` turns the missing install into silently green
+  test legs
 
 #### Scenario: execution that cannot be established is refused
 - **WHEN** a run block chains with `||` (the right side runs only on failure),
