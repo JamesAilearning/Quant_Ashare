@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# 上界同理适用于**构建依赖**：`pip install -e .` 缺省用隔离构建，pip 会
+# 独立解析这两条（CI 实测装到 setuptools 84.0.0，本机 82.0.1）。无上界
+# 就意味着一次 setuptools 大版本能在与当天 PR 无关的时刻把构建打断。
+requires = ["setuptools>=68,<90", "wheel>=0.40,<1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,20 +28,40 @@ dependencies = [
   # for the qlib install step).
   "scipy>=1.10,<1.14",
   "pandas>=2.0,<2.3",
-  "pyarrow>=14",
-  "ruamel.yaml>=0.17",
-  "PyYAML>=6.0",
-  "matplotlib>=3.7",
-  "optuna>=3.0",
-  "python-dateutil>=2.8",
+  # 这六条与上面三条同理：CI 的 `pip install -e ".[dev,ui]"` 会把 base 依赖
+  # 一并解析安装，无上界就意味着它们任何一个发新版都可能把 CI 打红，而与当天
+  # 的 PR 无关。它们是被代码**使用**的库（不是判代码的工具），所以给大版本
+  # 上界；`ruamel.yaml` 还是 0.x，它的破坏轴是小版本，故按小版本给。
+  # 取值都在 CI 实测版本之上，对当前解析结果是无操作：
+  #   pyarrow 25.0.1 · ruamel.yaml 0.19.1 · PyYAML 6.0.3
+  #   matplotlib 3.11.1 · optuna 4.9.0 · python-dateutil 2.9.0
+  "pyarrow>=14,<26",
+  "ruamel.yaml>=0.17,<0.20",
+  "PyYAML>=6.0,<7",
+  "matplotlib>=3.7,<4",
+  "optuna>=3.0,<5",
+  "python-dateutil>=2.8,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=7.4",
-  "pytest-cov>=4.1",
-  "ruff>=0.3",
-  "mypy>=1.8",
+  # 上界不是洁癖。2026-08-22，PR #462 的 CI 六腿全红，而当天的改动与失败点无关：
+  # `pytest>=7.4` 让 CI 装上了刚发布的 9.1.1，本机 venv 还停在 9.0.3，9.1 的
+  # logging 插件行为变化把一条测试判成失败。工具链**在判代码**——它一漂移，红的
+  # 就不是代码，而是当天的运气。
+  #
+  # 判代码的工具（跑测试/查类型/挑 lint）给**小版本**上界：新检查与行为变化多在
+  # 小版本引入，补丁版按各家政策只修 bug。下界同时抬到 CI 实际用的那个小版本，
+  # 这样「本机装的」与「CI 装的」是同一个，而不是各取所需——否则本机全绿仍然
+  # 什么都不证明。
+  "pytest>=9.1,<9.2",
+  "pytest-cov>=7.1,<7.2",
+  "ruff>=0.16,<0.17",     # ruff 还是 0.x：小版本才是它的破坏轴
+  "mypy>=2.3,<2.4",
+  # 治理测试按 TOML **解析**本文件（只认双引号的文本匹配漏掉过单引号字面量）。
+  # `tomllib` 是 3.11 才进标准库的，而 `requires-python` 仍收 3.10——所以在
+  # 3.10 上它是一条真依赖。同组同规矩：小版本上界。
+  "tomli>=2.2,<2.3; python_version<'3.11'",
 ]
 research = [
   "jupyter",
@@ -49,9 +72,12 @@ tushare = [
   "tushare>=1.4",
 ]
 ui = [
-  "streamlit>=1.57",
-  "plotly>=5.20",
-  "reportlab>=4.0",
+  # 这三个是被代码**使用**的库，不是判代码的工具，所以只给大版本上界：破坏性
+  # 大版本要挡住；小版本变化打破了 UI 测试，那是真实的兼容性信号，值得红一次
+  # 让人看见，而不该被上界闷掉。CI 装 `.[dev,ui]`，所以它们同样进守卫的覆盖面。
+  "streamlit>=1.57,<2",
+  "plotly>=5.20,<7",
+  "reportlab>=4.0,<6",
 ]
 
 [tool.setuptools.packages.find]
