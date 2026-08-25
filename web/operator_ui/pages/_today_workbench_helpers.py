@@ -17,6 +17,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
+from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
 from web.operator_ui.update_status import NO_REASON_MARK, UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
@@ -27,6 +28,8 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
+
+
 
 def failed_update_summary(status: UpdateRunStatus) -> str:
     """失败运行的一行说明：退出码含义、死在哪个阶段、**为什么**。
@@ -222,3 +225,24 @@ __all__ = [
     "summarise_daily_signal",
     "summarise_operations",
 ]
+
+def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
+    """身份卡上的模型时效行——数据**照抄**生产运维页⑤的 `retrain_window`。
+
+    P3 缺口（UI 评估已批序列③）：工作台身份卡只报形态不报年龄，「模型多旧」
+    要跳页才知道。此处不自造任何判定：同一个推导函数、同一套字段，只做措辞
+    （生产运维页与本页共用一份实现的既定纪律——#461 首版另写一份三个决策
+    全错的教训在档）。`known=False` 时如实说推导不了，不留空。
+    """
+    if not getattr(window, "known", False):
+        return [("模型时效", "无法推导（现任非可解析 ensemble）")]
+    state_text = {
+        "before": "未开",
+        "open": "开放中",
+        "closed": "已过（fit_end 须落窗内；点火按操作卡排期）",
+    }.get(str(getattr(window, "state", "")), str(getattr(window, "state", "")))
+    return [
+        ("fit 至", str(window.newest_fit_end)),
+        ("模型年龄", f"{window.days_since_newest} 天"),
+        ("下一成员 fit_end 窗", f"{window.opens_on}~{window.closes_on}（{state_text}）"),
+    ]

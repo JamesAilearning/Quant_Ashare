@@ -9,6 +9,7 @@ from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._today_workbench_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
+    model_age_rows,
     summarise_daily_signal,
     summarise_operations,
 )
@@ -235,3 +236,38 @@ class OperationSummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
+    """身份卡的模型时效行——数据照抄生产运维页的 retrain_window，零自造。
+
+    P3 缺口（UI 序列③）：措辞层只翻译字段；known=False 如实说推导不了。
+    """
+
+    def test_a_known_window_yields_the_three_rows(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        window = RetrainWindow(
+            known=True, newest_fit_end="2026-04-01", days_since_newest=146,
+            opens_on="2026-06-15", closes_on="2026-07-10", state="closed",
+            days_closed=46, gap_if_fit_today=146, refused_if_fit_today=True)
+        rows = model_age_rows(window)
+        self.assertEqual("fit 至", rows[0][0])
+        self.assertEqual("2026-04-01", rows[0][1])
+        self.assertEqual(("模型年龄", "146 天"), rows[1])
+        self.assertIn("2026-06-15~2026-07-10", rows[2][1])
+        self.assertIn("已过", rows[2][1], "closed 态没有如实翻译")
+
+    def test_an_unknown_window_is_stated_not_blank(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        rows = model_age_rows(RetrainWindow(known=False, error="x"))
+        self.assertEqual(1, len(rows))
+        self.assertIn("无法推导", rows[0][1])
+
+    def test_the_page_wires_the_cockpit_function_not_a_copy(self) -> None:
+        # 接线钉：页面必须消费 ops_cockpit 的同一个 retrain_window——
+        # 另写一份正是 #461 三决策全错的老路（干净数据上接线不可测，钉源码）。
+        source = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
+                  / "pages" / "today_workbench.py").read_text(encoding="utf-8")
+        self.assertIn("model_age_rows(retrain_window(incumbent, cn_today()))",
+                      source, "身份卡没有接生产运维页的同一推导")
+
