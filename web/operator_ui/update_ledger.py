@@ -171,8 +171,14 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # （codex P2）。判据抬到与写入侧同一函数级：resolve+normcase 的不动点。
     # 本机不存在的路径 resolve 只做词法归一化，外来 provider 的合法行不受
     # 影响。
-    if not os.path.isabs(stamped) or stamped != os.path.normcase(
-            str(Path(stamped).resolve())):
+    try:
+        resolved = os.path.normcase(str(Path(stamped).resolve()))
+    except (ValueError, OSError):
+        # 对**不可信**内容做 resolve 会抛（如 NUL 字节的路径）——那是坏行，
+        # 不是让整页崩掉的理由：词法验证不抛的地方，解析器验证也不许抛
+        # （codex P2）。
+        return False
+    if not os.path.isabs(stamped) or stamped != resolved:
         return False
     try:
         # `date.fromisoformat` 还接受 `20260825`、`2026-W35-2` 这类写入侧

@@ -320,6 +320,24 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
         self.assertEqual((1, 0), (history.malformed, history.foreign),
                          "符号链接别名身份被说成了别人的运行")
 
+    def test_a_filesystem_invalid_identity_is_malformed_not_a_crash(
+            self) -> None:
+        """resolve 不可信内容会抛（NUL 字节路径）——逃出解析兜底整页就崩。
+
+        坏行的契约是**计数**，不是把 read_ledger 炸掉（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            _write(path, [{**_record(provider, exit_code=0),
+                           "provider_dir": "/tmp/" + chr(0) + "bad"},
+                          _record(provider, exit_code=11)])
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual(1, len(history.runs), "好行也被带走了")
+        self.assertEqual((1, 0), (history.malformed, history.foreign),
+                         "文件系统非法身份没被记成坏行")
+
     def test_the_identity_check_resolves_not_just_normalises(self) -> None:
         # 源码钉：行为测试在无符号链接权限的机器上会 skip——resolve 在场
         # 必须钉得住（退回 normpath 即红）。

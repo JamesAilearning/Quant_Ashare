@@ -28,6 +28,13 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十二轮：一个 P2 —— 对不可信内容 resolve 要兜底
+
+身份检查抬到 resolve 不动点后，`Path(stamped).resolve()` 对文件系统非法的
+内容（NUL 字节路径）会抛 ValueError——逃出解析兜底，read_ledger 整个炸掉、
+工作台崩页。坏行的契约是**计数**不是崩溃：resolve 包 try/except
+(ValueError, OSError) → False 计 malformed；好行照读。
+
 ## codex 第二十一轮：一个 P2 —— 台账时间戳补齐同一处置（+固定时区）
 
 边界戳上一轮补了精确回环，台账两个时间戳还停在 parse+tz——紧凑型/周历/`Z`/
