@@ -28,6 +28,14 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十三轮：一个 P2 —— design.md 里同根陈述的第三处
+
+上上轮改了 proposal.md、上轮改了 v2-run-center-page delta，而 design.md
+「台账为什么不给 CLI 覆盖」一节还写着「那一整类风险在这里不存在」——第三处
+同根陈述。这次不再凭记忆找文件：**对整个 change 目录做了穷尽 grep**
+（攻击面/改道/无从/不存在/找得到边界），确认除历史记录外这是最后一处；按
+终态重写（派生只封正向；反向碰撞面由命名空间保留守住，守卫不可当多余删）。
+
 ## codex 第十二轮：一个 P2 + 一个 P2 —— 时间戳要解析得动、第二份 delta 也要对齐
 
 **非空还不够，得解析得动。** `run_date: "foobar"` 配胡话时间戳通过非空检查，
