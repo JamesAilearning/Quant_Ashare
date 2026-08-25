@@ -270,6 +270,16 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
         )
         self.assertTrue(bitten, "校验器没咬负对照——本用例的绿没有意义")
 
+    def test_the_header_discloses_truncated_diagnostics_at_floor(self) -> None:
+        # 下限点火时长视界诊断为空是**预告过的已知代价**（codex #466 P2），
+        # 不是异常——预告必须钉在操作人真正会读的 preset 头注里，且点名
+        # 21 个交易日与「非晋升证据」两个关键事实，防止后续编辑把披露删了
+        # 而点火下限还在（操作人读到 NaN 会当故障排查）。
+        text = (_PRESETS / "csi800_n5_m4.yaml").read_text(encoding="utf-8")
+        self.assertIn("21 个交易日", text, "缺 analyzer 视界事实")
+        self.assertIn("非晋升证据", text, "缺「诊断不进门」的定性")
+        self.assertIn("2026-11-02", text, "点火下限被改动或删除")
+
     def test_serving_pins_arithmetic(self) -> None:
         # 界值从 serving 契约本尊导入（codex P2：抄 75/100/700/745 字面会
         # 在契约收紧时治理绿着而 load_ensemble_manifest 拒载——竞争快照）。

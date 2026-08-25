@@ -29,6 +29,13 @@
 # 与 m3 家族同款，点火即全段可跑）。在此之前点火 = test 段不可回测，禁止。
 # 这与 m3 的实际节奏一致：其 valid 终 7-07、点火 ≈ 8 月初，间隔同为一个月。
 #
+# 下限点火的已知代价（如实预告，非异常）：SignalAnalyzer 的长视界诊断要
+# test 尾后 max(forward_periods)+1 = 21 个交易日（factor_max_decay_lag:
+# 20 继承自 config.yaml）——bundle 尾刚到 11-02 时 20 日 IC 会为空、更短
+# 视界被截断，运行照常完成并落盘。这与 m3 同款（test 尾 07-31、8 月初点
+# 火，同样截断）：诊断段**非晋升证据**，五门不消费它，故不作为点火前提；
+# 想要完整 20 日 IC 可等 bundle 尾 ≥ 约 2026-12-01 再跑，但不必等。
+#
 # 点火（GPU，操作人执行；单发，绝不与其它重型 run 并发）:
 #     python main.py config/presets/csi800_n5_m4.yaml
 # 产物: 运行目录下 model.pkl + trainer sidecar(<model>.pkl.meta.json)。
