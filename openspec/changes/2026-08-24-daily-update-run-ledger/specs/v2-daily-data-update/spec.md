@@ -60,6 +60,14 @@ the derived value.
   executes — an append into a canonical input, or a status replace truncating
   the append-only ledger, must be impossible rather than merely unlikely
 
+#### Scenario: the ledger name shape is reserved across providers
+- **WHEN** any configurable path ends with the derived-ledger name shape
+  `*.daily_update_ledger.jsonl` — including a SIBLING provider's ledger, which
+  this configuration cannot know about
+- **THEN** it is rejected at construction: the shape is reserved for ledger
+  writers, so no status replace can ever destroy any provider's append-only
+  history
+
 #### Scenario: a ledger failure never changes the exit code
 - **WHEN** the ledger append fails for any reason
 - **THEN** the failure is logged as an ERROR and the run's exit code is

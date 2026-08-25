@@ -151,10 +151,28 @@ class TheLedgerPathCannotAliasAnythingElseTheRunTouches(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self._cfg(tmp, **{field: ledger})
 
+    def test_a_sibling_providers_ledger_is_reserved_too(self) -> None:
+        """兄弟 provider B 把 --status-path 指到 A 的台账上。
+
+        只比**本 provider** 的派生路径，B 的配置照样通过——B 的第一次
+        _record_status 就把 A 的只可追加历史原子替换掉（codex P2）。单个
+        配置看不见别的 provider，判据抬到**命名空间**：`*.<LEDGER_FILENAME>`
+        整体保留，不必知道它是谁的。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            foreign = tmp / "somewhere" / f"other_prov.{du.LEDGER_FILENAME}"
+            for field in ("status_path", "delisted_registry", "reference_cases"):
+                with self.subTest(field=field):
+                    with self.assertRaises(ValueError):
+                        self._cfg(tmp, **{field: foreign})
+
     def test_an_honest_config_still_constructs(self) -> None:
         # 反面：正常布局必须照常通过，否则上面只是「什么都拒」的副产品。
+        # 显式 status 覆盖（合法 .json 名）同样要照常通过。
         with tempfile.TemporaryDirectory() as t:
             self._cfg(Path(t))
+            self._cfg(Path(t), status_path=Path(t) / "custom_status.json")
 
 
 # ---------------------------------------------------------------- 只可追加

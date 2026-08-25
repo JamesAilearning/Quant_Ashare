@@ -28,6 +28,15 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第七轮：一个 P2 —— 判据从「本 provider 的路径」抬到「命名空间」
+
+兄弟 provider B 把 --status-path 指到 **A 的**台账上：B 的配置里
+`default_ledger_path(B)` 与之不等，照样通过——B 的第一次 _record_status 就把
+A 的只可追加历史原子替换掉。单个配置**看不见**别的 provider，所以判据抬到
+命名空间：`*.daily_update_ledger.jsonl` 这个名字形状整体保留给台账写入者，
+任何可配置路径都不许落在这个形状上——不必知道它是谁的台账。仍在
+`__post_init__` 配置验证层，阶段语义零改动。
+
 ## codex 第六轮：一个 P1 —— 台账也是写入者，碰撞在构造期拒绝
 
 台账路径是派生的、没有 CLI 开关——但碰撞的**另一头**可以被打错：

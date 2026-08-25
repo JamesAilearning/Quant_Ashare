@@ -439,6 +439,15 @@ class DailyUpdateConfig:
                 )
         # 暂存兄弟不必查：暂存名 = 名字+".tmp"，而台账名以 .jsonl 结尾，
         # `_status_tmp_path(x) == 台账` 无解——查一个不可构造的碰撞是死守卫。
+        #
+        # codex #465 r7 P2: 只比**本 provider** 的派生路径还不够。兄弟
+        # provider B 把 --status-path 指到 A 的台账上，B 的配置里
+        # `default_ledger_path(B)` 与之不等、照样通过——B 的第一次
+        # _record_status 就把 A 的只可追加历史原子替换成一条 status JSON。
+        # 单个配置看不见别的 provider，所以判据抬到**命名空间**：
+        # `*.{LEDGER_FILENAME}` 这个名字形状整体保留给台账写入者，任何
+        # 可配置路径都不许落在这个形状上——不必知道它是谁的台账。
+        reserved = f".{LEDGER_FILENAME}".lower()
         for label, f in (
             ("--delisted-registry", self.delisted_registry),
             ("--reference-cases", self.reference_cases),
@@ -451,6 +460,12 @@ class DailyUpdateConfig:
                 raise ValueError(
                     f"运行台账的派生路径与 {label} ({f}) 重合 — 一边追加"
                     f"一边整写会互相破坏；拒绝（可观测性绝不影响数据）"
+                )
+            if os.path.basename(_norm(f)).endswith(reserved):
+                raise ValueError(
+                    f"{label} ({f}) 落在运行台账的保留命名空间"
+                    f"（*.{LEDGER_FILENAME}）上 — 那是（某个 provider 的）"
+                    f"只可追加台账的名字形状，整写会毁掉它的历史；拒绝"
                 )
         # codex P2: a name-less path (".", a filesystem root) makes
         # _write_status's path.with_name() raise ValueError — which
