@@ -295,6 +295,27 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
             history = read_ledger(path, provider_dir=provider)
         self.assertEqual((1, 0), (history.malformed, history.foreign))
 
+    def test_a_non_normalized_provider_identity_is_corrupt_not_foreign(
+            self) -> None:
+        """写入侧的 `_norm` 只产归一化绝对路径。
+
+        `provider_dir: "../bundle"` 过了非空检查后被 `_describes` 判成
+        「别人的」——它不是别人的，是坏的：告诉操作人「这行属于另一个
+        provider」掩盖了台账损坏（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            for stamped in ("../bundle", "bundle", "prov/../prov"):
+                with self.subTest(provider_dir=stamped):
+                    _write(path, [{**_record(provider, exit_code=0),
+                                   "provider_dir": stamped}])
+                    history = read_ledger(path, provider_dir=provider)
+                    self.assertEqual(
+                        (1, 0), (history.malformed, history.foreign),
+                        "非归一化身份被说成了别人的运行")
+
     def test_an_empty_identity_or_time_field_is_not_a_run(self) -> None:
         """身份/时间字段要**非空**——空串通过 `isinstance(str)`。
 

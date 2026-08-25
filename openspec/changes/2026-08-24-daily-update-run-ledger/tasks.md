@@ -28,6 +28,13 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十四轮：一个 P2 —— 非归一化身份是坏行，不是别人的
+
+写入侧 `_norm` 只产归一化绝对路径；`provider_dir: "../bundle"` 过了非空检查
+后被 `_describes` 判成「别人的」——掩盖台账损坏。验它是 normcase∘normpath
+的不动点且为绝对路径，不是就计 malformed（照抄「foreign 只配给完整合法记录」
+那条既立纪律，把身份形态也纳入「合法」的定义）。
+
 ## codex 第十三轮：一个 P2 —— design.md 里同根陈述的第三处
 
 上上轮改了 proposal.md、上轮改了 v2-run-center-page delta，而 design.md

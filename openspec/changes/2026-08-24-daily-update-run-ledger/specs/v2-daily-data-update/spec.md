@@ -92,6 +92,13 @@ the derived value.
   "foreign" label is reserved for a fully valid record whose only difference
   is its identity
 
+#### Scenario: a non-normalized provider identity is corruption, not a foreign run
+- **WHEN** a row's `provider_dir` is not the normalized absolute form the
+  writer's `_norm` exclusively produces — a relative path, an un-normalized
+  spelling
+- **THEN** the row counts as malformed instead of being described as another
+  provider's run, which would disguise ledger corruption as foreign history
+
 #### Scenario: unparseable dates and timestamps are corruption, not history
 - **WHEN** a row's `run_date` is not an ISO date, a timestamp is not a
   timezone-aware ISO datetime, or `finished_at` precedes `started_at` — none

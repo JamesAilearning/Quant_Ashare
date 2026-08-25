@@ -160,6 +160,14 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # 通过非空检查，被渲染成一次「真实」运行（codex P2）。写入侧固定产
     # ISO 日期 + 带时区的 ISO 时间戳，且结束不早于开始——按写入侧的产出
     # 验，验不过就是坏行，不硬渲染。
+    # `provider_dir` 必须**已经是**归一化的绝对路径——写入侧的 `_norm`
+    # 只产这种形态。`"../bundle"` 之类过了非空检查后会被 `_describes` 判成
+    # 「别人的」，而它不是别人的，是坏的（codex P2）：验它是 normcase∘normpath
+    # 的不动点且为绝对路径，不是就计 malformed。
+    stamped = str(record["provider_dir"])
+    if not os.path.isabs(stamped) or stamped != os.path.normcase(
+            os.path.normpath(stamped)):
+        return False
     try:
         date.fromisoformat(str(record["run_date"]))
         started = datetime.fromisoformat(str(record["started_at"]))
