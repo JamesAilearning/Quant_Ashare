@@ -222,12 +222,18 @@ elif _status.kind == "running":
             f"**{_attributed.boundary_stamp}**),不是推断出来的。{_scope}"
         )
     else:
-        # 窗口里没读到边界 —— 不知道就说不知道,不拿启发式顶上。
+        # 不知道就说不知道,并说**真原因**:三种失败条件对操作人的下一步不同,
+        # 一律说「没有边界」会在最常见的截断窗口上撒谎(codex P2)。
+        _why = {
+            "window_truncated": "日志长于读取窗口,窗口外可能还有别的运行边界",
+            "foreign_boundary": "窗口里有别的 provider 的运行边界,行可能交错",
+            "no_boundary": "读到的日志窗口里没有运行边界",
+        }.get(_attributed.unattributed_reason, "归属条件未满足")
         st.caption(
             f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
-            f"本次运行始于 **{_status.started_at or '?'}** —— 读到的日志窗口里"
-            "**没有运行边界**,因此**无法证明这条属于本次运行**(也可能是上一次"
-            f"留下的),请对着两个时刻自行判断。{_scope}"
+            f"本次运行始于 **{_status.started_at or '?'}** —— {_why},"
+            "因此**无法证明这条属于本次运行**(也可能是上一次留下的),"
+            f"请对着两个时刻自行判断。{_scope}"
         )
 elif _status.ok:
     st.success(

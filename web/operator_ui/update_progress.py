@@ -159,9 +159,17 @@ class AttributedProgress:
     #: 归属(`test_the_module_does_not_grow_an_attribution_guess_back`)。这里的
     #: 戳不参与任何比较,只是把「是哪一次运行」说给读者听。
     boundary_stamp: str = ""
+    #: `attributed=False` 时**为什么**不知道——三种失败条件对操作人的下一步
+    #: 不同,页面必须说真原因,不能一律说「窗口里没有边界」(codex P2):
+    #: ``window_truncated``(窗口没盖住整份日志,窗外可能还有边界)/
+    #: ``foreign_boundary``(窗口里有别的 provider 的边界,行有交错可能)/
+    #: ``no_boundary``(完整窗口里确实一条边界都没有)。归属确定时为空串。
+    unattributed_reason: str = ""
 
 
-def _current_segment(log_text: str, provider_key: str) -> tuple[int, str] | None:
+def _current_segment(
+    log_text: str, provider_key: str,
+) -> tuple[tuple[int, str] | None, str]:
     """本 provider 当前那一段的起点:(边界结束的字符位置, 起跑时刻)。
 
     判据是**独占**:窗口里的边界**全部**是我们的,才谈得上归属。
@@ -186,14 +194,14 @@ def _current_segment(log_text: str, provider_key: str) -> tuple[int, str] | None
     """
     boundaries = list(_BOUNDARY_RE.finditer(log_text))
     if not boundaries:
-        return None
+        return None, "no_boundary"
     if any(
         os.path.normcase(match.group("provider").strip()) != provider_key
         for match in boundaries
     ):
-        return None
+        return None, "foreign_boundary"
     last = boundaries[-1]
-    return last.end(), last.group("started")
+    return (last.end(), last.group("started")), ""
 
 
 def last_fetch_progress_for_run(
@@ -213,11 +221,14 @@ def last_fetch_progress_for_run(
     当成完整。
     """
     provider_key = os.path.normcase(str(provider_dir.resolve()))
-    boundary = (
-        _current_segment(log_text, provider_key) if window_complete else None)
+    if not window_complete:
+        boundary, reason = None, "window_truncated"
+    else:
+        boundary, reason = _current_segment(log_text, provider_key)
     if boundary is None:
         return AttributedProgress(
-            progress=last_fetch_progress(log_text), attributed=False)
+            progress=last_fetch_progress(log_text), attributed=False,
+            unattributed_reason=reason)
     end, started = boundary
     return AttributedProgress(
         progress=last_fetch_progress(log_text[end:]),

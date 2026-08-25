@@ -28,6 +28,21 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第四轮：三个 P2 —— 全部是「诚实」的续深
+
+**验形要在分类之前。** `{}` 或 `{"provider_dir": 5}` 被计进 foreign，页面就会
+说「这行属于另一个 provider」——把损坏说成了别人。「foreign」只配给完整合法、
+仅身份不同的 v1 记录。
+
+**身份/时间字段要非空。** 空串通过 `isinstance(str)`，一条 `exit_code: 0` 配
+空时间戳的行会渲染成「日期不明的成功」。provider_dir/run_date/started_at/
+finished_at 四个字段钉非空；detail 只钉类型（空不空是措辞问题，不是身份问题）。
+
+**未归属要说真原因。** 三种「不知道」（窗口截断/有外来边界/确实无边界）对
+操作人的下一步不同，而页面一律说「窗口里没有边界」——在最常见的截断窗口上
+这是句假话（边界明明可见）。`AttributedProgress.unattributed_reason` 三值枚举，
+页面逐一措辞，守卫钉住三个键都接上。
+
 ## codex 第三轮：一个 P1 + 一个 P2
 
 **P1 截断窗口不许声称独占——同一根因的第三种形态。** 第二轮把判据抬到「窗口

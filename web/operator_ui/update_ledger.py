@@ -103,8 +103,9 @@ def ledger_path_for_provider(provider_dir: Path) -> Path:
     return resolved.with_name(f"{resolved.name}.{LEDGER_FILENAME}")
 
 
-#: v1 行必须齐备的字段（`failed_stage` 允许 null，单列在下面判）。
-_REQUIRED_TEXT = ("run_date", "started_at", "finished_at", "detail")
+#: v1 行必须**非空**的身份/时间字段（`failed_stage` 允许 null，单列在下面判；
+#: `detail` 只要求是 str——它的空与非空是写入侧的措辞问题，不是身份问题）。
+_REQUIRED_NONEMPTY = ("provider_dir", "run_date", "started_at", "finished_at")
 
 
 def _is_valid_v1(record: dict[str, object]) -> bool:
@@ -139,7 +140,15 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # 损坏的数据讲成事实（codex 第二轮 P2）。
     if (exit_code == 0) != (stage is None):
         return False
-    return all(isinstance(record.get(key), str) for key in _REQUIRED_TEXT)
+    # 身份/时间字段要**非空**：只查 `isinstance(str)` 会放过空串，一条
+    # `exit_code: 0` 配三个空时间戳的行会被渲染成一次「日期不明的成功」——
+    # 写入侧从不产这种行（codex P2）。
+    if not all(
+        isinstance(record.get(key), str) and record.get(key)
+        for key in _REQUIRED_NONEMPTY
+    ):
+        return False
+    return isinstance(record.get("detail"), str)
 
 
 def _describes(record: object, provider_key: str) -> bool:
@@ -187,15 +196,15 @@ def read_ledger(
         except ValueError:
             malformed += 1
             continue
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or not _is_valid_v1(record):
+            # **先验形，后分类**。`{}` 或 `{"provider_dir": 5}` 不是「别人的
+            # 行」，是坏行——把它计进 foreign，页面就会告诉操作人「这行属于
+            # 另一个 provider」，而不是披露台账损坏（codex P2）。「foreign」
+            # 这个称谓只配给一条**完整合法**、只是身份不同的 v1 记录。
             malformed += 1
             continue
         if not _describes(record, provider_key):
             foreign += 1
-            continue
-        if not _is_valid_v1(record):
-            # 版本不对或字段不齐 —— 记成读不了，而不是拿 v1 语义硬解释它。
-            malformed += 1
             continue
         runs.append(LedgerRun(
             run_date=record["run_date"],

@@ -58,6 +58,13 @@ the derived value.
   unchanged — the ledger is observability, never a canonical input, and no
   module inside `src/` outside `src/data_pipeline/daily_update.py` consumes it
 
+#### Scenario: corruption is disclosed as corruption, not as a foreign run
+- **WHEN** a reader meets a line that is JSON but not a valid v1 record — `{}`,
+  a wrongly-typed provider field, an empty identity or time field
+- **THEN** it counts as malformed, never as another provider's run — the
+  "foreign" label is reserved for a fully valid record whose only difference
+  is its identity
+
 ### Requirement: 每次运行 SHALL 在日志里落一个带日期的运行边界
 
 `run_daily_update` SHALL write one boundary line into the shared log at the
@@ -111,6 +118,12 @@ the duplication this repository keeps paying for.
 - **WHEN** the window a reader examined contains no boundary
 - **THEN** attribution is reported as unknown, matching the behaviour that
   existed before this change rather than substituting a heuristic
+
+#### Scenario: the reason attribution is unknown is the true one
+- **WHEN** attribution is withheld — because the window is truncated, because a
+  foreign boundary is present, or because no boundary is visible
+- **THEN** the operator is told which of those it was, not a blanket "no
+  boundary in the window" that is false in the first two cases
 
 #### Scenario: another provider's boundary is not adopted
 - **WHEN** the boundary names a different provider directory

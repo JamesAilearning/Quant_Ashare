@@ -243,6 +243,52 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
         self.assertEqual(2, len(history.runs))
         self.assertEqual(0, history.malformed)
 
+    def test_a_shapeless_row_is_corruption_not_a_foreign_run(self) -> None:
+        """`{}` 或 `{"provider_dir": 5}` 不是「别人的行」，是坏行。
+
+        先分类后验形的话，它们被计进 foreign——页面就会告诉操作人「这行属于
+        另一个 provider」，而不是披露台账损坏（codex P2）。「foreign」这个
+        称谓只配给一条**完整合法**、只是身份不同的 v1 记录。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            for row in ({}, {"provider_dir": 5}):
+                with self.subTest(row=row):
+                    _write(path, [row])
+                    history = read_ledger(path, provider_dir=provider)
+                    self.assertEqual(1, history.malformed, "坏行没计成坏行")
+                    self.assertEqual(
+                        0, history.foreign, "坏行被说成了别人的运行")
+
+    def test_a_foreign_row_must_itself_be_a_valid_record(self) -> None:
+        # 另一个 provider 的行也要先过 v1 验形：验不过就是坏行，不是外来行。
+        with tempfile.TemporaryDirectory() as t:
+            provider, other = Path(t) / "prov", Path(t) / "other"
+            provider.mkdir()
+            other.mkdir()
+            path = ledger_path_for_provider(provider)
+            _write(path, [{**_record(other, exit_code=11), "exit_code": True}])
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual((1, 0), (history.malformed, history.foreign))
+
+    def test_an_empty_identity_or_time_field_is_not_a_run(self) -> None:
+        """身份/时间字段要**非空**——空串通过 `isinstance(str)`。
+
+        一条 `exit_code: 0` 配空时间戳的行会被渲染成「日期不明的成功」，而
+        写入侧从不产这种行（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            for field in ("run_date", "started_at", "finished_at"):
+                with self.subTest(field=field):
+                    self.assertEqual(
+                        0, self._one(provider, path, exit_code=0,
+                                     failed_stage=None, **{field: ""}))
+
     def test_a_boolean_or_float_schema_version_is_not_v1(self) -> None:
         """JSON 的 `true` 与 `1.0` 在 Python 里都 `== 1`。
 
@@ -506,6 +552,50 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertFalse(
             got.attributed, "截断窗口里声称了独占 —— 窗外的兄弟边界不可见")
         self.assertIsNotNone(got.progress, "说不知道归属，不等于连进度也丢掉")
+
+    def test_the_reason_for_unknown_attribution_is_the_true_one(self) -> None:
+        """三种「不知道」对操作人的下一步不同，页面必须说真原因。
+
+        一律说「窗口里没有边界」，在最常见的截断窗口上就是撒谎——边界明明
+        可见，只是窗外可能还有别人的（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider, other = Path(t) / "prov", Path(t) / "other"
+            provider.mkdir()
+            other.mkdir()
+            ours = self._boundary(provider, "2026-08-24T20:30:00+08:00")
+            theirs = self._boundary(other, "2026-08-24T20:00:00+08:00")
+            line = f"20:31:00{_PROGRESS_LINE}"
+            cases = [
+                ("window_truncated",
+                 chr(10).join([ours, line]), False),
+                ("foreign_boundary",
+                 chr(10).join([theirs, ours, line]), True),
+                ("no_boundary", line, True),
+            ]
+            for expected, text, complete in cases:
+                with self.subTest(reason=expected):
+                    got = last_fetch_progress_for_run(
+                        text, provider_dir=provider, window_complete=complete)
+                    self.assertFalse(got.attributed)
+                    self.assertEqual(expected, got.unattributed_reason)
+            attributed = last_fetch_progress_for_run(
+                chr(10).join([ours, line]), provider_dir=provider,
+                window_complete=True)
+        self.assertTrue(attributed.attributed)
+        self.assertEqual("", attributed.unattributed_reason,
+                         "归属确定时不该带失败原因")
+
+    def test_the_page_speaks_all_three_reasons(self) -> None:
+        # 页面的未归属分支必须按原因措辞——只要有一个键没接上，那种情形就
+        # 退回笼统话术，操作人拿到的又是错误解释。
+        source = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                  ).read_text(encoding="utf-8")
+        self.assertIn("unattributed_reason", source,
+                      "页面没有消费 unattributed_reason")
+        for key in ("window_truncated", "foreign_boundary", "no_boundary"):
+            with self.subTest(reason=key):
+                self.assertIn(key, source, f"页面没有为 {key} 给出对应措辞")
 
     def test_a_boundary_mid_file_is_found(self) -> None:
         """边界之后必然还有阶段输出，所以它几乎永远不是最后一行。
