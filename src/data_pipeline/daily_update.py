@@ -452,6 +452,12 @@ class DailyUpdateConfig:
             ("--delisted-registry", self.delisted_registry),
             ("--reference-cases", self.reference_cases),
             ("--status-path", final),
+            # codex #465 r8 P2: 可变**根**路径也在此列。B 把 --provider-dir
+            # 指到 A 的台账上，B 自己的派生台账只是后缀出现两次、相等检查
+            # 看不见——而一次成功重建后 swap() 会把 A 的台账 rename 成 .bak
+            # 再整个换掉，A 的历史就没了。tushare 根同理（fetch 直写其下）。
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
             *(("单飞锁", lock_path_for(Path(os.path.abspath(r))))
               for r in (self.provider_dir, self.tushare_dir,
                         self.delisted_registry)),

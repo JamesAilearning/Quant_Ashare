@@ -162,7 +162,10 @@ class TheLedgerPathCannotAliasAnythingElseTheRunTouches(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             foreign = tmp / "somewhere" / f"other_prov.{du.LEDGER_FILENAME}"
-            for field in ("status_path", "delisted_registry", "reference_cases"):
+            # 可变根路径同在保留名单：provider 根撞上会被 swap() 整个
+            # rename 掉，tushare 根被 fetch 直写（codex 第八轮 P2）。
+            for field in ("status_path", "delisted_registry", "reference_cases",
+                          "provider_dir", "tushare_dir"):
                 with self.subTest(field=field):
                     with self.assertRaises(ValueError):
                         self._cfg(tmp, **{field: foreign})

@@ -28,6 +28,13 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第八轮：一个 P2 —— 可变根路径也入保留名单
+
+命名空间保留上一轮漏了两个头：--provider-dir 与 --tushare-dir。B 把
+provider 根指到 A 的台账上，B 自己的派生台账只是后缀出现两次、相等检查看不
+见——而一次成功重建后 swap() 会把 A 的台账 rename 成 .bak 再整个换掉。
+tushare 根同理（fetch 直写其下）。两行入名单，守卫 subTest 从三字段扩到五。
+
 ## codex 第七轮：一个 P2 —— 判据从「本 provider 的路径」抬到「命名空间」
 
 兄弟 provider B 把 --status-path 指到 **A 的**台账上：B 的配置里

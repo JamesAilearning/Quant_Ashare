@@ -66,7 +66,9 @@ the derived value.
   this configuration cannot know about
 - **THEN** it is rejected at construction: the shape is reserved for ledger
   writers, so no status replace can ever destroy any provider's append-only
-  history
+  history — and the mutable ROOTS (`--provider-dir`, `--tushare-dir`) are in
+  the same reservation, because a provider root sitting on a ledger name is
+  renamed away wholesale by the swap machinery
 
 #### Scenario: a ledger failure never changes the exit code
 - **WHEN** the ledger append fails for any reason
