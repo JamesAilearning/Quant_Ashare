@@ -971,19 +971,34 @@ def run_daily_update(
     try:
         exit_code, failed_stage, detail = _execute_daily_update(
             config, runners, run_date=run_date)
-    except Exception as exc:
+    except BaseException as exc:
         # 阶段**抛异常**（而非返回退出码）时，下面的终态构造根本走不到——
         # status 卡在 running、台账恰好漏掉最需要记的那次失败。这条路在
         # 产线真实可达：atomic_write_parquet 重试后再抛 OSError，而 02 只
-        # 接 DelistedRegistryError（codex P1）。此处只**记录后原样再抛**：
-        # 不吞、不改映射、不碰阶段语义——观测写入自身的失败仍由反向耦合
-        # 契约吞掉，绝不反过来遮蔽原始异常。
+        # 接 DelistedRegistryError（codex P1）。接 BaseException 而非
+        # Exception：进程内阶段都从 argparse.parse_args 进门，argv 契约
+        # 不符抛 SystemExit；操作人 Ctrl-C 抛 KeyboardInterrupt——两者都
+        # 绕过 Exception 捕获，状态同样卡死 running（codex P2）。此处只
+        # **记录后原样再抛**：不吞、不改映射、不碰阶段语义——观测写入自身
+        # 的失败仍由反向耦合契约吞掉，绝不反过来遮蔽原始异常。
         crash_at = datetime.now(tz=_CN_TZ)
+        # 退出码尽量如实镜像进程行为：SystemExit 带非零 int code 时进程就
+        # 以它退出（argparse = 2，恰是 EXIT_CONFIG 的语义）；其余（含
+        # sys.exit(0)/None 从阶段中途冒出——那仍是异常终止，记 0 会违反
+        # 「失败记录带 failed_stage」不变式；KeyboardInterrupt 的平台码不
+        # 可移植）记 EXIT_UNHANDLED_EXCEPTION，真实类型在 detail 里。
+        crash_code = (
+            exc.code
+            if isinstance(exc, SystemExit)
+            and isinstance(exc.code, int)
+            and not isinstance(exc.code, bool)
+            and exc.code != 0
+            else EXIT_UNHANDLED_EXCEPTION)
         crash = {
             **base,
             "state": "finished",
             "finished_at": crash_at.isoformat(),
-            "exit_code": EXIT_UNHANDLED_EXCEPTION,  # 解释器进程码,如实镜像
+            "exit_code": crash_code,
             "failed_stage": "exception",
             # 消毒照抄 _stage_detail 的先例：异常消息可以携带代理转义的
             # 文件系统字节（OSError 带 surrogateescape 文件名，产线可达），

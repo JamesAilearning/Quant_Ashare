@@ -224,6 +224,65 @@ class ARaisingStageStillLeavesATerminalRecord(unittest.TestCase):
             self.assertEqual("finished", status["state"],
                              "status 卡在 running")
 
+    def test_a_system_exit_from_argparse_is_recorded_before_reraise(
+            self) -> None:
+        """SystemExit 绕过 except Exception——状态照样卡 running（codex P2）。
+
+        进程内阶段都从 argparse.parse_args 进门，argv 契约不符抛
+        SystemExit(2)。终录必须落（退出码如实镜像 2 = EXIT_CONFIG 语义），
+        再原样再抛。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            runners = _runners()
+            def bad_argv(argv: list[str]) -> int:
+                raise SystemExit(2)
+            runners["fetch"] = bad_argv
+            with self.assertRaises(SystemExit) as ctx:
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            self.assertEqual(2, ctx.exception.code, "异常被改写了")
+            rows = _lines(cfg)
+            self.assertEqual(1, len(rows), "SystemExit 的运行没进台账")
+            self.assertEqual(2, rows[0]["exit_code"], "进程真实退出码没镜像")
+            self.assertEqual("exception", rows[0]["failed_stage"])
+            self.assertIn("SystemExit", rows[0]["detail"])
+            status = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(
+                    encoding="utf-8"))
+            self.assertEqual("finished", status["state"],
+                             "status 卡在 running")
+
+    def test_a_keyboard_interrupt_is_recorded_before_reraise(self) -> None:
+        # 操作人 Ctrl-C 同罪（平台进程码不可移植——记 1，类型在 detail）。
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            runners = _runners()
+            def interrupted(argv: list[str]) -> int:
+                raise KeyboardInterrupt
+            runners["fetch"] = interrupted
+            with self.assertRaises(KeyboardInterrupt):
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            rows = _lines(cfg)
+            self.assertEqual(1, len(rows), "中断的运行没进台账")
+            self.assertEqual(1, rows[0]["exit_code"])
+            self.assertIn("KeyboardInterrupt", rows[0]["detail"])
+
+    def test_a_zero_system_exit_mid_stage_stays_a_failure_record(self) -> None:
+        # sys.exit(0) 从阶段中途冒出仍是异常终止：记 0 会造出「exit_code=0
+        # 却带 failed_stage」的矛盾记录（读侧判 corrupt）——记 1，如实。
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            runners = _runners()
+            def early_exit(argv: list[str]) -> int:
+                raise SystemExit(0)
+            runners["fetch"] = early_exit
+            with self.assertRaises(SystemExit):
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            rows = _lines(cfg)
+            self.assertEqual(1, rows[0]["exit_code"],
+                             "零码 SystemExit 造出了矛盾终录")
+            self.assertEqual("exception", rows[0]["failed_stage"])
+
     def test_a_surrogate_in_the_exception_still_lands_in_the_ledger(
             self) -> None:
         """异常消息带代理字节（surrogateescape 文件名，产线可达）。
