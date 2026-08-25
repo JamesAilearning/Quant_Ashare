@@ -320,6 +320,58 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
         self.assertEqual((1, 0), (history.malformed, history.foreign),
                          "符号链接别名身份被说成了别人的运行")
 
+    def test_a_symlink_loop_identity_is_malformed_not_a_crash(self) -> None:
+        """符号链接环让 resolve 抛 RuntimeError（3.10–3.12 实测）。
+
+        逃出兜底整页就崩——坏行契约是计数（codex P2）。真环难以可移植地
+        构造，按受控模拟：只对带标记的身份让 resolve 抛 RuntimeError，
+        其余路径走真实现。
+        """
+        import unittest.mock as mock
+
+        import web.operator_ui.update_ledger as ledger_mod
+        real_path = ledger_mod.Path
+
+        class _MaybeLooping:
+            def __init__(self, arg: object) -> None:
+                self._arg = str(arg)
+
+            def resolve(self):
+                # normcase 在 Windows 上小写化——标记匹配必须大小写不敏感
+                # （首版大小写敏感落空，行走了真实 resolve、被判 foreign）。
+                if "symlink-loop" in self._arg.lower():
+                    raise RuntimeError("Symlink loop from ...")
+                return real_path(self._arg).resolve()
+
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            looped = os.path.normcase(str(Path(t) / "SYMLINK-LOOP"))
+            _write(path, [{**_record(provider, exit_code=0),
+                           "provider_dir": looped},
+                          _record(provider, exit_code=11)])
+            with mock.patch.object(ledger_mod, "Path", _MaybeLooping):
+                history = read_ledger(path, provider_dir=provider)
+        self.assertEqual(1, len(history.runs), "好行也被带走了")
+        self.assertEqual((1, 0), (history.malformed, history.foreign),
+                         "符号链接环身份没被记成坏行（或整页崩了）")
+
+    def test_the_reader_opens_with_the_writers_discipline(self) -> None:
+        """读侧必须镜像写侧的打开纪律——FIFO 上 read_bytes 会挂死整页。
+
+        FIFO 无法在 Windows 上可移植构造，源码级钉三个承重件在场。
+        """
+        import inspect as _inspect
+
+        import web.operator_ui.update_ledger as ledger_mod
+        src = _inspect.getsource(ledger_mod.read_ledger)
+        for bearing in ("O_NONBLOCK", "O_NOFOLLOW", "S_ISREG"):
+            with self.subTest(承重位=bearing):
+                self.assertIn(bearing, src,
+                              f"读侧打开丢了 {bearing} —— FIFO 挂死防线缺角")
+        self.assertNotIn("read_bytes", src, "读侧退回了阻塞式 read_bytes")
+
     def test_a_filesystem_invalid_identity_is_malformed_not_a_crash(
             self) -> None:
         """resolve 不可信内容会抛（NUL 字节路径）——逃出解析兜底整页就崩。

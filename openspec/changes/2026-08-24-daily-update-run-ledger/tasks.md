@@ -28,6 +28,19 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十四轮：两个 P2 —— 读侧镜像写侧纪律、符号链接环
+
+**读侧也会被 FIFO 挂死。** `read_bytes()` 阻塞读——派生位被换成 FIFO 时
+工作台同步调用整页挂死；写侧的非阻塞/拒随/S_ISREG 防线管不到读路径。读侧
+镜像同一套：os.open(O_RDONLY|O_NONBLOCK|O_NOFOLLOW) + 描述符 S_ISREG，验不
+过 = unreadable。FIFO 无法在 Windows 可移植构造——源码钉三承重件 + 禁回
+阻塞式整读（钉的字样差点被我自己注释里的 read_bytes 满足，措辞改写避开）。
+
+**符号链接环让 resolve 抛 RuntimeError**（3.10–3.12），不在上一轮的兜底里
+——又是崩页。except 扩入 RuntimeError；真环不可移植构造，按受控模拟测
+（mock 模块 Path，仅带标记身份抛环；首版标记匹配大小写敏感、被 normcase
+小写化落空——修为不敏感后真咬）。
+
 ## codex 第二十三轮：一个 P2 —— design 的状态戳语义第三处收尾
 
 run-center delta 与实现的终态是「戳不等 → 归属仍确定、披露两本账不一致」，

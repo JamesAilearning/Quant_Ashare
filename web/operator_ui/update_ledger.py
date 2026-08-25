@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -173,10 +174,11 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
     # 影响。
     try:
         resolved = os.path.normcase(str(Path(stamped).resolve()))
-    except (ValueError, OSError):
-        # 对**不可信**内容做 resolve 会抛（如 NUL 字节的路径）——那是坏行，
-        # 不是让整页崩掉的理由：词法验证不抛的地方，解析器验证也不许抛
-        # （codex P2）。
+    except (ValueError, OSError, RuntimeError):
+        # 对**不可信**内容做 resolve 会抛：NUL 字节路径（ValueError/OSError）、
+        # **符号链接环**（RuntimeError，3.10–3.12 实测）——都是坏行，不是让
+        # 整页崩掉的理由：词法验证不抛的地方，解析器验证也不许抛
+        # （codex 两条 P2）。
         return False
     if not os.path.isabs(stamped) or stamped != resolved:
         return False
@@ -227,10 +229,32 @@ def read_ledger(
     只保留描述本 provider 的行；别人的行被计数（``foreign``）而不是混进来。
     解析不了的行同样被计数（``malformed``）而不是让整份台账失败。
     """
+    # 与写侧同一套打开纪律的**读侧镜像**：阻塞式整文件读取在 FIFO（或链到
+    # FIFO 的符号链接）上会阻塞等写者——工作台是同步调用，整页挂死
+    # （codex P2）。非阻塞 + 拒随打开，描述符上验常规文件，验不过 =
+    # unreadable。
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     try:
-        raw = path.read_bytes()
+        fd = os.open(str(path), flags)
     except FileNotFoundError:
         return LedgerHistory(kind="missing", path=path)
+    except OSError as exc:
+        return LedgerHistory(
+            kind="unreadable", path=path,
+            error=f"{type(exc).__name__}: {exc}")
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return LedgerHistory(
+                    kind="unreadable", path=path,
+                    error=f"不是常规文件（mode={info.st_mode:o}）")
+            raw = handle.read()
     except OSError as exc:
         return LedgerHistory(
             kind="unreadable", path=path,
