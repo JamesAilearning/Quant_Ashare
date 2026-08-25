@@ -279,6 +279,9 @@ _freshness = bundle_freshness(
     health_warnings=health.warnings if health is not None else (),
     integrity_accepted=_integrity.accepted,
     integrity_reason=_integrity.reason,
+    # 当前 bundle 的身份 tag——合成句拿它与工件 meta.bundle_tag 绑定
+    # （codex #468 P1：不绑定，另一个 bundle 的工件按日期巧合也能上卡）。
+    identity_tag=_integrity.identity_tag,
 )
 update_status: UpdateRunStatus | None = None
 update_matches_provider: bool | None = None

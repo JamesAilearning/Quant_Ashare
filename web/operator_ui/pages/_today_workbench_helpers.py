@@ -73,6 +73,12 @@ class DailySignalSummary:
     #: 被掩蔽），丢掉基数会让「再平衡日」被下游当成「必有买入对象」
     #: （codex #468 P1）。仅在工件通过全部核验后有值。
     pick_count: int | None = None
+    #: 产出器写下的数据来源（meta.provider_uri / meta.bundle_tag）。此前
+    #: 核验只绑模型身份、把数据来源丢了——provider 切换或 bundle 原地重建
+    #: 后，别的 bundle 的工件按日期巧合也能冒充「最新」（codex #468 P1）。
+    #: 仅在工件通过全部核验后原样留存；核验交给消费方。
+    data_provider_uri: str | None = None
+    data_bundle_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +184,18 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 数据来源原样留存（meta 在上方已通过形态核验，必为 dict）。产出器
+    # 无条件写 provider_uri；bundle_tag 在 bundle 无身份块时合法为 None。
+    meta_block = payload.get("meta")
+    data_provider = (
+        meta_block.get("provider_uri") if isinstance(meta_block, dict) else None)
+    data_tag = (
+        meta_block.get("bundle_tag") if isinstance(meta_block, dict) else None)
+    provenance: dict[str, str | None] = {
+        "data_provider_uri": (
+            data_provider if isinstance(data_provider, str) else None),
+        "data_bundle_tag": data_tag if isinstance(data_tag, str) else None,
+    }
     if cadence.is_hold:
         return DailySignalSummary(
             "hold",
@@ -186,6 +204,7 @@ def summarise_daily_signal(
             entry_date=entry_date,
             next_rebalance_date=cadence.next_rebalance_date,
             pick_count=pick_count,
+            **provenance,
         )
     if "rebalance_day" in payload:
         return DailySignalSummary(
@@ -194,6 +213,7 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
             pick_count=pick_count,
+            **provenance,
         )
     return DailySignalSummary(
         "daily",
@@ -201,6 +221,7 @@ def summarise_daily_signal(
         as_of_date=as_of_date,
         entry_date=entry_date,
         pick_count=pick_count,
+        **provenance,
     )
 
 
@@ -276,6 +297,17 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
 
 
 _ANSWER_DISCLAIMER = "本句只汇总既有工件与出单侧判据，不是订单，也不授予交易许可。"
+
+
+def _same_provider_spelling(artifact: str, current: str) -> bool:
+    """两个 provider 拼写是否指同一份 bundle——用出单器自己的归一化。
+
+    不自造第二套归一化（expanduser/abspath/realpath/normcase 的组合差一个
+    就是一类假阴/假阳）；出单器怎么认，本卡就怎么认。
+    """
+    from src.inference import daily_recommend as _rec  # noqa: PLC0415
+    normalize = _rec._normalize_provider_uri  # type: ignore[attr-defined]
+    return bool(normalize(artifact) == normalize(current))
 
 
 @dataclass(frozen=True)
@@ -377,13 +409,53 @@ def todays_buy_answer(
             "unanswerable", "无法给出",
             f"最新工件需要核查：{signal.detail}{_ANSWER_DISCLAIMER}",
         )
+    # 数据来源绑定（codex #468 P1）：entry 与日历尾的比对只在「工件出自
+    # **这份** bundle」时才有意义——provider 切换或 bundle 原地重建后，
+    # 别的 bundle 的工件按日期巧合也能对上尾，而全页健康检查说的都是另一
+    # 份数据。provider 必绑（产出器无条件写 meta.provider_uri）；身份 tag
+    # 两侧都有才可比（身份块是 stamp 的可选项，pre-PR-G+I 无块是合法态
+    # ——那时仅按 provider 绑定，不假装比过）。
+    if signal.data_provider_uri is None:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "工件缺数据来源（meta.provider_uri，v2 产出器无条件写入）——"
+            f"无法确认信号出自当前数据；请核查工件。{_ANSWER_DISCLAIMER}",
+        )
+    if not freshness.provider_uri:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "出单侧裁决未带 provider 身份，无法绑定工件的数据来源。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if not _same_provider_spelling(
+            signal.data_provider_uri, freshness.provider_uri):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"工件出自另一个 provider（工件 {signal.data_provider_uri} vs "
+            f"当前 {freshness.provider_uri}）——它不是这份数据的信号；本页"
+            f"其余检查说的都是当前数据。{_ANSWER_DISCLAIMER}",
+        )
+    if (signal.data_bundle_tag is not None
+            and freshness.identity_tag is not None
+            and signal.data_bundle_tag != freshness.identity_tag):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"工件出自另一份 bundle（工件身份戳 {signal.data_bundle_tag} vs "
+            f"当前 {freshness.identity_tag}）——bundle 已重建或被替换；请"
+            f"重跑出单。{_ANSWER_DISCLAIMER}",
+        )
     # 已核验的三类工件都带严格 ISO entry_date（summarise_daily_signal 的
     # 边界保证）；日历尾同为规范 YYYY-MM-DD——ISO 字符串可直接比序。
     entry = str(signal.entry_date)
+    # 已收盘披露跟着工件内容走到**每一个**把它当指令呈现的态（基线契约 +
+    # 本 change 规格；codex P2：流程态也点名了 entry，披露不能只在现行态）。
+    closed = (
+        f"截至 {entry} 收盘（**已收盘会话**，不是「明早买入」指令；真实"
+        "订单如何向清单收敛是你的执行惯例，观察期记录的正是该偏差）")
     if entry < tail:
         return TodaysAnswer(
             "no_instruction", "最新指令未跟上数据",
-            f"数据已到 {tail}，最新指令仍截至 {entry} 收盘——之后的出单"
+            f"数据已到 {tail}，最新指令仍是{closed}的那份——之后的出单"
             f"还没跑；请在运行中心生成。{_ANSWER_DISCLAIMER}",
         )
     if entry > tail:
@@ -393,9 +465,6 @@ def todays_buy_answer(
             f"出不了未收盘会话的清单，两侧必有一侧在说谎；请核查工件来源。"
             f"{_ANSWER_DISCLAIMER}",
         )
-    closed = (
-        f"截至 {entry} 收盘（**已收盘会话**，不是「明早买入」指令；真实"
-        "订单如何向清单收敛是你的执行惯例，观察期记录的正是该偏差）")
     if signal.kind == "hold":
         return TodaysAnswer(
             "watch", "不动 · 最新指令为 HOLD",

@@ -20,9 +20,25 @@ own, and SHALL NOT consult a wall clock.
 The card SHALL honour the daily-decision baseline's entry semantics:
 `entry_date` names an **already-closed** session, the list is not a
 next-morning buy instruction, and how real orders converge to the list is
-the operator's execution convention. Every state that presents artifact
-content SHALL restate that disclosure, and the card SHALL NOT phrase any
-execution imperative or equate `entry_date` with a buy day.
+the operator's execution convention. Every state that names the artifact's
+`entry_date` — current, empty-list, and superseded alike — SHALL restate
+that disclosure, and the card SHALL NOT phrase any execution imperative or
+equate `entry_date` with a buy day. The abnormal state that rejects an
+artifact's claimed session is exempt: it presents the claim as rejected,
+not as content.
+
+Before comparing any dates, the card SHALL bind the artifact to the current
+bundle by the producer-written data provenance: `meta.provider_uri` MUST
+match the current provider under the recommender's own normalization, and
+when both the artifact's `meta.bundle_tag` and the current integrity stamp's
+identity tag exist they MUST match. A missing artifact `provider_uri`, an
+unidentifiable current side, or either mismatch SHALL refuse the answer with
+both spellings named — an artifact from another or a superseded bundle can
+match the current tail by date coincidence while every health check on the
+page describes different data. A missing identity tag on either side is a
+legitimate stamp state (identity blocks are optional): the card SHALL fall
+back to provider binding alone, and SHALL NOT refuse for that reason or
+pretend the tags were compared.
 
 An empty target list on a rebalance day is a legitimate producer state
 (`--topk 0`, or every candidate masked): the card SHALL NOT call it an
@@ -71,6 +87,22 @@ grants no trading permission.
   (for example a missing instruments directory)
 - **WHEN** the card renders
 - **THEN** it refuses to answer and carries the health reason
+
+#### Scenario: an artifact from another provider or a superseded bundle
+
+- **GIVEN** a verified artifact whose `meta.provider_uri` does not match the
+  current provider, or whose `meta.bundle_tag` differs from the current
+  integrity stamp's identity tag
+- **WHEN** the card renders
+- **THEN** it refuses to answer and names both spellings
+
+#### Scenario: an identity tag missing on one side
+
+- **GIVEN** a verified artifact whose provider matches while the artifact or
+  the current stamp carries no identity tag
+- **WHEN** the card renders
+- **THEN** it answers on provider binding alone, without refusing and
+  without claiming the tags were compared
 
 #### Scenario: an artifact that could not be verified
 

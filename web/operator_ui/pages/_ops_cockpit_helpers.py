@@ -484,6 +484,10 @@ class BundleFreshness:
     # None = not evaluated.
     integrity_accepted: bool | None = None
     integrity_reason: str = ""
+    #: 当前 bundle 的内容身份 tag（integrity stamp 的 identity 块）。工件
+    #: meta 的 ``bundle_tag`` 与它比对，才知道信号出自**这份** bundle
+    #: （codex #468 P1）。None = stamp 无身份块（pre-PR-G+I 合法态）。
+    identity_tag: str | None = None
 
     @property
     def age_ok(self) -> bool:
@@ -663,6 +667,11 @@ class BundleIntegrityCheck:
     reason: str = ""
     holey: bool | None = None
     built_at: str | None = None
+    #: 该 stamp 的内容身份 tag（PR-G+I）。产出器把它写进工件 meta 的
+    #: ``bundle_tag``——读侧原样暴露，工件与 bundle 的身份绑定才可比
+    #: （codex #468 P1）。身份块是 schema v1 的可选项：pre-PR-G+I 的
+    #: stamp 没有它，None 是合法态，不是错误。
+    identity_tag: str | None = None
 
 
 def recommender_integrity_check(
@@ -720,10 +729,12 @@ def recommender_integrity_check(
         return BundleIntegrityCheck(
             known=True, accepted=allow_holey, holey=True,
             built_at=stamp.built_at,
+            identity_tag=stamp.identity.tag if stamp.identity else None,
             reason=("stamp 标记 built_from_holey_fetch=true;"
                     "出单侧拒绝(除非显式 --allow-holey-recommend)"))
     return BundleIntegrityCheck(
         known=True, accepted=True, holey=False, built_at=stamp.built_at,
+        identity_tag=stamp.identity.tag if stamp.identity else None,
         reason="完整性 stamp 完好且非 holey")
 
 
@@ -770,6 +781,7 @@ def bundle_freshness(
     health_warnings: tuple[str, ...] = (),
     integrity_accepted: bool | None = None,
     integrity_reason: str = "",
+    identity_tag: str | None = None,
 ) -> BundleFreshness:
     limit = serving_bundle_max_age_days() if max_age_days is None else max_age_days
     # Default to the recommender's clock rather than the caller's: every call
@@ -781,7 +793,7 @@ def bundle_freshness(
             message=message or "bundle 尾部日期不可读",
             health_status=health_status, health_warnings=health_warnings,
             integrity_accepted=integrity_accepted,
-            integrity_reason=integrity_reason)
+            integrity_reason=integrity_reason, identity_tag=identity_tag)
     try:
         tail = date.fromisoformat(str(tail_date))
     except ValueError:
@@ -791,7 +803,7 @@ def bundle_freshness(
             message=f"bundle 尾部日期不是合法日期:{tail_date!r}",
             health_status=health_status, health_warnings=health_warnings,
             integrity_accepted=integrity_accepted,
-            integrity_reason=integrity_reason)
+            integrity_reason=integrity_reason, identity_tag=identity_tag)
     behind = (today - tail).days
     return BundleFreshness(
         known=True, tail_date=tail.isoformat(), days_behind=behind,
@@ -800,7 +812,7 @@ def bundle_freshness(
         message=message, health_status=health_status,
         health_warnings=health_warnings,
         integrity_accepted=integrity_accepted,
-        integrity_reason=integrity_reason)
+        integrity_reason=integrity_reason, identity_tag=identity_tag)
 
 
 @dataclass(frozen=True)

@@ -152,6 +152,27 @@ class DailySignalSummaryTests(unittest.TestCase):
         self.assertEqual("rebalance", two.kind)
         self.assertEqual(2, two.pick_count)
 
+    def test_the_verified_summary_retains_the_data_provenance(self) -> None:
+        # 产出器写下的 meta.provider_uri / meta.bundle_tag 必须随核验结果
+        # 传出去——丢掉它，provider 切换或 bundle 重建后，别的 bundle 的
+        # 工件按日期巧合也能冒充「最新」（codex #468 P1）。
+        payload = _ensemble_payload()
+        meta = dict(payload["meta"])  # type: ignore[arg-type]
+        meta["provider_uri"] = "D:/data/prov"
+        meta["bundle_tag"] = "tag-1"
+        payload["meta"] = meta
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("D:/data/prov", got.data_provider_uri)
+        self.assertEqual("tag-1", got.data_bundle_tag)
+        # 缺失时如实 None（老工件形态）——不冒充有来源。
+        bare = summarise_daily_signal(
+            "2026-08-18", _ensemble_payload(),
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertIsNone(bare.data_provider_uri)
+        self.assertIsNone(bare.data_bundle_tag)
+
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
             ("missing", None),
@@ -329,7 +350,8 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         base: dict[str, object] = dict(
             known=True, tail_date="2026-08-26", days_behind=0,
             max_age_days=14, headroom_days=14, refuses_today=False,
-            integrity_accepted=True)
+            integrity_accepted=True, provider_uri="D:/data/prov",
+            identity_tag="tag-1")
         base.update(overrides)
         return BundleFreshness(**base)  # type: ignore[arg-type]
 
@@ -337,7 +359,8 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
     def _signal(kind: str, **overrides: object) -> DailySignalSummary:
         base: dict[str, object] = dict(
             kind=kind, detail="x", as_of_date="2026-08-25",
-            entry_date="2026-08-26", pick_count=5)
+            entry_date="2026-08-26", pick_count=5,
+            data_provider_uri="D:/data/prov", data_bundle_tag="tag-1")
         base.update(overrides)
         return DailySignalSummary(**base)  # type: ignore[arg-type]
 
@@ -352,11 +375,15 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         # 基线契约（v2-daily-decision-page）：entry_date 是**已收盘会话**、
         # 清单不是「明早买入」指令、真实订单如何收敛是操作人的执行惯例
         # （codex #468 P1：把 entry 等同「今天买」会怂恿对已收盘价下单）。
+        # 流程态（数据走过最新指令）也点名了 entry——披露必须跟到
+        # （codex P2：只在现行三态披露违反本 change 规格）。
         for signal in (self._signal("rebalance"),
                        self._signal("rebalance", pick_count=0),
-                       self._signal("hold")):
+                       self._signal("hold"),
+                       self._signal("rebalance", entry_date="2026-08-24")):
             got = todays_buy_answer(signal, self._fresh())
-            with self.subTest(kind=signal.kind, picks=signal.pick_count):
+            with self.subTest(kind=signal.kind, picks=signal.pick_count,
+                              entry=signal.entry_date):
                 self.assertIn("已收盘会话", got.detail,
                               "已收盘披露没跟着工件走到本卡")
                 self.assertNotIn("执行日", got.detail,
@@ -471,6 +498,49 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         self.assertEqual("unanswerable", got.state)
         self.assertIn("2026-08-27", got.detail)
         self.assertIn("2026-08-26", got.detail)
+
+    def test_an_artifact_from_another_provider_is_refused(self) -> None:
+        # 数据来源绑定（codex P1）：provider 切换后，旧 provider 的工件按
+        # 日期巧合也能对上尾——而全页健康检查说的都是当前数据。
+        got = todays_buy_answer(
+            self._signal("rebalance", data_provider_uri="D:/data/other"),
+            self._fresh())
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("D:/data/other", got.detail, "工件侧 provider 没点名")
+        self.assertIn("D:/data/prov", got.detail, "当前侧 provider 没点名")
+
+    def test_an_artifact_from_a_rebuilt_bundle_is_refused(self) -> None:
+        # 同 provider、bundle 原地重建（身份戳换了）——不是这份数据的信号。
+        got = todays_buy_answer(
+            self._signal("rebalance", data_bundle_tag="tag-0"), self._fresh())
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("tag-0", got.detail)
+        self.assertIn("tag-1", got.detail)
+
+    def test_a_missing_artifact_provenance_is_refused(self) -> None:
+        # v2 产出器无条件写 meta.provider_uri——缺失即需核查，不猜来源。
+        got = todays_buy_answer(
+            self._signal("rebalance", data_provider_uri=None), self._fresh())
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("meta.provider_uri", got.detail)
+
+    def test_an_unidentified_current_side_cannot_bind(self) -> None:
+        got = todays_buy_answer(
+            self._signal("rebalance"), self._fresh(provider_uri=None))
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("provider 身份", got.detail)
+
+    def test_a_missing_identity_tag_degrades_to_provider_binding(self) -> None:
+        # 身份块是 stamp 的可选项（pre-PR-G+I 无块合法）——单侧缺 tag 时
+        # 按 provider 绑定放行，不冒充比过，也不因此拒答。
+        for overrides in ({"data_bundle_tag": None}, {}):
+            fresh = (self._fresh(identity_tag=None)
+                     if not overrides else self._fresh())
+            got = todays_buy_answer(
+                self._signal("rebalance", **overrides), fresh)
+            with self.subTest(缺侧="工件" if overrides else "当前"):
+                self.assertEqual("rebalance", got.state,
+                                 "单侧无身份块不该拒答——provider 已绑定")
 
     def test_an_unmarked_daily_artifact_cannot_be_synthesized(self) -> None:
         got = todays_buy_answer(self._signal("daily"), self._fresh())

@@ -43,6 +43,18 @@
 - [x] 新守卫：禁执行日措辞（三态扫「执行日」「今天（」）、已收盘披露
       跟工件走、两方向日期错位各点名、无尾拒比
 
+## 第四轮（codex P1 来源绑定 + P2 披露补流程态）
+
+- [x] 比日期前先绑数据来源：`summarise_daily_signal` 留存产出器写的
+      `meta.provider_uri`/`meta.bundle_tag`；integrity 读取处暴露
+      `identity_tag` 并随 `BundleFreshness` 走；provider 用出单器自己的
+      归一化比对，双 tag 在场才比——mismatch/缺 provider/当前侧不可辨
+      各自拒答点名两侧，单侧缺 tag 按 provider 绑定放行（合法态）
+- [x] 已收盘披露跟到流程态（数据走过最新指令的分支）；超前拒绝态豁免
+      （呈现的是被拒的声称，规格措辞同步收窄）
+- [x] 新守卫 6 条（异 provider/异 tag/缺 meta 来源/当前侧不可辨/单侧缺
+      tag 放行×2/来源随核验留存）+ 披露循环加流程态
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
