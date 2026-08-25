@@ -390,6 +390,12 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
                 # 结束早于开始。
                 {"started_at": "2026-08-21T22:00:00+08:00",
                  "finished_at": "2026-08-21T20:00:00+08:00"},
+                # 解析得动但写入侧产不出的拼写/时区（codex P2）。
+                {"started_at": "20260821T203000+08:00"},
+                {"started_at": "2026-08-21T20:30:00Z"},
+                # 时区非 +08:00（时刻选得不触发「结束早于开始」——否则
+                # 排序检查会遮蔽时区检查，变异 CY 实测如此）。
+                {"started_at": "2026-08-21T10:30:00+00:00"},
             ]
             for override in cases:
                 with self.subTest(override=override):
@@ -807,9 +813,10 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider.mkdir()
             line = f"20:31:00{_PROGRESS_LINE}"
             for stamp in ("ץȡ�", "2026-08-24T20:30:00",
-                          # 解析得动但写入侧永不产的拼写（codex P2）：
+                          # 解析得动但写入侧永不产的拼写/时区（codex P2）：
                           "20260825T203000+08:00",
-                          "2026-08-24T20:30:00Z"):
+                          "2026-08-24T20:30:00Z",
+                          "2026-08-24T12:30:00+00:00"):
                 with self.subTest(stamp=stamp):
                     text = chr(10).join([
                         f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} {stamp} "

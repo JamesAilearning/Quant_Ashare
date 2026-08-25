@@ -141,9 +141,10 @@ the derived value.
   provider's run, which would disguise ledger corruption as foreign history
 
 #### Scenario: unparseable dates and timestamps are corruption, not history
-- **WHEN** a row's `run_date` is not an ISO date, a timestamp is not a
-  timezone-aware ISO datetime, or `finished_at` precedes `started_at` — none
-  of which the writer ever emits
+- **WHEN** a row's `run_date` is not an ISO date, a timestamp does not
+  round-trip exactly through `datetime.isoformat()` at the writer's fixed
+  `+08:00` offset (compact, week-date, `Z` and foreign-offset spellings all
+  parse but are never emitted), or `finished_at` precedes `started_at`
 - **THEN** the row counts as malformed rather than being rendered as a real
   run with nonsense dates
 

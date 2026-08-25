@@ -53,7 +53,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 #: 与 ``fetcher`` 的格式串一一对应:
@@ -212,6 +212,9 @@ def _current_segment(
         # 周历、`Z` 后缀等写入侧永不产的拼写（codex P2）。要求与
         # `datetime.isoformat()` 的产出**精确回环**——写入侧只产这种。
         if stamp.tzinfo is None or stamp.isoformat() != raw:
+            return None, "corrupt_boundary"
+        if stamp.utcoffset() != timedelta(hours=8):
+            # 写入侧只在东八区落边界——别的时区产不出（同一原则顺带钉上）。
             return None, "corrupt_boundary"
     if any(
         os.path.normcase(match.group("provider").strip()) != provider_key

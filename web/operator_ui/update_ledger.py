@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # Mirrors src/data_pipeline/daily_update.py LEDGER_FILENAME / LEDGER_SCHEMA_VERSION.
@@ -186,8 +186,15 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
         finished = datetime.fromisoformat(str(record["finished_at"]))
     except ValueError:
         return False
-    if started.tzinfo is None or finished.tzinfo is None:
-        return False
+    # 时间戳与 run_date 同一处置：解析得动还不够，得是写入侧**产得出**的
+    # 形态——与 `datetime.isoformat()` 精确回环，且时区是写入侧固定的
+    # +08:00（紧凑型/周历/`Z` 后缀/别的时区都产不出，codex P2）。
+    for stamp, raw in ((started, str(record["started_at"])),
+                       (finished, str(record["finished_at"]))):
+        if stamp.tzinfo is None or stamp.isoformat() != raw:
+            return False
+        if stamp.utcoffset() != timedelta(hours=8):
+            return False
     if finished < started:
         return False
     return isinstance(record.get("detail"), str)
