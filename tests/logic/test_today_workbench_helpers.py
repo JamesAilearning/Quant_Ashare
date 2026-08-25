@@ -257,6 +257,21 @@ class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
         self.assertIn("2026-06-15~2026-07-10", rows[2][1])
         self.assertIn("已过", rows[2][1], "closed 态没有如实翻译")
 
+    def test_the_window_row_discloses_its_derived_identity_visibly(self) -> None:
+        # 披露契约（codex P1）：窗口走到哪，「推导 + 无机器可读到期锚」的
+        # 告白就要跟到哪——且必须在**可见文案**里（label/value），docstring
+        # 不渲染不算。数值 pin 也要在场，操作人才知道推导依据是什么。
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        window = RetrainWindow(
+            known=True, newest_fit_end="2026-04-01", days_since_newest=146,
+            opens_on="2026-06-15", closes_on="2026-07-10", state="closed",
+            days_closed=46, gap_if_fit_today=146, refused_if_fit_today=True)
+        label, value = model_age_rows(window)[2]
+        self.assertIn("推导", label, "窗口行 label 没自报推导身份")
+        self.assertIn(f"[{window.spacing_min},{window.spacing_max}]", value,
+                      "推导依据（spacing pin 数值）不在可见文案里")
+        self.assertIn("无机器可读", value, "缺「仓库无到期锚」的告白")
+
     def test_an_unknown_window_is_stated_not_blank(self) -> None:
         from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
         rows = model_age_rows(RetrainWindow(known=False, error="x"))

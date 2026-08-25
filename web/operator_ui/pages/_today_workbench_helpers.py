@@ -233,6 +233,11 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
     要跳页才知道。此处不自造任何判定：同一个推导函数、同一套字段，只做措辞
     （生产运维页与本页共用一份实现的既定纪律——#461 首版另写一份三个决策
     全错的教训在档）。`known=False` 时如实说推导不了，不留空。
+
+    窗口行必须在**可见文案**里自报「推导」身份（codex P1）：仓库没有机器
+    可读的「下次重训到期日」，这个窗口是从 serving 间距 pin 推导出来的——
+    驾驶舱④的披露契约（cockpit 模块头「labelled as DERIVED」）跟着窗口走
+    到每一处展示，docstring 不渲染、不算数。
     """
     if not getattr(window, "known", False):
         return [("模型时效", "无法推导（现任非可解析 ensemble）")]
@@ -244,5 +249,10 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
     return [
         ("fit 至", str(window.newest_fit_end)),
         ("模型年龄", f"{window.days_since_newest} 天"),
-        ("下一成员 fit_end 窗", f"{window.opens_on}~{window.closes_on}（{state_text}）"),
+        (
+            "下一成员 fit_end 窗（推导）",
+            f"{window.opens_on}~{window.closes_on}（{state_text}；由 serving "
+            f"间距 pin [{window.spacing_min},{window.spacing_max}] 天推导，"
+            "仓库无机器可读的重训到期锚）",
+        ),
     ]
