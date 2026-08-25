@@ -272,10 +272,35 @@ def _is_pip_install(command: list[str]) -> bool:
         return False
     name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
     if _PYTHON_EXECUTABLE.match(name) and tokens[1:3] == ["-m", "pip"]:
-        return "install" in tokens[3:]
-    if _PIP_EXECUTABLE.match(name):
-        return "install" in tokens[1:]
-    return False
+        rest = tokens[3:]
+    elif _PIP_EXECUTABLE.match(name):
+        rest = tokens[1:]
+    else:
+        return False
+    # `install` 必须是**子命令**（`pip <command> [options]`），不是任意位置
+    # 的实参：`pip --help install ".[research]"` 只打印帮助、装不了任何东西，
+    # 在实参里搜 `install` 会把 research 记进覆盖面，治理对 CI 没装的依赖
+    # 变红（codex P2）。三条判据，都不需要 pip 的选项表：
+    #  1. `-h`/`--help` 出现在任何位置 → 帮助优先，pip 不会安装（argparse
+    #     通例，不是 pip 特有）；
+    #  2. 子命令 = 可执行体后第一个不带 `-` 的 token；
+    #  3. 子命令**之前**还有别的选项 token → 有的全局选项接值（如 --log
+    #     PATH），值与子命令无从区分——多义即响亮，与本地目标那条同一处置。
+    if any(token in ("-h", "--help") for token in rest):
+        return False
+    subcommand_at = next(
+        (i for i, token in enumerate(rest) if not token.startswith("-")), None)
+    if subcommand_at is None:
+        return False
+    # 子命令之前的选项：`--opt=value` 连写自含值、无歧义；**裸**选项才可能
+    # 把下一个 token 吃成值（如 `--log PATH`），让子命令位置无从确定。
+    bare_options = [t for t in rest[:subcommand_at] if "=" not in t]
+    if bare_options:
+        raise AmbiguousPipCommand(
+            f"pip 子命令之前有裸选项 token {bare_options}——接值的全局选项"
+            f"让子命令位置无从确定；请把选项挪到子命令之后或用 --opt=value"
+            f" 连写")
+    return rest[subcommand_at] == "install"
 
 
 def _pip_installs(workflow: Path) -> list[list[str]]:
@@ -344,6 +369,21 @@ class AmbiguousPipCommand(ValueError):
     的、随版本变的集合，不是本守卫该维护的。所以**响亮**：用 `--opt=value`
     的连写形态消歧后，值不再是独立 token，歧义就地消失。
     """
+
+
+def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
+    """真正**安装** qlib 的命令。
+
+    只按「URL 出现在命令里」认，一条 `echo git+…qlib… "numpy…" "scipy…"`
+    也会当成安装——若真安装被误删只剩这句回显，两条断言照样绿，而
+    `pytest.importorskip("qlib")` 会让 qlib 侧 CI 静默跳过（codex P1）。
+    候选必须先过 `_is_pip_install`。
+    """
+    return [
+        command for command in commands
+        if any(token.startswith(_QLIB_PIN) for token in command)
+        and _is_pip_install(command)
+    ]
 
 
 def _local_target(command: list[str]) -> re.Match[str] | None:
@@ -721,6 +761,48 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
     def test_install_must_follow_the_executable(self) -> None:
         self.assertFalse(_is_pip_install(_commands("pip download numpy")[0]))
 
+    def test_install_must_be_the_subcommand_not_any_argument(self) -> None:
+        """`pip --help install ".[research]"` 只打印帮助，什么都不装。
+
+        在实参里搜 `install`，research 被记进覆盖面，治理对 CI 没装的依赖
+        变红（codex P2）。帮助优先是 argparse 通例；`pip install --help`
+        同样只打印帮助。
+        """
+        for line in ('pip --help install ".[research]"',
+                     'pip install --help ".[research]"',
+                     'pip -h install ".[research]"'):
+            with self.subTest(line=line):
+                self.assertFalse(_is_pip_install(_commands(line)[0]))
+
+    def test_options_before_the_subcommand_are_ambiguous_loudly(self) -> None:
+        # `--log PATH` 这类接值的全局选项让子命令位置无从确定——多义即响亮。
+        with self.assertRaises(AmbiguousPipCommand):
+            _is_pip_install(_commands('pip --log x.log install ".[dev]"')[0])
+        # 连写形态消歧后照常判定。
+        self.assertTrue(
+            _is_pip_install(_commands('pip --log=x.log install ".[dev]"')[0]))
+
+
+class TheQlibPinMustBeARealInstall(unittest.TestCase):
+    """URL 出现在命令里 ≠ 安装了 qlib。
+
+    真安装被误删只剩一句 `echo git+…qlib… "numpy…"` 时，「装 qlib 的命令带齐
+    了窗口」两条断言照样绿——而 `pytest.importorskip("qlib")` 让 qlib 侧 CI
+    静默跳过（codex P1）。候选先过 `_is_pip_install`。
+    """
+
+    QLIB = "git+https://github.com/microsoft/qlib.git@abc123"
+
+    def test_an_echo_carrying_the_pin_is_not_an_install(self) -> None:
+        self.assertEqual(
+            [], _qlib_pin_installs(
+                _commands(f'echo {self.QLIB} "numpy>=1.24,<2.0"')))
+
+    def test_a_real_install_is_kept(self) -> None:
+        got = _qlib_pin_installs(
+            _commands(f'pip install {self.QLIB} "numpy>=1.24,<2.0"'))
+        self.assertEqual(1, len(got))
+
     def test_a_control_keyword_does_not_hide_the_install(self) -> None:
         """`if pip install …; then` 的可执行体是 `pip`，不是 `if`。
 
@@ -1013,8 +1095,7 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         commands = [
             (workflow.name, command)
             for workflow in _workflows()
-            for command in _workflow_commands(workflow)
-            if any(token.startswith(_QLIB_PIN) for token in command)
+            for command in _qlib_pin_installs(_workflow_commands(workflow))
         ]
         self.assertGreaterEqual(
             len(commands), 1, "没有在项目之前装 qlib 的命令 —— 本守卫已失效")

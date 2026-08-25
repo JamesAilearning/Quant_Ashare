@@ -187,6 +187,21 @@ that actually produces the anchor.
 - **THEN** a body containing `$(` or a backtick is refused loudly, while a
   plain-text body (variable expansion cannot run a command) is still skipped
 
+#### Scenario: the qlib pin must sit on an actual install
+- **WHEN** the qlib URL appears only in a command that is not a pip install —
+  an `echo` documenting it, for instance
+- **THEN** that command satisfies neither the presence floor nor the
+  carries-both-windows assertion, because `pytest.importorskip("qlib")` would
+  let a missing install turn qlib-dependent CI silently green
+
+#### Scenario: install must be pip's subcommand, not any argument
+- **WHEN** `install` appears among a pip command's arguments without being its
+  subcommand — `pip --help install ".[research]"` prints help and installs
+  nothing
+- **THEN** it contributes nothing to the derived coverage; help flags preempt,
+  and a bare option before the subcommand position is refused loudly because a
+  value-taking global option would make that position undecidable
+
 #### Scenario: an option value shaped like a target is ambiguous, loudly
 - **WHEN** a pip install carries both an option value and an install target
   that match the local-target shape, as in `--find-links . ".[research]"`

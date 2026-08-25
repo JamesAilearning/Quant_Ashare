@@ -15,6 +15,19 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第十二轮：一个 P1 + 一个 P2 —— URL 不是安装，实参不是子命令
+
+**P1 qlib pin 检查只认 URL。** 一条 `echo git+…qlib… "numpy…"` 也满足两条
+断言——真安装被误删只剩回显时守卫照样绿，而 `pytest.importorskip("qlib")`
+会让 qlib 侧 CI 静默跳过。候选先过 `_is_pip_install`（新 helper
+`_qlib_pin_installs`，可单测可变异）。
+
+**P2 `install` 必须是子命令。** `pip --help install ".[research]"` 只打印
+帮助，在实参里搜 `install` 会把 research 记进覆盖面、治理误报红。三条判据
+都不需要 pip 的选项表：帮助 flag 优先（argparse 通例）；子命令 = 可执行体后
+第一个不带 `-` 的 token；子命令前的**裸**选项（可能接值）多义即响亮，
+`--opt=value` 连写自含值不拦。
+
 ## codex 第十一轮：两个 P2 —— 未引号 heredoc 的活性体、选项值的歧义
 
 **未加引号的定界词让 heredoc 正文保持活性。** POSIX 在这种正文里做命令替换，
