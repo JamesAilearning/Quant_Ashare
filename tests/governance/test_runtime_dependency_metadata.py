@@ -307,8 +307,9 @@ def _is_pip_install(command: list[str]) -> bool:
     # 语法顺序：保留字引导复合命令在先，赋值前缀在后，然后才是可执行体。
     while tokens and tokens[0] in _RESERVED_WORDS:
         tokens.pop(0)
+    assignments: list[str] = []
     while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
-        tokens.pop(0)
+        assignments.append(tokens.pop(0))
     if not tokens:
         return False
     name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
@@ -318,6 +319,16 @@ def _is_pip_install(command: list[str]) -> bool:
         rest = tokens[1:]
     else:
         return False
+    # pip 的每个选项都能经 `PIP_<OPTION>` 环境变量注入——`PIP_DRY_RUN=1
+    # pip install …` 让 pip 什么都不装，而命令实参上看不出来（codex P1）。
+    # 分辨哪些 PIP_* 是「行为改变的」需要 pip 的选项表——pip 的、随版本变，
+    # 不该由本守卫维护。与选项歧义同一处置：**多义即响亮**，药方是把配置
+    # 写成显式 flag（flag 受 --dry-run / 文件引入等既有判据管辖）。
+    pip_environment = [a for a in assignments if a.startswith("PIP_")]
+    if pip_environment:
+        raise AmbiguousPipCommand(
+            f"pip 行为经环境赋值注入：{pip_environment} —— 命令文本推导"
+            f"看不见它改变了什么；请改用显式 flag")
     # `install` 必须是**子命令**（`pip <command> [options]`），不是任意位置
     # 的实参：`pip --help install ".[research]"` 只打印帮助、装不了任何东西，
     # 在实参里搜 `install` 会把 research 记进覆盖面，治理对 CI 没装的依赖
@@ -942,7 +953,25 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
     def test_an_assignment_prefix_does_not_hide_the_executable(self) -> None:
         # POSIX 允许 `VAR=value cmd …`——可执行体在赋值前缀之后。
         self.assertTrue(_is_pip_install(
-            _commands('PIP_NO_CACHE_DIR=1 pip install ".[dev]"')[0]))
+            _commands('MY_FLAG=1 pip install ".[dev]"')[0]))
+
+    def test_a_pip_environment_assignment_is_ambiguous_loudly(self) -> None:
+        """pip 的每个选项都能经 `PIP_<OPTION>` 环境注入。
+
+        `PIP_DRY_RUN=1 pip install <窗口> <qlib pin>` 让 pip 什么都不装，而
+        实参上看不出来——安装与窗口两道守卫全过、qlib 缺席、CI 静默绿
+        （codex P1）。哪些 PIP_* 改行为要查 pip 的选项表——不维护它，多义
+        即响亮，含此前当反例用过的 PIP_NO_CACHE_DIR：一视同仁。
+        """
+        for line in ('PIP_DRY_RUN=1 pip install ".[dev]"',
+                     'PIP_NO_CACHE_DIR=1 pip install ".[dev]"',
+                     'PIP_REQUIREMENT=r.txt python -m pip install .'):
+            with self.subTest(line=line):
+                with self.assertRaises(AmbiguousPipCommand):
+                    _is_pip_install(_commands(line)[0])
+        # 非 PIP_ 前缀的赋值不拦——它不配置 pip。
+        self.assertTrue(_is_pip_install(
+            _commands('RUST_LOG=debug pip install ".[dev]"')[0]))
 
     def test_a_lookalike_executable_is_not_pip(self) -> None:
         # `pipx install` 装的是隔离环境里的应用，不是项目依赖。

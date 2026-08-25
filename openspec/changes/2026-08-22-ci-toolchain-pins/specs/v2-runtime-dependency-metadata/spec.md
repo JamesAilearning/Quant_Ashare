@@ -223,6 +223,13 @@ that actually produces the anchor.
 - **THEN** the extras enter the derived coverage and the parseability check
   sees the command, because target candidates include `=`-joined option values
 
+#### Scenario: pip behavior injected through the environment is refused
+- **WHEN** a pip command carries a `PIP_*` assignment prefix — pip maps every
+  option to a `PIP_<OPTION>` environment variable, so `PIP_DRY_RUN=1` installs
+  nothing while the arguments look like a real install
+- **THEN** the guard refuses loudly and demands explicit flags, which the
+  existing dry-run and file-sourcing judgements then govern
+
 #### Scenario: a dry run is not an install
 - **WHEN** a pip install carries `--dry-run` — defined by pip as not actually
   installing anything
