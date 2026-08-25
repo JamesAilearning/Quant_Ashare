@@ -148,8 +148,7 @@ that actually produces the anchor.
   governance red for dependencies CI never installs
 
 #### Scenario: subshell parentheses are command syntax
-- **WHEN** an install is wrapped in unquoted grouping parentheses or appears
-  inside a command substitution
+- **WHEN** an install is wrapped in unquoted grouping parentheses
 - **THEN** it is recognised like any other command, while parentheses inside
   quotes remain word characters
 
@@ -187,12 +186,20 @@ that actually produces the anchor.
 - **THEN** the governance test fails saying so, because a guard that silently
   reads nothing is empty in a way nobody can see
 
-#### Scenario: active substitution inside quotes is refused, not swallowed
-- **WHEN** a double-quoted argument contains `$(` or a backtick — content the
-  shell would execute
-- **THEN** the lexer refuses loudly instead of treating the quoted range as an
-  opaque word, so an install hidden there cannot silently leave the coverage;
-  escaped `\$` remains a literal character
+#### Scenario: command substitution is refused, not modelled
+- **WHEN** `$(` or a backtick appears anywhere — inside double quotes, where
+  treating the range as opaque would silently HIDE an install, or unquoted,
+  where treating the parentheses as command boundaries would INVENT a command
+  the shell never runs (the substitution's output is the outer command's
+  argument)
+- **THEN** the lexer refuses loudly; escaped `\$` remains a literal character,
+  and the workflows-all-lex guard keeps the construct out of the repository
+
+#### Scenario: a continuation inside quotes vanishes before tokenising
+- **WHEN** a double-quoted argument is continued with a backslash-newline
+- **THEN** the token compares as the shell would execute it, with the
+  continuation removed — while an escaped backslash followed by a real newline
+  keeps its newline
 
 #### Scenario: a control keyword does not hide an install
 - **WHEN** an install is guarded by a POSIX reserved word — `if pip install

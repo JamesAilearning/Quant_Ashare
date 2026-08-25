@@ -93,9 +93,10 @@ def _split_commands(script: str) -> list[str]:
             continue
         if char == '"':
             cursor = index + 1
+            pieces = ['"']
             while cursor < size and script[cursor] != '"':
                 # 双引号里 `$(`/反引号是**活性**的——shell 会执行其中的命令。
-                # 本词法器不建模引号内替换（那是 shell 全文法的无底洞：嵌套
+                # 本词法器不建模命令替换（那是 shell 全文法的无底洞：嵌套
                 # 引号、嵌套替换、参数展开），但也**绝不静默吞掉**：吞掉就是
                 # 覆盖面在这一段上空得看不出来（codex P2）。响亮拒读，由
                 # 「现有 workflow 全部可词法化」那条守卫保证仓库不用这种写法。
@@ -103,10 +104,22 @@ def _split_commands(script: str) -> list[str]:
                     raise UnlexableShell(
                         "双引号内有命令替换——本词法器不建模引号内活性内容，"
                         "请把替换移到引号外")
-                cursor += 2 if script[cursor] == "\\" else 1
+                if script[cursor] == "\\":
+                    # 双引号**内**的行末续行同样在分词前就被 shell 删掉：
+                    # `".[dev,\` 换行 `ui]"` 执行时是 `.[dev,ui]`。保留原样
+                    # 会让比对拿着一个执行时不存在的反斜杠换行（codex P2）。
+                    if script[cursor + 1:cursor + 2] == "\n":
+                        cursor += 2
+                        continue
+                    pieces.append(script[cursor:cursor + 2])
+                    cursor += 2
+                    continue
+                pieces.append(script[cursor])
+                cursor += 1
             if cursor >= size:
                 raise UnlexableShell("双引号没有闭合")
-            buffer.append(script[index:cursor + 1])
+            pieces.append('"')
+            buffer.append("".join(pieces))
             index = cursor + 1
             continue
         if char == "\\":
@@ -140,15 +153,21 @@ def _split_commands(script: str) -> list[str]:
             index = skip_heredoc_bodies(index + 1) if pending_heredocs else index + 1
             continue
         if char == "`":
-            # 反引号是遗留形态的命令替换，同属「活性内容」一类：不建模，
-            # 也不静默——写成 `$(…)` 的会被正常拆分。
-            raise UnlexableShell("反引号命令替换未建模——请改写为 $(…)")
+            # 反引号是遗留形态的命令替换，「活性内容」一类：不建模也不静默。
+            raise UnlexableShell("反引号命令替换未建模——请拆成独立命令")
+        if script.startswith("$(", index):
+            # 命令替换与外层命令**纠缠**：`echo $(date) pip install …` 里
+            # 只有 `date` 和外层 `echo` 会执行，替换的输出成为 echo 的实参
+            # ——把两个括号当无条件边界，会**发明**一条 shell 根本不跑的
+            # `pip install`，让治理对 CI 没装的依赖变红（codex P2）。曾把
+            # `$()` 内容当独立命令拆分，此判正是那样发明出来的。建模嵌套
+            # 重挂（外层词跨过替换重新拼接）是 shell 全文法的无底洞，与
+            # 引号内替换同一处置：响亮拒读。
+            raise UnlexableShell("命令替换未建模——请拆成独立命令")
         if char in "()":
-            # 未加引号的括号是命令边界（子 shell 分组、命令替换）。命令替换
-            # 的 `$(` 不需要单列：`(` 在这里断开、配对的 `)` 也在这里断开，
-            # 内部本身就是命令、照常扫描；`$` 留在外层片段的 token 上，对
-            # 「这条是不是 pip 安装」的判定无影响——曾单列过一个 `$(` 分支，
-            # 变异证明它是**死代码**（裸括号规则已覆盖），删。
+            # 未加引号的括号是命令边界（子 shell 分组）。`(cmd)` 之后同一条
+            # 命令不能再接词（POSIX 语法），所以在这里断开是安全的；命令
+            # 替换 `$(` 已在上面被响亮拒掉，不会走到这条。
             flush()
             index += 1
             continue
@@ -460,6 +479,24 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
         self.assertIn(self.QLIB, got[0], "qlib 参数被 `&&` 粘走了")
 
+    def test_a_continuation_inside_quotes_vanishes_before_tokenizing(
+            self) -> None:
+        """双引号**内**的 `\\<换行>` 也是续行——shell 在分词前删掉它。
+
+        保留原样，`pip install ".[dev,\\<换行>ui]"` 的目标读出来带着一个执行
+        时不存在的反斜杠换行：要么发明一个未声明的 extra，要么把执行时逐字
+        一致的重述拒掉（codex P2）。
+        """
+        got = _commands('pip install ".[dev,\\\nui]"')
+        self.assertEqual([["pip", "install", ".[dev,ui]"]], got)
+        matched = _local_target(got[0])
+        assert matched is not None
+        self.assertEqual("dev,ui", matched.group("extras"))
+        # 反面：引号内**转义的反斜杠**后跟换行，不是续行——换行是真内容。
+        kept = _commands('echo "a\\\\\nb"')
+        self.assertEqual(1, len(kept))
+        self.assertIn("\n", kept[0][1], "转义反斜杠后的真换行被误删了")
+
     def test_a_line_continuation_keeps_one_command(self) -> None:
         """行末反斜杠续行：命令跨了物理行，判据不许跟着断。
 
@@ -652,9 +689,15 @@ class ParenthesesAreCommandSyntaxNotWordCharacters(unittest.TestCase):
         assert matched is not None
         self.assertEqual("research", matched.group("extras"))
 
-    def test_a_command_substitution_is_split_out(self) -> None:
-        got = _commands('echo "v=" $(pip --version)')
-        self.assertIn(["pip", "--version"], got, "$() 里的命令没被拆出来")
+    def test_a_command_substitution_is_refused_not_reinvented(self) -> None:
+        """`$()` 与外层命令纠缠：替换的输出是外层命令的实参。
+
+        把两个括号当无条件边界，`echo $(date) pip install ".[research]"` 会被
+        拆出一条 shell 根本不跑的 `pip install`——治理对 CI 没装的依赖变红
+        （codex P2）。不建模嵌套重挂，与引号内替换同一处置：响亮拒读。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands('echo $(date) pip install ".[research]"')
 
     def test_a_quoted_parenthesis_is_still_a_word_character(self) -> None:
         self.assertEqual([["echo", "(not a subshell)"]],
