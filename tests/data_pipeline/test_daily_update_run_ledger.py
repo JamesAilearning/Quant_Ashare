@@ -224,6 +224,28 @@ class ARaisingStageStillLeavesATerminalRecord(unittest.TestCase):
             self.assertEqual("finished", status["state"],
                              "status 卡在 running")
 
+    def test_a_surrogate_in_the_exception_still_lands_in_the_ledger(
+            self) -> None:
+        """异常消息带代理字节（surrogateescape 文件名，产线可达）。
+
+        原样内插会让 status 与台账双双在 UnicodeEncodeError 上吞掉——
+        crash 记录被它要防的失败打穿（codex P2）。消毒照抄 _stage_detail
+        先例（backslashreplace 留残迹）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            runners = _runners()
+            bad = "path-" + chr(0xDC80) + "-broken"
+            def boom(argv: list[str]) -> int:
+                raise OSError(f"cannot write {bad}")
+            runners["fetch"] = boom
+            with self.assertRaises(OSError):
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            rows = _lines(cfg)
+        self.assertEqual(1, len(rows), "代理字节把 crash 记录打穿了")
+        self.assertIn(chr(92) + "udc80", rows[0]["detail"],
+                      "残迹没有以可读转义形式保留")
+
     def test_a_dry_run_still_writes_nothing(self) -> None:
         # dry-run 早返回在包裹**之前**且不执行 runner（异常不可达）——
         # 契约不变：无论如何零写入。带抛异常的 runner 只为钉住「就算日后

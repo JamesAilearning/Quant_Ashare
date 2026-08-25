@@ -983,7 +983,17 @@ def run_daily_update(
             "finished_at": crash_at.isoformat(),
             "exit_code": 1,          # 未捕获异常的进程退出码，如实镜像
             "failed_stage": "exception",
-            "detail": f"{type(exc).__name__}: {exc}"[:_STAGE_DETAIL_MAX_CHARS],
+            # 消毒照抄 _stage_detail 的先例：异常消息可以携带代理转义的
+            # 文件系统字节（OSError 带 surrogateescape 文件名，产线可达），
+            # 原样内插会让两个写入器都在 UnicodeEncodeError 上吞掉——
+            # crash 记录恰好被它要防的那类失败打穿（codex P2）。
+            # backslashreplace 留可读残迹；折单行；截断。
+            "detail": " / ".join(
+                part.strip()
+                for part in f"{type(exc).__name__}: {exc}"
+                .encode("utf-8", "backslashreplace").decode("utf-8")
+                .splitlines() if part.strip()
+            )[:_STAGE_DETAIL_MAX_CHARS],
         }
         _record_status(status_path, crash)
         _append_ledger(

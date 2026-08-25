@@ -28,6 +28,13 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十六轮：一个 P2 —— crash 详情要过同一道消毒
+
+crash 路径原样内插异常消息——带代理转义字节（surrogateescape 文件名，产线
+可达）时，两个写入器都在 UnicodeEncodeError 上吞掉：crash 记录被它要防的
+那类失败打穿。消毒照抄 _stage_detail 先例（backslashreplace 留可读残迹 +
+折单行 + 截断）；守卫用带真代理字符的 OSError 实测入账。
+
 ## codex 第二十五轮：一个 P1 —— 阶段抛异常时终态记录被跳过
 
 阶段**抛异常**（而非返回退出码）时，终态构造根本走不到——status 卡
