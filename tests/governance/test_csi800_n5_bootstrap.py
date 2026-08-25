@@ -247,8 +247,26 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
         校验器**（钉调用同一函数的既定纪律），train→valid 与 valid→test 两
         个边界都要过；再用负对照证明校验器在咬——空/错日历的绿不算数。
         """
-        from src.data._segment_embargo import validate_segment_embargo
+        import dataclasses
+
+        from src.core._yaml_loader import load_yaml_with_inheritance
+        from src.core.pipeline import PipelineConfig
+        from src.data._segment_embargo import (
+            label_lookahead_days,
+            validate_segment_embargo,
+        )
         cfg = self._m4()
+        # lookahead 不抄缺省值：生产 builder 传 label_lookahead_days(
+        # config.label_horizon_days)——config.yaml 日后改 horizon>1 时，
+        # 拿缺省 2 的治理会绿着而点火即拒（codex P2）。horizon 从**运行时
+        # 同一装载器**解析的合并配置取（extends 链生效值；未显式配置时按
+        # PipelineConfig 字段缺省，与运行时构造一致），再走同一推导函数。
+        merged = load_yaml_with_inheritance(_PRESETS / "csi800_n5_m4.yaml")
+        default_horizon = next(
+            f.default for f in dataclasses.fields(PipelineConfig)
+            if f.name == "label_horizon_days")
+        lookahead = label_lookahead_days(
+            merged.get("label_horizon_days", default_horizon))
         calendar = [date.fromisoformat(d) for d in _M4_BOUNDARY_SESSIONS]
         errors = validate_segment_embargo(
             train_end=date.fromisoformat(cfg["train_end"]),
@@ -256,6 +274,7 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
             valid_end=date.fromisoformat(cfg["valid_end"]),
             test_start=date.fromisoformat(cfg["test_start"]),
             calendar=calendar,
+            lookahead_days=lookahead,
         )
         self.assertEqual([], errors, "m4 边界过不了运行时 embargo 校验器")
         # 负对照：test_start 提前到假期后次日（10-09），严格介于 09-30 与
@@ -267,6 +286,7 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
             valid_end=date.fromisoformat(cfg["valid_end"]),
             test_start=date(2026, 10, 9),
             calendar=calendar,
+            lookahead_days=lookahead,
         )
         self.assertTrue(bitten, "校验器没咬负对照——本用例的绿没有意义")
 
