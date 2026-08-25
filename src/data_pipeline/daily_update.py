@@ -8,6 +8,7 @@ short-circuits the rest; each failing stage maps to a DISTINCT exit code so a
 scheduler (Phase 4 — out of scope here) can tell where a run died:
 
     0  success
+    1  unhandled exception escaped a stage (crash recorded, then re-raised)
     2  configuration / setup error
     10 startup repair found an unrepairable bundle state
     11 fetch failed hard (01 exited anything other than 0 or 3)
@@ -125,6 +126,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "data_pipeline"
 
 # Exit codes (module-level constants so tests assert symbolically).
 EXIT_OK = 0
+EXIT_UNHANDLED_EXCEPTION = 1  # 阶段外抛未捕获异常：crash 记录入账后原样再抛,1 是解释器自己的进程码
 EXIT_CONFIG = 2
 EXIT_UNREPAIRABLE = 10
 EXIT_FETCH_HARD = 11
@@ -981,7 +983,7 @@ def run_daily_update(
             **base,
             "state": "finished",
             "finished_at": crash_at.isoformat(),
-            "exit_code": 1,          # 未捕获异常的进程退出码，如实镜像
+            "exit_code": EXIT_UNHANDLED_EXCEPTION,  # 解释器进程码,如实镜像
             "failed_stage": "exception",
             # 消毒照抄 _stage_detail 的先例：异常消息可以携带代理转义的
             # 文件系统字节（OSError 带 surrogateescape 文件名，产线可达），
