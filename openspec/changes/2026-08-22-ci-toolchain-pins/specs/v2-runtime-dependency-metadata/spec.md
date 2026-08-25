@@ -336,6 +336,13 @@ that actually produces the anchor.
   then fails loudly for the missing install, and the direct-target scan names
   the ambiguity with the `--opt=value` remedy
 
+#### Scenario: a destination-redirected install is not presence
+- **WHEN** the qlib install carries `--target`, `--root` or `--prefix` (bare
+  or `=`-joined) — pip's destination options place the package outside the
+  later pytest process's import path
+- **THEN** it earns no presence credit, so the per-job guard fails loudly for
+  the missing importable install
+
 #### Scenario: qlib is installed before pytest, with a guarantee
 - **WHEN** the only guaranteed qlib install in a job sits AFTER a pytest step
   — steps run in order, so those tests already ran through `importorskip`

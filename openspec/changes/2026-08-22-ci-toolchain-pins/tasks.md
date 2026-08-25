@@ -15,6 +15,14 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十七轮：一个 P1 —— 改了目的地的安装不进 import path
+
+`pip install --target=/tmp/detached <窗口> <qlib-pin>`：pip 文档定义
+--target 装进指定目录——不在随后 pytest 进程的 import path 上，
+importorskip 全跳而 presence 照绿。目的地选项是 pip 文档的闭集
+（--target/--root/--prefix），裸形态与 `=` 连写都不给 presence 记账；
+缺席由 per-job 守卫响亮。
+
 ## codex 第二十六轮：两个 P1 —— 后台化的安装、窗口也是选项值
 
 **P1 裸 `&` 把安装后台化。** codex 实测 `bash -e -o pipefail -c 'false &

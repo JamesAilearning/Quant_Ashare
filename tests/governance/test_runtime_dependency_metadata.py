@@ -800,6 +800,22 @@ def _unprotected_pytest(entries: list[tuple[list[str], bool]]) -> bool:
     return False
 
 
+#: 改变安装**目的地**的 pip 选项（pip 文档定义的闭集）：装出来的包不在
+#: 随后 pytest 进程的 import path 上——`--target=/tmp/x` 的 qlib 对
+#: `importorskip` 而言等于没装（codex P1）。presence 不给这类安装记账。
+_DESTINATION_OPTIONS = ("--target", "--root", "--prefix")
+
+
+def _redirected_destination(command: list[str]) -> bool:
+    """这条安装是否被改了目的地——presence 记账前必查。"""
+    return any(
+        token in _DESTINATION_OPTIONS
+        or any(token.startswith(f"{option}=")
+               for option in _DESTINATION_OPTIONS)
+        for token in command
+    )
+
+
 def _credited(command: list[str]) -> list[str]:
     """可以拿来记账（presence/窗口/重述）的 token——排除裸选项的疑似值。
 
@@ -848,6 +864,8 @@ def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
             for i, token in enumerate(command)
         )
         and _is_pip_install(command)
+        # 改了目的地的安装不进 import path——对 presence 等于没装。
+        and not _redirected_destination(command)
     ]
 
 
@@ -1837,6 +1855,22 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
             _commands("pip install x & pytest tests/")
         self.assertEqual([["echo", "a"], ["pytest"]],
                          _commands("echo a & pytest"))
+
+    def test_a_destination_redirected_install_is_not_presence(self) -> None:
+        """`--target=/tmp/detached` 把 qlib 装到 import path 之外。
+
+        随后的 pytest 进程 import 不到它——`importorskip` 全跳而 presence
+        守卫照绿（codex P1）。目的地选项是 pip 文档定义的闭集
+        （--target/--root/--prefix），裸形态与 `=` 连写都不记账。
+        """
+        for extra in ("--target=/tmp/detached", "--target /tmp/detached",
+                      "--root=/tmp/r", "--prefix=/tmp/p"):
+            with self.subTest(option=extra):
+                line = f"pip install {extra} {self.QLIB}"
+                self.assertEqual([], _qlib_pin_installs(_commands(line)),
+                                 "改了目的地的安装被记成了 presence")
+        self.assertEqual(
+            1, len(_qlib_pin_installs(_commands(f"pip install {self.QLIB}"))))
 
     def test_a_pin_as_an_option_value_is_not_presence(self) -> None:
         """`pip install --trusted-host <qlib-pin> <窗口>` 装的是那两个窗口。
