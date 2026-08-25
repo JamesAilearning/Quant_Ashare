@@ -264,8 +264,11 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
     def test_the_guard_trio_and_device_are_pinned_directly(self) -> None:
         # parity 之外再直接钉一层：m3 若也被改，parity 会双双漂移而绿着。
         cfg = self._m4()
-        self.assertTrue(cfg["attribution_sleeve_grouping"])
-        self.assertTrue(cfg["risk_constraints_enabled"])
+        # 身份比对钉字面布尔（codex P2）：assertTrue 吃 truthy——m3/m4 同
+        # 漂成 YAML 字符串 "false" 时 parity 与 truthy 双双照绿，而
+        # PipelineConfig 不管这两个字段的运行时类型。
+        self.assertIs(True, cfg["attribution_sleeve_grouping"])
+        self.assertIs(True, cfg["risk_constraints_enabled"])
         self.assertEqual("campaign_v1", cfg["risk_constraints_calibration"])
         self.assertEqual("gpu", cfg["compute_device"])
         self.assertEqual("csi800", cfg["instruments"])
