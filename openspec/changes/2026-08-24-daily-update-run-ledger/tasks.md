@@ -28,6 +28,19 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第六轮：一个 P1 —— 台账也是写入者，碰撞在构造期拒绝
+
+台账路径是派生的、没有 CLI 开关——但碰撞的**另一头**可以被打错：
+--delisted-registry / --reference-cases / 显式 --status-path 指到
+`<provider>.daily_update_ledger.jsonl` 上，终态一到台账把 JSON 追加进
+canonical 输入；status 撞上更糟，每次 _record_status 的原子替换把「只可追加」
+的台账整个截掉。修在 `__post_init__` **配置验证层**（状态路径那套守卫的所在
+地），阶段语义零改动的硬约束不动。containment 查 provider/tushare 树与
+.new/.bak，equality 查三个可打错的输入 + 单飞锁。
+
+**顺带删了一条自己刚写的死守卫**：台账 vs 状态暂存名的相等检查——暂存名 =
+名字+".tmp" 而台账以 .jsonl 结尾，碰撞不可构造。查不可构造的碰撞是死代码。
+
 ## codex 第五轮：两个 P2 —— 洗白的数据与对不上的两本账
 
 **坏字节落在 JSON 字符串里时，替换解码会把它洗成合法行。** 整份

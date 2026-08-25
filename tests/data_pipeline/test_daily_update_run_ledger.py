@@ -118,6 +118,45 @@ class TheStageBodyIsUntouched(unittest.TestCase):
         self.assertIn("run_boundary_line", called)
 
 
+# ---------------------------------------------------------------- 路径碰撞
+
+class TheLedgerPathCannotAliasAnythingElseTheRunTouches(unittest.TestCase):
+    """台账路径是派生的、没有 CLI 开关——但碰撞的**另一头**可以被打错。
+
+    操作人把 --delisted-registry / --reference-cases / 显式 --status-path 指到
+    `<provider>.daily_update_ledger.jsonl` 上：终态一到，台账把 JSON 追加进
+    canonical 输入；status 撞上更糟——每次 _record_status 的原子替换会把
+    「只可追加」的台账整个截掉（codex P1）。与状态工件同一处置：**构造期**
+    拒绝，任何阶段执行之前。
+
+    暂存兄弟刻意不在此列：暂存名 = 名字+".tmp"，台账名以 .jsonl 结尾，
+    `_status_tmp_path(x) == 台账` 无解——查不可构造的碰撞是死守卫。
+    """
+
+    @staticmethod
+    def _cfg(tmp: Path, **override: object) -> DailyUpdateConfig:
+        base: dict[str, object] = dict(
+            tushare_dir=tmp / "raw", provider_dir=tmp / "prov",
+            delisted_registry=tmp / "raw" / "reg.parquet",
+            reference_cases=tmp / "cases.yaml", now=TODAY,
+        )
+        return DailyUpdateConfig(**{**base, **override})  # type: ignore[arg-type]
+
+    def test_each_aliasable_input_is_rejected_at_construction(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ledger = du.default_ledger_path(tmp / "prov")
+            for field in ("delisted_registry", "reference_cases", "status_path"):
+                with self.subTest(field=field):
+                    with self.assertRaises(ValueError):
+                        self._cfg(tmp, **{field: ledger})
+
+    def test_an_honest_config_still_constructs(self) -> None:
+        # 反面：正常布局必须照常通过，否则上面只是「什么都拒」的副产品。
+        with tempfile.TemporaryDirectory() as t:
+            self._cfg(Path(t))
+
+
 # ---------------------------------------------------------------- 只可追加
 
 class TheLedgerIsAppendOnly(unittest.TestCase):

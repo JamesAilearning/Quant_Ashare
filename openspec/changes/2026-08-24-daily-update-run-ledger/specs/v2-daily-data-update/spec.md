@@ -52,6 +52,14 @@ the derived value.
   stays isolated as its own malformed line, and the new entry is not fused onto
   it
 
+#### Scenario: the ledger path cannot alias anything else the run touches
+- **WHEN** `--delisted-registry`, `--reference-cases`, or an explicit
+  `--status-path` resolves to the derived ledger path, or the derived path
+  falls inside the provider / tushare trees or the swap staging siblings
+- **THEN** the configuration is rejected at construction, before any stage
+  executes — an append into a canonical input, or a status replace truncating
+  the append-only ledger, must be impossible rather than merely unlikely
+
 #### Scenario: a ledger failure never changes the exit code
 - **WHEN** the ledger append fails for any reason
 - **THEN** the failure is logged as an ERROR and the run's exit code is

@@ -415,6 +415,43 @@ class DailyUpdateConfig:
                         f"artifact's write path would clobber a canonical "
                         f"input; refusing"
                     )
+        # codex #465 r6 P1: the run LEDGER is a writer too. Its path is
+        # DERIVED (<provider sibling>, no CLI override), so it cannot be
+        # typo'd directly — but the OTHER side of a collision can be: an
+        # operator can point --delisted-registry / --reference-cases / an
+        # explicit --status-path at exactly that spot. A terminal run would
+        # then append status JSON to a canonical input; worse, a status-path
+        # alias means every _record_status atomically REPLACES the
+        # supposedly append-only ledger. Same construction-time rejection,
+        # BEFORE any stage executes. (The ledger has no .tmp sibling — it is
+        # append-only by contract, so the derived path is the only target.)
+        ledger = _norm(default_ledger_path(self.provider_dir))
+        for label, root in (
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
+            ("<provider>.new", new_dir(self.provider_dir)),
+            ("<provider>.bak", bak_dir(self.provider_dir)),
+        ):
+            if _path_within(ledger, _norm(root)):
+                raise ValueError(
+                    f"运行台账的派生路径落在 {label} ({root}) 之内 — 台账追加"
+                    f"会写进 canonical 数据；拒绝（可观测性绝不影响数据）"
+                )
+        # 暂存兄弟不必查：暂存名 = 名字+".tmp"，而台账名以 .jsonl 结尾，
+        # `_status_tmp_path(x) == 台账` 无解——查一个不可构造的碰撞是死守卫。
+        for label, f in (
+            ("--delisted-registry", self.delisted_registry),
+            ("--reference-cases", self.reference_cases),
+            ("--status-path", final),
+            *(("单飞锁", lock_path_for(Path(os.path.abspath(r))))
+              for r in (self.provider_dir, self.tushare_dir,
+                        self.delisted_registry)),
+        ):
+            if ledger == _norm(f):
+                raise ValueError(
+                    f"运行台账的派生路径与 {label} ({f}) 重合 — 一边追加"
+                    f"一边整写会互相破坏；拒绝（可观测性绝不影响数据）"
+                )
         # codex P2: a name-less path (".", a filesystem root) makes
         # _write_status's path.with_name() raise ValueError — which
         # _record_status does not catch (OSError only), so the mistake would
