@@ -72,8 +72,13 @@ _CLOCK_RE = re.compile(r"^(?P<clock>\d{2}:\d{2}:\d{2})")
 # to the same value.
 RUN_BOUNDARY_MARK = "[daily_update] run started"
 
-#: 边界行。logger 会在前面加上自己的 `HH:MM:SS [name] LEVEL — ` 前缀,所以这里
-#: 只在行内**搜**标记,不锚定行首。
+#: 边界行。logger 会在前面加上自己的 `HH:MM:SS [name] LEVEL — ` 前缀,所以
+#: 不锚定行首——但**锚定消息起始**：标记必须紧跟写侧 logger 的固定前缀
+#: `[<写侧 logger 名>] INFO — `（src/core/logger.py 的格式串）。无锚搜索会把
+#: **转述**边界行的普通消息（上游报错原样回显整行）当成真边界，其后的进度
+#: 被以「已确定」口气归给一次不存在的运行（codex P2）。同 logger 的 INFO
+#: 消息**中部**出现标记同样不算——只有消息以标记开头才是写侧自己的发射。
+#: logic 测试钉住本前缀与写侧 logger 名/真实格式串一致。
 # `re.MULTILINE` 是**承重**的:不带它,`$` 只在整串末尾匹配,于是只有当边界恰好
 # 是最后一行时才找得到——而边界之后必然还有阶段输出,也就是说它在真实日志里
 # 几乎永远匹配不上。
@@ -82,8 +87,10 @@ RUN_BOUNDARY_MARK = "[daily_update] run started"
 # 捕获组会让每一条真实边界都验不过写侧形态。真以 CR 结尾的 POSIX 目录名
 # 本就无法在行式日志里回环（写侧一落盘就与终结符不可分），它会退化成
 # foreign_boundary（如实不归属），绝不会被误归属。
+_BOUNDARY_PREFIX = "[src.data_pipeline.daily_update] INFO — "
+
 _BOUNDARY_RE = re.compile(
-    re.escape(RUN_BOUNDARY_MARK)
+    re.escape(_BOUNDARY_PREFIX) + re.escape(RUN_BOUNDARY_MARK)
     + r"\s+(?P<started>\S+)\s+provider=(?P<provider>.*?)\r?$",
     re.MULTILINE,
 )

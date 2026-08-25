@@ -75,6 +75,20 @@ class TheReaderAgreesWithTheWriter(unittest.TestCase):
     def test_the_boundary_mark_matches(self) -> None:
         self.assertEqual(writer.RUN_BOUNDARY_MARK, RUN_BOUNDARY_MARK)
 
+    def test_the_boundary_prefix_matches_the_writers_logger(self) -> None:
+        # 锚定「消息起始」用的前缀必须与写侧真实发射一致：logger 名 =
+        # 写侧模块名（get_logger(__name__)）、级别 INFO、分隔符来自
+        # src/core/logger.py 的真实格式串——三者任一变了，锚就抓不到真
+        # 边界，归属整体退化成 no_boundary（静默退化正是本类要防的）。
+        self.assertEqual(
+            f"[{writer.__name__}] INFO — ",
+            update_progress._BOUNDARY_PREFIX)
+        fmt_src = (_ROOT / "src" / "core" / "logger.py").read_text(
+            encoding="utf-8")
+        self.assertIn(
+            'fmt="%(asctime)s [%(name)s] %(levelname)s — %(message)s"',
+            fmt_src, "真实格式串变了——前缀锚随之失效")
+
     def test_the_path_derivation_matches(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             for name in ("my_cn_data_pit", "my_cn_data_pit_2015", "."):
@@ -656,7 +670,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
 
     @staticmethod
     def _boundary(provider: Path, started: str) -> str:
-        return (f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} {started} "
+        return (f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} {started} "
                 f"provider={writer._norm(provider)}")
 
     def test_progress_after_our_boundary_is_attributed(self) -> None:
@@ -890,7 +904,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                           "2026-08-24T12:30:00+00:00"):
                 with self.subTest(stamp=stamp):
                     text = chr(10).join([
-                        f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} {stamp} "
+                        f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} {stamp} "
                         f"provider={writer._norm(provider)}",
                         line,
                     ])
@@ -918,7 +932,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                              dotted):
                 with self.subTest(spelling=repr(spelling)):
                     text = chr(10).join([
-                        f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                        f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} "
                         f"2026-08-24T20:30:01+08:00 provider={spelling}",
                         f"20:31:00{_PROGRESS_LINE}",
                     ])
@@ -935,7 +949,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider = Path(t) / "prov"
             provider.mkdir()
             text = chr(10).join([
-                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} "
                 f"2026-08-24T20:30:01+08:00 provider={writer._norm(provider).upper()}",
                 f"20:31:00{_PROGRESS_LINE}",
             ])
@@ -943,6 +957,34 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 text, provider_dir=provider, window_complete=True)
         self.assertFalse(got.attributed)
         self.assertEqual("corrupt_boundary", got.unattributed_reason)
+
+    def test_an_echoed_boundary_inside_a_message_is_not_a_boundary(self) -> None:
+        """转述边界行的普通消息不是边界（codex P2）。
+
+        上游报错原样回显 `[daily_update] run started …` 时，无锚搜索会把
+        转述当成最新边界，其后的进度被以「已确定」口气归给一次不存在的
+        运行。锚 = 标记必须紧跟写侧 logger 的 `[名] INFO — ` 消息起始。
+        （整行连前缀一起原样转述在纯文本日志里不可分辨——那是共享文本
+        日志的结构极限，与消息中部转述不同类，不在本锚的射程内。）
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            mark = (f"{RUN_BOUNDARY_MARK} 2026-08-24T20:30:01+08:00 "
+                    f"provider={writer._norm(provider)}")
+            for label, line in (
+                ("别的 logger 的 ERROR 回显",
+                 f"20:40:00 [src.data.tushare.fetcher] ERROR — saw: {mark}"),
+                ("同 logger 的 INFO 消息中部转述",
+                 f"20:40:00 [{writer.__name__}] INFO — "
+                 f"could not parse: {mark}"),
+            ):
+                with self.subTest(形态=label):
+                    text = chr(10).join([line, f"20:41:00{_PROGRESS_LINE}"])
+                    got = last_fetch_progress_for_run(
+                        text, provider_dir=provider, window_complete=True)
+                    self.assertFalse(got.attributed, "转述被当成了真边界")
+                    self.assertEqual("no_boundary", got.unattributed_reason)
 
     def test_a_symlink_loop_boundary_is_corrupt_not_a_crash(self) -> None:
         """符号链接环让 resolve 抛 RuntimeError（3.10–3.12 实测）。
@@ -971,7 +1013,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider.mkdir()
             looped = os.path.normcase(str(Path(t) / "SYMLINK-LOOP"))
             text = chr(10).join([
-                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} "
                 f"2026-08-24T20:30:01+08:00 provider={looped}",
                 f"20:31:00{_PROGRESS_LINE}",
             ])
@@ -992,7 +1034,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider = Path(t) / "prov"
             provider.mkdir()
             text = (
-                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} "
                 f"2026-08-24T20:30:01+08:00 provider={writer._norm(provider)}\r\n"
                 f"20:31:00{_PROGRESS_LINE}\r\n")
             got = last_fetch_progress_for_run(
@@ -1008,7 +1050,7 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertEqual(os.path.normcase(str(Path(key).resolve())), key,
                          "用例前提不成立：key 不是写侧形态（回环不闭合）")
         text = chr(10).join([
-            f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+            f"20:30:01 [src.data_pipeline.daily_update] INFO — {RUN_BOUNDARY_MARK} "
             f"2026-08-24T20:30:01+08:00 provider={key}",
             f"20:31:00{_PROGRESS_LINE}",
         ])
