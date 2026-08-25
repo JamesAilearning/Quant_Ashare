@@ -94,6 +94,7 @@ no-op, exit 12); the next day catches up. Scheduling late avoids the wasted run.
 | Code | Meaning | Action |
 |---|---|---|
 | 0 | success (incl. weekend calendar-gate no-op; a weekday holiday runs normally and also exits 0 when there is no new bar) | none |
+| 1 | unhandled exception escaped a stage (production-reachable: disk full, permission); the crash is still recorded (status + ledger) before re-raising | read the run's `detail` — it carries the exception type and message |
 | 2 | config / setup error (incl. an unwritable / unreachable lock path) | fix args; check `--provider-dir`'s parent is writable |
 | 10 | unrepairable bundle state | investigate `.bak`/`.new`; manual repair |
 | 11 | fetch failed hard (01 exited anything but 0/3) | read the run's `detail` — it carries 01's own error line; token/network is one cause among several |

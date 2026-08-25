@@ -490,11 +490,17 @@ def _decode_log_line(raw: bytes) -> str:
             return raw.decode("utf-8", errors="replace")
 
 
-def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
-    """Last ``chars`` characters of the log, decoded leniently.
+def log_window(
+    log_path: Path, *, chars: int = _LOG_TAIL_CHARS,
+) -> tuple[str, bool]:
+    """Last ``chars`` characters of the log, plus whether that IS the whole log.
 
-    Missing log = empty string (a fresh machine has no log yet; that is
-    a state to render, not an error).
+    第二个返回值是**归属判断的前提**：窗口没盖住整份日志时，「窗口里看不到
+    别人的边界」证明不了别人不存在——更早起跑、仍在写的兄弟 provider 的边界
+    可能正好在窗口之外（codex #465 P1）。读侧必须把「我看到的是不是全部」
+    这一事实交出去，而不是让下游把截断当成完整。
+
+    Missing log = ``("", True)``——空日志是完整地读完了的。
     """
     try:
         with open(log_path, "rb") as fh:
@@ -504,11 +510,21 @@ def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
             fh.seek(start)
             data = fh.read()
     except FileNotFoundError:
-        return ""
+        return "", True
     except OSError as exc:
-        return f"(日志不可读:{exc})"
+        return f"(日志不可读:{exc})", False
     lines = data.split(b"\n")
     if start > 0 and len(lines) > 1:
         # 从中间起读,首行多半被切成半个字符序列——丢掉它,别拿半行去猜编码。
         lines = lines[1:]
-    return "\n".join(_decode_log_line(line) for line in lines)[-chars:]
+    text = "\n".join(_decode_log_line(line) for line in lines)
+    return text[-chars:], start == 0 and len(text) <= chars
+
+
+def log_tail(log_path: Path, *, chars: int = _LOG_TAIL_CHARS) -> str:
+    """Last ``chars`` characters of the log, decoded leniently.
+
+    Missing log = empty string (a fresh machine has no log yet; that is
+    a state to render, not an error).
+    """
+    return log_window(log_path, chars=chars)[0]
