@@ -87,11 +87,20 @@ the derived value.
 
 #### Scenario: a raising stage still leaves a terminal record
 - **WHEN** a stage RAISES instead of returning an exit code — reachable in
-  production, e.g. `atomic_write_parquet` re-raising `OSError` after retries
-- **THEN** the terminal status and ledger row are still written (exit_code 1,
-  failed_stage "exception", the exception in the detail) and the exception
-  propagates unchanged — recorded then re-raised, never swallowed, never
-  remapped; a dry run keeps writing nothing
+  production, e.g. `atomic_write_parquet` re-raising `OSError` after retries,
+  an in-process stage's `argparse` rejecting argv with `SystemExit(2)`, or an
+  operator interrupt (`KeyboardInterrupt`) — `BaseException` subclasses
+  included, since `except Exception` alone leaves those stuck at `running`
+- **THEN** the terminal status and ledger row are still written
+  (failed_stage "exception", the exception's type and message in the detail)
+  and the exception propagates unchanged — recorded then re-raised, never
+  swallowed, never remapped; a dry run keeps writing nothing
+- **AND** the recorded exit_code mirrors the process's behavior as far as it
+  is knowable: a `SystemExit` carrying a nonzero int code records that code
+  (argparse's 2 matching the config-error semantics); everything else —
+  including a zero/None `SystemExit` escaping mid-stage (recording 0 would
+  fabricate a "success with failed_stage" record the reader rejects as
+  corrupt) and `KeyboardInterrupt` (no portable process code) — records 1
 
 #### Scenario: a torn tail cannot swallow the new line
 - **WHEN** a previous process died mid-write leaving a final line without its
