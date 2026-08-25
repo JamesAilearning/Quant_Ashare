@@ -963,9 +963,10 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
 
         上游报错原样回显 `[daily_update] run started …` 时，无锚搜索会把
         转述当成最新边界，其后的进度被以「已确定」口气归给一次不存在的
-        运行。锚 = 标记必须紧跟写侧 logger 的 `[名] INFO — ` 消息起始。
-        （整行连前缀一起原样转述在纯文本日志里不可分辨——那是共享文本
-        日志的结构极限，与消息中部转述不同类，不在本锚的射程内。）
+        运行。锚 = **物理行首**的完整 logger 记录（时间戳起）——消息中部
+        的转述、连 logger 前缀整段回显的转述，行首锚都分辨得开（codex 两
+        轮 P2：只锚消息起始时后者仍冒充得进）。残余极限只剩「消息体带真实
+        换行逐字节复刻整行」——那需要结构化日志，注释已言明。
         """
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
@@ -978,6 +979,9 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                 ("同 logger 的 INFO 消息中部转述",
                  f"20:40:00 [{writer.__name__}] INFO — "
                  f"could not parse: {mark}"),
+                ("连 logger 前缀整段回显（行中部）",
+                 f"20:40:00 [src.data.tushare.fetcher] ERROR — saw: "
+                 f"20:30:01 [{writer.__name__}] INFO — {mark}"),
             ):
                 with self.subTest(形态=label):
                     text = chr(10).join([line, f"20:41:00{_PROGRESS_LINE}"])

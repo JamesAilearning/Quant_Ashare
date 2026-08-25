@@ -72,13 +72,13 @@ _CLOCK_RE = re.compile(r"^(?P<clock>\d{2}:\d{2}:\d{2})")
 # to the same value.
 RUN_BOUNDARY_MARK = "[daily_update] run started"
 
-#: 边界行。logger 会在前面加上自己的 `HH:MM:SS [name] LEVEL — ` 前缀,所以
-#: 不锚定行首——但**锚定消息起始**：标记必须紧跟写侧 logger 的固定前缀
-#: `[<写侧 logger 名>] INFO — `（src/core/logger.py 的格式串）。无锚搜索会把
-#: **转述**边界行的普通消息（上游报错原样回显整行）当成真边界，其后的进度
-#: 被以「已确定」口气归给一次不存在的运行（codex P2）。同 logger 的 INFO
-#: 消息**中部**出现标记同样不算——只有消息以标记开头才是写侧自己的发射。
-#: logic 测试钉住本前缀与写侧 logger 名/真实格式串一致。
+#: 边界行,锚**物理行首**:`^HH:MM:SS [<写侧 logger 名>] INFO — <标记>`
+#: (src/core/logger.py 的完整格式串)。无锚搜索会把**转述**边界行的普通消息
+#: (上游报错原样回显)当成真边界,其后的进度被以「已确定」口气归给一次不存在
+#: 的运行;只锚消息起始仍放过「连 logger 前缀整段回显在消息中部」的形态——
+#: 行首锚连它也分辨得开(codex 两轮 P2)。残余极限:消息体里带**真实换行**再
+#: 逐字节复刻整行时,续行与真边界物理不可分——那需要结构化日志,超出文本
+#: 读侧。logic 测试钉住本前缀与写侧 logger 名/真实格式串一致。
 # `re.MULTILINE` 是**承重**的:不带它,`$` 只在整串末尾匹配,于是只有当边界恰好
 # 是最后一行时才找得到——而边界之后必然还有阶段输出,也就是说它在真实日志里
 # 几乎永远匹配不上。
@@ -90,7 +90,8 @@ RUN_BOUNDARY_MARK = "[daily_update] run started"
 _BOUNDARY_PREFIX = "[src.data_pipeline.daily_update] INFO — "
 
 _BOUNDARY_RE = re.compile(
-    re.escape(_BOUNDARY_PREFIX) + re.escape(RUN_BOUNDARY_MARK)
+    r"^\d{2}:\d{2}:\d{2} "
+    + re.escape(_BOUNDARY_PREFIX) + re.escape(RUN_BOUNDARY_MARK)
     + r"\s+(?P<started>\S+)\s+provider=(?P<provider>.*?)\r?$",
     re.MULTILINE,
 )
