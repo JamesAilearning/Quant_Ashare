@@ -295,9 +295,10 @@ that actually produces the anchor.
 #### Scenario: a conditionally-skipped step does not satisfy presence
 - **WHEN** the qlib install sits in a step (or job) carrying `if:` — GitHub
   Actions may skip it on some matrix legs
-- **THEN** it does not count toward the per-workflow qlib presence floor,
-  while bounds and shape scans still read every step (reading more only
-  tightens them) — and pytest DETECTION reads every step too: the test
+- **THEN** it does not count toward the per-job qlib presence floor — and
+  neither does a step or job marked `continue-on-error: true`, whose failed
+  install lets the run proceed to pytest regardless — while bounds and shape
+  scans still read every step (reading more only tightens them) — and pytest DETECTION reads every step too: the test
   workflow's pytest invocations all sit behind matrix conditions, so deriving
   the obligation from the unconditional set alone would leave the whole guard
   vacuously green

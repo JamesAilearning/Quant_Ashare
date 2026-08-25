@@ -15,6 +15,14 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十四轮：一个 P1 + 一个 P2 —— 允许失败的安装、wrapper 的对称性
+
+**P1 `continue-on-error: true`。** 安装失败后 Actions 照样跑向 pytest——
+「允许失败的安装」不是 presence 保证，与 `if:` 同一过滤（step/job 两级），
+两处收集器同步改。**P2 wrapper 的对称性。** pip 侧解包了 env/command，
+pytest 检测没解包——`env pytest tests/` 让该 job 的 presence 义务真空蒸发。
+同一套解包搬过去（保守方向：条件位/赋值后的 pytest 一律算数）。
+
 ## codex 第二十三轮：两个 P1 —— 管道吞失败、job 是隔离 runner
 
 **P1 管道里的安装。** `pip install <qlib> | tee log` 的退出码是 tee 的——

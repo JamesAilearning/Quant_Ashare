@@ -378,13 +378,18 @@ def _run_scripts(
     scripts: list[str] = []
     for job in (document or {}).get("jobs", {}).values():
         job = job or {}
-        job_conditional = "if" in job
+        # `continue-on-error: true` 与 `if:` 同类：安装失败后 Actions 照样
+        # 跑向 pytest——「允许失败的安装」不是 presence 保证（codex P1）。
+        job_skippable = "if" in job or bool(job.get("continue-on-error"))
         for step in job.get("steps", []) or []:
             step = step or {}
             script = step.get("run")
             if not isinstance(script, str):
                 continue
-            if unconditional_only and (job_conditional or "if" in step):
+            if unconditional_only and (
+                job_skippable or "if" in step
+                or bool(step.get("continue-on-error"))
+            ):
                 continue
             scripts.append(script)
     return scripts
@@ -400,14 +405,17 @@ def _job_commands(
     jobs: list[tuple[str, list[list[str]]]] = []
     for name, job in ((document or {}).get("jobs") or {}).items():
         job = job or {}
-        job_conditional = "if" in job
+        job_skippable = "if" in job or bool(job.get("continue-on-error"))
         commands: list[list[str]] = []
         for step in job.get("steps", []) or []:
             step = step or {}
             script = step.get("run")
             if not isinstance(script, str):
                 continue
-            if unconditional_only and (job_conditional or "if" in step):
+            if unconditional_only and (
+                job_skippable or "if" in step
+                or bool(step.get("continue-on-error"))
+            ):
                 continue
             commands.extend(_commands(script))
         jobs.append((str(name), commands))
@@ -729,12 +737,25 @@ def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
 
 
 def _runs_pytest(commands: list[list[str]]) -> bool:
-    """这些命令里有没有 pytest 调用（裸 `pytest` 或 `python -m pytest`）。"""
+    """这些命令里有没有 pytest 调用（裸 `pytest` 或 `python -m pytest`）。
+
+    wrapper（env/command）照 pip 侧同一套解包——`env pytest tests/` 也是在
+    跑测试，不解包会让该 job 的 presence 义务真空蒸发（codex P2）。检测取
+    保守方向：条件位/赋值前缀后的 pytest 一律算数。
+    """
     for command in commands:
         tokens = list(command)
-        while tokens and (tokens[0] in _RESERVED_WORDS
-                          or _ASSIGNMENT_PREFIX.match(tokens[0])):
-            tokens.pop(0)
+        stripped = True
+        while stripped and tokens:
+            stripped = False
+            while tokens and (tokens[0] in _RESERVED_WORDS
+                              or _ASSIGNMENT_PREFIX.match(tokens[0])):
+                tokens.pop(0)
+                stripped = True
+            if tokens and tokens[0].replace("\\", "/").rsplit(
+                    "/", 1)[-1] in _COMMAND_WRAPPERS:
+                tokens.pop(0)
+                stripped = True
         if not tokens:
             continue
         name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
@@ -1212,6 +1233,39 @@ jobs:
             _commands("echo start | pip install x")
         self.assertEqual(
             [["echo", "hi"], ["wc", "-l"]], _commands("echo hi | wc -l"))
+
+    def test_an_allowed_to_fail_install_is_not_presence(self) -> None:
+        """`continue-on-error: true` 的安装失败后 Actions 照样跑向 pytest。
+
+        只滤 `if:` 时这种步骤仍算「无条件」——失败的安装被当 presence 保证
+        （codex P1）。与 `if:` 同一过滤，step/job 两级都看。
+        """
+        import tempfile as _tf
+        doc = """
+jobs:
+  j:
+    steps:
+      - run: pip install git+https://github.com/microsoft/qlib.git@{sha}
+        continue-on-error: true
+      - run: pytest tests/
+""".format(sha="a" * 40)
+        with _tf.TemporaryDirectory() as t:
+            wf = Path(t) / "w.yml"
+            wf.write_text(doc, encoding="utf-8")
+            jobs = dict(_job_commands(wf))
+            unconditional = dict(_job_commands(wf, unconditional_only=True))
+        self.assertTrue(
+            _pytest_without_qlib(jobs["j"], unconditional["j"]),
+            "允许失败的安装被当成了 presence 保证")
+
+    def test_a_wrapped_pytest_is_still_pytest(self) -> None:
+        # `env pytest tests/`——wrapper 照 pip 侧同一套解包（codex P2）。
+        for line in ("env pytest tests/", "command pytest",
+                     "env RUST_LOG=x python -m pytest"):
+            with self.subTest(line=line):
+                self.assertTrue(_runs_pytest(_commands(line)),
+                                "包着 wrapper 的 pytest 没被认出来")
+        self.assertFalse(_runs_pytest(_commands("env python train.py")))
 
     def test_presence_is_evaluated_per_job(self) -> None:
         """jobs 是隔离 runner——A job 装的 qlib，B job 拿不到。
