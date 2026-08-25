@@ -240,7 +240,11 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
     到每一处展示，docstring 不渲染、不算数。
     """
     if not getattr(window, "known", False):
-        return [("模型时效", "无法推导（现任非可解析 ensemble）")]
+        # 原因照抄契约给的 error，不硬编码一种失败：known=False 不只有
+        # 「非可解析 ensemble」一种（最新 fit_end 非法同样走这里），错误
+        # 归因会把操作人引向错的修法（codex P2）。
+        reason = str(getattr(window, "error", "") or "").strip() or "原因未记录"
+        return [("模型时效", f"无法推导：{reason}")]
     state_text = {
         "before": "未开",
         "open": "开放中",

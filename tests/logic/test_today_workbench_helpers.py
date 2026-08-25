@@ -273,10 +273,21 @@ class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
         self.assertIn("无机器可读", value, "缺「仓库无到期锚」的告白")
 
     def test_an_unknown_window_is_stated_not_blank(self) -> None:
+        # 原因必须**原样**活到可见行里（codex P2：硬编码「非可解析
+        # ensemble」会错报 fit_end 非法这类同走 known=False 的失败）。
         from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
-        rows = model_age_rows(RetrainWindow(known=False, error="x"))
+        rows = model_age_rows(RetrainWindow(
+            known=False, error="现任最新 fit_end 不是合法 ISO 日期"))
         self.assertEqual(1, len(rows))
         self.assertIn("无法推导", rows[0][1])
+        self.assertIn("现任最新 fit_end 不是合法 ISO 日期", rows[0][1],
+                      "契约给的原因没活到可见文案")
+        self.assertNotIn("ensemble", rows[0][1], "又把一种失败硬编码成了全部")
+
+    def test_an_unknown_window_without_a_reason_says_so(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        rows = model_age_rows(RetrainWindow(known=False, error=""))
+        self.assertIn("原因未记录", rows[0][1], "空原因得明说，不能留白")
 
     def test_the_page_wires_the_cockpit_function_not_a_copy(self) -> None:
         # 接线钉：页面必须消费 ops_cockpit 的同一个 retrain_window——
