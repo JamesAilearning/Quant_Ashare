@@ -233,9 +233,18 @@ that actually produces the anchor.
 #### Scenario: a pip environment token is refused wherever it sits
 - **WHEN** a token shaped `PIP_*=` appears in ANY command — as an inline
   prefix, after `export`, behind `env` or `set`, in any letter case (Windows
-  environment names are case-insensitive)
+  environment names are case-insensitive) — or in PowerShell's spelling,
+  `$env:PIP_*` / `Env:PIP_*`, which the Windows legs execute because their
+  default shell is pwsh
 - **THEN** the governance test fails naming it: carriers are not enumerated,
   the shape is what configures pip
+
+#### Scenario: a wrapped install is still an install
+- **WHEN** pip is invoked through `env` or `command` — POSIX utilities whose
+  semantics is "run the following command"
+- **THEN** the install is unwrapped and covered like any other, its `env`
+  assignments join the environment check, and a bare wrapper option (which may
+  consume the next word) is refused loudly
 
 #### Scenario: workflow env mappings cannot configure pip either
 - **WHEN** a `PIP_*` key is declared in a workflow-, job-, or step-level `env:`

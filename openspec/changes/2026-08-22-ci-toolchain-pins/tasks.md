@@ -15,6 +15,20 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第十九轮：两个 P2 —— 第二种 shell 的形状、wrapper 解包
+
+**Windows 腿默认跑 pwsh**（test.yml 无 shell: 覆盖）——`$env:PIP_DRY_RUN=1`
+在那里与 export 等效。形状正则并入 PowerShell 拼写（`$env:PIP_*` /
+`Env:PIP_*`，Set-Item 的路径实参），仍是认形状不认载体。**边界如实记录**：
+词法器建模的是 POSIX，pwsh 全文法不建模；若后续意见要求整体 shell-aware，
+届时呈裁决。
+
+**`env pip install …` / `command pip install …` 是真安装。** 第 0 个 token
+是 wrapper 时整条安装从三处覆盖面同时消失（这次是漏报方向）。解包这两个
+POSIX 定义的「运行后面那条命令」实用程序：env 的赋值前缀并入环境检查，
+wrapper 的裸选项（可能吃值）多义即响亮。不做开放枚举，新 wrapper 由底数
+断言暴露。
+
 ## codex 第十八轮：一个 P1 + 一个 P2 —— 载体不枚举，认形状；大小写不敏感
 
 **P1 `export PIP_DRY_RUN=1; pip install …`**：赋值坐在另一条命令里、随后

@@ -308,6 +308,13 @@ _PIP_EXECUTABLE = re.compile(r"^pip[\d.]*$")
 _PYTHON_EXECUTABLE = re.compile(r"^python[\d.]*$")
 #: POSIX 简单命令允许的前缀：`VAR=value` 赋值。可执行体在它们**之后**。
 _ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+#: 「运行后面那条命令」的 POSIX 实用程序：`env`（可带赋值前缀）与
+#: `command`（shell 内建）。第 0 个 token 是它们时真正的可执行体在后面——
+#: `env pip install …` 是一次真安装，不解包会把它整条排除在覆盖面之外
+#: （codex P2）。只解包这两个有实据的；新 wrapper 出现由 qlib 在场底数与
+#: 可解析底数暴露，不做开放枚举。
+_COMMAND_WRAPPERS = frozenset({"env", "command"})
+
 #: POSIX 保留字（POSIX.1-2017 §2.4 定义的**闭集**）。出现在命令开头时引导
 #: 复合命令，真正的可执行体在它们之后——`if pip install …; then` 的可执行体
 #: 是 `pip`，不是 `if`（codex P2）。
@@ -334,6 +341,20 @@ def _is_pip_install(command: list[str]) -> bool:
     assignments: list[str] = []
     while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
         assignments.append(tokens.pop(0))
+    # wrapper 解包：`env` / `command` 的语义就是「运行后面那条命令」。env
+    # 自己的赋值前缀继续剥（PIP_*= 由形状规则响亮）；wrapper 的**裸选项**
+    # 可能吃掉下一个 token（env -u NAME、command -p），多义即响亮。
+    while tokens:
+        wrapper = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+        if wrapper not in _COMMAND_WRAPPERS:
+            break
+        tokens.pop(0)
+        while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
+            assignments.append(tokens.pop(0))
+        if tokens and tokens[0].startswith("-"):
+            raise AmbiguousPipCommand(
+                f"wrapper 后有裸选项 {tokens[0]!r}——接值选项让命令位置无从"
+                f"确定；请去掉选项或改写")
     if not tokens:
         return False
     name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
@@ -421,7 +442,12 @@ _FILE_SOURCED_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 #: `export`、`env`、`set` 都只是把这个形状送进环境的不同姿势；Windows 上
 #: 环境名大小写不敏感，`pip_dry_run=1` 与 `PIP_DRY_RUN=1` 等效（codex
 #: P1+P2）。任何命令的任何 token 长成这样，pip 的行为就可能被无形改写。
-_PIP_ENV_TOKEN = re.compile(r"^pip_[a-z0-9_]*=", re.IGNORECASE)
+#: 两种 shell 的 pip 环境引用形状：POSIX 的 `PIP_X=…`，以及 PowerShell 的
+#: `$env:PIP_X=…` / `Env:PIP_X`（`Set-Item` 的路径实参）。Windows 腿没有
+#: `shell:` 覆盖、默认跑 pwsh——`$env:PIP_DRY_RUN=1` 在那里与 POSIX 的
+#: `export` 等效（codex P2）。仍然认形状不认载体。
+_PIP_ENV_TOKEN = re.compile(
+    r"^pip_[a-z0-9_]*=|^\$?env:pip_[a-z0-9_]*", re.IGNORECASE)
 
 
 def _pip_environment_offenders(commands: list[list[str]]) -> list[str]:
@@ -1048,6 +1074,27 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
         self.assertTrue(_is_pip_install(
             _commands('RUST_LOG=debug pip install ".[dev]"')[0]))
 
+    def test_a_wrapped_install_is_still_an_install(self) -> None:
+        """`env pip install …` / `command pip install …` 是真安装。
+
+        第 0 个 token 是 wrapper 时直接返回 False，这条安装从 extras 发现、
+        直接目标上界、qlib 窗口三处覆盖面里同时消失（codex P2）。解包这两个
+        POSIX 定义的「运行后面那条命令」实用程序；wrapper 的裸选项可能吃值，
+        多义即响亮。
+        """
+        for line in ('env pip install ".[dev]"',
+                     'command pip install ".[dev]"',
+                     'env MY_VAR=1 pip install ".[dev]"',
+                     'env command pip install ".[dev]"'):
+            with self.subTest(line=line):
+                self.assertTrue(_is_pip_install(_commands(line)[0]),
+                                "包着 wrapper 的安装没被认出来")
+        with self.assertRaises(AmbiguousPipCommand):
+            _is_pip_install(_commands('env -u X pip install ".[dev]"')[0])
+        # env 携带的 PIP_*= 赋值照样响亮（形状规则经 assignments 生效）。
+        with self.assertRaises(AmbiguousPipCommand):
+            _is_pip_install(_commands('env PIP_DRY_RUN=1 pip install .')[0])
+
     def test_a_lookalike_executable_is_not_pip(self) -> None:
         # `pipx install` 装的是隔离环境里的应用，不是项目依赖。
         self.assertFalse(_is_pip_install(_commands("pipx install ruff")[0]))
@@ -1182,8 +1229,11 @@ class NoCommandAnywhereCarriesAPipEnvironmentToken(unittest.TestCase):
     def test_every_carrier_spelling_is_caught(self) -> None:
         # 直接对着**上面那条真数据守卫用的同一个 helper** 测——真实 workflow
         # 是干净的，负断言测不出扫描被删（变异 BO），作证要在 helper 层做。
+        # 含 PowerShell 形态：Windows 腿默认跑 pwsh（codex P2）。
         for line in ("export PIP_DRY_RUN=1",
                      "env pip_dry_run=1 pip install .",
+                     "$env:PIP_DRY_RUN=1",
+                     "Set-Item Env:PIP_DRY_RUN 1",
                      "set PIP_REQUIREMENT=r.txt"):
             with self.subTest(line=line):
                 self.assertTrue(
