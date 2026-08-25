@@ -28,6 +28,14 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十七轮：一个 P2 —— 硬链接不经过 O_NOFOLLOW
+
+派生位被硬链到 canonical 输入或别的 provider 的台账时，两个名字指**同一个
+inode**——路径比较看不见、O_NOFOLLOW 不管（那只管符号链接）。对**已打开的
+描述符** fstat：查的就是拿到的 inode，没有 check-then-use 窗口；st_nlink > 1
+拒写 + ERROR，退出码照旧。NTFS 建硬链接无需特权，行为测试本机真跑（与
+symlink 测试不同，不 skip）。
+
 ## codex 第十六轮：一个 P2 —— 先查再开是竞态，打开动作自己要拒随
 
 上一轮的 `is_symlink()` 前置检查与 `open("ab")` 是两次文件系统操作——中间

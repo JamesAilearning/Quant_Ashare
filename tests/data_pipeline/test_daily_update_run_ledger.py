@@ -15,6 +15,7 @@
 import ast
 import json
 import logging
+import os
 import sys
 import tempfile
 import unittest
@@ -257,7 +258,7 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         self.assertIn("is_symlink", called,
                       "_append_ledger 不再检查符号链接 —— 拒随防线没了")
         body_src = ast.unparse(fn)
-        for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT"):
+        for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT", "st_nlink"):
             with self.subTest(承重位=bearing):
                 self.assertIn(
                     bearing, body_src,
@@ -288,6 +289,29 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
             self.assertEqual(du.EXIT_FETCH_HARD, code, "退出码被台账问题改变了")
             self.assertEqual("", victim.read_text(encoding="utf-8"),
                              "追加穿过符号链接写进了别人的历史")
+
+    def test_a_hard_linked_ledger_target_is_refused(self) -> None:
+        """派生位被硬链到别处时，写的是**同一个 inode**。
+
+        O_NOFOLLOW 只管符号链接；构造期检查比的是路径串——硬链接两个名字
+        指同一 inode，追加会直接改写链接另一头的内容（codex P2）。对已打开
+        的描述符 fstat，st_nlink > 1 拒写；NTFS 上建硬链接无需特权，本测试
+        真跑。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            victim = Path(t) / "victim_history.jsonl"
+            victim.write_text("precious\n", encoding="utf-8")
+            target = du.default_ledger_path(cfg.provider_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(victim, target)
+            except OSError:
+                self.skipTest("本文件系统不支持硬链接")
+            code = du.run_daily_update(cfg, _runners(failing="fetch"))  # type: ignore[arg-type]
+            self.assertEqual(du.EXIT_FETCH_HARD, code, "退出码被台账问题改变了")
+            self.assertEqual("precious\n", victim.read_text(encoding="utf-8"),
+                             "追加写进了硬链接另一头的内容")
 
     def test_a_torn_tail_does_not_swallow_the_new_line(self) -> None:
         """上一个进程死在写一半、留下没有换行的尾行时，新记录不许被焊上去。

@@ -53,6 +53,13 @@ the derived value.
   primary line on Windows where symlink creation is privileged; the run's exit
   code is unaffected either way
 
+#### Scenario: a hard-linked target is refused on the opened descriptor
+- **WHEN** the derived ledger path is hard-linked to a canonical input or to
+  another provider's ledger — the same inode under two names, invisible to
+  path comparison and untouched by `O_NOFOLLOW`
+- **THEN** the append inspects the descriptor it actually opened (`fstat`,
+  no check-then-use window) and refuses when the link count exceeds one
+
 #### Scenario: a torn tail cannot swallow the new line
 - **WHEN** a previous process died mid-write leaving a final line without its
   newline

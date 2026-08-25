@@ -289,6 +289,17 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
             | getattr(os, "O_BINARY", 0)
         )
         with os.fdopen(os.open(str(path), flags, 0o644), "ab") as handle:
+            # 硬链接不经过 O_NOFOLLOW（那只管符号链接）：派生位被硬链到
+            # canonical 输入或别的 provider 的台账时，写的就是**同一个
+            # inode**。对已打开的描述符 fstat——查的就是拿到的 inode，没有
+            # check-then-use 窗口；多于一个链接就拒写（codex P2）。
+            if os.fstat(handle.fileno()).st_nlink > 1:
+                _logger.error(
+                    "run-ledger target %s is HARD-LINKED elsewhere "
+                    "(st_nlink>1) — refusing to append into a shared inode; "
+                    "the run's exit code is unaffected.", path,
+                )
+                return
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
