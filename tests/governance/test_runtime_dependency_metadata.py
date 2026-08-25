@@ -374,6 +374,14 @@ def _workflows() -> list[Path]:
 # pyproject 的约束，所以每条装它的 workflow 都得自己把窗口写一遍。
 # 「哪些 workflow 该有重述」因此可以推导，不必写死一个处数。
 _QLIB_PIN = "git+https://github.com/microsoft/qlib.git@"
+#: 钉住的必须是**不可变**引用：完整 40 位十六进制 commit SHA。`@main` 这类
+#: 可动引用让 CI 的 qlib 代码在两次运行之间漂移，「固定 commit」名存实亡
+#: （codex P2）。
+_IMMUTABLE_SHA = re.compile(r"^[0-9a-f]{40}$")
+#: 从**文件**引入安装内容的 pip 选项（pip 文档定义的闭集：`-r/--requirement`
+#: 装文件里列的每一个包，`-c/--constraint` 用文件约束解析）。命令文本推导
+#: 看不见文件内容——静默跳过就是覆盖面在文件里的每一行上空着（codex P2）。
+_FILE_SOURCED_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 
 # pyproject 里承载 requirement 的三处（标准定的闭集）：
 #   PEP 518 `[build-system].requires` · PEP 621 `[project].dependencies` ·
@@ -448,11 +456,26 @@ def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
     problems: list[str] = []
     for token in after:
         if token.startswith("-"):
+            # 从文件引入安装内容的选项不许静默跳过：pip 会安装/约束文件里的
+            # 每一行，而命令文本推导看不见它们（codex P2）。裸形态与 `=`
+            # 连写形态都拦。
+            if token in _FILE_SOURCED_OPTIONS or any(
+                token.startswith(f"{option}=")
+                for option in _FILE_SOURCED_OPTIONS
+            ):
+                problems.append(
+                    f"从文件引入安装内容：{token} —— 覆盖面推导看不见文件"
+                    f"内容；请把 requirement 直接写在命令里")
             continue
         if _LOCAL_TARGET.match(token):
             continue                      # 本地项目：extras 机制管
         if token.startswith(_QLIB_PIN):
-            continue                      # 固定 commit 的 qlib：pin 守卫管
+            # 前缀对了还要看**后缀**：`@main` 是可动引用，CI 的 qlib 代码
+            # 会在两次运行之间漂移（codex P2）。
+            if not _IMMUTABLE_SHA.match(token[len(_QLIB_PIN):]):
+                problems.append(
+                    f"qlib 引用不是不可变 commit SHA：{token}")
+            continue
         if token.startswith("git+"):
             problems.append(f"未钉 commit 的源码安装：{token}")
             continue
@@ -481,9 +504,28 @@ def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
     ]
 
 
+def _local_target_candidates(command: list[str]) -> list[str]:
+    """可能承载本地目标的 token 值：裸 token + `--editable=` 连写的值。
+
+    `pip install --editable=.[research]` 合法，而目标藏在 `=` 后面——只看
+    裸 token，这条 extra 连同它的无上界依赖静默脱离覆盖面，可解析性检查也
+    因「没有以 `.` 开头的 token」跳过它（codex P2）。
+    """
+    values = []
+    for token in command:
+        if token.startswith("--editable="):
+            values.append(token[len("--editable="):])
+        elif not token.startswith("-"):
+            values.append(token)
+    return values
+
+
 def _local_target(command: list[str]) -> re.Match[str] | None:
     """这条 pip install 命令装的是不是**本地项目**；是则返回目标的匹配。"""
-    matches = [m for token in command if (m := _LOCAL_TARGET.match(token))]
+    matches = [
+        m for value in _local_target_candidates(command)
+        if (m := _LOCAL_TARGET.match(value))
+    ]
     if len(matches) > 1:
         raise AmbiguousPipCommand(
             f"命令里有 {len(matches)} 个本地目标形状的 token"
@@ -850,6 +892,22 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
         assert matched is not None
         self.assertEqual("research", matched.group("extras"))
 
+    def test_an_equals_joined_editable_target_is_found(self) -> None:
+        """`pip install --editable=.[research]` 的目标藏在 `=` 后面。
+
+        只看裸 token，这条 extra 连同它的无上界依赖静默脱离覆盖面，可解析性
+        检查也因「没有以 `.` 开头的 token」跳过它（codex P2）。
+        """
+        matched = _local_target(_commands("pip install --editable=.[research]")[0])
+        self.assertIsNotNone(matched, "= 连写的 editable 目标没被认出来")
+        assert matched is not None
+        self.assertEqual("research", matched.group("extras"))
+        self.assertIn(
+            ".[research]",
+            _local_target_candidates(
+                _commands("pip install --editable=.[research]")[0]),
+            "可解析性过滤的候选值里没有 = 连写的目标")
+
     def test_a_bare_dot_is_a_local_install_without_extras(self) -> None:
         matched = _local_target(_commands("pip install -e .")[0])
         self.assertIsNotNone(matched)
@@ -958,6 +1016,33 @@ class EveryDirectWorkflowInstallTargetIsBounded(unittest.TestCase):
             (1, []),
             _direct_install_targets(
                 _commands('python -m pip install --upgrade "pip>=24,<26"')[0]))
+
+    def test_a_file_sourced_option_is_flagged_not_skipped(self) -> None:
+        """`--requirement=requirements.txt` 会装文件里的每一个包。
+
+        整个 token 被当普通选项跳过，文件里潜在无上界的依赖静默绕过守卫
+        （codex P2）。裸形态 `-r` 同拦；约束文件 `-c/--constraint` 同理。
+        """
+        for line in ("pip install --requirement=requirements.txt",
+                     "pip install -r requirements.txt",
+                     "pip install --constraint=c.txt x>=1,<2"):
+            with self.subTest(line=line):
+                _, problems = _direct_install_targets(_commands(line)[0])
+                self.assertTrue(problems, "文件引入选项被静默跳过了")
+
+    def test_a_mutable_qlib_reference_is_flagged(self) -> None:
+        """`@main` 是可动引用——CI 的 qlib 代码会在两次运行之间漂移。
+
+        只看 URL 前缀，`@` 后面挂什么都算「钉住」（codex P2）。必须是完整
+        40 位十六进制 commit SHA。
+        """
+        _, problems = _direct_install_targets(_commands(
+            "pip install git+https://github.com/microsoft/qlib.git@main")[0])
+        self.assertTrue(problems, "可动引用被当成了钉死的 commit")
+        _, ok = _direct_install_targets(_commands(
+            "pip install git+https://github.com/microsoft/qlib.git@"
+            + "a" * 40)[0])
+        self.assertEqual([], ok, "合法的 40 位 SHA 被误拒")
 
     def test_an_unpinned_source_install_is_flagged(self) -> None:
         _, problems = _direct_install_targets(
@@ -1159,8 +1244,12 @@ class EverythingCIInstallsIsBounded(unittest.TestCase):
             # extra 就悄悄脱离覆盖面（codex P2）。
             for command in _pip_installs(workflow):
                 # 只看装**本地项目**的那些：`pip install pytest` 之类装的是
-                # 第三方包，不点名任何 extra，与覆盖面无关。
-                if not any(token.startswith(".") for token in command):
+                # 第三方包，不点名任何 extra，与覆盖面无关。候选值经
+                # `_local_target_candidates`——`--editable=` 连写的值也在内。
+                if not any(
+                    value.startswith(".")
+                    for value in _local_target_candidates(command)
+                ):
                     continue
                 checked += 1
                 if _local_target(command) is None:

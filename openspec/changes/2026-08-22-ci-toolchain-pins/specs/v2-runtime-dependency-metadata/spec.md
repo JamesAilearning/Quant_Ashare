@@ -205,6 +205,24 @@ that actually produces the anchor.
   source install is named, and an unclassifiable target (usually the value of
   a bare option) is refused loudly with the `--opt=value` remedy
 
+#### Scenario: file-sourced install content is refused, not skipped
+- **WHEN** a pip install carries `-r/--requirement` or `-c/--constraint`, bare
+  or `=`-joined — pip installs or constrains from a file the command text
+  cannot see
+- **THEN** the guard refuses loudly instead of skipping the option, so no
+  dependency can enter CI through a file outside the derived coverage
+
+#### Scenario: the qlib reference must be an immutable commit
+- **WHEN** the qlib source suffix after `@` is anything but a full 40-hex
+  commit SHA — a branch like `@main`
+- **THEN** it is flagged: a moving reference lets CI's qlib code drift between
+  runs while every guard stays green
+
+#### Scenario: an equals-joined editable target is still a target
+- **WHEN** the project is installed as `--editable=.[extras]`
+- **THEN** the extras enter the derived coverage and the parseability check
+  sees the command, because target candidates include `=`-joined option values
+
 #### Scenario: a dry run is not an install
 - **WHEN** a pip install carries `--dry-run` — defined by pip as not actually
   installing anything
