@@ -266,12 +266,13 @@ that actually produces the anchor.
   qlib-pin presence check, which a dry-run carrying the pin and both windows
   would otherwise satisfy while qlib stays absent
 
-#### Scenario: a piped install is refused
-- **WHEN** a pip install sits in a pipeline — `pip install <qlib> | tee log` —
-  where the exit status belongs to the last segment and a failed install can
-  be swallowed
+#### Scenario: a piped or AND-chained install is refused
+- **WHEN** a pip install sits in a pipeline (`pip install <qlib> | tee log`,
+  whose exit status belongs to the last segment) or in an `&&` list — where
+  bash's `-e` does NOT exit on a failed inner command, so `false && pip
+  install <qlib>` is skipped while the step stays green
 - **THEN** it is refused loudly, in the same execution-cannot-be-established
-  family as `||`; pipelines without installs keep splitting normally
+  family as `||`; chains without installs keep splitting normally
 
 #### Scenario: a workflow that runs pytest installs qlib itself
 - **WHEN** the qlib install is removed from a JOB that invokes pytest, while
@@ -318,6 +319,20 @@ that actually produces the anchor.
 - **THEN** the operators and their targets are stripped before
   classification, so redirecting output can neither invent an unbounded
   target nor split a command apart
+
+#### Scenario: a pin or target that may be an option value is not credited
+- **WHEN** the qlib pin or a local-target token immediately follows a bare
+  (non-`=`) option other than `-e/--editable` — `--trusted-host <qlib-pin>`
+  consumes the pin as its hostname
+- **THEN** it earns no presence or target credit: the per-job presence guard
+  then fails loudly for the missing install, and the direct-target scan names
+  the ambiguity with the `--opt=value` remedy
+
+#### Scenario: qlib is installed before pytest, with a guarantee
+- **WHEN** the only guaranteed qlib install in a job sits AFTER a pytest step
+  — steps run in order, so those tests already ran through `importorskip`
+- **THEN** the per-job guard fails: each pytest invocation requires a
+  guaranteed install strictly before it
 
 #### Scenario: the qlib pin must sit on an actual install
 - **WHEN** the qlib URL appears only in a command that is not a pip install —

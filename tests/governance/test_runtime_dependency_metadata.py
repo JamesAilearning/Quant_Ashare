@@ -257,11 +257,14 @@ def _split_commands(script: str) -> list[str]:
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
-            if separator == "|":
-                # 管道两侧都记为 piped：`pip install <qlib> | tee log` 的
-                # 退出码是 tee 的——pip 失败被吞、步骤照样绿（codex P1，
-                # sh -e 实测继续执行）。左侧此刻还在 buffer 里——标记要在
-                # flush **之前**落到当前片段上，右侧由 next_piped 接力。
+            if separator in ("|", "&&"):
+                # 两侧都打「纠缠」标记：`pip install <qlib> | tee log` 的退出
+                # 码是 tee 的（失败被吞）；`false && pip install <qlib>` 在
+                # bash -e 下**不会**让步骤退出——errexit 对 AND 链内的失败
+                # 不生效（codex 以 Linux 腿的 bash -e -o pipefail 实测），
+                # 安装被跳过而 pytest 照跑。此前「前件失败步骤即红」的判读
+                # 是**错的**，&&与 | 同罪：链内的 pip 安装执行/结果无法确立。
+                # 左侧此刻还在 buffer 里——标记要在 flush **之前**落上。
                 piped[0] = True
                 flush(next_piped=True)
                 index += len(separator)
@@ -333,8 +336,8 @@ def _commands(script: str) -> list[list[str]]:
             continue
         if piped and _is_pip_install(args):
             raise UnlexableShell(
-                "管道中的 pip 安装——失败可被下游命令的退出码吞掉，执行"
-                "结果无法确立；请拆出管道或另起步骤")
+                "管道或 &&/AND 链中的 pip 安装——失败可被吞掉或整段被跳过，"
+                "执行/结果无法确立；请拆成独立命令或步骤")
         out.append(args)
     return out
 
@@ -396,29 +399,32 @@ def _run_scripts(
 
 
 def _job_commands(
-    workflow: Path, *, unconditional_only: bool = False,
-) -> list[tuple[str, list[list[str]]]]:
-    """按 **job** 分组的命令。jobs 跑在**隔离的 runner** 上——A job 装的
-    qlib，B job 一个字节也拿不到；presence 判据摊到 workflow 一层会让
-    「装在别的 job 里」蒙混过关（codex P1）。"""
+    workflow: Path,
+) -> list[tuple[str, list[tuple[list[str], bool]]]]:
+    """按 **job** 分组的命令，逐条带「是否有保证」标记，**保持步骤顺序**。
+
+    jobs 跑在隔离 runner 上——A job 装的 qlib，B job 拿不到（codex P1）；
+    步骤又是**顺序执行**的——qlib 装在 pytest 之后，前面的测试已经在
+    importorskip 下静默跑完（codex P1）。「有保证」= 所在 step/job 既无
+    `if:` 也无 `continue-on-error`。"""
     document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-    jobs: list[tuple[str, list[list[str]]]] = []
+    jobs: list[tuple[str, list[tuple[list[str], bool]]]] = []
     for name, job in ((document or {}).get("jobs") or {}).items():
         job = job or {}
         job_skippable = "if" in job or bool(job.get("continue-on-error"))
-        commands: list[list[str]] = []
+        entries: list[tuple[list[str], bool]] = []
         for step in job.get("steps", []) or []:
             step = step or {}
             script = step.get("run")
             if not isinstance(script, str):
                 continue
-            if unconditional_only and (
+            guaranteed = not (
                 job_skippable or "if" in step
                 or bool(step.get("continue-on-error"))
-            ):
-                continue
-            commands.extend(_commands(script))
-        jobs.append((str(name), commands))
+            )
+            entries.extend(
+                (command, guaranteed) for command in _commands(script))
+        jobs.append((str(name), entries))
     return jobs
 
 
@@ -717,6 +723,12 @@ def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
         if _LOCAL_TARGET.match(token):
             continue                      # 本地项目：extras 机制管
         if token.startswith(_QLIB_PIN):
+            if _blocked_by_bare_option(command, command.index(token)):
+                problems.append(
+                    f"qlib 引用紧跟裸选项——可能只是选项值而非安装目标："
+                    f"{command[command.index(token) - 1]} {token}；请用"
+                    f" --opt=value 连写消歧")
+                continue
             # 前缀对了还要看**后缀**：`@main` 是可动引用，CI 的 qlib 代码
             # 会在两次运行之间漂移（codex P2）。
             if not _IMMUTABLE_SHA.match(token[len(_QLIB_PIN):]):
@@ -766,22 +778,40 @@ def _runs_pytest(commands: list[list[str]]) -> bool:
     return False
 
 
-def _pytest_without_qlib(
-    all_commands: list[list[str]],
-    unconditional_commands: list[list[str]],
-) -> bool:
-    """跑 pytest 却不自装 qlib——`importorskip` 让整套 qlib 侧覆盖静默蒸发。
+def _unprotected_pytest(entries: list[tuple[list[str], bool]]) -> bool:
+    """job 里是否有**前面没有保证性 qlib 安装**的 pytest 调用。
 
-    全局底数挡不住这个：test.yml 删掉 qlib 安装后，regen-baseline 里的那条
-    仍让 `len(commands) >= 1` 过线（codex P1）。判据按 **workflow 各自**成立。
-
-    **两个集合各司其职**（codex 又一条 P1 抓的正是把它们混用）：pytest 检测
-    看**全部**命令——test.yml 的 pytest 全在矩阵 `if:` 后面，从无条件集里
-    找 pytest 会一无所获、整条守卫真空绿；qlib 在场只看**无条件**命令——
-    `if:` 可跳过的安装不是安装。
+    集合成员判据的两个已被逐一击破的洞（codex 三条 P1）：混用无条件集找
+    pytest（真空绿）、把别的 job 的安装记进来（隔离 runner）、以及**顺序**
+    ——步骤顺序执行，qlib 装在 pytest 之后，前面的测试已在 importorskip 下
+    静默跑完。所以逐条走：pytest 用**全部**条目检测（条件腿也要 qlib），
+    qlib 只认**此前**出现的、**有保证**（无 if:/continue-on-error）的安装。
     """
-    return _runs_pytest(all_commands) and not _qlib_pin_installs(
-        unconditional_commands)
+    qlib_seen = False
+    for command, guaranteed in entries:
+        if guaranteed and _qlib_pin_installs([command]):
+            qlib_seen = True
+        if _runs_pytest([command]) and not qlib_seen:
+            return True
+    return False
+
+
+def _blocked_by_bare_option(command: list[str], index: int) -> bool:
+    """这个 token 是否紧跟在一个**裸**选项之后——可能只是它的值。
+
+    `pip install --trusted-host <qlib-pin> <窗口>` 装的是那两个窗口，pin 只是
+    `--trusted-host` 的值（codex P1）。分辨要 pip 的选项表——不维护；
+    presence 类判据（qlib 在场 / 本地目标）对这种 token **不记账**，缺席由
+    相应守卫响亮。`-e/--editable` 例外：它的值**就是**安装目标，语义即此。
+    """
+    if index == 0:
+        return False
+    previous = command[index - 1]
+    return (
+        previous.startswith("-")
+        and "=" not in previous
+        and previous not in ("-e", "--editable")
+    )
 
 
 def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
@@ -794,7 +824,11 @@ def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
     """
     return [
         command for command in commands
-        if any(token.startswith(_QLIB_PIN) for token in command)
+        if any(
+            token.startswith(_QLIB_PIN)
+            and not _blocked_by_bare_option(command, i)
+            for i, token in enumerate(command)
+        )
         and _is_pip_install(command)
     ]
 
@@ -807,7 +841,7 @@ def _local_target_candidates(command: list[str]) -> list[str]:
     因「没有以 `.` 开头的 token」跳过它（codex P2）。
     """
     values = []
-    for token in command:
+    for index, token in enumerate(command):
         if token.startswith("--editable="):
             values.append(token[len("--editable="):])
         elif (
@@ -818,7 +852,10 @@ def _local_target_candidates(command: list[str]) -> list[str]:
             # 附着式短选项值（`-e.[research]`）——与 `-r` 附着形态同一条
             # optparse 规则；只认裸 token 会让这条 extra 静默脱离覆盖面。
             values.append(token[2:])
-        elif not token.startswith("-"):
+        elif not token.startswith("-") and not _blocked_by_bare_option(
+                command, index):
+            # 紧跟裸选项（非 -e）的 token 可能只是选项值——不记为目标候选
+            # （codex P1 的同一原则用在本地目标上）。
             values.append(token)
     return values
 
@@ -962,17 +999,29 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
 
     QLIB = "git+https://github.com/microsoft/qlib.git@abc123"
 
-    def test_a_compound_line_becomes_separate_commands(self) -> None:
-        got = _commands(f'pip install {self.QLIB} && pip install "numpy>=1.24,<2.0"')
-        self.assertEqual(2, len(got), "整行被当成了一条命令")
-        self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
+    def test_a_compound_install_line_is_refused_outright(self) -> None:
+        """`pip install <qlib> && pip install "numpy…"`——整条响亮。
+
+        判读的三段演进：r6 按分隔符拆开（防约束漏认）；本轮 codex 证明
+        bash -e 对 AND 链内的失败不 errexit——`false && pip install` 的安装
+        被跳过而步骤照样绿，「前件失败步骤即红」是错的。&& 链内的安装与
+        管道同罪：执行/结果无法确立即响亮。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands(f'pip install {self.QLIB} && pip install "numpy>=1.24,<2.0"')
+        # 非安装的 && 链照常拆分。
+        self.assertEqual(2, len(_commands("echo a && echo b")))
 
     def test_every_posix_separator_splits(self) -> None:
-        # `||` 不在此列（右侧执行无法确立，整段响亮）；`|` 也不在——管道
-        # 里的**安装**响亮，非安装管道由专门用例覆盖。
-        for sep in ("&&", ";", "&"):
+        # `||` 不在此列（右侧执行无法确立，整段响亮）；`|`/`&&` 链内的
+        # **安装**响亮（fixture 用非安装命令验证拆分本身）。
+        for sep in ("&&", ";", "|", "&"):
             with self.subTest(分隔符=sep):
-                self.assertEqual(2, len(_commands(f"pip install a {sep} pip install b")))
+                self.assertEqual(2, len(_commands(f"echo a {sep} echo b")))
+        for sep in (";", "&"):
+            with self.subTest(分隔符=sep, 安装="独立"):
+                self.assertEqual(
+                    2, len(_commands(f"pip install a {sep} pip install b")))
 
     def test_a_quoted_separator_is_not_a_separator(self) -> None:
         # 引号里的 `&&` 是实参的一部分，不是命令边界。
@@ -985,10 +1034,11 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         `pip install git+…@sha&&pip install "numpy…"` 会被当成一条命令，qlib
         那次无约束的解析就此通过检查（codex 第六轮 P1）。
         """
-        got = _commands(f'pip install {self.QLIB}&&pip install "numpy>=1.24,<2.0"')
-        self.assertEqual(2, len(got), "没有空格的 `&&` 没被认成命令边界")
-        self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
-        self.assertIn(self.QLIB, got[0], "qlib 参数被 `&&` 粘走了")
+        # 无空格形态同样要被认出边界——认出之后按 && 链内安装响亮。
+        with self.assertRaises(UnlexableShell):
+            _commands(f'pip install {self.QLIB}&&pip install "numpy>=1.24,<2.0"')
+        self.assertEqual(2, len(_commands("echo a&&echo b")),
+                         "没有空格的 `&&` 没被认成命令边界")
 
     def test_a_continuation_inside_quotes_vanishes_before_tokenizing(
             self) -> None:
@@ -1193,11 +1243,12 @@ jobs:
             wf = Path(t) / "w.yml"
             wf.write_text(doc, encoding="utf-8")
             everything = _workflow_commands(wf)
-            unconditional = _workflow_commands(wf, unconditional_only=True)
+            entries = dict(_job_commands(wf))["j"]
         self.assertTrue(_runs_pytest(everything), "条件腿的 pytest 也要被看见")
-        self.assertEqual([], unconditional, "带 if: 的步骤不该算无条件")
+        self.assertTrue(all(not guaranteed for _, guaranteed in entries),
+                        "带 if: 的步骤不该算有保证")
         self.assertTrue(
-            _pytest_without_qlib(everything, unconditional),
+            _unprotected_pytest(entries),
             "条件腿跑 pytest + 条件安装 qlib —— 该判违例（安装可被跳过）")
         # 接线钉：真数据守卫必须真的传 unconditional_only=True——真实
         # workflow 的 qlib 安装本就无条件，接线退化在干净数据上测不出
@@ -1206,8 +1257,8 @@ jobs:
         guard_src = _inspect.getsource(
             EveryPytestWorkflowInstallsQlibItself
             .test_each_pytest_workflow_carries_its_own_install)
-        self.assertIn("unconditional_only=True", guard_src,
-                      "presence 守卫没有把判据落在无条件步骤上")
+        self.assertIn("_unprotected_pytest(entries)", guard_src,
+                      "presence 守卫没有用带序带保证标记的判据")
 
     def test_a_short_circuit_right_side_is_refused(self) -> None:
         """`true || pip install <窗口> <qlib>`：右侧从不运行、步骤照样绿。
@@ -1218,7 +1269,8 @@ jobs:
         """
         with self.assertRaises(UnlexableShell):
             _commands('true || pip install "numpy>=1.24,<2.0"')
-        self.assertEqual(2, len(_commands("pip install a && pip install b")))
+        with self.assertRaises(UnlexableShell):
+            _commands('false && pip install "numpy>=1.24,<2.0"')
 
     def test_a_piped_install_is_refused(self) -> None:
         """`pip install <qlib> | tee log` 的退出码是 tee 的。
@@ -1252,10 +1304,9 @@ jobs:
         with _tf.TemporaryDirectory() as t:
             wf = Path(t) / "w.yml"
             wf.write_text(doc, encoding="utf-8")
-            jobs = dict(_job_commands(wf))
-            unconditional = dict(_job_commands(wf, unconditional_only=True))
+            entries = dict(_job_commands(wf))["j"]
         self.assertTrue(
-            _pytest_without_qlib(jobs["j"], unconditional["j"]),
+            _unprotected_pytest(entries),
             "允许失败的安装被当成了 presence 保证")
 
     def test_a_wrapped_pytest_is_still_pytest(self) -> None:
@@ -1286,12 +1337,11 @@ jobs:
             wf = Path(t) / "w.yml"
             wf.write_text(doc, encoding="utf-8")
             jobs = dict(_job_commands(wf))
-            unconditional = dict(_job_commands(wf, unconditional_only=True))
         self.assertTrue(
-            _pytest_without_qlib(jobs["test-only"],
-                                 unconditional["test-only"]),
+            _unprotected_pytest(jobs["test-only"]),
             "别的 job 里的 qlib 被当成了本 job 的 presence")
-        self.assertFalse(_runs_pytest(jobs["install-only"]))
+        self.assertFalse(
+            _runs_pytest([c for c, _ in jobs["install-only"]]))
         # 接线钉：真数据守卫必须真按 job 分组——本仓每个 workflow 只有一个
         # job，接线退回 workflow 摊平在干净数据上测不出（变异 CS 实测），
         # 只能钉调用点源码。
@@ -1358,22 +1408,25 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
                 assert matched is not None
                 self.assertEqual("dev,ui", matched.group("extras"))
 
-    def test_an_option_value_dot_makes_the_target_ambiguous_loudly(
+    def test_an_option_value_dot_is_excluded_from_target_candidates(
             self) -> None:
-        """`pip install --find-links . ".[research]"` 是合法命令。
+        """`pip install --find-links . ".[research]"`：`.` 是选项值。
 
-        取第一个目标形状的 token 会把选项值 `.` 当目标，research 连同它的
-        extras 静默脱离覆盖面（codex P2）。选项表是 pip 的、随版本变——不
-        维护它，**响亮**：要求 `--opt=value` 连写形态消歧。
+        判读两段演进：先前多候选即响亮；本轮「紧跟裸选项的 token 不记为
+        presence/目标候选」把选项值**确定性排除**——真目标唯一可得，extras
+        完整（codex P1 的同一原则）。真正的双目标歧义仍响亮。
         """
-        with self.assertRaises(AmbiguousPipCommand):
-            _local_target(
-                _commands('pip install --find-links . ".[research]"')[0])
-        # 连写形态：值不再是独立 token，目标唯一、extras 完整。
+        matched = _local_target(
+            _commands('pip install --find-links . ".[research]"')[0])
+        assert matched is not None
+        self.assertEqual("research", matched.group("extras"))
         matched = _local_target(
             _commands('pip install --find-links=. ".[research]"')[0])
         assert matched is not None
         self.assertEqual("research", matched.group("extras"))
+        # 两个都不被裸选项遮挡的目标——仍然响亮。
+        with self.assertRaises(AmbiguousPipCommand):
+            _local_target(_commands('pip install . ".[research]"')[0])
 
     def test_an_attached_editable_target_is_found(self) -> None:
         # `-e.[research]`：附着式短选项值里的本地目标，同一条 optparse 规则。
@@ -1677,16 +1730,13 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
         pytest_workflows = 0
         offenders = []
         for workflow in _workflows():
-            # 判据按 **job** 评估——jobs 是隔离 runner，别的 job 装的
-            # qlib 到不了这里（codex P1）。job 内：pytest 看全部步骤，qlib
-            # 在场只看无条件步骤。
-            unconditional = dict(
-                _job_commands(workflow, unconditional_only=True))
-            for job_name, job_all in _job_commands(workflow):
-                if _runs_pytest(job_all):
+            # 判据按 **job** 且**按顺序**评估——jobs 是隔离 runner，
+            # 步骤顺序执行：qlib 必须在每个 pytest **之前**有保证地装上
+            # （codex 三条 P1 的合并终态）。
+            for job_name, entries in _job_commands(workflow):
+                if _runs_pytest([c for c, _ in entries]):
                     pytest_workflows += 1
-                    if _pytest_without_qlib(
-                            job_all, unconditional.get(job_name, [])):
+                    if _unprotected_pytest(entries):
                         offenders.append(f"{workflow.name}:{job_name}")
         self.assertEqual([], offenders, "这些 workflow 跑 pytest 却不装 qlib")
         self.assertGreaterEqual(
@@ -1694,19 +1744,19 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
 
     def test_the_rule_itself_bites_on_synthetic_input(self) -> None:
         # 两层作证：真实 workflow 干净，规则被删负断言测不出——直接单测。
+        # entries = 按步骤顺序的 (命令, 有保证) 列表。
         qlib = ["pip", "install",
                 "git+https://github.com/microsoft/qlib.git@" + "a" * 40]
         pytest_cmd = ["pytest", "tests/"]
-        # pytest 在**条件**步骤里（只出现在全集）、qlib 缺席 → 违例。
-        # 这正是 test.yml 的真实形状：pytest 全带矩阵 if:（codex P1——
-        # 把 pytest 检测也放进无条件集会在这里一无所获、真空绿）。
-        self.assertTrue(_pytest_without_qlib([pytest_cmd], []))
-        # pytest 条件、qlib 无条件在场 → 合规。
-        self.assertFalse(_pytest_without_qlib([pytest_cmd, qlib], [qlib]))
-        # qlib 只在条件步骤里（不在无条件集）→ 仍违例。
-        self.assertTrue(_pytest_without_qlib([pytest_cmd, qlib], []))
-        # 不跑 pytest → 无义务。
-        self.assertFalse(_pytest_without_qlib([["echo", "hi"]], []))
+        # 有保证的 qlib 在 pytest **之前** → 合规（pytest 本身可以是条件腿）。
+        self.assertFalse(_unprotected_pytest([(qlib, True), (pytest_cmd, False)]))
+        # qlib 在 pytest **之后** → 违例：前面的测试已经裸跑（codex P1 顺序）。
+        self.assertTrue(_unprotected_pytest([(pytest_cmd, False), (qlib, True)]))
+        # qlib 只在条件步骤里（无保证）→ 违例。
+        self.assertTrue(_unprotected_pytest([(qlib, False), (pytest_cmd, True)]))
+        # 根本没有 qlib → 违例；不跑 pytest → 无义务。
+        self.assertTrue(_unprotected_pytest([(pytest_cmd, True)]))
+        self.assertFalse(_unprotected_pytest([(["echo", "hi"], True)]))
 
 
 class TheQlibPinMustBeARealInstall(unittest.TestCase):
@@ -1728,6 +1778,21 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
         got = _qlib_pin_installs(
             _commands(f'pip install {self.QLIB} "numpy>=1.24,<2.0"'))
         self.assertEqual(1, len(got))
+
+    def test_a_pin_as_an_option_value_is_not_presence(self) -> None:
+        """`pip install --trusted-host <qlib-pin> <窗口>` 装的是那两个窗口。
+
+        pin 只是 `--trusted-host` 的值——记进 presence，qlib 缺席而两道守卫
+        全绿（codex P1）。紧跟裸选项（非 -e/--editable）的 pin 不记账；
+        `-e <pin>` 是合法的 editable-VCS 安装，照记。
+        """
+        line = (f'pip install --trusted-host {self.QLIB} '
+                f'"numpy>=1.24,<2.0" "scipy>=1.10,<1.14"')
+        self.assertEqual([], _qlib_pin_installs(_commands(line)),
+                         "选项值里的 pin 被记成了安装")
+        self.assertEqual(
+            1, len(_qlib_pin_installs(_commands(f"pip install -e {self.QLIB}"))),
+            "-e 的 VCS 目标没被记为安装")
 
     def test_a_dry_run_is_not_an_install(self) -> None:
         """`--dry-run` 由 pip 定义为「Don't actually install anything」。

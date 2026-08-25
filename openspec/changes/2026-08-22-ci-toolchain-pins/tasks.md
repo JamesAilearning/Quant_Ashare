@@ -15,6 +15,24 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十五轮：三个 P1 —— 选项值不是目标、&& 同罪、顺序即语义
+
+**P1 pin 可以是选项值。** `--trusted-host <qlib-pin> <窗口>` 装的是窗口，
+pin 是主机名。紧跟裸选项（非 -e/--editable，它的值语义就是目标）的 token
+不记 presence/目标账——缺席由 per-job 守卫响亮，直接目标扫描点名歧义。
+副产品：`--find-links . ".[research]"` 从「多候选响亮」升级为选项值
+**确定性排除**、真目标直接可得。
+
+**P1 && 与 | 同罪——我此前的判读被证伪。** codex 以 Linux 腿的
+`bash -e -o pipefail` 实测：errexit 对 AND 链内的失败**不生效**，
+`false && pip install <qlib>; pytest` 安装被跳过、步骤照绿。r20「前件失败
+步骤即红」是错的，留档改正；&& 链内的安装与管道统一响亮，非安装链照常拆分。
+
+**P1 顺序即语义。** 步骤顺序执行——qlib 装在 pytest 之后，前面的测试已在
+importorskip 下静默跑完。`_job_commands` 改产带序的 (命令, 有保证) 条目，
+`_unprotected_pytest` 逐条走：每个 pytest 之前必须已有**有保证**的 qlib
+安装。集合成员判据的三个洞（混用集合/跨 job/无序）就此收敛为一个带序判据。
+
 ## codex 第二十四轮：一个 P1 + 一个 P2 —— 允许失败的安装、wrapper 的对称性
 
 **P1 `continue-on-error: true`。** 安装失败后 Actions 照样跑向 pytest——
