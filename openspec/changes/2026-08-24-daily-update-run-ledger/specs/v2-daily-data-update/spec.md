@@ -85,6 +85,14 @@ the derived value.
 - **THEN** the append inspects the descriptor it actually opened (`fstat`,
   no check-then-use window) and refuses when the link count exceeds one
 
+#### Scenario: a raising stage still leaves a terminal record
+- **WHEN** a stage RAISES instead of returning an exit code — reachable in
+  production, e.g. `atomic_write_parquet` re-raising `OSError` after retries
+- **THEN** the terminal status and ledger row are still written (exit_code 1,
+  failed_stage "exception", the exception in the detail) and the exception
+  propagates unchanged — recorded then re-raised, never swallowed, never
+  remapped; a dry run keeps writing nothing
+
 #### Scenario: a torn tail cannot swallow the new line
 - **WHEN** a previous process died mid-write leaving a final line without its
   newline

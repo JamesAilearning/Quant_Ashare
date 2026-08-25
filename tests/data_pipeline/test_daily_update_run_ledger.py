@@ -13,6 +13,7 @@
 """
 
 import ast
+import dataclasses
 import json
 import logging
 import os
@@ -190,6 +191,55 @@ class TheLedgerPathCannotAliasAnythingElseTheRunTouches(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             self._cfg(Path(t))
             self._cfg(Path(t), status_path=Path(t) / "custom_status.json")
+
+
+# ---------------------------------------------------------------- crash 路径
+
+class ARaisingStageStillLeavesATerminalRecord(unittest.TestCase):
+    """阶段抛异常（而非返回退出码）时，终态记录不许被跳过。
+
+    status 卡 running、台账漏掉恰好最需要记的那次失败；产线真实可达
+    （atomic_write_parquet 重试后再抛 OSError——codex P1）。契约：记录后
+    **原样再抛**，异常类型与内容不变。
+    """
+
+    def test_the_crash_is_recorded_and_reraised(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            runners = _runners()
+            def boom(argv: list[str]) -> int:
+                raise OSError("disk full while writing parquet")
+            runners["fetch"] = boom
+            with self.assertRaises(OSError) as ctx:
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            self.assertIn("disk full", str(ctx.exception), "异常被改写了")
+            rows = _lines(cfg)
+            self.assertEqual(1, len(rows), "崩溃的运行没进台账")
+            self.assertEqual(1, rows[0]["exit_code"])
+            self.assertEqual("exception", rows[0]["failed_stage"])
+            self.assertIn("OSError", rows[0]["detail"])
+            status = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(
+                    encoding="utf-8"))
+            self.assertEqual("finished", status["state"],
+                             "status 卡在 running")
+
+    def test_a_dry_run_still_writes_nothing(self) -> None:
+        # dry-run 早返回在包裹**之前**且不执行 runner（异常不可达）——
+        # 契约不变：无论如何零写入。带抛异常的 runner 只为钉住「就算日后
+        # dry-run 语义变了，crash 包裹也不许给 dry-run 写记录」。
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            cfg = dataclasses.replace(cfg, dry_run=True)   # frozen dataclass
+            runners = _runners()
+            def boom(argv: list[str]) -> int:
+                raise OSError("boom")
+            runners["fetch"] = boom
+            try:
+                du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+            except OSError:
+                pass
+            self.assertEqual([], _lines(cfg), "dry-run 写了台账")
 
 
 # ---------------------------------------------------------------- 只可追加

@@ -966,8 +966,31 @@ def run_daily_update(
     # 重定向,这里不该知道它落在哪儿。
     _logger.info("%s", run_boundary_line(started_at, config.provider_dir))
     _record_status(status_path, {**base, "state": "running"})
-    exit_code, failed_stage, detail = _execute_daily_update(
-        config, runners, run_date=run_date)
+    try:
+        exit_code, failed_stage, detail = _execute_daily_update(
+            config, runners, run_date=run_date)
+    except Exception as exc:
+        # 阶段**抛异常**（而非返回退出码）时，下面的终态构造根本走不到——
+        # status 卡在 running、台账恰好漏掉最需要记的那次失败。这条路在
+        # 产线真实可达：atomic_write_parquet 重试后再抛 OSError，而 02 只
+        # 接 DelistedRegistryError（codex P1）。此处只**记录后原样再抛**：
+        # 不吞、不改映射、不碰阶段语义——观测写入自身的失败仍由反向耦合
+        # 契约吞掉，绝不反过来遮蔽原始异常。
+        crash_at = datetime.now(tz=_CN_TZ)
+        crash = {
+            **base,
+            "state": "finished",
+            "finished_at": crash_at.isoformat(),
+            "exit_code": 1,          # 未捕获异常的进程退出码，如实镜像
+            "failed_stage": "exception",
+            "detail": f"{type(exc).__name__}: {exc}"[:_STAGE_DETAIL_MAX_CHARS],
+        }
+        _record_status(status_path, crash)
+        _append_ledger(
+            default_ledger_path(config.provider_dir),
+            {**crash, "schema_version": LEDGER_SCHEMA_VERSION},
+        )
+        raise
     finished_at = datetime.now(tz=_CN_TZ)
     terminal = {
         **base,

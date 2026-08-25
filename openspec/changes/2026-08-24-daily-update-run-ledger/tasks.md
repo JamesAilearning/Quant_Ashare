@@ -28,6 +28,16 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十五轮：一个 P1 —— 阶段抛异常时终态记录被跳过
+
+阶段**抛异常**（而非返回退出码）时，终态构造根本走不到——status 卡
+running、台账漏掉恰好最需要记的那次失败；产线真实可达（atomic_write_parquet
+重试后再抛 OSError，02 只接 DelistedRegistryError）。修在 run_daily_update
+对 _execute_daily_update 的**调用点包裹**：记录（exit_code=1 镜像未捕获异常
+的进程退出码、failed_stage="exception"、detail 截断进）后**原样再抛**——
+不吞、不改映射、阶段体零动（AST 守卫原样绿）。dry-run 早返回在包裹之前，
+零写入契约不变。
+
 ## codex 第二十四轮：两个 P2 —— 读侧镜像写侧纪律、符号链接环
 
 **读侧也会被 FIFO 挂死。** `read_bytes()` 阻塞读——派生位被换成 FIFO 时
