@@ -94,6 +94,15 @@ def _split_commands(script: str) -> list[str]:
         if char == '"':
             cursor = index + 1
             while cursor < size and script[cursor] != '"':
+                # 双引号里 `$(`/反引号是**活性**的——shell 会执行其中的命令。
+                # 本词法器不建模引号内替换（那是 shell 全文法的无底洞：嵌套
+                # 引号、嵌套替换、参数展开），但也**绝不静默吞掉**：吞掉就是
+                # 覆盖面在这一段上空得看不出来（codex P2）。响亮拒读，由
+                # 「现有 workflow 全部可词法化」那条守卫保证仓库不用这种写法。
+                if script.startswith("$(", cursor) or script[cursor] == "`":
+                    raise UnlexableShell(
+                        "双引号内有命令替换——本词法器不建模引号内活性内容，"
+                        "请把替换移到引号外")
                 cursor += 2 if script[cursor] == "\\" else 1
             if cursor >= size:
                 raise UnlexableShell("双引号没有闭合")
@@ -130,6 +139,10 @@ def _split_commands(script: str) -> list[str]:
             flush()
             index = skip_heredoc_bodies(index + 1) if pending_heredocs else index + 1
             continue
+        if char == "`":
+            # 反引号是遗留形态的命令替换，同属「活性内容」一类：不建模，
+            # 也不静默——写成 `$(…)` 的会被正常拆分。
+            raise UnlexableShell("反引号命令替换未建模——请改写为 $(…)")
         if char in "()":
             # 未加引号的括号是命令边界（子 shell 分组、命令替换）。命令替换
             # 的 `$(` 不需要单列：`(` 在这里断开、配对的 `)` 也在这里断开，
@@ -196,6 +209,13 @@ _PIP_EXECUTABLE = re.compile(r"^pip[\d.]*$")
 _PYTHON_EXECUTABLE = re.compile(r"^python[\d.]*$")
 #: POSIX 简单命令允许的前缀：`VAR=value` 赋值。可执行体在它们**之后**。
 _ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+#: POSIX 保留字（POSIX.1-2017 §2.4 定义的**闭集**）。出现在命令开头时引导
+#: 复合命令，真正的可执行体在它们之后——`if pip install …; then` 的可执行体
+#: 是 `pip`，不是 `if`（codex P2）。
+_RESERVED_WORDS = frozenset({
+    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi",
+    "for", "if", "in", "then", "until", "while",
+})
 
 
 def _is_pip_install(command: list[str]) -> bool:
@@ -209,6 +229,9 @@ def _is_pip_install(command: list[str]) -> bool:
     本体；是 python 且紧跟 `-m pip` 即模块形态。`pipx` 形近不算。
     """
     tokens = list(command)
+    # 语法顺序：保留字引导复合命令在先，赋值前缀在后，然后才是可执行体。
+    while tokens and tokens[0] in _RESERVED_WORDS:
+        tokens.pop(0)
     while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
         tokens.pop(0)
     if not tokens:
@@ -253,15 +276,26 @@ _QLIB_PIN = "git+https://github.com/microsoft/qlib.git@"
 _BUILD_REQUIRES = "requires"
 _RUNTIME_DEPENDENCIES = "dependencies"
 
+def _canonical_name(name: str) -> str:
+    """PEP 503：包名比较大小写不敏感，`-`/`_`/`.` 相互等价。"""
+    return re.sub(r"[-_.]", "-", name).lower()
+
+
 def _restated_package(token: str, declared: dict[str, str]) -> str | None:
     """这个实参是不是某个受钉包的版本约束？是则返回包名。
 
     只看「以包名开头、紧跟一个版本运算符」，避免把 `numpydoc` 之类同前缀的
-    别的包误当成重述。
+    别的包误当成重述。**名字按 PEP 503 归一化比较**：`NumPy>=1.24,<2.1` 也是
+    numpy 窗口的重述，大小写敏感的 `startswith` 会让它整条躲过一致性检查
+    （codex P2）。随后的逐字一致断言仍比对原 token——于是非规范拼写的重述
+    会被要求改成与 pyproject 完全一致的写法，而不是被放过。
     """
     for package in declared:
         rest = token[len(package):]
-        if token.startswith(package) and rest[:1] in ("<", ">", "=", "~", "!"):
+        if (
+            _canonical_name(token[:len(package)]) == _canonical_name(package)
+            and rest[:1] in ("<", ">", "=", "~", "!")
+        ):
             return package
     return None
 
@@ -460,6 +494,24 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         got = _commands(script)
         self.assertEqual([["python", "-"], ["pip", "install", "-e", ".[dev]"]], got)
 
+    def test_active_substitution_inside_quotes_is_loud(self) -> None:
+        """双引号里的 `$(`/反引号是活性的——shell 会执行它。
+
+        当成不透明字符串吞掉，`echo "$(pip install \'.[research]\')"` 里的
+        安装就从覆盖面里静默消失（codex P2）。本词法器不建模引号内替换
+        （shell 全文法的无底洞），但拒读必须**响亮**；转义了的 `\\$` 不算。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands('echo "$(pip install \'.[research]\')"')
+        with self.assertRaises(UnlexableShell):
+            _commands('echo "`pip --version`"')
+        # 转义的 `\$` 是字面字符，不是替换——不许误伤。
+        self.assertEqual(1, len(_commands('echo "\\$(literal)"')))
+
+    def test_a_backtick_substitution_is_loud(self) -> None:
+        with self.assertRaises(UnlexableShell):
+            _commands("echo `pip --version`")
+
     def test_an_unbalanced_quote_is_loud(self) -> None:
         """读不下去要**响亮**。
 
@@ -565,6 +617,23 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
     def test_install_must_follow_the_executable(self) -> None:
         self.assertFalse(_is_pip_install(_commands("pip download numpy")[0]))
 
+    def test_a_control_keyword_does_not_hide_the_install(self) -> None:
+        """`if pip install …; then` 的可执行体是 `pip`，不是 `if`。
+
+        保留字引导复合命令；只认第 0 个 token，条件化的安装整条从覆盖面里
+        消失，而 workflow 里写 `if pip install…` 完全合法（codex P2）。
+        保留字是 POSIX.1-2017 §2.4 定义的闭集，不是我在枚举写法。
+        """
+        script = 'if pip install ".[research]"; then echo ok; fi'
+        first = _commands(script)[0]
+        self.assertTrue(_is_pip_install(first), "if 后面的安装没被认出来")
+        for keyword in ("while", "until", "elif", "else", "do", "then", "!"):
+            with self.subTest(保留字=keyword):
+                self.assertTrue(_is_pip_install(
+                    _commands(f'{keyword} pip install ".[x]"')[0]))
+        # 反面：保留字自己不是可执行体。
+        self.assertFalse(_is_pip_install(_commands("if true")[0]))
+
 
 class ParenthesesAreCommandSyntaxNotWordCharacters(unittest.TestCase):
     """未加引号的 `(`/`)` 是 POSIX 的命令语法，不是词的一部分。
@@ -590,6 +659,31 @@ class ParenthesesAreCommandSyntaxNotWordCharacters(unittest.TestCase):
     def test_a_quoted_parenthesis_is_still_a_word_character(self) -> None:
         self.assertEqual([["echo", "(not a subshell)"]],
                          _commands('echo "(not a subshell)"'))
+
+
+class ARestatementIsFoundByItsCanonicalName(unittest.TestCase):
+    """PEP 503：包名大小写不敏感，`-`/`_`/`.` 等价。
+
+    大小写敏感的 `startswith`，`NumPy>=1.24,<2.1` 整条躲过一致性检查——它
+    确实重述了 numpy 窗口，还带着一个**分叉的**上界（codex P2）。检测按归一
+    名，断言仍逐字：非规范拼写会被要求改写，不是被放过。
+    """
+
+    DECLARED = {"numpy": "numpy>=1.24,<2.0", "scipy": "scipy>=1.10,<1.14"}
+
+    def test_a_differently_cased_restatement_is_detected(self) -> None:
+        for token in ("NumPy>=1.24,<2.1", "SCIPY>=1.10,<1.14"):
+            with self.subTest(token=token):
+                self.assertIsNotNone(_restated_package(token, self.DECLARED))
+
+    def test_a_shared_prefix_is_still_not_a_restatement(self) -> None:
+        self.assertIsNone(_restated_package("numpydoc>=1.5", self.DECLARED))
+
+    def test_separator_variants_are_the_same_name(self) -> None:
+        declared = {"python-dateutil": "python-dateutil>=2.8,<3"}
+        self.assertEqual(
+            "python-dateutil",
+            _restated_package("python_dateutil>=2.8,<3", declared))
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):

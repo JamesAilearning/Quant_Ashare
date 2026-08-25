@@ -186,3 +186,22 @@ that actually produces the anchor.
   here-document
 - **THEN** the governance test fails saying so, because a guard that silently
   reads nothing is empty in a way nobody can see
+
+#### Scenario: active substitution inside quotes is refused, not swallowed
+- **WHEN** a double-quoted argument contains `$(` or a backtick — content the
+  shell would execute
+- **THEN** the lexer refuses loudly instead of treating the quoted range as an
+  opaque word, so an install hidden there cannot silently leave the coverage;
+  escaped `\$` remains a literal character
+
+#### Scenario: a control keyword does not hide an install
+- **WHEN** an install is guarded by a POSIX reserved word — `if pip install
+  ".[research]"; then …`, `while`, `until`
+- **THEN** the executable is still found, because reserved words lead compound
+  commands and the reserved-word list is the closed set POSIX defines
+
+#### Scenario: a restated window is found under any spelling of the name
+- **WHEN** a workflow restates a pinned window with a differently-cased or
+  differently-separated package name, as PEP 503 permits
+- **THEN** the restatement is detected by canonical name, and the byte-identical
+  assertion then requires it to be rewritten to match `pyproject.toml` exactly
