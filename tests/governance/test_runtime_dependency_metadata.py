@@ -226,18 +226,30 @@ def _split_commands(script: str) -> list[str]:
             flush()
             index += 1
             continue
-        if char == ">":
-            # 把 `>` / `>>` / `>&fd` 当整体消费——否则 `2>&1` 里的 `&` 会被
-            # 分隔符分支拦腰截断，凭空多出一条命令（重定向剥离在 token 层，
-            # 前提是操作符先完整地活到那里）。
+        if char in "<>":
+            # 未加引号的 `>`/`<` **在词中间也仍是重定向**：bash 把
+            # `pip install numpy>=1.24,<2.0` 读成 `numpy` + 输出重定向 +
+            # 输入重定向——那两个窗口根本没传给 pip，按逐字一致「通过」是
+            # 假的（codex P2）。所以在扫描层把操作符从词里**切开**（前后
+    # 各垫一个空格），token 层的剥离随后接手；IO_NUMBER（`2>&1` 的
+            # `2`）按 POSIX 规则归并进操作符。真正的版本窗口必须**加引号**
+            # ——这正是仓库 workflow 的现有写法。
             cursor = index + 1
-            if script[cursor:cursor + 1] == ">":
+            if char == ">" and script[cursor:cursor + 1] == ">":
                 cursor += 1
-            if script[cursor:cursor + 1] == "&":
+            if char == ">" and script[cursor:cursor + 1] == "&":
                 cursor += 1
                 while script[cursor:cursor + 1].isdigit():
                     cursor += 1
-            buffer.append(script[index:cursor])
+            operator = script[index:cursor]
+            joined = "".join(buffer)
+            word_start = max(joined.rfind(" "), joined.rfind("\t"),
+                             joined.rfind("\n")) + 1
+            word = joined[word_start:]
+            if char == ">" and word.isdigit() and word:
+                buffer = [joined[:word_start]]
+                operator = word + operator
+            buffer.append(" " + operator + " ")
             index = cursor
             continue
         separator = next(
@@ -689,15 +701,22 @@ def _runs_pytest(commands: list[list[str]]) -> bool:
     return False
 
 
-def _pytest_without_qlib(commands: list[list[str]]) -> bool:
+def _pytest_without_qlib(
+    all_commands: list[list[str]],
+    unconditional_commands: list[list[str]],
+) -> bool:
     """跑 pytest 却不自装 qlib——`importorskip` 让整套 qlib 侧覆盖静默蒸发。
 
     全局底数挡不住这个：test.yml 删掉 qlib 安装后，regen-baseline 里的那条
-    仍让 `len(commands) >= 1` 过线，而六条测试腿全在无 qlib 下静默绿
-    （codex P1）。判据按 **workflow 各自**成立；抽 helper 是两层作证——
-    真实 workflow 是干净的，负断言测不出规则被删。
+    仍让 `len(commands) >= 1` 过线（codex P1）。判据按 **workflow 各自**成立。
+
+    **两个集合各司其职**（codex 又一条 P1 抓的正是把它们混用）：pytest 检测
+    看**全部**命令——test.yml 的 pytest 全在矩阵 `if:` 后面，从无条件集里
+    找 pytest 会一无所获、整条守卫真空绿；qlib 在场只看**无条件**命令——
+    `if:` 可跳过的安装不是安装。
     """
-    return _runs_pytest(commands) and not _qlib_pin_installs(commands)
+    return _runs_pytest(all_commands) and not _qlib_pin_installs(
+        unconditional_commands)
 
 
 def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
@@ -1055,15 +1074,37 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         self.assertEqual(
             [["pip", "install", "foo>=1,<2"]],
             _commands('pip install "foo>=1,<2" > install.log'))
+        # 无引号的 `x<1` 在 bash 里是 `x` + 输入重定向——不是版本约束
+        # （codex P2）。加引号的才是。
+        self.assertEqual(
+            [["pip", "install", "x"]],
+            _commands("pip install x<1 2>&1 >>log.txt"))
         self.assertEqual(
             [["pip", "install", "x<1"]],
-            _commands("pip install x<1 2>&1 >>log.txt"))
+            _commands('pip install "x<1"'))
         self.assertEqual(
             [["echo", "hi"]], _commands("echo hi >out.txt"))
         count, problems = _direct_install_targets(
             _commands('pip install "foo>=1,<2" > install.log')[0])
         self.assertEqual((1, []), (count, problems),
                          "重定向目标被当成了安装目标")
+
+    def test_an_unquoted_window_is_a_redirection_not_a_requirement(
+            self) -> None:
+        """`pip install numpy>=1.24,<2.0`（无引号）在 bash 里不是约束。
+
+        `>` 与 `<` 在词中间仍是重定向——bash 传给 pip 的只有 `numpy`，
+        版本窗口变成了输出/输入重定向。把整个词当逐字一致的有界 requirement
+        是假通过（codex P2）。扫描层拆开后，裸 `numpy` 走无上界告警——
+        治理红着要求加引号，与仓库现有写法一致。
+        """
+        got = _commands("pip install numpy>=1.24,<2.0")
+        self.assertEqual([["pip", "install", "numpy"]], got,
+                         "无引号窗口没有被当成重定向切开")
+        count, problems = _direct_install_targets(got[0])
+        self.assertEqual(1, count)
+        self.assertTrue(problems and "numpy" in problems[0],
+                        "裸 numpy 没有触发无上界告警——假窗口静默通过")
 
     def test_a_conditional_step_does_not_satisfy_presence(self) -> None:
         """`if:` 可跳过的步骤里的安装不算「在场」。
@@ -1090,8 +1131,8 @@ jobs:
         self.assertTrue(_runs_pytest(everything), "条件腿的 pytest 也要被看见")
         self.assertEqual([], unconditional, "带 if: 的步骤不该算无条件")
         self.assertTrue(
-            _pytest_without_qlib(unconditional) or not unconditional,
-            "条件安装满足了 presence —— 判据没落在无条件步骤上")
+            _pytest_without_qlib(everything, unconditional),
+            "条件腿跑 pytest + 条件安装 qlib —— 该判违例（安装可被跳过）")
         # 接线钉：真数据守卫必须真的传 unconditional_only=True——真实
         # workflow 的 qlib 安装本就无条件，接线退化在干净数据上测不出
         # （变异 CE 实测），只能钉调用点源码。
@@ -1489,11 +1530,13 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
         offenders = []
         for workflow in _workflows():
             # pytest 检测扫**全部**步骤（条件腿也要 qlib）；qlib 在场只数
-            # **无条件**步骤——`if:` 可跳过的安装不是安装（codex P1）。
-            if _runs_pytest(_workflow_commands(workflow)):
+            # **无条件**步骤——`if:` 可跳过的安装不是安装（codex 两条 P1）。
+            everything = _workflow_commands(workflow)
+            if _runs_pytest(everything):
                 pytest_workflows += 1
-                if _pytest_without_qlib(_workflow_commands(
-                        workflow, unconditional_only=True)):
+                if _pytest_without_qlib(
+                        everything,
+                        _workflow_commands(workflow, unconditional_only=True)):
                     offenders.append(workflow.name)
         self.assertEqual([], offenders, "这些 workflow 跑 pytest 却不装 qlib")
         self.assertGreaterEqual(
@@ -1503,11 +1546,17 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
         # 两层作证：真实 workflow 干净，规则被删负断言测不出——直接单测。
         qlib = ["pip", "install",
                 "git+https://github.com/microsoft/qlib.git@" + "a" * 40]
-        self.assertTrue(_pytest_without_qlib([["pytest", "tests/"]]))
-        self.assertTrue(_pytest_without_qlib(
-            [["python", "-m", "pytest"], ["pip", "install", "x<1"]]))
-        self.assertFalse(_pytest_without_qlib([["pytest"], qlib]))
-        self.assertFalse(_pytest_without_qlib([["echo", "no", "tests"]]))
+        pytest_cmd = ["pytest", "tests/"]
+        # pytest 在**条件**步骤里（只出现在全集）、qlib 缺席 → 违例。
+        # 这正是 test.yml 的真实形状：pytest 全带矩阵 if:（codex P1——
+        # 把 pytest 检测也放进无条件集会在这里一无所获、真空绿）。
+        self.assertTrue(_pytest_without_qlib([pytest_cmd], []))
+        # pytest 条件、qlib 无条件在场 → 合规。
+        self.assertFalse(_pytest_without_qlib([pytest_cmd, qlib], [qlib]))
+        # qlib 只在条件步骤里（不在无条件集）→ 仍违例。
+        self.assertTrue(_pytest_without_qlib([pytest_cmd, qlib], []))
+        # 不跑 pytest → 无义务。
+        self.assertFalse(_pytest_without_qlib([["echo", "hi"]], []))
 
 
 class TheQlibPinMustBeARealInstall(unittest.TestCase):

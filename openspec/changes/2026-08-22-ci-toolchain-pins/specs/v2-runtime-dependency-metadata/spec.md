@@ -289,7 +289,19 @@ that actually produces the anchor.
   Actions may skip it on some matrix legs
 - **THEN** it does not count toward the per-workflow qlib presence floor,
   while bounds and shape scans still read every step (reading more only
-  tightens them)
+  tightens them) — and pytest DETECTION reads every step too: the test
+  workflow's pytest invocations all sit behind matrix conditions, so deriving
+  the obligation from the unconditional set alone would leave the whole guard
+  vacuously green
+
+#### Scenario: an unquoted version window is a redirection, not a requirement
+- **WHEN** a constraint is written without quotes — `pip install
+  numpy>=1.24,<2.0` — where the shell reads `>` and `<` as redirections even
+  mid-word and passes only `numpy` to pip
+- **THEN** the lexer splits the operators out exactly as the shell would
+  (IO_NUMBER digits joining the operator), the bare name trips the
+  unbounded-target alarm, and the fix is to quote — the repository's existing
+  spelling
 
 #### Scenario: redirections are shell syntax, not arguments
 - **WHEN** a pip install redirects its output — `> install.log`, `2>&1`,
