@@ -83,6 +83,14 @@ class LedgerHistory:
     malformed: int = 0
     foreign: int = 0
     error: str = ""
+    #: 从**最新侧**数，撞到第一条坏行之前有几条本 provider 的可用行；None =
+    #: 整份台账没有坏行。坏行是连败统计的**屏障**：它可能是一次成功——把它
+    #: 丢掉再数「连续失败」，会把断开的两段焊成一段（codex P2）。外来行不是
+    #: 屏障：它验形完整、确定不是本 provider 的，不影响本 provider 行的相邻性。
+    runs_before_barrier: int | None = None
+    #: 本 provider 可用行的**总数**（recent 截断之前）。截断处之外可能还有
+    #: 更多失败——连败数到截断即"至少"，不是精确值（codex P2）。
+    total_runs: int = 0
 
 
 def ledger_path_for_provider(provider_dir: Path) -> Path:
@@ -189,6 +197,7 @@ def read_ledger(
     # 错：坏字节落在 JSON 字符串**里面**（比如 detail）时，替换字符 `�` 仍是
     # 合法 JSON，那行验形照过、渲染成一次真实运行、malformed 计零——把被
     # 悄悄改写过的数据当成事实交给操作人（codex P2）。解码失败 = 坏行。
+    since_barrier: int | None = None
     for raw_line in raw.split(b"\n"):
         if not raw_line.strip():
             continue
@@ -196,6 +205,7 @@ def read_ledger(
             record = json.loads(raw_line.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             malformed += 1
+            since_barrier = 0
             continue
         if not isinstance(record, dict) or not _is_valid_v1(record):
             # **先验形，后分类**。`{}` 或 `{"provider_dir": 5}` 不是「别人的
@@ -203,10 +213,13 @@ def read_ledger(
             # 另一个 provider」，而不是披露台账损坏（codex P2）。「foreign」
             # 这个称谓只配给一条**完整合法**、只是身份不同的 v1 记录。
             malformed += 1
+            since_barrier = 0
             continue
         if not _describes(record, provider_key):
             foreign += 1
             continue
+        if since_barrier is not None:
+            since_barrier += 1
         runs.append(LedgerRun(
             run_date=record["run_date"],
             started_at=record["started_at"],
@@ -219,18 +232,45 @@ def read_ledger(
         kind="ok", path=path,
         runs=tuple(reversed(runs))[:max(recent, 0)],
         malformed=malformed, foreign=foreign,
+        runs_before_barrier=since_barrier, total_runs=len(runs),
     )
 
 
-def consecutive_failures(history: LedgerHistory) -> int:
-    """从最近一次往回数，连着失败了几次。
+@dataclass(frozen=True)
+class FailureStreak:
+    """连败数，带**能断到哪**的诚实边界。
 
-    这就是三晚事故里没人看得见的那个数。它**只**数台账里已有的行——台账没记到
-    的运行（比如 exit 2 / 17 那类根本没进编排器的）不在其中，也不该被算进来。
+    * ``exact=True``  —— 正好 count 次（撞到了一次成功，或数完了整份台账）。
+    * ``exact=False`` —— **至少** count 次：连续性在坏行或 recent 截断处断掉，
+      再往回可能还是失败，也可能不是——台账答不了。
+    * ``blocked=True`` —— 最新一行就读不了，连败数整体不可断（那行可能是一次
+      成功）。此时 count 恒为 0。
     """
+
+    count: int
+    exact: bool
+    blocked: bool = False
+
+
+def consecutive_failures(history: LedgerHistory) -> FailureStreak:
+    """从最近一次往回数，连着失败了几次——以及这个数**能不能断言**。
+
+    这就是三晚事故里没人看得见的那个数。它**只**数台账里已有的行——台账没记
+    到的运行（exit 2 / 17 那类根本没进编排器的）不在其中。两条诚实边界：
+    坏行是**屏障**（它可能是一次成功，丢掉再数会把断开的两段焊成一段）；
+    recent 截断处之外可能还有更多失败（8 连败与 7 连败在截到 7 条的视图里
+    长得一样）——两种情况都只报**下界**（codex 两条 P2）。
+    """
+    barrier = history.runs_before_barrier
+    if barrier == 0:
+        return FailureStreak(0, exact=False, blocked=True)
+    limit = len(history.runs) if barrier is None else min(len(history.runs), barrier)
     count = 0
-    for run in history.runs:
+    for run in history.runs[:limit]:
         if run.exit_code is None or run.ok:
-            break
+            return FailureStreak(count, exact=True)
         count += 1
-    return count
+    # 数到了可断连续性的尽头也没撞到成功——还能不能说「正好」？
+    hit_barrier = barrier is not None and limit == barrier
+    trimmed = history.total_runs > len(history.runs)
+    return FailureStreak(count, exact=not (hit_barrier or trimmed))

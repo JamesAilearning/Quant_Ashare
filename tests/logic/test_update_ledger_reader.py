@@ -384,7 +384,10 @@ class TheRunsAreOrderedNewestFirstAndTheStreakIsCounted(unittest.TestCase):
                 _record(provider, exit_code=11, day="2026-08-21"),
             ])
             history = read_ledger(path, provider_dir=provider)
-        self.assertEqual(3, consecutive_failures(history))
+        streak = consecutive_failures(history)
+        self.assertEqual((3, True, False),
+                         (streak.count, streak.exact, streak.blocked),
+                         "撞到成功而止的连败是精确值")
 
     def test_a_success_ends_the_streak(self) -> None:
         with tempfile.TemporaryDirectory() as t:
@@ -393,8 +396,81 @@ class TheRunsAreOrderedNewestFirstAndTheStreakIsCounted(unittest.TestCase):
             path = ledger_path_for_provider(provider)
             _write(path, [_record(provider, exit_code=11),
                           _record(provider, exit_code=0)])
-            self.assertEqual(
-                0, consecutive_failures(read_ledger(path, provider_dir=provider)))
+            streak = consecutive_failures(
+                read_ledger(path, provider_dir=provider))
+        self.assertEqual((0, True), (streak.count, streak.exact))
+
+    def test_a_malformed_row_is_a_barrier_not_glue(self) -> None:
+        """坏行可能是一次成功——丢掉再数会把断开的两段焊成一段。
+
+        成功 → 失败 → **坏行** → 失败×2：可断言的连败只有坏行之后（更新侧）
+        的 2 次，且因为撞上屏障只是**至少** 2（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            good = [json.dumps(_record(provider, exit_code=0, day="2026-08-14")),
+                    json.dumps(_record(provider, exit_code=11, day="2026-08-17"))]
+            bad = "{torn"
+            newer = [json.dumps(_record(provider, exit_code=11, day="2026-08-20")),
+                     json.dumps(_record(provider, exit_code=11, day="2026-08-21"))]
+            path.write_text(
+                chr(10).join(good + [bad] + newer) + chr(10),
+                encoding="utf-8")
+            streak = consecutive_failures(
+                read_ledger(path, provider_dir=provider))
+        self.assertEqual((2, False, False),
+                         (streak.count, streak.exact, streak.blocked),
+                         "坏行两侧的失败被焊成了一段，或下界被说成精确值")
+
+    def test_a_malformed_newest_row_blocks_the_streak(self) -> None:
+        # 最新一行读不了——它可能是一次成功，连败数整体不可断。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            _write(path, [_record(provider, exit_code=11)],
+                   trailing=b'{"torn"')
+            streak = consecutive_failures(
+                read_ledger(path, provider_dir=provider))
+        self.assertTrue(streak.blocked, "最新侧的坏行没有挡住连败断言")
+        self.assertEqual(0, streak.count)
+
+    def test_a_capped_streak_is_a_lower_bound_not_an_exact_count(self) -> None:
+        """8 连败与 7 连败在截到 7 条的视图里长得一样。
+
+        把截断后的 7 报成「正好 7」低估了这份台账要暴露的模式（codex P2）。
+        数到截断即**至少**；整份台账都数完了才是精确值。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            _write(path, [
+                _record(provider, exit_code=11, day=f"2026-08-{10 + i:02d}")
+                for i in range(9)
+            ])
+            history = read_ledger(path, provider_dir=provider)
+            streak = consecutive_failures(history)
+            self.assertEqual(7, len(history.runs), "前提：视图截到 7 条")
+            self.assertEqual((7, False), (streak.count, streak.exact),
+                             "截断处的连败被说成了精确值")
+            # 反面：整份台账全数完（无截断、无屏障）→ 精确。
+            whole = consecutive_failures(
+                read_ledger(path, provider_dir=provider, recent=20))
+        self.assertEqual((9, True), (whole.count, whole.exact))
+
+    def test_the_workbench_speaks_the_streaks_honesty(self) -> None:
+        # 页面必须消费三态：blocked / 非精确（至少）/ 精确——少接一个，那种
+        # 情形就退回精确口气。
+        source = _WORKBENCH.read_text(encoding="utf-8")
+        self.assertIn("streak.blocked", source, "页面没有处理 blocked")
+        # 锚在**承载机制的表达式**上，不是「至少」这个词——那个词在 count==1
+        # 分支里也出现，按词断言会被别处满足、真空地绿（本会话同类第 4 次，
+        # 变异 BC 抓的正是它）。
+        self.assertIn('"" if streak.exact else "至少 "', source,
+                      "连败 ≥2 的分支没有按 exact 区分「正好/至少」")
 
     def test_elapsed_is_derived_not_stored(self) -> None:
         run = LedgerRun(started_at="2026-08-21T20:30:00+08:00",

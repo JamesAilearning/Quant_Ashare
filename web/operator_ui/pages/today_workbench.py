@@ -204,10 +204,16 @@ def _render_recent_runs(provider_dir: Path) -> None:
         ("✅" if run.ok else "❌") + (run.run_date[5:] or "?") for run in history.runs)
     streak = consecutive_failures(history)
     tail = ""
-    if streak >= 2:
-        tail = f" —— **最近连续 {streak} 次失败**"
-    elif streak == 1:
-        tail = " —— 最近一次失败"
+    if streak.blocked:
+        # 最新一行读不了——它可能是一次成功，连败数整体不可断（codex P2）。
+        tail = " —— 最新一行读不了，连败统计不可用"
+    elif streak.count >= 2:
+        qualifier = "" if streak.exact else "至少 "
+        tail = f" —— **最近连续{qualifier}{streak.count} 次失败**"
+    elif streak.count == 1:
+        tail = (" —— 最近一次失败"
+                if streak.exact else " —— 最近至少 1 次失败（更早的历史被"
+                "坏行或截断挡住）")
     st.caption(f"近期运行（新→旧）：{marks}{tail}。{note_text}")
 
 

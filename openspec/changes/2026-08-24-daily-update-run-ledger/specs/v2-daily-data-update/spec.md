@@ -78,6 +78,13 @@ the derived value.
   unchanged — the ledger is observability, never a canonical input, and no
   module inside `src/` outside `src/data_pipeline/daily_update.py` consumes it
 
+#### Scenario: the failure streak is honest about what it can assert
+- **WHEN** an unreadable row sits between valid runs, at the newest position,
+  or the recent window truncates a longer run of failures
+- **THEN** the streak is reported respectively as a lower bound ("at least N"),
+  as unavailable (the newest row may have been a success), or as a lower bound
+  — never as an exact count the ledger cannot actually support
+
 #### Scenario: corruption is disclosed as corruption, not as a foreign run
 - **WHEN** a reader meets a line that is JSON but not a valid v1 record — `{}`,
   a wrongly-typed provider field, an empty identity or time field

@@ -28,6 +28,20 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十轮：两个 P2 —— 连败数长出诚实边界
+
+**坏行是屏障。** 它可能是一次成功——丢掉再数会把断开的两段焊成一段，
+「连续 2 次失败」可能根本不连续。**截断是下界。** 8 连败与 7 连败在截到
+7 条的视图里长得一样，报「正好 7」低估了这份台账要暴露的模式。
+`consecutive_failures` 改返回 `FailureStreak(count, exact, blocked)`：撞到
+成功或数完整份台账 = 精确；数到坏行或截断 = **至少** count；最新一行就读不
+了 = 整体不可断。页面三态分别措辞。
+
+**守卫自身又栽一次「断言被别处满足」**（本会话同类第 4 次，变异 BC 抓到）：
+「页面有『至少』措辞」按词断言被 count==1 分支满足、真空绿。重锚到承载机制
+的精确表达式（qualifier 三元式）。规则升级：源码级守卫先问「把机制删掉，
+断言还能被别处满足吗」。
+
 ## codex 第九轮：一个 P2 —— 保留检查按路径组件做，不只 basename
 
 `--status-path <台账名>/status.json` 的叶子是无辜的 status.json——basename
