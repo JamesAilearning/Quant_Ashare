@@ -7,11 +7,19 @@
 The workbench SHALL render, as its first card, a single synthesized answer to
 the operator's daily question — buy today, watch today, or an honest
 non-answer — and every input to that synthesis SHALL come from a verdict the
-page already computes: staleness and integrity from the serving side's own
-freshness verdict (the decision-queue's consumption surface), cadence from
-the provenance-verified daily-signal summary, and day-ownership from
-`entry_date` equal to the operator-facing CN calendar day. The synthesis
-layer SHALL NOT derive staleness, cadence, or day-ownership of its own.
+page already computes: bundle preconditions from the serving side's own
+freshness verdict consumed in FULL (`usable` — age, integrity, and the
+health summary's withhold-only share; consuming only part of it lets this
+card say "buy" while the health card on the same page reports a problem),
+cadence and pick cardinality from the provenance-verified daily-signal
+summary, and day-ownership from `entry_date` equal to the operator-facing
+CN calendar day. The synthesis layer SHALL NOT derive staleness, cadence,
+or day-ownership of its own.
+
+An empty target list on a rebalance day is a legitimate producer state
+(`--topk 0`, or every candidate masked): the card SHALL NOT call it a buy
+instruction — it SHALL say there is nothing to buy and why that can be
+legitimate. A buy answer SHALL state the number of candidates.
 
 The serving-side verdict takes precedence: when serving would refuse today,
 the card SHALL refuse to answer even if an artifact looks current — that
@@ -23,11 +31,27 @@ grants no trading permission.
 
 #### Scenario: a verified rebalance instruction whose entry date is today
 
-- **GIVEN** a provenance-verified rebalance artifact with `entry_date` equal
-  to the CN calendar day, and a serving-side verdict that accepts today
+- **GIVEN** a provenance-verified rebalance artifact with a non-empty target
+  list and `entry_date` equal to the CN calendar day, and a serving-side
+  verdict that accepts today
 - **WHEN** the card renders
-- **THEN** it says there is a buy instruction pending human review, and
-  points at the detail page
+- **THEN** it says there is a buy instruction pending human review, states
+  the candidate count, and points at the detail page
+
+#### Scenario: a rebalance day whose target list is empty
+
+- **GIVEN** a provenance-verified rebalance artifact for today whose target
+  list is empty
+- **WHEN** the card renders
+- **THEN** it says there is nothing to buy, names the empty list, and does
+  not raise an error state
+
+#### Scenario: a bundle failing a health precondition beyond age and integrity
+
+- **GIVEN** age and integrity pass while the health summary still withholds
+  (for example a missing instruments directory)
+- **WHEN** the card renders
+- **THEN** it refuses to answer and carries the health reason
 
 #### Scenario: a verified HOLD whose entry date is today
 

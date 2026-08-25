@@ -70,6 +70,10 @@ class DailySignalSummary:
     as_of_date: str | None = None
     entry_date: str | None = None
     next_rebalance_date: str | None = None
+    #: 已核验候选清单的条数。空清单是**合法产出**（`--topk 0` 或全部候选
+    #: 被掩蔽），丢掉基数会让「再平衡日」被下游当成「必有买入对象」
+    #: （codex #468 P1）。仅在工件通过全部核验后有值。
+    pick_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +162,7 @@ def summarise_daily_signal(
         # The detailed page treats a missing/non-list picks value, or a
         # non-object member, as a corrupt producer artifact. The workbench
         # must use that same boundary before presenting this file as current.
-        picks_table_rows(payload)
+        pick_count = len(picks_table_rows(payload))
     except ValueError as exc:
         return DailySignalSummary(
             "needs_verification",
@@ -182,6 +186,7 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
             next_rebalance_date=cadence.next_rebalance_date,
+            pick_count=pick_count,
         )
     if "rebalance_day" in payload:
         return DailySignalSummary(
@@ -189,12 +194,14 @@ def summarise_daily_signal(
             "再平衡日信号，仍须在详情页完成人工核对。",
             as_of_date=as_of_date,
             entry_date=entry_date,
+            pick_count=pick_count,
         )
     return DailySignalSummary(
         "daily",
         "日频工件，仍须在详情页完成人工核对。",
         as_of_date=as_of_date,
         entry_date=entry_date,
+        pick_count=pick_count,
     )
 
 
@@ -296,12 +303,13 @@ def todays_buy_answer(
 ) -> TodaysAnswer:
     """合成「今天要不要买」——用户每天真正要问的那一句（UI 已批序列④）。
 
-    **零新判定**：陈旧与完整性用出单侧自己的裁决（`bundle_freshness` /
-    `recommender_integrity_check`，今日待办队列同款消费面——#461 首版另写
-    一份三个决策全错的教训在档）；节奏（HOLD / 再平衡）用 `summarise_daily_
-    signal` 已核验过来源的分类；「这份指令是不是说给今天的」只看
-    `entry_date == today`（出单协议：entry 是收盘后生成、面向下一交易日的
-    执行日）。本函数只做措辞与优先级，不碰任何一份原始工件。
+    **零新判定**：数据包前置用出单侧自己的 `usable` 判据全额消费——年龄、
+    完整性，加上健康摘要「只扣分不加分」的份额（漏任何一份都会与同页的
+    健康卡自相矛盾；#461 首版另写一份三个决策全错的教训在档）；节奏
+    （HOLD / 再平衡）用 `summarise_daily_signal` 已核验过来源的分类，含
+    候选**基数**（空清单是合法产出，不是买入指令）；「这份指令是不是说给
+    今天的」只看 `entry_date == today`（出单协议：entry 是收盘后生成、
+    面向下一交易日的执行日）。本函数只做措辞与优先级，不碰任何原始工件。
 
     优先级：出单侧判据先行——出单侧今天会拒时，即使手上有一份看起来是今天
     的指令也**拒答**（该组合正常流程到不了：entry==今天 蕴含数据新到昨收；
@@ -336,6 +344,21 @@ def todays_buy_answer(
             "unanswerable", "无法给出",
             f"出单侧完整性闸未放行：{reason}。{_ANSWER_DISCLAIMER}",
         )
+    if not freshness.usable:
+        # 年龄与完整性两道闸都过了，`usable` 仍可为假——健康摘要的份额
+        # （instruments 缺失这类前置）。健康只能扣分不能加分（其角色如此
+        # documented），漏掉它会让本卡说「买」而健康卡同时报问题——同页
+        # 自相矛盾（codex #468 P1）。
+        leftovers = "；".join(part for part in (
+            f"健康状态 {freshness.health_status}"
+            if freshness.health_status != "ok" else "",
+            *freshness.health_warnings,
+        ) if part)
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"数据包健康前置未全过：{leftovers or freshness.message or '原因未记录'}。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
     if signal.kind == "missing":
         return TodaysAnswer(
             "no_instruction", "没有面向今天的指令",
@@ -363,10 +386,26 @@ def todays_buy_answer(
             f"{signal.next_rebalance_date or '未记录'}。{_ANSWER_DISCLAIMER}",
         )
     if signal.kind == "rebalance":
+        # 空清单是**合法产出**（`--topk 0` 或全部候选被掩蔽）——零个买入
+        # 对象时说「有买入指令」是最显眼卡片上的错话（codex #468 P1）。
+        if signal.pick_count is None:
+            return TodaysAnswer(
+                "unanswerable", "无法给出",
+                "再平衡工件的候选数未随核验结果传递，无法确认有无买入对象。"
+                f"{_ANSWER_DISCLAIMER}",
+            )
+        if signal.pick_count == 0:
+            return TodaysAnswer(
+                "watch", "不买 · 再平衡日但清单为空",
+                f"今天（{today.isoformat()}）是再平衡执行日，但目标清单为空"
+                "（--topk 0 或全部候选被掩蔽都是合法产出）——没有买入对象；"
+                f"详情页可核对原因。{_ANSWER_DISCLAIMER}",
+            )
         return TodaysAnswer(
             "buy", "有买入指令（待人工核对）",
-            f"今天（{today.isoformat()}）是再平衡执行日——去日度决策页逐项"
-            f"人工核对后再执行。{_ANSWER_DISCLAIMER}",
+            f"今天（{today.isoformat()}）是再平衡执行日，共 "
+            f"{signal.pick_count} 只候选——去日度决策页逐项人工核对后再执行。"
+            f"{_ANSWER_DISCLAIMER}",
         )
     return TodaysAnswer(
         "unanswerable", "无法给出",

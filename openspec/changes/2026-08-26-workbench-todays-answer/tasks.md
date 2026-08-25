@@ -20,6 +20,16 @@
 - [x] 定向 30 passed / 17 subtests；logic 全量见 PR 实测数字
 - [x] openspec validate --strict valid
 
+## 第二轮（codex 2×P1）
+
+- [x] 数据包前置改为全额消费 `usable`：年龄+完整性之外补健康摘要的
+      「只扣分」份额（漏了会与同页健康卡自相矛盾）
+- [x] `summarise_daily_signal` 传出候选基数 `pick_count`；空清单再平衡日
+      → 「不买 · 清单为空」（合法产出，非错误态）；基数缺失 → 拒答；
+      买入态点名候选数
+- [x] 新守卫 5 条（空清单/基数缺失/健康扣分带原因/基数流经核验/买入数
+      如实）；变异见 PR 实测
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

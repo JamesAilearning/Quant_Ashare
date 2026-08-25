@@ -138,6 +138,21 @@ class DailySignalSummaryTests(unittest.TestCase):
         )
         self.assertEqual(result.kind, "rebalance")
 
+    def test_the_verified_summary_carries_the_pick_cardinality(self) -> None:
+        # 空清单是合法产出——但基数必须随核验结果**传出去**：丢掉它，
+        # 下游会把「再平衡日」当成「必有买入对象」（codex #468 P1）。
+        empty = summarise_daily_signal(
+            "2026-08-18", _ensemble_payload(),
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual(0, empty.pick_count)
+        payload = _ensemble_payload()
+        payload["picks"] = [{}, {}]
+        two = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("rebalance", two.kind)
+        self.assertEqual(2, two.pick_count)
+
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
             ("missing", None),
@@ -325,7 +340,7 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
     def _signal(kind: str, **overrides: object) -> DailySignalSummary:
         base: dict[str, object] = dict(
             kind=kind, detail="x", as_of_date="2026-08-25",
-            entry_date="2026-08-26")
+            entry_date="2026-08-26", pick_count=5)
         base.update(overrides)
         return DailySignalSummary(**base)  # type: ignore[arg-type]
 
@@ -335,6 +350,39 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         self.assertEqual("buy", got.state)
         self.assertIn("有买入指令", got.value)
         self.assertIn("人工核对", got.detail, "买入态不许省掉人工核对义务")
+        self.assertIn("5 只候选", got.detail, "候选数没如实说出")
+
+    def test_an_empty_rebalance_list_is_not_a_buy_instruction(self) -> None:
+        # 空清单是合法产出（--topk 0 / 全部候选被掩蔽，codex P1）——
+        # 零个买入对象时最显眼的卡片不许说「买」。
+        got = todays_buy_answer(
+            self._signal("rebalance", pick_count=0), self._fresh(),
+            self._TODAY)
+        self.assertEqual("watch", got.state)
+        self.assertIn("不买", got.value)
+        self.assertIn("清单为空", got.value)
+        self.assertIn("没有买入对象", got.detail)
+
+    def test_a_rebalance_without_a_cardinality_refuses_to_answer(self) -> None:
+        # 接线保险：候选数没随核验结果传递（None）时不许猜有对象。
+        got = todays_buy_answer(
+            self._signal("rebalance", pick_count=None), self._fresh(),
+            self._TODAY)
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("候选数", got.detail)
+
+    def test_a_health_precondition_failure_blocks_a_buy_answer(self) -> None:
+        # 年龄与完整性都过、健康摘要仍扣分（如 instruments 缺失）——
+        # usable=False 时说「买」会与同页健康卡自相矛盾（codex P1）。
+        got = todays_buy_answer(
+            self._signal("rebalance"),
+            self._fresh(health_status="error",
+                        health_warnings=("instruments 目录缺失",)),
+            self._TODAY)
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("instruments 目录缺失", got.detail,
+                      "健康扣分的原因没活到可见文案")
+        self.assertIn("健康状态 error", got.detail)
 
     def test_a_hold_for_today_says_watch_and_names_the_next_day(self) -> None:
         got = todays_buy_answer(
