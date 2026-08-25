@@ -28,6 +28,44 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第三十二轮：一个 P2 —— SystemExit/KeyboardInterrupt 也留终录
+
+crash 包裹只接 Exception；进程内阶段从 argparse 进门，argv 契约不符抛
+SystemExit(2)、Ctrl-C 抛 KeyboardInterrupt——都绕过捕获，status 照样卡
+running。改接 BaseException（记录后原样再抛）；退出码尽量镜像进程行为
+（SystemExit 非零 int 记它，argparse 的 2 恰是 EXIT_CONFIG；零码/None/
+KeyboardInterrupt 记 1，防造出 exit_code=0 带 failed_stage 的矛盾终录）。
+三条回归；变异回退 Exception → 3 failed 全咬。
+
+## codex 第三十一轮：一个 P2 —— 边界锚到物理行首
+
+只锚消息起始仍放过「连 logger 前缀整段回显在消息中部」；我上一轮把它豁免
+成结构极限是划早了——行首锚（^HH:MM:SS + 完整记录）分辨得开。第三类转述
+用例入回归；残余极限如实收窄到「消息体带真实换行逐字节复刻整行」。
+
+## codex 第三十轮：一个 P2 —— 转述的边界不是边界（消息起始锚）
+
+上游报错原样回显边界行时，无锚搜索把转述当真边界。标记必须紧跟写侧
+logger 的 `[名] INFO — ` 前缀；前缀↔写侧 logger 名/真实格式串一致性钉。
+
+## codex 第二十九轮：一个 P2 —— 符号链接环边界判 corrupt 不崩页
+
+resolve 遇符号链接环抛 RuntimeError（3.10-3.12），逃出兜底崩掉 run_center
+页。except 元组补 RuntimeError（台账读者同款处置）；受控模拟回归。
+
+## codex 第二十八轮：两个 P2 —— 身份完整回环、退出码 1 进三表
+
+(a) 边界身份 `.strip()+normcase` 宽容化 → 先改「不动点+isabs」再收 codex
+续指：半套放过 `/a/../b`（误判 foreign）——终态 = stamped 必须等于自己的
+normcase(resolve()) 完整回环，词法层收编行尾 `\r`（CRLF 日志）。
+(b) crash 的 exit_code=1 在共享退出码表无条目（UI 渲「未知退出码」）——
+EXIT_UNHANDLED_EXCEPTION 常量入 daily_update，三表一致性闸强制 UI 表/
+运维手册/docstring 齐改。
+
+## codex 第二十七轮：一个 P2 —— 台账/边界诚实性等（承前）
+
+（第二十六轮后的 conflict 解决与消毒轮推送；详见 PR 逐 commit 记录。）
+
 ## codex 第二十六轮：一个 P2 —— crash 详情要过同一道消毒
 
 crash 路径原样内插异常消息——带代理转义字节（surrogateescape 文件名，产线
