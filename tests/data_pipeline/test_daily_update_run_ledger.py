@@ -231,6 +231,15 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         }
         self.assertTrue(modes, "找不到任何 open 调用 —— 本守卫已失效")
         self.assertIn("ab", modes, "追加句柄没了")
+        # symlink 拒随是承重的（`open("ab")` 会跟随链接、写进别人的历史），
+        # 而行为测试在无符号链接权限的机器上会 skip —— 源码级钉住它在场。
+        called = {
+            node.func.attr
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn("is_symlink", called,
+                      "_append_ledger 不再检查符号链接 —— 拒随防线没了")
         self.assertLessEqual(
             modes, {"ab", "rb"},
             f"出现了追加/只读之外的打开方式：{modes} —— 「只可追加」不再成立")
@@ -239,6 +248,27 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         for forbidden in ("write_text", "os.replace", "truncate", "write_bytes"):
             with self.subTest(不许出现=forbidden):
                 self.assertNotIn(forbidden, body)
+
+    def test_a_symlinked_ledger_target_is_refused(self) -> None:
+        """派生台账位上的符号链接不许被跟随。
+
+        B 名下的台账名被链到 A 的台账时，`open("ab")` 跟随链接、B 的记录
+        直接写进 A 的历史——构造期检查看不见事后落在派生位上的链接
+        （codex P2）。拒绝 + ERROR，退出码照旧。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            victim = Path(t) / "victim_history.jsonl"
+            victim.write_text("", encoding="utf-8")
+            target = du.default_ledger_path(cfg.provider_dir)
+            try:
+                target.symlink_to(victim)
+            except OSError:
+                self.skipTest("本机无符号链接权限")
+            code = du.run_daily_update(cfg, _runners(failing="fetch"))  # type: ignore[arg-type]
+            self.assertEqual(du.EXIT_FETCH_HARD, code, "退出码被台账问题改变了")
+            self.assertEqual("", victim.read_text(encoding="utf-8"),
+                             "追加穿过符号链接写进了别人的历史")
 
     def test_a_torn_tail_does_not_swallow_the_new_line(self) -> None:
         """上一个进程死在写一半、留下没有换行的尾行时，新记录不许被焊上去。

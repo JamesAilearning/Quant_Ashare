@@ -263,6 +263,17 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
       后面再跟一条健康的行。
     """
     try:
+        # 目标是符号链接就**拒绝追加**：`open("ab")` 会跟随链接——B 名下的
+        # 台账名被链到 A 的台账时，B 的记录会直接写进 A 的历史，而构造期
+        # 检查解析的是各自配置的路径、看不见事后落在派生位上的链接
+        # （codex P2）。拒绝并记 ERROR，退出码照旧不受影响。
+        if path.is_symlink():
+            _logger.error(
+                "run-ledger target %s is a SYMLINK — refusing to append "
+                "through it (it may point at another provider's history); "
+                "the run's exit code is unaffected.", path,
+            )
+            return
         line = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8") + b"\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_file() and path.stat().st_size > 0:

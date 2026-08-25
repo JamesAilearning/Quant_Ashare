@@ -28,6 +28,18 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十五轮：两个 P2 —— 派生位上的符号链接、我自己造的规格矛盾
+
+**symlink 拒随。** B 名下的台账名被链到 A 的台账时，`open("ab")` 跟随链接、
+B 的记录直接写进 A 的历史——构造期检查解析的是各自配置的路径，看不见事后落
+在派生位上的链接。`_append_ledger`（可观测性层）开头查 `is_symlink()`，拒绝
+并记 ERROR，退出码照旧；阶段语义零改动。
+
+**两份 delta 打架，是我上一轮写出来的。** run-center delta 说「状态戳不等→
+unknown」，主 delta 与实现说「属于边界那次运行、只是不属于展示的记录」。
+取实现语义（归属仍确定，身份披露不同）对齐 run-center delta——一个语义，
+只说一遍。
+
 ## codex 第十四轮：一个 P2 —— 非归一化身份是坏行，不是别人的
 
 写入侧 `_norm` 只产归一化绝对路径；`provider_dir: "../bundle"` 过了非空检查
