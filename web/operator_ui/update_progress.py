@@ -77,8 +77,14 @@ RUN_BOUNDARY_MARK = "[daily_update] run started"
 # `re.MULTILINE` 是**承重**的:不带它,`$` 只在整串末尾匹配,于是只有当边界恰好
 # 是最后一行时才找得到——而边界之后必然还有阶段输出,也就是说它在真实日志里
 # 几乎永远匹配不上。
+# 行尾的 `\r?` 是**词法层**的：Windows 上 logging 落盘是 CRLF，而
+# `log_window` 按 `\n` 切行——`\r` 是行终结符的残留，不是身份内容，收进
+# 捕获组会让每一条真实边界都验不过写侧形态。真以 CR 结尾的 POSIX 目录名
+# 本就无法在行式日志里回环（写侧一落盘就与终结符不可分），它会退化成
+# foreign_boundary（如实不归属），绝不会被误归属。
 _BOUNDARY_RE = re.compile(
-    re.escape(RUN_BOUNDARY_MARK) + r"\s+(?P<started>\S+)\s+provider=(?P<provider>.*)$",
+    re.escape(RUN_BOUNDARY_MARK)
+    + r"\s+(?P<started>\S+)\s+provider=(?P<provider>.*?)\r?$",
     re.MULTILINE,
 )
 
@@ -216,10 +222,15 @@ def _current_segment(
         if stamp.utcoffset() != timedelta(hours=8):
             # 写入侧只在东八区落边界——别的时区产不出（同一原则顺带钉上）。
             return None, "corrupt_boundary"
-    if any(
-        os.path.normcase(match.group("provider").strip()) != provider_key
-        for match in boundaries
-    ):
+        # 身份与戳同罪同治（codex P2）：写侧只产 `normcase(resolve())` 的
+        # 精确形态——normcase 不动点、绝对路径。此前读侧 `.strip()+normcase`
+        # 宽容化，`provider= /tmp/prov ` 这种写侧产不出的拼写会被洗成
+        # provider_key 并以「已确定」口气归属；而真以空白结尾的合法 POSIX
+        # 目录名反被 strip 改掉。拼写验不过 = 日志损坏，不硬解释。
+        stamped = match.group("provider")
+        if os.path.normcase(stamped) != stamped or not os.path.isabs(stamped):
+            return None, "corrupt_boundary"
+    if any(match.group("provider") != provider_key for match in boundaries):
         return None, "foreign_boundary"
     last = boundaries[-1]
     return (last.end(), last.group("started")), ""

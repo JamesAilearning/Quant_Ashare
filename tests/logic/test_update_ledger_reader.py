@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 import src.data_pipeline.daily_update as writer
+import web.operator_ui.update_progress as update_progress
 import web.operator_ui.update_status as status_reader
 from web.operator_ui.update_ledger import (
     LEDGER_FILENAME,
@@ -898,6 +899,82 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                     self.assertFalse(got.attributed, "坏戳的边界被当真了")
                     self.assertEqual("corrupt_boundary",
                                      got.unattributed_reason)
+
+    def test_a_noncanonical_provider_spelling_is_corrupt_not_ours(self) -> None:
+        r"""身份与戳同罪同治（codex P2）：写侧只产 normcase(resolve()) 精确形态。
+
+        此前读侧 `.strip()+normcase` 宽容化——`provider= <ours> ` 这种写侧
+        产不出的拼写会被洗成 provider_key，随后以「已确定」口气归属。拼写
+        验不过（有围空白/相对路径/空）＝日志损坏，与坏戳同一处置。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            ours = writer._norm(provider)
+            for spelling in (f" {ours} ", f" {ours}", "rel/prov", ""):
+                with self.subTest(spelling=repr(spelling)):
+                    text = chr(10).join([
+                        f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                        f"2026-08-24T20:30:01+08:00 provider={spelling}",
+                        f"20:31:00{_PROGRESS_LINE}",
+                    ])
+                    got = last_fetch_progress_for_run(
+                        text, provider_dir=provider, window_complete=True)
+                    self.assertFalse(got.attributed, "写侧产不出的拼写被归属了")
+                    self.assertEqual("corrupt_boundary",
+                                     got.unattributed_reason,
+                                     "该判损坏，不是判成别人的")
+
+    @unittest.skipUnless(os.name == "nt", "normcase 只在 Windows 上小写化")
+    def test_an_uppercase_spelling_is_not_writer_form_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            text = chr(10).join([
+                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"2026-08-24T20:30:01+08:00 provider={writer._norm(provider).upper()}",
+                f"20:31:00{_PROGRESS_LINE}",
+            ])
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
+        self.assertFalse(got.attributed)
+        self.assertEqual("corrupt_boundary", got.unattributed_reason)
+
+    def test_a_crlf_terminated_boundary_still_attributes(self) -> None:
+        r"""行尾 `\r` 是词法层的终结符残留，不是身份内容。
+
+        Windows 上 logging 落盘 CRLF，而窗口读取按 `\n` 切行——每条真实
+        边界的捕获组都会拖着一个 `\r`。旧实现靠 `.strip()` 静默兜底；改成
+        精确比对后必须由词法层收编，否则真实日志全军 corrupt。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            text = (
+                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"2026-08-24T20:30:01+08:00 provider={writer._norm(provider)}\r\n"
+                f"20:31:00{_PROGRESS_LINE}\r\n")
+            got = last_fetch_progress_for_run(
+                text, provider_dir=provider, window_complete=True)
+        self.assertTrue(got.attributed, "CRLF 日志的真实边界被判成了损坏")
+        self.assertEqual("2026-08-24T20:30:01+08:00", got.boundary_stamp)
+
+    def test_an_identity_that_really_ends_in_a_space_round_trips(self) -> None:
+        # 真以空白结尾的合法 POSIX 目录名——旧 `.strip()` 会把它改掉判成
+        # 别人的。writer 形态的 key 直接喂 `_current_segment`（不触盘，
+        # 避免 Windows 文件系统对尾空格目录的平台差异）。
+        key = os.path.normcase(str((Path(os.sep) / "data" / "prov ").absolute()))
+        assume_writer_form = (os.path.normcase(key) == key
+                              and os.path.isabs(key))
+        self.assertTrue(assume_writer_form, "用例前提不成立：key 不是写侧形态")
+        text = chr(10).join([
+            f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+            f"2026-08-24T20:30:01+08:00 provider={key}",
+            f"20:31:00{_PROGRESS_LINE}",
+        ])
+        boundary, reason = update_progress._current_segment(text, key)
+        self.assertEqual("", reason)
+        self.assertIsNotNone(boundary, "真尾空格身份被 strip 改掉判成了别人")
 
     def test_the_page_speaks_all_three_reasons(self) -> None:
         # 页面的未归属分支必须按原因措辞——只要有一个键没接上，那种情形就
