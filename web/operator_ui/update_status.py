@@ -29,13 +29,32 @@ STATUS_FILENAME = "daily_update_status.json"
 # OTHER version is corrupt here — never interpreted with v1 semantics.
 STATUS_SCHEMA_VERSION = 1
 
+# Mirrors ``src/data_pipeline/daily_update.py``'s ``_NO_REASON_MARK`` —
+# same deliberate duplication as the schema version above (the two
+# modules never import each other), pinned by the same logic test.
+#
+# The writer appends this to ``detail`` when the failing stage logged no
+# ERROR at all, so ``detail`` carries only the exit-code summary. Without
+# the marker a reader cannot tell that apart from a real captured reason,
+# and would render "原因：fetch failed hard (exit 1)" — dressing up "we
+# only have an exit code" as an explanation.
+NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行日志）"
+
 # Exit-code → one-line Chinese meaning, mirroring the runbook table in
 # docs/runbook_daily_update_scheduling.md (the canonical exit-code reference).
+# All THREE copies (here / the runbook / daily_update.py's module docstring)
+# are pinned to the same code set by tests/logic/test_exit_code_semantics.py.
+#
+# 一条码 = 一个**阶段**,不是一个原因。11 曾写作「查 token / 网络」,而 11 的实际
+# 条件是「01 以 0/3 以外任何码退出」——2026-08-17/20/21 连续三晚的 11 全都是
+# fetch manifest 拒绝缩窄合并,token 与网络自始至终正常,那句文案把操作人直接
+# 引向了错的地方。具体原因由状态工件的 `detail` 承载(它现在带着该阶段自己那
+# 句 ERROR),这张表只说死在哪一环。
 EXIT_CODE_MEANINGS: dict[int, str] = {
     0: "成功（含周末日历门 no-op）",
     2: "配置/启动错误",
     10: "启动修复发现不可修复的 bundle 状态",
-    11: "抓取硬失败（查 token / 网络）",
+    11: "抓取硬失败（01 以非 0/3 退出；具体原因见详情）",
     12: "抓取有洞且未放行（或收盘前数据未发布）",
     13: "active-stocks 快照未刷新到运行日",
     14: "重建失败（02/05/03/04/07 之一）",

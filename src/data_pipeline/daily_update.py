@@ -10,7 +10,7 @@ scheduler (Phase 4 — out of scope here) can tell where a run died:
     0  success
     2  configuration / setup error
     10 startup repair found an unrepairable bundle state
-    11 fetch failed hard (01 exit 1/2)
+    11 fetch failed hard (01 exited anything other than 0 or 3)
     12 fetch completed WITH HOLES and --allow-holey-fetch was not given
     13 active-stocks snapshot not refreshed to today (and no override)
     14 rebuild failed (02 registry / 05 bins / 03 membership / 04 universe)
@@ -61,9 +61,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -134,6 +136,188 @@ EXIT_SWAP = 16
 EXIT_ALREADY_RUNNING = 17  # CLI single-flight (阶段5 PR-P); see scripts/daily_update.py
 
 Runner = Callable[[list[str]], int]
+
+# ---------------------------------------------------------------- 阶段失败原因
+#
+# `Runner` 只让一个 int 穿过。于是 01 已经写好、并且**直接给出修法**的那句
+# "refusing narrower-scope merge ... Re-run the full range to extend it, or pass
+# --reset-manifest" 停在日志里,而操作人实际读的状态工件只拿到
+# "fetch failed hard (exit 1)"。2026-08-17/20/21 三晚连续失败,退出码全是 11,
+# 工件与 UI 三晚说的是同一句废话,真正的原因一次都没露面。
+#
+# 补法是在**编排器这一侧**给每次阶段调用套一个作用域内的日志捕获——七个脚本
+# 一行都不用改,而且七个阶段一视同仁(只补 fetch 就会在下一个阶段上重演)。
+_STAGE_DETAIL_MAX_CHARS = 1200
+
+# 阶段一条 ERROR 都没记时,`detail` 末尾附这句。读侧据此把「没有原因」
+# 与「有原因」分开:否则工作台会把兜底串本身当成原因渲染出来。
+_NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行日志）"
+
+# 头部被压缩时附这句。截断必须声明,不许静默。
+_TRUNCATED_MARK = "…（已截断，完整内容见日志）"
+
+# 摘要与各段之间、以及各段彼此之间的分隔。它也要计进预算 —— 只给内容记账、
+# 把分隔符和标记留在账外,正是「返回值超上限」的来源。
+_JOIN = " — "
+
+
+# 尾条(通常是修法)很长时,头部预算会被压到 0。留这么多字符,至少还能认出
+# 「是什么错」,而不是只剩一句修法悬在那里。
+_MIN_HEAD_CHARS = 120
+
+# 捕获点必须是 `src`,不是真正的 root:`src.core.logger.setup_logging` 在
+# `logging.getLogger("src")` 上设了 `propagate = False`(为免重复输出),挂在真
+# root 上的 handler 一条记录都收不到——那会让这整套机制静默变成空转。
+_STAGE_LOG_ROOT = "src"
+
+
+class _StageErrorCollector(logging.Handler):
+    """收集一次阶段调用期间发出的 ERROR 行。"""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # 可观测性绝不允许改变运行结果。`logging.Handler.handle` 并不包住
+        # `emit`,这里抛出的异常会从阶段自己那句 `logger.error(...)` 里冒出去,
+        # 把一次**可诊断的失败**变成一次崩溃——正是本改动要消除的那种事。
+        # 所以这里吞掉一切:少一行详情可以接受,改变退出码不可以。
+        try:
+            self.lines.append(record.getMessage())
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+@contextmanager
+def _capture_stage_errors() -> Iterator[list[str]]:
+    """捕获**一个阶段运行期间**发出的 ERROR 行。
+
+    分辨「阶段自己报的原因」与「编排器对它的转述」靠的就是这个作用域,不靠
+    按 logger 名过滤:下面每一句 `_logger.error("Fetch FAILED ...")` 都在阶段
+    调用**返回之后**才发出,天然落在窗口外;而 `_verify_snapshot_refreshed` 把
+    原因记在自己函数体内,天然落在窗口内。
+
+    也**不该**按 logger 名过滤:阶段栽在它调用的某个 helper 模块里时,那条
+    ERROR 同样是这个阶段的失败原因。
+
+    作用域是**进程级**的:窗口开着时,同进程任何线程在 `src.*` 下报的 ERROR 都会
+    被收进来。编排器是单线程且由 single_flight 串行化的,所以这在生产里不构成
+    歧义;若将来有人让阶段并发,这里要先改。
+    """
+    collector = _StageErrorCollector()
+    logger = logging.getLogger(_STAGE_LOG_ROOT)
+    logger.addHandler(collector)
+    try:
+        yield collector.lines
+    finally:
+        # `finally` 而非 `except`:阶段抛异常时也必须摘下,否则 handler 会在
+        # 进程存活期间一直挂着,把后续每个阶段的错误都收进一个死列表。
+        logger.removeHandler(collector)
+
+
+def _dropped_notice(count: int) -> str:
+    return f"（中间另有 {count} 条错误未列出，完整内容见日志）"
+
+
+def _stage_detail(summary: str, captured: Sequence[str]) -> str:
+    """把阶段自己的 ERROR 行折进状态工件的单行 `detail`。
+
+    `detail` 的契约是**一行**(它被渲染进表格单元格与卡片正文),所以内嵌换行
+    折成 `' / '` 而不是丢弃——traceback 的最后一帧往往正是有用的那半。
+
+    截断**必须声明**,不许静默。上限刻意远高于 `job_io._extract_failure_detail`
+    的 200:本改动要救的那句真实消息约 350 字符,而它的**后**半句才是修法
+    ("Re-run the full range to extend it, or pass --reset-manifest")——按 200 截
+    会精准地留下抱怨、切掉办法。
+
+    捕获为空时返回 `summary` 并**明说该阶段没在日志里留下原因**:不知道就不编,
+    但也不能让读侧把这句兜底串当成原因 —— 那会让工作台显示「原因:fetch
+    failed hard (exit 1)」,把「只有退出码」伪装成一条解释(codex P2)。
+
+    **不成对代理必须在这里消掉。** `_record_status` 以 `ensure_ascii=False`
+    序列化,一个不成对代理会让写盘抛 UnicodeEncodeError;它按「可观测性失败不
+    改变退出码」的契约吞掉那个异常 —— 代价是**整份状态记录写不出来**,UI 继续
+    显示上一次的记录,操作人以为什么都没跑。
+
+    在本改动之前 `detail` 只承载编排器自己写的常量串与异常消息,这条路几乎走
+    不到;现在它承载**阶段记进日志的任意文本**,而 `surrogateescape`(Python
+    解码文件系统路径的方式)恰恰产出代理。少几个字符可以接受,把整份记录弄丢
+    不可以 —— 那正是本改动要消除的那种「操作人看不见发生了什么」。
+    """
+    cleaned: list[str] = []
+    for line in captured:
+        # 用 `backslashreplace` 而不是 `replace`:前者留下可读的反斜杠转义残迹,
+        # 后者只留一个问号,把「这里原本有个诡异字节」这条线索也一并抹掉。
+        safe = str(line).encode("utf-8", "backslashreplace").decode("utf-8")
+        folded = " / ".join(
+            part.strip() for part in safe.splitlines() if part.strip())
+        if folded:
+            cleaned.append(folded)
+    if not cleaned:
+        return f"{summary}{_NO_REASON_MARK}"
+    # 上限落在**最终返回值**上,不是某个中间片段。此前只给 `body` 记账,而
+    # `summary`、分隔符、截断标记都在预算之外,于是返回串照样能超过上限——与
+    # 规格里「`detail` 本身有界」那条直接矛盾(codex)。所有会出现在结果里的
+    # 东西,在切之前先预留。
+    #
+    # 头尾都要留:第一条通常是**为什么**,最后一条通常是**怎么办**。01 的
+    # `_log_hole_report` 就是这个形状——表头、每端点一行、最多二十条明细,最后
+    # 才是 "Re-run with the same --output-dir to fill the holes"。
+    tail = cleaned[-1] if len(cleaned) > 1 else None
+    head_source = cleaned[:-1] if tail is not None else cleaned
+    budget = _STAGE_DETAIL_MAX_CHARS - len(summary) - len(_JOIN)
+
+    # 报数那句也要**先**预留:它是在收行之后才拼上去的,不预留的话它会把头部
+    # 顶出上限,随后被切掉——于是「中间漏了几条」这个信息恰好丢失(codex)。
+    # 按最坏情况(全部头行都被丢)预留,数字宽度不会再变大。
+    notice_room = (
+        len(_dropped_notice(len(head_source))) + len(_JOIN)
+        if len(head_source) > 1 else 0
+    )
+
+    if tail is not None:
+        # 尾条很长时**裁尾条**,而不是把头部整个换成一句交代。此前那条退化分支
+        # 会丢掉首条错误——首条通常正是「为什么」,而规格写的是首尾都要留;它还
+        # 顺手把报数也省了(codex)。两端各留一份,信息就都在。
+        #
+        # 这里**不必**再为报数预留:头部那侧的填充循环已经留了,而真到了要截断
+        # 的地步,截断分支会把报数单独拼回去。再减一次只让头部少约 28 字符,
+        # 不改变任何信息——实测变异「去掉这一项」无一用例会红,所以它是冗余的。
+        room = budget - _MIN_HEAD_CHARS - len(_JOIN)
+        if len(tail) > room:
+            tail = tail[: max(room - len(_TRUNCATED_MARK), 0)] + _TRUNCATED_MARK
+        budget -= len(tail) + len(_JOIN)
+    kept: list[str] = []
+    for line in head_source:
+        candidate = kept + [line]
+        # 还有没收下的行时,才需要留报数的位置。
+        reserve = notice_room if len(candidate) < len(head_source) else 0
+        # 第一条无论多长都要收下(否则一条超长消息会让详情整个消失,又回到
+        # 「只有退出码」的原点);它之后再超限就停。
+        if kept and len(_JOIN.join(candidate)) + reserve > budget:
+            break
+        kept.append(line)
+    dropped = len(head_source) - len(kept)
+    parts = list(kept)
+    if dropped:
+        parts.append(_dropped_notice(dropped))
+    head_text = _JOIN.join(parts)
+    if len(head_text) > budget:
+        # 只压头部:对拼好的整串做 `[:上限]` 是从右边切,而尾巴恰恰在右边。
+        #
+        # 而且裁的是**第一条**,不是拼好的头部整串:报数那句排在它后面,裁整串
+        # 会把报数一并切掉——「中间漏了几条」恰恰是此刻唯一还能说的信息
+        # (codex)。首条独自超预算时,能保住的就只有「它是什么错」的开头 +
+        # 「还漏了几条」+ 修法。
+        notice = parts[-1] if dropped else ""
+        reserved = (len(notice) + len(_JOIN)) if notice else 0
+        room = max(budget - reserved - len(_TRUNCATED_MARK), 0)
+        head_text = kept[0][:room] + _TRUNCATED_MARK
+        if notice:
+            head_text = head_text + _JOIN + notice
+    body = _JOIN.join(p for p in (head_text, tail) if p)
+    return f"{summary}{_JOIN}{body}"
 
 
 class DailyUpdateError(RuntimeError):
@@ -815,7 +999,11 @@ def _execute_daily_update(
     default loads the real numbered scripts). ``failed_stage`` is the stage key
     (``fetch`` / ``snapshot`` / ``registry`` / … / ``validate`` / ``swap`` /
     ``startup_repair``), ``None`` on success; ``detail`` is a one-line
-    human-readable summary for the status artifact.
+    human-readable summary for the status artifact — for the seven CLI-shaped
+    stages it carries the stage's OWN error line(s) across the ``Runner``
+    seam (see ``_capture_stage_errors``); ``startup_repair`` and ``swap`` are
+    deliberately NOT wrapped because their reason already arrives as the
+    caught exception and wrapping would print it twice.
     """
     active = dict(_default_runners())
     if runners:
@@ -903,7 +1091,8 @@ def _execute_daily_update(
         )
 
     # Stage 1: fetch (01 --refresh-current). Exit 3 = completed-with-holes.
-    rc = active["fetch"](plan.fetch)
+    with _capture_stage_errors() as stage_errors:
+        rc = active["fetch"](plan.fetch)
     if rc == 3 and not config.allow_holey_fetch:
         _logger.error(
             "Fetch completed WITH HOLES (exit 3) and --allow-holey-fetch was "
@@ -911,17 +1100,21 @@ def _execute_daily_update(
             "Re-run to self-heal the holes, or pass --allow-holey-fetch to "
             "build a research bundle from partial data."
         )
-        return EXIT_FETCH_HOLES, "fetch", (
-            "fetch completed with holes; --allow-holey-fetch not given")
+        return EXIT_FETCH_HOLES, "fetch", _stage_detail(
+            "fetch completed with holes; --allow-holey-fetch not given",
+            stage_errors)
     if rc not in (0, 3):
         _logger.error("Fetch FAILED (exit %d); aborting the update.", rc)
-        return EXIT_FETCH_HARD, "fetch", f"fetch failed hard (exit {rc})"
+        return EXIT_FETCH_HARD, "fetch", _stage_detail(
+            f"fetch failed hard (exit {rc})", stage_errors)
 
     # Stage 2: prove the active-stocks snapshot was refreshed today.
-    rc = _verify_snapshot_refreshed(config, run_date)
+    with _capture_stage_errors() as stage_errors:
+        rc = _verify_snapshot_refreshed(config, run_date)
     if rc != EXIT_OK:
-        return rc, "snapshot", (
-            "active-stocks snapshot not refreshed to the run date")
+        return rc, "snapshot", _stage_detail(
+            "active-stocks snapshot not refreshed to the run date",
+            stage_errors)
 
     # Stage 3: full rebuild into <provider>.new (02 -> 05 -> 03 -> 04 -> 07;
     # 05 must precede 03/04/07 because its staging-promote REPLACES the output
@@ -929,12 +1122,13 @@ def _execute_daily_update(
     # writes, so the atomic swap preserves the benchmark instruments (the
     # retired xlsx ingest wrote into LIVE and the swap erased them — audit E2).
     for stage in ("registry", "bins", "membership", "universe", "benchmark"):
-        rc = active[stage](getattr(plan, stage))
+        with _capture_stage_errors() as stage_errors:
+            rc = active[stage](getattr(plan, stage))
         if rc != 0:
             _logger.error("Rebuild stage %r FAILED (exit %d); the live bundle "
                           "is untouched.", stage, rc)
-            return EXIT_REBUILD, stage, (
-                f"rebuild stage {stage!r} failed (exit {rc})")
+            return EXIT_REBUILD, stage, _stage_detail(
+                f"rebuild stage {stage!r} failed (exit {rc})", stage_errors)
 
     # Stage 4: validate the STAGED bundle. Only a pass reaches the swap.
     # 06's exit convention: 0 = clean, 1 = WARNINGS ONLY (every check passed —
@@ -942,7 +1136,8 @@ def _execute_daily_update(
     # check), >= 2 = a check FAILED. Warnings-only is a pass here (codex P1):
     # refusing to swap a valid bundle over a routine warning would wedge the
     # daily update permanently.
-    rc = active["validate"](plan.validate)
+    with _capture_stage_errors() as stage_errors:
+        rc = active["validate"](plan.validate)
     if rc == 1:
         _logger.warning(
             "Validation passed WITH WARNINGS (exit 1) on %s — swapping; "
@@ -953,8 +1148,9 @@ def _execute_daily_update(
             "Validation FAILED (exit %d) on %s; NOT swapping — the live "
             "bundle stays as it was.", rc, new_dir(config.provider_dir),
         )
-        return EXIT_VALIDATE, "validate", (
-            f"validation failed (exit {rc}) on the staged bundle; not swapping")
+        return EXIT_VALIDATE, "validate", _stage_detail(
+            f"validation failed (exit {rc}) on the staged bundle; not swapping",
+            stage_errors)
 
     # Stage 5: atomic two-stage swap.
     try:

@@ -96,7 +96,7 @@ no-op, exit 12); the next day catches up. Scheduling late avoids the wasted run.
 | 0 | success (incl. weekend calendar-gate no-op; a weekday holiday runs normally and also exits 0 when there is no new bar) | none |
 | 2 | config / setup error (incl. an unwritable / unreachable lock path) | fix args; check `--provider-dir`'s parent is writable |
 | 10 | unrepairable bundle state | investigate `.bak`/`.new`; manual repair |
-| 11 | fetch failed hard | check tushare token / network; re-run |
+| 11 | fetch failed hard (01 exited anything but 0/3) | read the run's `detail` — it carries 01's own error line; token/network is one cause among several |
 | 12 | fetch holes (or pre-close, no `--allow-holey-fetch`) | usually transient (pre-close) — re-run later/next day |
 | 13 | snapshot not refreshed to run date | re-run after data publish |
 | 14 | rebuild failed | inspect 02/05/03/04 logs |
