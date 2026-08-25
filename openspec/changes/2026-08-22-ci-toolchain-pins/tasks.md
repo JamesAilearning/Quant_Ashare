@@ -15,6 +15,23 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第二十轮：两个 P1 + 一个 P2 —— 底数按 workflow 摊、执行要可确立
+
+**P1 底数不许全局摊。** test.yml 删掉 qlib 安装后，regen-baseline 的那条让
+全局 `>= 1` 照样过线——六条测试腿在 importorskip 下静默绿。规则改为**跑
+pytest 的 workflow 必须自己装 qlib**（regen-baseline 不跑 pytest，规则精确
+适用）；两层作证：`_pytest_without_qlib` 可单测，真数据守卫只留底数。
+
+**P1 `||` 右侧执行无法确立。** `true || pip install <窗口> <qlib>` 从不运行
+而步骤照样绿——把右侧当独立命令数就是把从不运行的安装当真安装。不建模控制
+流：`||` 在 run 块里响亮拒绝（现有 workflow 零使用）；`&&` 保持接受——前件
+失败步骤即红，链上每段「要么运行、要么响亮」。**边界如实记**：`if cond;
+then X; fi` 的 X 同样是条件执行，本轮未拒（codex 未点、现有用法为空），
+若后续要求即再收。
+
+**P2 `$INSTALLER install …`。** 展开值在命令文本之外，静默 False 让真安装
+从覆盖面消失。可执行体位置上的变量展开响亮拒绝（现有 workflow 零使用）。
+
 ## codex 第十九轮：两个 P2 —— 第二种 shell 的形状、wrapper 解包
 
 **Windows 腿默认跑 pwsh**（test.yml 无 shell: 覆盖）——`$env:PIP_DRY_RUN=1`

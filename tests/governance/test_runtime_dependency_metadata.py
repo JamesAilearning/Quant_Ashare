@@ -229,6 +229,15 @@ def _split_commands(script: str) -> list[str]:
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
+            if separator == "||":
+                # `a || b` 的 b 只在 a **失败**时运行——a 成功则 b 从未执行
+                # 而步骤照样绿。把 b 当独立命令数，会把一条从不运行的
+                # `pip install <窗口> <qlib>` 当成真安装（codex P1）。本守卫
+                # 不建模控制流：执行无法确立的构造响亮拒绝。（`&&` 不同：
+                # 前件失败步骤即红，链上每段「要么运行、要么响亮」。）
+                raise UnlexableShell(
+                    "`||` 右侧只在左侧失败时运行——执行无法确立；请改写为"
+                    "显式 if 或拆成独立步骤")
             flush()
             index += len(separator)
             continue
@@ -357,6 +366,14 @@ def _is_pip_install(command: list[str]) -> bool:
                 f"确定；请去掉选项或改写")
     if not tokens:
         return False
+    if tokens[0].startswith("$"):
+        # `INSTALLER=pip` 之后的 `$INSTALLER install …` 真的会执行 pip，而
+        # 展开值在命令文本之外——把它当不透明可执行体静默返回 False，这条
+        # 安装连同 extras 从覆盖面消失（codex P2）。不建模变量求值：可执行
+        # 体位置上的展开响亮拒绝，请写字面命令名。
+        raise AmbiguousPipCommand(
+            f"可执行体是变量展开：{tokens[0]!r} —— 无法确立调用的是什么；"
+            f"请写字面命令名")
     name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
     if _PYTHON_EXECUTABLE.match(name) and tokens[1:3] == ["-m", "pip"]:
         rest = tokens[3:]
@@ -585,6 +602,34 @@ def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
     return seen, problems
 
 
+def _runs_pytest(commands: list[list[str]]) -> bool:
+    """这些命令里有没有 pytest 调用（裸 `pytest` 或 `python -m pytest`）。"""
+    for command in commands:
+        tokens = list(command)
+        while tokens and (tokens[0] in _RESERVED_WORDS
+                          or _ASSIGNMENT_PREFIX.match(tokens[0])):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+        if name == "pytest":
+            return True
+        if _PYTHON_EXECUTABLE.match(name) and tokens[1:3] == ["-m", "pytest"]:
+            return True
+    return False
+
+
+def _pytest_without_qlib(commands: list[list[str]]) -> bool:
+    """跑 pytest 却不自装 qlib——`importorskip` 让整套 qlib 侧覆盖静默蒸发。
+
+    全局底数挡不住这个：test.yml 删掉 qlib 安装后，regen-baseline 里的那条
+    仍让 `len(commands) >= 1` 过线，而六条测试腿全在无 qlib 下静默绿
+    （codex P1）。判据按 **workflow 各自**成立；抽 helper 是两层作证——
+    真实 workflow 是干净的，负断言测不出规则被删。
+    """
+    return _runs_pytest(commands) and not _qlib_pin_installs(commands)
+
+
 def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
     """真正**安装** qlib 的命令。
 
@@ -769,7 +814,8 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         self.assertNotIn("numpy>=1.24,<2.0", got[0], "约束漏进了 qlib 那条命令")
 
     def test_every_posix_separator_splits(self) -> None:
-        for sep in ("&&", "||", ";", "|", "&"):
+        # `||` 不在此列：右侧执行无法确立，整段响亮拒读（见下一个用例）。
+        for sep in ("&&", ";", "|", "&"):
             with self.subTest(分隔符=sep):
                 self.assertEqual(2, len(_commands(f"pip install a {sep} pip install b")))
 
@@ -928,6 +974,23 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
     def test_a_backtick_substitution_is_loud(self) -> None:
         with self.assertRaises(UnlexableShell):
             _commands("echo `pip --version`")
+
+    def test_a_short_circuit_right_side_is_refused(self) -> None:
+        """`true || pip install <窗口> <qlib>`：右侧从不运行、步骤照样绿。
+
+        把右侧当独立命令数=把从不运行的安装当真安装（codex P1）。不建模
+        控制流，执行无法确立即响亮；`&&` 不拒——前件失败步骤即红，链上每段
+        「要么运行、要么响亮」。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands('true || pip install "numpy>=1.24,<2.0"')
+        self.assertEqual(2, len(_commands("pip install a && pip install b")))
+
+    def test_a_variable_executable_is_refused(self) -> None:
+        # `INSTALLER=pip` 后的 `$INSTALLER install …` 真的执行 pip——展开值
+        # 在命令文本之外，静默 False 让安装从覆盖面消失（codex P2）。
+        with self.assertRaises(AmbiguousPipCommand):
+            _is_pip_install(_commands('$INSTALLER install ".[research]"')[0])
 
     def test_an_unbalanced_quote_is_loud(self) -> None:
         """读不下去要**响亮**。
@@ -1285,6 +1348,37 @@ class WorkflowEnvironmentCannotConfigurePip(unittest.TestCase):
                          _pip_env_key_offenders(keys),
                          "小写的 pip 键没被认出来")
         self.assertEqual([], _pip_env_key_offenders(["RUN_E2E", "REASON"]))
+
+
+class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
+    """跑 pytest 的 workflow 必须**自己**装 qlib——底数不许全局摊。
+
+    test.yml 的 qlib 安装被删时，regen-baseline 的那条让全局 `>= 1` 照样
+    过线，而六条测试腿在 `pytest.importorskip("qlib")` 下静默绿（codex P1）。
+    """
+
+    def test_each_pytest_workflow_carries_its_own_install(self) -> None:
+        pytest_workflows = 0
+        offenders = []
+        for workflow in _workflows():
+            commands = _workflow_commands(workflow)
+            if _runs_pytest(commands):
+                pytest_workflows += 1
+                if _pytest_without_qlib(commands):
+                    offenders.append(workflow.name)
+        self.assertEqual([], offenders, "这些 workflow 跑 pytest 却不装 qlib")
+        self.assertGreaterEqual(
+            pytest_workflows, 1, "一个跑 pytest 的 workflow 都没发现——覆盖面塌了")
+
+    def test_the_rule_itself_bites_on_synthetic_input(self) -> None:
+        # 两层作证：真实 workflow 干净，规则被删负断言测不出——直接单测。
+        qlib = ["pip", "install",
+                "git+https://github.com/microsoft/qlib.git@" + "a" * 40]
+        self.assertTrue(_pytest_without_qlib([["pytest", "tests/"]]))
+        self.assertTrue(_pytest_without_qlib(
+            [["python", "-m", "pytest"], ["pip", "install", "x<1"]]))
+        self.assertFalse(_pytest_without_qlib([["pytest"], qlib]))
+        self.assertFalse(_pytest_without_qlib([["echo", "no", "tests"]]))
 
 
 class TheQlibPinMustBeARealInstall(unittest.TestCase):

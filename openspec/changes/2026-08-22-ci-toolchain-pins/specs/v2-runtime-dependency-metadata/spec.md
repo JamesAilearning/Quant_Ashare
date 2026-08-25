@@ -266,6 +266,21 @@ that actually produces the anchor.
   qlib-pin presence check, which a dry-run carrying the pin and both windows
   would otherwise satisfy while qlib stays absent
 
+#### Scenario: a workflow that runs pytest installs qlib itself
+- **WHEN** the qlib install is removed from a workflow that invokes pytest,
+  while another workflow in the repository still carries one
+- **THEN** the governance test fails for THAT workflow — the floor is
+  per-workflow, because `pytest.importorskip("qlib")` turns a missing install
+  into silently green test legs
+
+#### Scenario: execution that cannot be established is refused
+- **WHEN** a run block chains with `||` (the right side runs only on failure)
+  or invokes a variable-expanded executable such as `$INSTALLER install …`
+- **THEN** the lexer or classifier refuses loudly instead of counting a
+  command whose execution the text cannot establish — control flow and
+  variable evaluation are not modelled, `&&` chains stay accepted because
+  every segment either runs or fails the step loudly
+
 #### Scenario: the qlib pin must sit on an actual install
 - **WHEN** the qlib URL appears only in a command that is not a pip install —
   an `echo` documenting it, for instance
