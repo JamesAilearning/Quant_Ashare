@@ -257,7 +257,11 @@ def _split_commands(script: str) -> list[str]:
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
-            if separator in ("|", "&&"):
+            if separator in ("|", "&&", "&"):
+                # 裸 `&` 把左侧**后台化**：失败不传播（codex 实测
+                # `bash -e -o pipefail -c 'false & …'` 返回 0），安装可能
+                # 还没跑完/已失败而 pytest 已经开跑。左侧与管道/AND 链同罪；
+                # 右侧是新列表、不受牵连。
                 # 两侧都打「纠缠」标记：`pip install <qlib> | tee log` 的退出
                 # 码是 tee 的（失败被吞）；`false && pip install <qlib>` 在
                 # bash -e 下**不会**让步骤退出——errexit 对 AND 链内的失败
@@ -266,7 +270,7 @@ def _split_commands(script: str) -> list[str]:
                 # 是**错的**，&&与 | 同罪：链内的 pip 安装执行/结果无法确立。
                 # 左侧此刻还在 buffer 里——标记要在 flush **之前**落上。
                 piped[0] = True
-                flush(next_piped=True)
+                flush(next_piped=(separator != "&"))
                 index += len(separator)
                 continue
             if separator == "||":
@@ -796,6 +800,20 @@ def _unprotected_pytest(entries: list[tuple[list[str], bool]]) -> bool:
     return False
 
 
+def _credited(command: list[str]) -> list[str]:
+    """可以拿来记账（presence/窗口/重述）的 token——排除裸选项的疑似值。
+
+    `pip install <qlib-pin> --report "numpy>=1.24,<2.0" …` 里那个 numpy 串是
+    `--report` 的**文件名**：按 token 成员资格给窗口记账，qlib 那次解析其实
+    没带约束（codex P1）。与 pin/目标同一原则：紧跟裸选项（非 -e/--editable）
+    的 token 不记账。
+    """
+    return [
+        token for index, token in enumerate(command)
+        if not _blocked_by_bare_option(command, index)
+    ]
+
+
 def _blocked_by_bare_option(command: list[str], index: int) -> bool:
     """这个 token 是否紧跟在一个**裸**选项之后——可能只是它的值。
 
@@ -1018,10 +1036,11 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         for sep in ("&&", ";", "|", "&"):
             with self.subTest(分隔符=sep):
                 self.assertEqual(2, len(_commands(f"echo a {sep} echo b")))
-        for sep in (";", "&"):
-            with self.subTest(分隔符=sep, 安装="独立"):
-                self.assertEqual(
-                    2, len(_commands(f"pip install a {sep} pip install b")))
+        # `&` 也不再进「独立安装」列——左侧被后台化，失败不传播
+        # （见 test_a_backgrounded_install_is_refused）。
+        with self.subTest(分隔符=";", 安装="独立"):
+            self.assertEqual(
+                2, len(_commands("pip install a ; pip install b")))
 
     def test_a_quoted_separator_is_not_a_separator(self) -> None:
         # 引号里的 `&&` 是实参的一部分，不是命令边界。
@@ -1779,6 +1798,46 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
             _commands(f'pip install {self.QLIB} "numpy>=1.24,<2.0"'))
         self.assertEqual(1, len(got))
 
+    def test_a_window_as_an_option_value_is_not_credited(self) -> None:
+        """`--report "numpy>=1.24,<2.0"` 的 numpy 串是文件名，不是约束。
+
+        按 token 成员资格记账，qlib 那次解析其实没带窗口而三道守卫全绿
+        （codex P1）。`_credited` 排除裸选项的疑似值；正常写法全数保留。
+        """
+        line = (f'pip install {self.QLIB} --report "numpy>=1.24,<2.0" '
+                f'"scipy>=1.10,<1.14"')
+        credited = _credited(_commands(line)[0])
+        self.assertNotIn("numpy>=1.24,<2.0", credited,
+                         "选项值里的窗口串被记了账")
+        self.assertIn("scipy>=1.10,<1.14", credited,
+                      "正常位置的窗口被误排除")
+        normal = _credited(_commands(
+            f'pip install "numpy>=1.24,<2.0" "scipy>=1.10,<1.14" {self.QLIB}')[0])
+        self.assertIn("numpy>=1.24,<2.0", normal)
+        # 接线钉：两处记账调用点必须真用 _credited——真实 workflow 的窗口
+        # 都在正常位置，接线退化在干净数据上测不出（变异 DH 实测）。
+        import inspect as _inspect
+        self.assertIn("_credited(tokens)", _inspect.getsource(
+            EveryRestatementOfAPinnedWindowMatches
+            .test_the_qlib_install_command_carries_both_windows),
+            "窗口检查没有走可记账 token")
+        self.assertIn("_credited(command)", _inspect.getsource(
+            EveryRestatementOfAPinnedWindowMatches
+            .test_every_workflow_restatement_is_byte_identical),
+            "重述扫描没有走可记账 token")
+
+    def test_a_backgrounded_install_is_refused(self) -> None:
+        """`pip install … & pytest`：安装被后台化，失败不传播。
+
+        codex 实测 `bash -e -o pipefail -c 'false & printf x'` 返回 0——
+        pytest 开跑时安装可能还没完成或已失败（P1）。左侧与管道/AND 链
+        同罪；右侧不受牵连，非安装的 & 照常拆分。
+        """
+        with self.assertRaises(UnlexableShell):
+            _commands("pip install x & pytest tests/")
+        self.assertEqual([["echo", "a"], ["pytest"]],
+                         _commands("echo a & pytest"))
+
     def test_a_pin_as_an_option_value_is_not_presence(self) -> None:
         """`pip install --trusted-host <qlib-pin> <窗口>` 装的是那两个窗口。
 
@@ -2077,7 +2136,7 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         checked = 0
         for workflow in _workflows():
             for command in _workflow_commands(workflow):
-                for token in command:
+                for token in _credited(command):
                     package = _restated_package(token, declared)
                     if package is None:
                         continue
@@ -2125,8 +2184,10 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         for name, tokens in commands:
             for package, constraint in declared.items():
                 with self.subTest(包=package, workflow=name):
+                    # 窗口只在**可记账** token 里找——裸选项的疑似值不算
+                    # （codex P1：--report 的文件名不是约束）。
                     self.assertIn(
-                        constraint, tokens,
+                        constraint, _credited(tokens),
                         f"{name} 里装 qlib 的那条命令没带上 {package} 窗口 —— "
                         f"无约束的首次解析会装出不兼容的环境")
 

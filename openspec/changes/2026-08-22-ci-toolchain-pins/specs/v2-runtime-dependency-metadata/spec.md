@@ -272,7 +272,15 @@ that actually produces the anchor.
   bash's `-e` does NOT exit on a failed inner command, so `false && pip
   install <qlib>` is skipped while the step stays green
 - **THEN** it is refused loudly, in the same execution-cannot-be-established
-  family as `||`; chains without installs keep splitting normally
+  family as `||`; chains without installs keep splitting normally — and a
+  BACKGROUNDED install (`pip install … & pytest`) is refused the same way,
+  because `&` detaches the install and its failure never propagates
+
+#### Scenario: a window that may be an option value earns no credit
+- **WHEN** a pinned window string immediately follows a bare option —
+  `--report "numpy>=1.24,<2.0"` names a report file, not a constraint
+- **THEN** neither the carries-both-windows check nor the restatement scan
+  credits it; only tokens not shadowed by a bare option count
 
 #### Scenario: a workflow that runs pytest installs qlib itself
 - **WHEN** the qlib install is removed from a JOB that invokes pytest, while
