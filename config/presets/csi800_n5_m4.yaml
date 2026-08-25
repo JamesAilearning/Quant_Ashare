@@ -1,0 +1,47 @@
+# CSI800 N5 季度维护成员 m4 —— 跑前钉死（2026-08-25，季度重训操作卡
+# docs/csi800-n5-production-runbook.md「季度重训操作卡（维护路径）」）。
+#
+# 与自举三成员同族（Alpha158/LGB/csi800/campaign 三守卫），除窗口与本
+# 头注外与 csi800_n5_bootstrap_m3.yaml 逐字相同。
+#
+# 本成员窗口（交易日历实算至 2026-08-25 日历尾；规则经 m1/m2/m3 三份
+# preset 逐一复核一致）:
+#   train 2024-07-01..2026-06-30（729 天，24 个月滚动窗；终点 = Q2 末
+#         交易日，距 m3 fit_end 2026-04-01 共 90 天 ∈ [75,100] 间距 pin）
+#   valid 2026-07-03..2026-09-30（89 天 ≈ 3 个月；起点 = 训窗终点后第 3
+#         个交易日（LABEL_LOOKAHEAD_DAYS=2 embargo 合规），终点 = 起点
+#         +3 个日历月回拉交易日——2026-10-03 落国庆，回拉 09-30）
+#   test  2026-10-12..2026-10-30（管线内嵌【日频诊断】回测，非晋升证据；
+#         ⚠ 预填值——点火日必须按冻结公式对当日日历复核后更新：
+#         test_start = valid_end 后第 3 个交易日，test_end = 点火日
+#         bundle 尾前最后一个可结算交易日（qlib 回测需 T+1 在册，m3 的
+#         v1 三元组正是钉在尾上而物理不可回测、经门拒后重锚——同一教训）
+#
+# manifest 算术自检（serving pins，src/inference/ensemble_serving.py）：
+# fit_end 间隔 90 天 ∈ [75,100]；训窗跨度 729 天 ∈ [700,745]。
+#
+# ⏰ 点火时机：valid 终点 2026-09-30 的数据入 bundle 之后（实务 = 国庆
+# 假期后，≈2026-10 上中旬）。在此之前点火 = valid 窗数据缺失，禁止。
+#
+# 点火（GPU，操作人执行；单发，绝不与其它重型 run 并发）:
+#     python main.py config/presets/csi800_n5_m4.yaml
+# 产物: 运行目录下 model.pkl + trainer sidecar(<model>.pkl.meta.json)。
+# inference meta(<model>.meta.json) 由轮换执行器按 ④ 先例写入，
+# 不在训练阶段产生。后续:五门(retrain_gate member/ensemble 双 scope)
+# → rotate_ensemble_member plan/execute,均按季度重训操作卡逐步走。
+extends: ../../config.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+# csi800 宇宙强制三守卫（v2-csi800-expansion-guards 配置级规则）
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+# 窗口显式钉死（不依赖 config.yaml 未来漂移）
+train_start: "2024-07-01"
+train_end: "2026-06-30"
+valid_start: "2026-07-03"
+valid_end: "2026-09-30"
+test_start: "2026-10-12"
+test_end: "2026-10-30"
+compute_device: "gpu"
