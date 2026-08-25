@@ -288,6 +288,12 @@ def _is_pip_install(command: list[str]) -> bool:
     #     PATH），值与子命令无从区分——多义即响亮，与本地目标那条同一处置。
     if any(token in ("-h", "--help") for token in rest):
         return False
+    # `--dry-run` 由 pip 自己定义为「Don't actually install anything」——
+    # 带着它的 `pip install <窗口> <qlib pin>` 能同时骗过「是安装」与「带齐
+    # 窗口」两道守卫，而 qlib 实际缺席，`importorskip` 让 CI 静默绿
+    # （codex P1）。子命令对了仍不等于装了。
+    if "--dry-run" in rest:
+        return False
     subcommand_at = next(
         (i for i, token in enumerate(rest) if not token.startswith("-")), None)
     if subcommand_at is None:
@@ -369,6 +375,47 @@ class AmbiguousPipCommand(ValueError):
     的、随版本变的集合，不是本守卫该维护的。所以**响亮**：用 `--opt=value`
     的连写形态消歧后，值不再是独立 token，歧义就地消失。
     """
+
+
+#: PEP 508 风格的 requirement 串外形：包名开头，后面跟可选 extras 与
+#: 版本约束。URL / 路径不匹配它——选项值多为这两类，天然被排除。
+_REQUIREMENT_SHAPE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^\]]+\])?([<>=~!;].*)?$")
+
+
+def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
+    """这条 pip install 命令的直接安装目标：（requirement 计数, 问题列表）。
+
+    `python -m pip install --upgrade pip` 直接装了一个不经 pyproject 的包——
+    pip 自己。它无上界时，一次 pip 新版就能改变/打断全部 CI 安装，而治理
+    照样绿，与「CI 装的每条依赖都有上界」的不变式矛盾（codex P1）。所以
+    直接目标同受上界约束；未钉 commit 的源码安装与无法归类的 token 一并
+    响亮（后者多半是接值裸选项的值——用 --opt=value 连写即消歧）。
+    """
+    try:
+        after = command[command.index("install") + 1:]
+    except ValueError:
+        return 0, []
+    seen = 0
+    problems: list[str] = []
+    for token in after:
+        if token.startswith("-"):
+            continue
+        if _LOCAL_TARGET.match(token):
+            continue                      # 本地项目：extras 机制管
+        if token.startswith(_QLIB_PIN):
+            continue                      # 固定 commit 的 qlib：pin 守卫管
+        if token.startswith("git+"):
+            problems.append(f"未钉 commit 的源码安装：{token}")
+            continue
+        if _REQUIREMENT_SHAPE.match(token):
+            seen += 1
+            if not _UPPER_BOUND.search(token):
+                problems.append(f"无上界：{token}")
+            continue
+        problems.append(
+            f"无法归类的安装目标：{token}（若是选项值请用 --opt=value 连写）")
+    return seen, problems
 
 
 def _qlib_pin_installs(commands: list[list[str]]) -> list[list[str]]:
@@ -783,6 +830,44 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
             _is_pip_install(_commands('pip --log=x.log install ".[dev]"')[0]))
 
 
+class EveryDirectWorkflowInstallTargetIsBounded(unittest.TestCase):
+    """workflow 直接装的包（不经 pyproject）同样每条都要有上界。
+
+    实证就在本仓：两条 `python -m pip install --upgrade pip` 无上界——pip
+    是解析安装一切的那个工具，一次新版就能改变全部 CI 安装的结果，而此前
+    的覆盖面只走 pyproject 三处 + extras，对它是盲的（codex P1）。
+    """
+
+    def test_every_direct_target_in_the_workflows_is_bounded(self) -> None:
+        seen = 0
+        problems: list[str] = []
+        for workflow in _workflows():
+            for command in _pip_installs(workflow):
+                count, bad = _direct_install_targets(command)
+                seen += count
+                problems.extend(f"{workflow.name}: {p}" for p in bad)
+        self.assertEqual([], problems)
+        # 底数：pip 引导 ×2 + numpy ×2 + scipy ×2。读少了=覆盖面塌了。
+        self.assertGreaterEqual(seen, 6, f"只读到 {seen} 个直接目标")
+
+    def test_an_unbounded_bootstrap_is_flagged(self) -> None:
+        count, problems = _direct_install_targets(
+            _commands("python -m pip install --upgrade pip")[0])
+        self.assertEqual(1, count)
+        self.assertTrue(problems and "pip" in problems[0], "无上界的 pip 没被点名")
+
+    def test_a_bounded_bootstrap_passes(self) -> None:
+        self.assertEqual(
+            (1, []),
+            _direct_install_targets(
+                _commands('python -m pip install --upgrade "pip>=24,<26"')[0]))
+
+    def test_an_unpinned_source_install_is_flagged(self) -> None:
+        _, problems = _direct_install_targets(
+            _commands("pip install git+https://github.com/x/y.git")[0])
+        self.assertTrue(problems, "未钉 commit 的源码安装没被点名")
+
+
 class TheQlibPinMustBeARealInstall(unittest.TestCase):
     """URL 出现在命令里 ≠ 安装了 qlib。
 
@@ -802,6 +887,18 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
         got = _qlib_pin_installs(
             _commands(f'pip install {self.QLIB} "numpy>=1.24,<2.0"'))
         self.assertEqual(1, len(got))
+
+    def test_a_dry_run_is_not_an_install(self) -> None:
+        """`--dry-run` 由 pip 定义为「Don't actually install anything」。
+
+        带着它的命令能同时满足「是安装」「带齐窗口」两道守卫而 qlib 缺席，
+        `importorskip` 让 CI 静默绿（codex P1）。
+        """
+        self.assertEqual(
+            [], _qlib_pin_installs(_commands(
+                f'pip install --dry-run {self.QLIB} "numpy>=1.24,<2.0"')))
+        self.assertFalse(
+            _is_pip_install(_commands('pip install --dry-run ".[dev]"')[0]))
 
     def test_a_control_keyword_does_not_hide_the_install(self) -> None:
         """`if pip install …; then` 的可执行体是 `pip`，不是 `if`。

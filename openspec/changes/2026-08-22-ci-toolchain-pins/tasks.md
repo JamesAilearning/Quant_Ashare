@@ -15,6 +15,22 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第十三轮：两个 P1 —— 覆盖面对 pip 自己是盲的、dry-run 不装东西
+
+**P1 pip 引导无上界。** 两条 workflow 都跑 `python -m pip install --upgrade
+pip`——pip 是解析安装一切的那个工具，一次新版能改变全部 CI 安装的结果，而
+覆盖面只走 pyproject 三处 + extras，对「workflow 直接装的包」是盲的，与
+不变式正面矛盾。修两处：workflow 引导钉窗（`pip>=24,<26`，与 setuptools
+同类的宽上界）；新守卫 `_direct_install_targets` 把直接目标全数纳管——
+requirement 形状的要上界、未钉 commit 的 git+ 点名、无法归类的（多半是接值
+裸选项的值）响亮并给出 --opt=value 药方。变异 AU 证明守卫真的盯着 workflow：
+把引导改回无上界当场红。
+
+**P1 `--dry-run` 不装东西。** pip 自己定义它「Don't actually install
+anything」——带着它的 `pip install <窗口> <qlib pin>` 能同时骗过「是安装」
+「带齐窗口」两道守卫，而 qlib 缺席、`importorskip` 让 CI 静默绿。子命令对了
+仍不等于装了；`--dry-run` 在场即不算安装。
+
 ## codex 第十二轮：一个 P1 + 一个 P2 —— URL 不是安装，实参不是子命令
 
 **P1 qlib pin 检查只认 URL。** 一条 `echo git+…qlib… "numpy…"` 也满足两条

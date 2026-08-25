@@ -187,6 +187,20 @@ that actually produces the anchor.
 - **THEN** a body containing `$(` or a backtick is refused loudly, while a
   plain-text body (variable expansion cannot run a command) is still skipped
 
+#### Scenario: a direct workflow install target is bounded like any other
+- **WHEN** a workflow installs a package directly, outside `pyproject.toml` —
+  the `pip` bootstrap upgrade itself being the standing example
+- **THEN** that requirement must carry an upper bound, an unpinned `git+`
+  source install is named, and an unclassifiable target (usually the value of
+  a bare option) is refused loudly with the `--opt=value` remedy
+
+#### Scenario: a dry run is not an install
+- **WHEN** a pip install carries `--dry-run` — defined by pip as not actually
+  installing anything
+- **THEN** it contributes nothing: neither to the derived coverage nor to the
+  qlib-pin presence check, which a dry-run carrying the pin and both windows
+  would otherwise satisfy while qlib stays absent
+
 #### Scenario: the qlib pin must sit on an actual install
 - **WHEN** the qlib URL appears only in a command that is not a pip install —
   an `echo` documenting it, for instance
