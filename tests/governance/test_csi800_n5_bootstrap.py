@@ -184,3 +184,59 @@ class BootstrapGateSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# 季度维护成员 m4（chore/csi800-n5-m4-preset，跑前钉死）。窗口按三成员
+# 既定算术实算：train 终点 = Q2 末、距 m3 90 天 ∈ [75,100]、跨度 729 天
+# ∈ [700,745]；valid = 训终后第 3 个交易日起 +3 个日历月回拉；test 为
+# 内嵌诊断段（非晋升证据），点火须待 bundle 尾 ≥ 2026-11-02。
+_M4_WINDOWS = (("2024-07-01", "2026-06-30"), ("2026-07-03", "2026-09-30"),
+               ("2026-10-13", "2026-10-30"))
+#: 六个窗口键之外，m4 必须与 m3 **逐字同族**——preset 的头注承诺如此，
+#: 治理在此作证（codex #466 P2：没有钉，之后一笔「顺手调参」静默失效
+#: 预注册）。
+_WINDOW_KEYS = ("train_start", "train_end", "valid_start", "valid_end",
+                "test_start", "test_end")
+
+
+class MaintenanceMemberM4Pins(unittest.TestCase):
+    @staticmethod
+    def _m4() -> dict:
+        path = _PRESETS / "csi800_n5_m4.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_windows_are_the_preregistered_ones(self) -> None:
+        cfg = self._m4()
+        (train, valid, test) = _M4_WINDOWS
+        self.assertEqual(train, (cfg["train_start"], cfg["train_end"]))
+        self.assertEqual(valid, (cfg["valid_start"], cfg["valid_end"]))
+        self.assertEqual(test, (cfg["test_start"], cfg["test_end"]))
+
+    def test_serving_pins_arithmetic(self) -> None:
+        cfg = self._m4()
+        m3 = _load("m3")
+        gap = (date.fromisoformat(cfg["train_end"])
+               - date.fromisoformat(m3["train_end"])).days
+        span = (date.fromisoformat(cfg["train_end"])
+                - date.fromisoformat(cfg["train_start"])).days
+        self.assertTrue(75 <= gap <= 100, f"与 m3 的 fit_end 间距 {gap} 出 pin")
+        self.assertTrue(700 <= span <= 745, f"训窗跨度 {span} 出 pin")
+
+    def test_family_parity_outside_the_window_keys(self) -> None:
+        cfg = self._m4()
+        m3 = _load("m3")
+        stripped_m4 = {k: v for k, v in cfg.items() if k not in _WINDOW_KEYS}
+        stripped_m3 = {k: v for k, v in m3.items() if k not in _WINDOW_KEYS}
+        self.assertEqual(stripped_m3, stripped_m4,
+                         "m4 在窗口键之外与 m3 不同族——预注册被静默改动")
+
+    def test_the_guard_trio_and_device_are_pinned_directly(self) -> None:
+        # parity 之外再直接钉一层：m3 若也被改，parity 会双双漂移而绿着。
+        cfg = self._m4()
+        self.assertTrue(cfg["attribution_sleeve_grouping"])
+        self.assertTrue(cfg["risk_constraints_enabled"])
+        self.assertEqual("campaign_v1", cfg["risk_constraints_calibration"])
+        self.assertEqual("gpu", cfg["compute_device"])
+        self.assertEqual("csi800", cfg["instruments"])
+        self.assertEqual("SH000906TR", cfg["benchmark_code"])
+
