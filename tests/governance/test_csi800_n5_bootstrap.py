@@ -230,14 +230,28 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
                          "头注的点火下限与 test_end 的 T+1 算术对不上")
 
     def test_serving_pins_arithmetic(self) -> None:
+        # 界值从 serving 契约本尊导入（codex P2：抄 75/100/700/745 字面会
+        # 在契约收紧时治理绿着而 load_ensemble_manifest 拒载——竞争快照）。
+        from src.inference.ensemble_serving import (
+            MEMBER_SPACING_DAYS_MAX,
+            MEMBER_SPACING_DAYS_MIN,
+            TRAIN_WINDOW_DAYS_MAX,
+            TRAIN_WINDOW_DAYS_MIN,
+        )
         cfg = self._m4()
         m3 = _load("m3")
         gap = (date.fromisoformat(cfg["train_end"])
                - date.fromisoformat(m3["train_end"])).days
         span = (date.fromisoformat(cfg["train_end"])
                 - date.fromisoformat(cfg["train_start"])).days
-        self.assertTrue(75 <= gap <= 100, f"与 m3 的 fit_end 间距 {gap} 出 pin")
-        self.assertTrue(700 <= span <= 745, f"训窗跨度 {span} 出 pin")
+        self.assertGreaterEqual(gap, MEMBER_SPACING_DAYS_MIN,
+                                f"与 m3 的 fit_end 间距 {gap} 出 pin")
+        self.assertLessEqual(gap, MEMBER_SPACING_DAYS_MAX,
+                             f"与 m3 的 fit_end 间距 {gap} 出 pin")
+        self.assertGreaterEqual(span, TRAIN_WINDOW_DAYS_MIN,
+                                f"训窗跨度 {span} 出 pin")
+        self.assertLessEqual(span, TRAIN_WINDOW_DAYS_MAX,
+                             f"训窗跨度 {span} 出 pin")
 
     def test_family_parity_outside_the_window_keys(self) -> None:
         cfg = self._m4()
