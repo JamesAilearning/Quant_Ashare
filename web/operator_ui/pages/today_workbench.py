@@ -16,6 +16,7 @@ from web.operator_ui.bundle_health import (
 )
 from web.operator_ui.components import render_stat_card
 from web.operator_ui.decision_journal import DecisionJournalError, read_journal
+from web.operator_ui.formatting import cn_today
 from web.operator_ui.incumbent import (
     anchored_to_repo,
     resolve_incumbent,
@@ -43,6 +44,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     bundle_calendar_tail,
     bundle_freshness,
     recommender_integrity_check,
+    retrain_window,
 )
 from web.operator_ui.pages._today_decision_queue_helpers import (
     TodayQueueItem,
@@ -53,6 +55,7 @@ from web.operator_ui.pages._today_decision_queue_helpers import (
 from web.operator_ui.pages._today_workbench_helpers import (
     DailySignalSummary,
     failed_update_summary,
+    model_age_rows,
     summarise_daily_signal,
     summarise_operations,
 )
@@ -388,7 +391,12 @@ with identity_col:
             "现任服务身份",
             f"ensemble · {len(incumbent.members)} 成员",
             "这是 serving manifest 的解析结果，不是认证或交易授权结论。",
-            secondary=[("manifest", Path(str(incumbent.manifest_path)).name)],
+            secondary=[
+                ("manifest", Path(str(incumbent.manifest_path)).name),
+                # P3：模型时效——数据照抄生产运维页⑤的同一推导函数，
+                # 本页零自造判定（措辞在 model_age_rows）。
+                *model_age_rows(retrain_window(incumbent, cn_today())),
+            ],
         )
     elif incumbent.kind == "single":
         incumbent_detail = "当前 serving manifest 显式声明单模型形态；仅供身份核对。"
@@ -397,6 +405,10 @@ with identity_col:
             "单模型形态",
             "这是 QUANT_ENSEMBLE_MANIFEST 显式设为 none 的 opt-out，不是缺省推断。",
             color="warning",
+            # 时效行在**每个**分支都渲染（codex P2：只接 ensemble 分支，
+            # known=False 的「无法推导+原因」永远到不了卡上，规格场景落
+            # 空）。unknown 的措辞由同一个 helper 如实给出。
+            secondary=model_age_rows(retrain_window(incumbent, cn_today())),
         )
     else:
         incumbent_detail = incumbent.error or "现任 manifest 无法解析；请勿据此判断信号来源。"
@@ -405,6 +417,7 @@ with identity_col:
             "无法确认",
             incumbent.error or "现任 manifest 无法解析；请勿据此判断信号来源。",
             color="negative",
+            secondary=model_age_rows(retrain_window(incumbent, cn_today())),
         )
 
 with signal_col:

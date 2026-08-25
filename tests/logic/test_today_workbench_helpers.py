@@ -9,6 +9,7 @@ from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._today_workbench_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
+    model_age_rows,
     summarise_daily_signal,
     summarise_operations,
 )
@@ -235,3 +236,69 @@ class OperationSummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
+    """身份卡的模型时效行——数据照抄生产运维页的 retrain_window，零自造。
+
+    P3 缺口（UI 序列③）：措辞层只翻译字段；known=False 如实说推导不了。
+    """
+
+    def test_a_known_window_yields_the_three_rows(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        window = RetrainWindow(
+            known=True, newest_fit_end="2026-04-01", days_since_newest=146,
+            opens_on="2026-06-15", closes_on="2026-07-10", state="closed",
+            days_closed=46, gap_if_fit_today=146, refused_if_fit_today=True)
+        rows = model_age_rows(window)
+        self.assertEqual("fit 至", rows[0][0])
+        self.assertEqual("2026-04-01", rows[0][1])
+        self.assertEqual(("模型年龄", "146 天"), rows[1])
+        self.assertIn("2026-06-15~2026-07-10", rows[2][1])
+        self.assertIn("已过", rows[2][1], "closed 态没有如实翻译")
+
+    def test_the_window_row_discloses_its_derived_identity_visibly(self) -> None:
+        # 披露契约（codex P1）：窗口走到哪，「推导 + 无机器可读到期锚」的
+        # 告白就要跟到哪——且必须在**可见文案**里（label/value），docstring
+        # 不渲染不算。数值 pin 也要在场，操作人才知道推导依据是什么。
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        window = RetrainWindow(
+            known=True, newest_fit_end="2026-04-01", days_since_newest=146,
+            opens_on="2026-06-15", closes_on="2026-07-10", state="closed",
+            days_closed=46, gap_if_fit_today=146, refused_if_fit_today=True)
+        label, value = model_age_rows(window)[2]
+        self.assertIn("推导", label, "窗口行 label 没自报推导身份")
+        self.assertIn(f"[{window.spacing_min},{window.spacing_max}]", value,
+                      "推导依据（spacing pin 数值）不在可见文案里")
+        self.assertIn("无机器可读", value, "缺「仓库无到期锚」的告白")
+
+    def test_an_unknown_window_is_stated_not_blank(self) -> None:
+        # 原因必须**原样**活到可见行里（codex P2：硬编码「非可解析
+        # ensemble」会错报 fit_end 非法这类同走 known=False 的失败）。
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        rows = model_age_rows(RetrainWindow(
+            known=False, error="现任最新 fit_end 不是合法 ISO 日期"))
+        self.assertEqual(1, len(rows))
+        self.assertIn("无法推导", rows[0][1])
+        self.assertIn("现任最新 fit_end 不是合法 ISO 日期", rows[0][1],
+                      "契约给的原因没活到可见文案")
+        self.assertNotIn("ensemble", rows[0][1], "又把一种失败硬编码成了全部")
+
+    def test_an_unknown_window_without_a_reason_says_so(self) -> None:
+        from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+        rows = model_age_rows(RetrainWindow(known=False, error=""))
+        self.assertIn("原因未记录", rows[0][1], "空原因得明说，不能留白")
+
+    def test_the_page_wires_the_cockpit_function_not_a_copy(self) -> None:
+        # 接线钉：页面必须消费 ops_cockpit 的同一个 retrain_window——
+        # 另写一份正是 #461 三决策全错的老路（干净数据上接线不可测，钉源码）。
+        source = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
+                  / "pages" / "today_workbench.py").read_text(encoding="utf-8")
+        self.assertIn("model_age_rows(retrain_window(incumbent, cn_today()))",
+                      source, "身份卡没有接生产运维页的同一推导")
+        self.assertGreaterEqual(
+            source.count(
+                "model_age_rows(retrain_window(incumbent, cn_today()))"),
+            3, "时效行没接到身份卡全部三个分支——unknown 的「无法推导+原因」"
+               "到不了卡上，规格场景落空（codex P2）")
+

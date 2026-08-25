@@ -17,6 +17,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
+from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
 from web.operator_ui.update_status import NO_REASON_MARK, UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
@@ -27,6 +28,8 @@ _ACTIVE_JOB_STATUSES = frozenset({"pending", "running"})
 _ATTENTION_JOB_STATUSES = frozenset({
     "failed", "partial", "stop_failed", "stopped", "cancelled",
 })
+
+
 
 def failed_update_summary(status: UpdateRunStatus) -> str:
     """失败运行的一行说明：退出码含义、死在哪个阶段、**为什么**。
@@ -222,3 +225,38 @@ __all__ = [
     "summarise_daily_signal",
     "summarise_operations",
 ]
+
+def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
+    """身份卡上的模型时效行——数据**照抄**生产运维页⑤的 `retrain_window`。
+
+    P3 缺口（UI 评估已批序列③）：工作台身份卡只报形态不报年龄，「模型多旧」
+    要跳页才知道。此处不自造任何判定：同一个推导函数、同一套字段，只做措辞
+    （生产运维页与本页共用一份实现的既定纪律——#461 首版另写一份三个决策
+    全错的教训在档）。`known=False` 时如实说推导不了，不留空。
+
+    窗口行必须在**可见文案**里自报「推导」身份（codex P1）：仓库没有机器
+    可读的「下次重训到期日」，这个窗口是从 serving 间距 pin 推导出来的——
+    驾驶舱④的披露契约（cockpit 模块头「labelled as DERIVED」）跟着窗口走
+    到每一处展示，docstring 不渲染、不算数。
+    """
+    if not getattr(window, "known", False):
+        # 原因照抄契约给的 error，不硬编码一种失败：known=False 不只有
+        # 「非可解析 ensemble」一种（最新 fit_end 非法同样走这里），错误
+        # 归因会把操作人引向错的修法（codex P2）。
+        reason = str(getattr(window, "error", "") or "").strip() or "原因未记录"
+        return [("模型时效", f"无法推导：{reason}")]
+    state_text = {
+        "before": "未开",
+        "open": "开放中",
+        "closed": "已过（fit_end 须落窗内；点火按操作卡排期）",
+    }.get(str(getattr(window, "state", "")), str(getattr(window, "state", "")))
+    return [
+        ("fit 至", str(window.newest_fit_end)),
+        ("模型年龄", f"{window.days_since_newest} 天"),
+        (
+            "下一成员 fit_end 窗（推导）",
+            f"{window.opens_on}~{window.closes_on}（{state_text}；由 serving "
+            f"间距 pin [{window.spacing_min},{window.spacing_max}] 天推导，"
+            "仓库无机器可读的重训到期锚）",
+        ),
+    ]
