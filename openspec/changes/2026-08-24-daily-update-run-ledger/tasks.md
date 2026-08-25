@@ -28,6 +28,17 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十八轮：两个 P2 —— FIFO 会挂死、fromisoformat 太宽容
+
+**FIFO 上的 O_WRONLY open 会阻塞等读者**——一次已完成的更新挂死在可观测性
+写入上、握着单飞锁不放，反向耦合契约被一个 open 反转。O_NONBLOCK（无读者的
+FIFO 直接 ENXIO 进吞噬通道）+ 已开描述符上 S_ISREG 验证（有读者时 open 会
+成功，靠它拒掉）。常规文件不受 O_NONBLOCK 影响。
+
+**`date.fromisoformat` 接受 `20260825`、`2026-W35-2`** 这类写入侧永不产的
+形态——工作台按 YYYY-MM-DD 切 `[5:]` 会渲染出 `825` 这种鬼标签。要求与
+`date.isoformat()` 产出**精确回环**。
+
 ## codex 第十七轮：一个 P2 —— 硬链接不经过 O_NOFOLLOW
 
 派生位被硬链到 canonical 输入或别的 provider 的台账时，两个名字指**同一个

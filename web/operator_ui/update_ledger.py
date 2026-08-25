@@ -169,7 +169,13 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
             os.path.normpath(stamped)):
         return False
     try:
-        date.fromisoformat(str(record["run_date"]))
+        # `date.fromisoformat` 还接受 `20260825`、`2026-W35-2` 这类写入侧
+        # 永不产的形态——而工作台按 `YYYY-MM-DD` 切 `[5:]`，会把它们渲染成
+        # `825` 这种鬼标签（codex P2）。要求与 `date.isoformat()` 的产出
+        # **精确回环**。
+        if date.fromisoformat(str(record["run_date"])).isoformat() != str(
+                record["run_date"]):
+            return False
         started = datetime.fromisoformat(str(record["started_at"]))
         finished = datetime.fromisoformat(str(record["finished_at"]))
     except ValueError:

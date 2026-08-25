@@ -62,6 +62,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -283,21 +284,31 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
                 tail.seek(-1, os.SEEK_END)
                 if tail.read(1) != b"\n":
                     line = b"\n" + line
+        # O_NONBLOCK：派生位被预建成 FIFO 时，O_WRONLY 打开会**阻塞等
+        # 读者**——一次已完成的更新挂死在这里、握着单飞锁不放，反向耦合
+        # 契约（可观测性绝不影响运行）被一个 open 反转（codex P2）。带
+        # O_NONBLOCK 后无读者的 FIFO 直接 ENXIO（进吞噬通道）；有读者时
+        # open 成功，下面的 S_ISREG 拒掉它。常规文件不受 O_NONBLOCK 影响。
         flags = (
             os.O_WRONLY | os.O_APPEND | os.O_CREAT
             | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
             | getattr(os, "O_BINARY", 0)
         )
         with os.fdopen(os.open(str(path), flags, 0o644), "ab") as handle:
-            # 硬链接不经过 O_NOFOLLOW（那只管符号链接）：派生位被硬链到
-            # canonical 输入或别的 provider 的台账时，写的就是**同一个
-            # inode**。对已打开的描述符 fstat——查的就是拿到的 inode，没有
-            # check-then-use 窗口；多于一个链接就拒写（codex P2）。
-            if os.fstat(handle.fileno()).st_nlink > 1:
+            # 对**已打开的描述符** fstat——查的就是拿到的 inode，没有
+            # check-then-use 窗口。两个判据（codex 两轮 P2）：
+            # * 必须是**常规文件**——FIFO/设备节点上的追加要么挂死要么写进
+            #   别的语义；
+            # * 硬链接数不得超过 1——O_NOFOLLOW 只管符号链接，硬链接两个
+            #   名字指同一个 inode，追加会改写链接另一头的内容。
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
                 _logger.error(
-                    "run-ledger target %s is HARD-LINKED elsewhere "
-                    "(st_nlink>1) — refusing to append into a shared inode; "
-                    "the run's exit code is unaffected.", path,
+                    "run-ledger target %s is not a plain single-link regular "
+                    "file (mode=%o, nlink=%d) — refusing to append; the "
+                    "run's exit code is unaffected.",
+                    path, info.st_mode, info.st_nlink,
                 )
                 return
             handle.write(line)

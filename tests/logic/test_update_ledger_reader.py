@@ -344,6 +344,10 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
             path = ledger_path_for_provider(provider)
             cases = [
                 {"run_date": "foobar"},
+                # fromisoformat 还接受这些写入侧永不产的形态——工作台按
+                # YYYY-MM-DD 切 [5:] 会渲染成 `825` 这种鬼标签（codex P2）。
+                {"run_date": "20260825"},
+                {"run_date": "2026-W35-2"},
                 {"started_at": "not-a-time"},
                 {"finished_at": "still-not-a-time"},
                 # 无时区（naive）的时间戳不是写入侧的产出。

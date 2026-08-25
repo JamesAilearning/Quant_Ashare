@@ -258,7 +258,8 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         self.assertIn("is_symlink", called,
                       "_append_ledger 不再检查符号链接 —— 拒随防线没了")
         body_src = ast.unparse(fn)
-        for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT", "st_nlink"):
+        for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT", "O_NONBLOCK",
+                        "st_nlink", "S_ISREG"):
             with self.subTest(承重位=bearing):
                 self.assertIn(
                     bearing, body_src,

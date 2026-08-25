@@ -53,6 +53,14 @@ the derived value.
   primary line on Windows where symlink creation is privileged; the run's exit
   code is unaffected either way
 
+#### Scenario: a non-regular target cannot hang or hijack the append
+- **WHEN** the derived ledger path has been pre-created as a FIFO or another
+  non-regular node — an `O_WRONLY` open on a readerless FIFO blocks forever,
+  holding the single-flight lock
+- **THEN** the open carries `O_NONBLOCK` (a readerless FIFO fails immediately
+  into the swallow-and-log channel) and the opened descriptor is verified
+  `S_ISREG` before any byte is written
+
 #### Scenario: a hard-linked target is refused on the opened descriptor
 - **WHEN** the derived ledger path is hard-linked to a canonical input or to
   another provider's ledger — the same inode under two names, invisible to
