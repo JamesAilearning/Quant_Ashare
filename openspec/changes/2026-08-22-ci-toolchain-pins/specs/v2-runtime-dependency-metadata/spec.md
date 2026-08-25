@@ -176,9 +176,23 @@ that actually produces the anchor.
 - **THEN** the extras it names still enter the derived coverage
 
 #### Scenario: a here-document body is data, not commands
-- **WHEN** a step feeds a script to an interpreter via `<<`
+- **WHEN** a step feeds a script to an interpreter via `<<` with a QUOTED
+  delimiter
 - **THEN** the body is not read as shell, and the real commands in that step
   remain covered
+
+#### Scenario: an unquoted here-document body stays honest
+- **WHEN** the delimiter is unquoted — the shell performs command substitution
+  inside the body
+- **THEN** a body containing `$(` or a backtick is refused loudly, while a
+  plain-text body (variable expansion cannot run a command) is still skipped
+
+#### Scenario: an option value shaped like a target is ambiguous, loudly
+- **WHEN** a pip install carries both an option value and an install target
+  that match the local-target shape, as in `--find-links . ".[research]"`
+- **THEN** the guard refuses loudly and demands the `--opt=value` spelling,
+  because telling them apart needs pip's own option table — a set this guard
+  does not own
 
 #### Scenario: unreadable shell is refused, not skipped
 - **WHEN** a `run` block cannot be lexed — an unclosed quote, an unterminated

@@ -56,7 +56,7 @@ def _split_commands(script: str) -> list[str]:
     """
     segments: list[str] = []
     buffer: list[str] = []
-    pending_heredocs: list[str] = []
+    pending_heredocs: list[tuple[str, bool]] = []
     index = 0
     size = len(script)
 
@@ -67,15 +67,26 @@ def _split_commands(script: str) -> list[str]:
         buffer.clear()
 
     def skip_heredoc_bodies(start: int) -> int:
-        """从行尾出发，吞掉挂起的 here-document 正文。"""
+        """从行尾出发，吞掉挂起的 here-document 正文。
+
+        定界词**没加引号**时正文是活性的：POSIX 会在正文里做命令替换，
+        `cat <<EOF` 的正文里一句 `$(pip install …)` 是真的会执行的安装——
+        无条件丢弃正文就把它静默吞了（codex P2）。加了引号（`<<'EOF'`）的
+        正文是字面量，照旧跳过；未加引号的正文若含 `$(`/反引号，与其他
+        活性内容同一处置：响亮拒读。`$VAR` 这类变量展开执行不了命令，不拦。
+        """
         position = start
-        for delimiter in pending_heredocs:
+        for delimiter, quoted in pending_heredocs:
             while True:
                 end = script.find("\n", position)
                 line = script[position:end if end != -1 else size]
                 if line.strip() == delimiter:
                     position = size if end == -1 else end + 1
                     break
+                if not quoted and ("$(" in line or "`" in line):
+                    raise UnlexableShell(
+                        "未加引号的 here-document 正文里有命令替换——正文是"
+                        "活性的，本词法器不建模；请给定界词加引号或拆出来")
                 if end == -1:
                     raise UnlexableShell(f"here-document {delimiter!r} 没有收尾")
                 position = end + 1
@@ -145,7 +156,10 @@ def _split_commands(script: str) -> list[str]:
                 cursor += 1
             if not word:
                 raise UnlexableShell("here-document 没有定界词")
-            pending_heredocs.append(word.strip("'\""))
+            # 定界词带任意引号字符即视为 quoted —— POSIX 允许部分引号
+            # （`E'O'F`），只要有引号，正文就是字面量。
+            pending_heredocs.append(
+                (word.strip("'\""), any(q in word for q in "'\"")))
             index = cursor
             continue
         if char == "\n":
@@ -182,7 +196,8 @@ def _split_commands(script: str) -> list[str]:
 
     flush()
     if pending_heredocs:
-        raise UnlexableShell(f"here-document {pending_heredocs[0]!r} 没有收尾")
+        raise UnlexableShell(
+            f"here-document {pending_heredocs[0][0]!r} 没有收尾")
     return segments
 
 
@@ -319,13 +334,27 @@ def _restated_package(token: str, declared: dict[str, str]) -> str | None:
     return None
 
 
+class AmbiguousPipCommand(ValueError):
+    """一条 pip 命令里有不止一个长得像本地目标的 token。
+
+    pip 的部分选项接**路径值**（`--find-links .`），于是
+    `pip install --find-links . ".[research]"` 里 `.` 与 `.[research]` 都
+    匹配目标形状——取第一个会把选项值当目标、把真目标（连同它点名的
+    extras）静默丢掉（codex P2）。分辨二者需要 pip 的选项表——那是 pip
+    的、随版本变的集合，不是本守卫该维护的。所以**响亮**：用 `--opt=value`
+    的连写形态消歧后，值不再是独立 token，歧义就地消失。
+    """
+
+
 def _local_target(command: list[str]) -> re.Match[str] | None:
     """这条 pip install 命令装的是不是**本地项目**；是则返回目标的匹配。"""
-    for token in command:
-        matched = _LOCAL_TARGET.match(token)
-        if matched:
-            return matched
-    return None
+    matches = [m for token in command if (m := _LOCAL_TARGET.match(token))]
+    if len(matches) > 1:
+        raise AmbiguousPipCommand(
+            f"命令里有 {len(matches)} 个本地目标形状的 token"
+            f"（{[m.group(0) for m in matches]}）——选项值与安装目标无法"
+            f"区分；请把带路径值的选项写成 --opt=value 连写形态")
+    return matches[0] if matches else None
 
 # 上界的形式：`<` / `<=` / `==`（精确钉）/ `~=`（兼容版本，蕴含上界）。
 #
@@ -515,6 +544,27 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
             ["pip", "install", "git+https://x/y.git#egg=z"],
             _commands("pip install git+https://x/y.git#egg=z")[0])
 
+    def test_an_unquoted_heredoc_body_with_substitution_is_loud(self) -> None:
+        """未加引号的定界词让正文保持活性：`$(pip install …)` 真的会执行。
+
+        无条件丢弃正文，这条安装既不进覆盖面也不响亮（codex P2）。纯文本的
+        未引号正文照旧跳过（`$VAR` 执行不了命令），加引号的正文是字面量。
+        """
+        active = "\n".join([
+            "cat <<EOF",
+            "$(pip install '.[research]')",
+            "EOF",
+        ])
+        with self.assertRaises(UnlexableShell):
+            _commands(active)
+        # 纯文本正文：跳过，不误伤。
+        benign = "\n".join(["cat <<EOF", "plain $VAR text", "EOF", "echo ok"])
+        self.assertEqual([["cat"], ["echo", "ok"]], _commands(benign))
+        # 加了引号的定界词：正文是字面量，$( 也只是文本。
+        literal = "\n".join(
+            ["cat <<'EOF'", "$(pip install '.[research]')", "EOF"])
+        self.assertEqual([["cat"]], _commands(literal))
+
     def test_a_heredoc_body_is_data_not_commands(self) -> None:
         """here-document 的正文是**数据**，不是命令。
 
@@ -598,6 +648,23 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
                 self.assertIsNotNone(matched, "这种写法没被认出来")
                 assert matched is not None
                 self.assertEqual("dev,ui", matched.group("extras"))
+
+    def test_an_option_value_dot_makes_the_target_ambiguous_loudly(
+            self) -> None:
+        """`pip install --find-links . ".[research]"` 是合法命令。
+
+        取第一个目标形状的 token 会把选项值 `.` 当目标，research 连同它的
+        extras 静默脱离覆盖面（codex P2）。选项表是 pip 的、随版本变——不
+        维护它，**响亮**：要求 `--opt=value` 连写形态消歧。
+        """
+        with self.assertRaises(AmbiguousPipCommand):
+            _local_target(
+                _commands('pip install --find-links . ".[research]"')[0])
+        # 连写形态：值不再是独立 token，目标唯一、extras 完整。
+        matched = _local_target(
+            _commands('pip install --find-links=. ".[research]"')[0])
+        assert matched is not None
+        self.assertEqual("research", matched.group("extras"))
 
     def test_a_bare_dot_is_a_local_install_without_extras(self) -> None:
         matched = _local_target(_commands("pip install -e .")[0])
