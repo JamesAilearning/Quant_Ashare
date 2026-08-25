@@ -243,6 +243,7 @@ elif _status.kind == "running":
             "window_truncated": "日志长于读取窗口,窗口外可能还有别的运行边界",
             "foreign_boundary": "窗口里有别的 provider 的运行边界,行可能交错",
             "no_boundary": "读到的日志窗口里没有运行边界",
+            "corrupt_boundary": "窗口里的运行边界戳读不出来(日志可能损坏)",
         }.get(_attributed.unattributed_reason, "归属条件未满足")
         st.caption(
             f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"

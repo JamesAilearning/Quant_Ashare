@@ -242,7 +242,8 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
             and node.func.attr == "fdopen"
             and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
         }
-        self.assertEqual({"ab"}, fdopen_modes, "追加句柄没了")
+        self.assertEqual({"ab", "rb"}, fdopen_modes,
+                         "追加/探针句柄形态变了")
         self.assertLessEqual(
             path_open_modes, {"rb"},
             f"出现了只读之外的 Path.open：{path_open_modes} —— "
@@ -258,6 +259,14 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         self.assertIn("is_symlink", called,
                       "_append_ledger 不再检查符号链接 —— 拒随防线没了")
         body_src = ast.unparse(fn)
+        # 探针与追加**各自**要非阻塞/拒随——只钉一处，另一处丢了照样挂死
+        # （codex P2：残尾探针先于追加阻塞在 FIFO 上）。
+        self.assertGreaterEqual(
+            body_src.count("O_NONBLOCK"), 2,
+            "残尾探针或追加的 O_NONBLOCK 丢了——FIFO 挂死防线缺角")
+        self.assertGreaterEqual(
+            body_src.count("S_ISREG"), 2,
+            "残尾探针或追加的 S_ISREG 验证丢了")
         for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT", "O_NONBLOCK",
                         "st_nlink", "S_ISREG"):
             with self.subTest(承重位=bearing):

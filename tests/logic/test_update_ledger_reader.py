@@ -761,6 +761,29 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertIn('"started_at": started_at.isoformat()', source)
         self.assertIn("run_boundary_line(started_at", source)
 
+    def test_a_corrupt_boundary_stamp_defeats_attribution(self) -> None:
+        r"""`\S+` 会把乱码当「起跑时刻」——随后以确定口气宣布归属。
+
+        戳验不过的边界 = 日志损坏，归属整体不可断（codex P2）；与台账坏行
+        同一处置。缺时区的戳同拒（写入侧永远带时区）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            line = f"20:31:00{_PROGRESS_LINE}"
+            for stamp in ("ץȡ�", "2026-08-24T20:30:00"):
+                with self.subTest(stamp=stamp):
+                    text = chr(10).join([
+                        f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} {stamp} "
+                        f"provider={writer._norm(provider)}",
+                        line,
+                    ])
+                    got = last_fetch_progress_for_run(
+                        text, provider_dir=provider, window_complete=True)
+                    self.assertFalse(got.attributed, "坏戳的边界被当真了")
+                    self.assertEqual("corrupt_boundary",
+                                     got.unattributed_reason)
+
     def test_the_page_speaks_all_three_reasons(self) -> None:
         # 页面的未归属分支必须按原因措辞——只要有一个键没接上，那种情形就
         # 退回笼统话术，操作人拿到的又是错误解释。
@@ -768,7 +791,8 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
                   ).read_text(encoding="utf-8")
         self.assertIn("unattributed_reason", source,
                       "页面没有消费 unattributed_reason")
-        for key in ("window_truncated", "foreign_boundary", "no_boundary"):
+        for key in ("window_truncated", "foreign_boundary", "no_boundary",
+                    "corrupt_boundary"):
             with self.subTest(reason=key):
                 self.assertIn(key, source, f"页面没有为 {key} 给出对应措辞")
 

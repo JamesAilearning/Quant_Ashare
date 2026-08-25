@@ -279,11 +279,33 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
             return
         line = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8") + b"\n"
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_file() and path.stat().st_size > 0:
-            with path.open("rb") as tail:
-                tail.seek(-1, os.SEEK_END)
-                if tail.read(1) != b"\n":
-                    line = b"\n" + line
+        # 残尾探针与追加**同一套**打开纪律：is_file()/stat() 之后路径可被换
+        # 成无读者的 FIFO，紧接着的 open("rb") 会先于追加那次非阻塞 open
+        # **阻塞等写者**——挂死照样发生，只是提前了一行（codex P2）。
+        probe_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        try:
+            probe_fd = os.open(str(path), probe_flags)
+        except FileNotFoundError:
+            probe_fd = -1
+        if probe_fd >= 0:
+            with os.fdopen(probe_fd, "rb") as tail:
+                info = os.fstat(tail.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    _logger.error(
+                        "run-ledger target %s is not a regular file "
+                        "(mode=%o) — refusing to append; the run's exit "
+                        "code is unaffected.", path, info.st_mode,
+                    )
+                    return
+                if info.st_size > 0:
+                    tail.seek(-1, os.SEEK_END)
+                    if tail.read(1) != b"\n":
+                        line = b"\n" + line
         # O_NONBLOCK：派生位被预建成 FIFO 时，O_WRONLY 打开会**阻塞等
         # 读者**——一次已完成的更新挂死在这里、握着单飞锁不放，反向耦合
         # 契约（可观测性绝不影响运行）被一个 open 反转（codex P2）。带

@@ -53,6 +53,21 @@ the derived value.
   primary line on Windows where symlink creation is privileged; the run's exit
   code is unaffected either way
 
+#### Scenario: the tail probe obeys the same open discipline as the append
+- **WHEN** the target is replaced with a readerless FIFO after the existence
+  check but before the torn-tail probe — which used to open blocking, ahead of
+  the nonblocking append
+- **THEN** the probe itself opens nonblocking/no-follow and verifies `S_ISREG`
+  on its descriptor before reading, so the hang cannot simply move one line
+  earlier
+
+#### Scenario: a corrupt boundary stamp defeats attribution
+- **WHEN** a boundary line's timestamp is garbage — corruption or legacy
+  decoding — while its provider field still matches
+- **THEN** attribution is reported unknown with the corrupt-boundary reason,
+  never asserted from a stamp the writer could not have produced (the writer
+  emits only timezone-aware ISO stamps)
+
 #### Scenario: a non-regular target cannot hang or hijack the append
 - **WHEN** the derived ledger path has been pre-created as a FIFO or another
   non-regular node — an `O_WRONLY` open on a readerless FIFO blocks forever,

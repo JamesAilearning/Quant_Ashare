@@ -28,6 +28,19 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十九轮：两个 P2 —— 探针也要非阻塞、边界戳要验形
+
+**残尾探针先于追加阻塞。** 上一轮把追加改成了非阻塞，而它**前面**的残尾
+探针还是 `is_file()/stat()` 后的阻塞 `open("rb")`——FIFO 挂死只是提前了
+一行。探针改同一套纪律：os.open(O_RDONLY|O_NONBLOCK|O_NOFOLLOW) + 描述符
+S_ISREG 验证。守卫钉「O_NONBLOCK/S_ISREG 各出现 ≥2 次」——只钉一处，另一处
+丢了照样挂死。
+
+**边界戳 `\S+` 太宽。** 坏字节/遗留编码洗出的乱码被当「起跑时刻」，
+run_center 的不一致分支以确定口气宣布归属。戳验形（fromisoformat + 带时区）
+验不过 = corrupt_boundary 第四态，与台账坏行同一处置；页面第四句措辞 + 键
+守卫扩四。
+
 ## codex 第十八轮：两个 P2 —— FIFO 会挂死、fromisoformat 太宽容
 
 **FIFO 上的 O_WRONLY open 会阻塞等读者**——一次已完成的更新挂死在可观测性

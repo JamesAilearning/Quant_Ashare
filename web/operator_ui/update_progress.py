@@ -53,6 +53,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 #: 与 ``fetcher`` 的格式串一一对应:
@@ -163,7 +164,9 @@ class AttributedProgress:
     #: 不同,页面必须说真原因,不能一律说「窗口里没有边界」(codex P2):
     #: ``window_truncated``(窗口没盖住整份日志,窗外可能还有边界)/
     #: ``foreign_boundary``(窗口里有别的 provider 的边界,行有交错可能)/
-    #: ``no_boundary``(完整窗口里确实一条边界都没有)。归属确定时为空串。
+    #: ``no_boundary``(完整窗口里确实一条边界都没有)/
+    #: ``corrupt_boundary``(有边界但戳验不过——日志损坏,不硬解释)。
+    #: 归属确定时为空串。
     unattributed_reason: str = ""
 
 
@@ -195,6 +198,17 @@ def _current_segment(
     boundaries = list(_BOUNDARY_RE.finditer(log_text))
     if not boundaries:
         return None, "no_boundary"
+    for match in boundaries:
+        # 边界戳必须是写入侧的形态：带时区的 ISO 时间戳。正则的 `\S+` 会把
+        # 坏字节/遗留编码洗出来的乱码当成「起跑时刻」，run_center 的不一致
+        # 分支随即以确定口气宣布进度属于那次「运行」（codex P2）。戳验不过
+        # 的边界 = 日志损坏，归属整体不可断——与台账坏行同一处置。
+        try:
+            stamp = datetime.fromisoformat(match.group("started"))
+        except ValueError:
+            return None, "corrupt_boundary"
+        if stamp.tzinfo is None:
+            return None, "corrupt_boundary"
     if any(
         os.path.normcase(match.group("provider").strip()) != provider_key
         for match in boundaries
