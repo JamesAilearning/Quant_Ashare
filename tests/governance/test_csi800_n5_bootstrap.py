@@ -190,6 +190,15 @@ class BootstrapGateSemantics(unittest.TestCase):
 # 内嵌诊断段（非晋升证据），点火须待 bundle 尾 ≥ 2026-11-02。
 _M4_WINDOWS = (("2024-07-01", "2026-06-30"), ("2026-07-03", "2026-09-30"),
                ("2026-10-12", "2026-10-30"))
+#: m4 两个段边界附近的 2026 交易日（合成日历，仅覆盖 embargo 判定所需的
+#: 「严格介于」区间；出处 = 上交所 2025-12-22 休市安排：国庆 10-01..10-07
+#: 休市、10-08 起照常开市，10-10(周六) 周末休市；6 月末-7 月初无假日）。
+_M4_BOUNDARY_SESSIONS = (
+    "2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02", "2026-07-03",
+    "2026-07-06",
+    "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-08", "2026-10-09",
+    "2026-10-12", "2026-10-13",
+)
 #: 六个窗口键之外，m4 必须与 m3 **逐字同族**——preset 的头注承诺如此，
 #: 治理在此作证（codex #466 P2：没有钉，之后一笔「顺手调参」静默失效
 #: 预注册）。
@@ -228,6 +237,38 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
             settlement += timedelta(days=1)
         self.assertEqual(date(2026, 11, 2), settlement,
                          "头注的点火下限与 test_end 的 T+1 算术对不上")
+
+    def test_embargo_gaps_clear_the_canonical_validator(self) -> None:
+        """embargo 直接驱动运行时同一校验器（codex P2：weekday≠交易日）。
+
+        周内日自检管不住假日：两个边界改到只隔一个真实交易日的周内日，
+        weekday 检查照绿而 FeatureDatasetBuilder 的 validate_segment_embargo
+        点火即拒。所以这里拿官方休市安排合成的边界日历，喂**运行时那同一个
+        校验器**（钉调用同一函数的既定纪律），train→valid 与 valid→test 两
+        个边界都要过；再用负对照证明校验器在咬——空/错日历的绿不算数。
+        """
+        from src.data._segment_embargo import validate_segment_embargo
+        cfg = self._m4()
+        calendar = [date.fromisoformat(d) for d in _M4_BOUNDARY_SESSIONS]
+        errors = validate_segment_embargo(
+            train_end=date.fromisoformat(cfg["train_end"]),
+            valid_start=date.fromisoformat(cfg["valid_start"]),
+            valid_end=date.fromisoformat(cfg["valid_end"]),
+            test_start=date.fromisoformat(cfg["test_start"]),
+            calendar=calendar,
+        )
+        self.assertEqual([], errors, "m4 边界过不了运行时 embargo 校验器")
+        # 负对照：test_start 提前到假期后次日（10-09），严格介于 09-30 与
+        # 它之间只剩 10-08 一个交易日——同一校验器必须报错，否则上面的绿
+        # 只是校验器没在咬。
+        bitten = validate_segment_embargo(
+            train_end=date.fromisoformat(cfg["train_end"]),
+            valid_start=date.fromisoformat(cfg["valid_start"]),
+            valid_end=date.fromisoformat(cfg["valid_end"]),
+            test_start=date(2026, 10, 9),
+            calendar=calendar,
+        )
+        self.assertTrue(bitten, "校验器没咬负对照——本用例的绿没有意义")
 
     def test_serving_pins_arithmetic(self) -> None:
         # 界值从 serving 契约本尊导入（codex P2：抄 75/100/700/745 字面会
