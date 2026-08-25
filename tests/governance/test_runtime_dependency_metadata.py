@@ -66,6 +66,44 @@ def _split_commands(script: str) -> list[str]:
             segments.append(segment)
         buffer.clear()
 
+    def _heredoc_delimiter(word: str) -> tuple[str, bool]:
+        """对定界词做 POSIX 引号移除：返回（生效定界词, 是否有引号）。
+
+        `word.strip("'\"")` 只剥两端：部分引号的 `E'O'F` 剩下 `E'O'F`，真正
+        的收尾行 `EOF` 永远配不上、workflow 被误判未收尾；反斜杠形态（`<<` 后接单个反斜杠的定界词）
+        也是引号（正文因此是字面量），只认引号字符会把它当活性正文误拒
+        （codex 两条 P2）。构件与词法器主循环同一套：单引号、双引号、反斜杠。
+        """
+        effective: list[str] = []
+        quoted = False
+        i = 0
+        while i < len(word):
+            ch = word[i]
+            if ch == "'":
+                end = word.find("'", i + 1)
+                if end == -1:
+                    raise UnlexableShell("heredoc 定界词的单引号没有闭合")
+                effective.append(word[i + 1:end])
+                quoted = True
+                i = end + 1
+            elif ch == '"':
+                end = word.find('"', i + 1)
+                if end == -1:
+                    raise UnlexableShell("heredoc 定界词的双引号没有闭合")
+                effective.append(word[i + 1:end])
+                quoted = True
+                i = end + 1
+            elif ch == "\\":
+                if i + 1 >= len(word):
+                    raise UnlexableShell("heredoc 定界词以孤立反斜杠结尾")
+                effective.append(word[i + 1])
+                quoted = True
+                i += 2
+            else:
+                effective.append(ch)
+                i += 1
+        return "".join(effective), quoted
+
     def skip_heredoc_bodies(start: int) -> int:
         """从行尾出发，吞掉挂起的 here-document 正文。
 
@@ -76,11 +114,16 @@ def _split_commands(script: str) -> list[str]:
         活性内容同一处置：响亮拒读。`$VAR` 这类变量展开执行不了命令，不拦。
         """
         position = start
-        for delimiter, quoted in pending_heredocs:
+        for delimiter, quoted, dashed in pending_heredocs:
             while True:
                 end = script.find("\n", position)
                 line = script[position:end if end != -1 else size]
-                if line.strip() == delimiter:
+                # 终止行**精确**等于定界词——`  EOF` 在 shell 眼里是正文，
+                # `strip()` 把它当收尾会让其后的真正文被读成命令（codex P2）。
+                # 唯一的例外由语法自己给出：`<<-` 允许剥前导 **tab**（只有
+                # tab，不含空格）。
+                terminator = line.lstrip("\t") if dashed else line
+                if terminator == delimiter:
                     position = size if end == -1 else end + 1
                     break
                 if not quoted and ("$(" in line or "`" in line):
@@ -146,7 +189,8 @@ def _split_commands(script: str) -> list[str]:
             continue
         if script.startswith("<<", index):
             cursor = index + 2
-            if script[cursor:cursor + 1] == "-":
+            dashed = script[cursor:cursor + 1] == "-"
+            if dashed:
                 cursor += 1
             while script[cursor:cursor + 1] in (" ", "\t"):
                 cursor += 1
@@ -156,10 +200,7 @@ def _split_commands(script: str) -> list[str]:
                 cursor += 1
             if not word:
                 raise UnlexableShell("here-document 没有定界词")
-            # 定界词带任意引号字符即视为 quoted —— POSIX 允许部分引号
-            # （`E'O'F`），只要有引号，正文就是字面量。
-            pending_heredocs.append(
-                (word.strip("'\""), any(q in word for q in "'\"")))
+            pending_heredocs.append(_heredoc_delimiter(word) + (dashed,))
             index = cursor
             continue
         if char == "\n":
@@ -357,10 +398,17 @@ def _restated_package(token: str, declared: dict[str, str]) -> str | None:
     """
     for package in declared:
         rest = token[len(package):]
-        if (
-            _canonical_name(token[:len(package)]) == _canonical_name(package)
-            and rest[:1] in ("<", ">", "=", "~", "!")
-        ):
+        if _canonical_name(token[:len(package)]) != _canonical_name(package):
+            continue
+        # `numpy[feature]>=…` 也是 numpy 窗口的重述——PEP 508 允许 extras 段
+        # 紧跟包名。名字后是 `[` 时跳过整段 extras 再看版本运算符，否则带着
+        # 分叉窗口的重述整条躲过逐字一致检查（codex P2）。
+        if rest.startswith("["):
+            close = rest.find("]")
+            if close == -1:
+                continue
+            rest = rest[close + 1:]
+        if rest[:1] in ("<", ">", "=", "~", "!"):
             return package
     return None
 
@@ -651,6 +699,55 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         literal = "\n".join(
             ["cat <<'EOF'", "$(pip install '.[research]')", "EOF"])
         self.assertEqual([["cat"]], _commands(literal))
+
+    def test_an_indented_delimiter_line_is_body_not_terminator(self) -> None:
+        """`  EOF`（带前导空格）在 shell 眼里是**正文**，不是收尾。
+
+        `strip()` 把它当收尾，其后的 `pip install -e '.[research]'` 就被读成
+        命令——发明覆盖面或误报红（codex P2）。终止行精确匹配；`<<-` 形态
+        只剥前导 **tab**。
+        """
+        script = "\n".join([
+            "cat <<'EOF'",
+            "  EOF",
+            "pip install -e '.[research]'",
+            "EOF",
+            "echo ok",
+        ])
+        got = _commands(script)
+        self.assertEqual([["cat"], ["echo", "ok"]], got,
+                         "缩进的假收尾把正文放了出来")
+
+    def test_a_dashed_heredoc_strips_leading_tabs_only(self) -> None:
+        script = "cat <<-'EOF'\n\tbody\n\tEOF\necho ok"
+        self.assertEqual([["cat"], ["echo", "ok"]], _commands(script))
+        # 反面：普通 `<<` 不剥 tab —— tab 缩进的行是正文，收尾必须顶格。
+        undashed = "cat <<'EOF'\n\tEOF\nEOF\necho ok"
+        self.assertEqual([["cat"], ["echo", "ok"]], _commands(undashed))
+
+    def test_a_partially_quoted_delimiter_still_terminates(self) -> None:
+        """`<<E'O'F` 的生效定界词是 `EOF`——POSIX 引号移除的结果。
+
+        只剥两端引号会把它存成 `E'O'F`，真正的收尾行永远配不上、workflow 被
+        误判未收尾（codex P2）。带任何引号 = 正文字面量。
+        """
+        script = "\n".join([
+            "cat <<E'O'F",
+            "$(pip install '.[research]')",   # 字面量正文，不该炸
+            "EOF",
+            "echo ok",
+        ])
+        self.assertEqual([["cat"], ["echo", "ok"]], _commands(script))
+
+    def test_a_backslash_quoted_delimiter_is_literal_too(self) -> None:
+        # `<<` + 反斜杠EOF：反斜杠也是引号——正文是字面量。
+        script = "\n".join([
+            "cat <<" + chr(92) + "EOF",
+            "$(pip install '.[x]')",
+            "EOF",
+            "echo ok",
+        ])
+        self.assertEqual([["cat"], ["echo", "ok"]], _commands(script))
 
     def test_a_heredoc_body_is_data_not_commands(self) -> None:
         """here-document 的正文是**数据**，不是命令。
@@ -973,6 +1070,19 @@ class ARestatementIsFoundByItsCanonicalName(unittest.TestCase):
         self.assertEqual(
             "python-dateutil",
             _restated_package("python_dateutil>=2.8,<3", declared))
+
+    def test_an_extras_segment_does_not_hide_a_restatement(self) -> None:
+        """`numpy[feature]>=1.24,<2.1` 也是 numpy 窗口的重述。
+
+        名字后紧跟 `[` 时旧判据（下一个字符必须是版本运算符）返回 None——
+        带着**分叉窗口**的重述整条躲过逐字一致检查（codex P2）。跳过 extras
+        段再看运算符；随后的逐字断言自然把它打红，要求与 pyproject 完全一致。
+        """
+        self.assertEqual(
+            "numpy",
+            _restated_package("numpy[feature]>=1.24,<2.1", self.DECLARED))
+        # 反面：没闭合的 `[` 不是 extras 段，不算重述。
+        self.assertIsNone(_restated_package("numpy[oops>=1.24", self.DECLARED))
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):

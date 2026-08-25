@@ -181,6 +181,17 @@ that actually produces the anchor.
 - **THEN** the body is not read as shell, and the real commands in that step
   remain covered
 
+#### Scenario: a here-document ends exactly where the shell says it ends
+- **WHEN** a body line merely resembles the delimiter — indented `  EOF` — or
+  the form is `<<-` where only leading TABS are stripped
+- **THEN** the body is not terminated early: what follows a lookalike line is
+  still data, never commands, so no coverage is invented from heredoc content
+
+#### Scenario: a heredoc delimiter undergoes real quote removal
+- **WHEN** the delimiter is partially quoted (`E'O'F`) or backslash-quoted
+- **THEN** the effective delimiter is the shell's (`EOF`), the body counts as
+  literal, and the workflow is not misjudged unterminated
+
 #### Scenario: an unquoted here-document body stays honest
 - **WHEN** the delimiter is unquoted — the shell performs command substitution
   inside the body
@@ -249,6 +260,12 @@ that actually produces the anchor.
   ".[research]"; then …`, `while`, `until`
 - **THEN** the executable is still found, because reserved words lead compound
   commands and the reserved-word list is the closed set POSIX defines
+
+#### Scenario: an extras segment does not hide a restatement
+- **WHEN** a workflow restates a pinned window with an extras segment —
+  `numpy[feature]>=1.24,<2.1`
+- **THEN** it is detected as that package's restatement and held to
+  byte-identity with `pyproject.toml`
 
 #### Scenario: a restated window is found under any spelling of the name
 - **WHEN** a workflow restates a pinned window with a differently-cased or
