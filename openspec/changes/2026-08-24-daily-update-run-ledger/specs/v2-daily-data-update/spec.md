@@ -68,7 +68,9 @@ the derived value.
   writers, so no status replace can ever destroy any provider's append-only
   history — and the mutable ROOTS (`--provider-dir`, `--tushare-dir`) are in
   the same reservation, because a provider root sitting on a ledger name is
-  renamed away wholesale by the swap machinery
+  renamed away wholesale by the swap machinery; the reservation examines EVERY
+  path component, not the leaf alone — `<ledger-name>/status.json` would mkdir
+  the ledger's name as a directory and leave the run unable to enter history
 
 #### Scenario: a ledger failure never changes the exit code
 - **WHEN** the ledger append fails for any reason

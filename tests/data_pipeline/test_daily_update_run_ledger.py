@@ -170,6 +170,19 @@ class TheLedgerPathCannotAliasAnythingElseTheRunTouches(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self._cfg(tmp, **{field: foreign})
 
+    def test_a_descendant_of_a_ledger_name_is_rejected_too(self) -> None:
+        """`<台账名>/status.json` 的叶子无辜，祖先不无辜。
+
+        只查 basename 会放行；而写状态要先 mkdir 出台账那个名字的**目录**，
+        随后 _append_ledger 撞 IsADirectoryError 被吞，运行永远进不了历史
+        （codex P2）。保留检查按**每一段**路径组件做。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            foreign = tmp / f"other.{du.LEDGER_FILENAME}" / "status.json"
+            with self.assertRaises(ValueError):
+                self._cfg(tmp, status_path=foreign)
+
     def test_an_honest_config_still_constructs(self) -> None:
         # 反面：正常布局必须照常通过，否则上面只是「什么都拒」的副产品。
         # 显式 status 覆盖（合法 .json 名）同样要照常通过。

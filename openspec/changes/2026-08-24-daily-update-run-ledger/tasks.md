@@ -28,6 +28,13 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第九轮：一个 P2 —— 保留检查按路径组件做，不只 basename
+
+`--status-path <台账名>/status.json` 的叶子是无辜的 status.json——basename
+检查放行；而写状态要先 mkdir 出台账那个名字的**目录**，随后 _append_ledger
+撞 IsADirectoryError 被（按反向耦合契约）吞掉，运行永远进不了历史。保留
+检查改为查**每一段**路径组件；变异（退回 basename）咬住。
+
 ## codex 第八轮：一个 P2 —— 可变根路径也入保留名单
 
 命名空间保留上一轮漏了两个头：--provider-dir 与 --tushare-dir。B 把

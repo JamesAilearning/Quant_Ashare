@@ -467,11 +467,15 @@ class DailyUpdateConfig:
                     f"运行台账的派生路径与 {label} ({f}) 重合 — 一边追加"
                     f"一边整写会互相破坏；拒绝（可观测性绝不影响数据）"
                 )
-            if os.path.basename(_norm(f)).endswith(reserved):
+            # 查**每一段**路径组件，不只 basename：
+            # `<台账名>/status.json` 的叶子是无辜的 status.json，但写它要先
+            # mkdir 出台账那个名字的**目录**——随后 _append_ledger 撞上
+            # IsADirectoryError 被吞掉，运行永远进不了历史（codex P2）。
+            if any(part.endswith(reserved) for part in Path(_norm(f)).parts):
                 raise ValueError(
                     f"{label} ({f}) 落在运行台账的保留命名空间"
-                    f"（*.{LEDGER_FILENAME}）上 — 那是（某个 provider 的）"
-                    f"只可追加台账的名字形状，整写会毁掉它的历史；拒绝"
+                    f"（*.{LEDGER_FILENAME}，含作为祖先目录）上 — 那是"
+                    f"（某个 provider 的）只可追加台账的名字形状；拒绝"
                 )
         # codex P2: a name-less path (".", a filesystem root) makes
         # _write_status's path.with_name() raise ValueError — which
