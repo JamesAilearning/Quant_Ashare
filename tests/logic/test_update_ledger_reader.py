@@ -911,7 +911,11 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
             provider = Path(t) / "prov"
             provider.mkdir()
             ours = writer._norm(provider)
-            for spelling in (f" {ours} ", f" {ours}", "rel/prov", ""):
+            dotted = str(Path(ours).parent / "alias" / ".." / Path(ours).name)
+            for spelling in (f" {ours} ", f" {ours}", "rel/prov", "",
+                             # 绝对但含 `..`——resolve 早消掉的拼写，写侧产
+                             # 不出；半套判据会把它误判成 foreign（第二轮）。
+                             dotted):
                 with self.subTest(spelling=repr(spelling)):
                     text = chr(10).join([
                         f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
@@ -963,10 +967,9 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         # 真以空白结尾的合法 POSIX 目录名——旧 `.strip()` 会把它改掉判成
         # 别人的。writer 形态的 key 直接喂 `_current_segment`（不触盘，
         # 避免 Windows 文件系统对尾空格目录的平台差异）。
-        key = os.path.normcase(str((Path(os.sep) / "data" / "prov ").absolute()))
-        assume_writer_form = (os.path.normcase(key) == key
-                              and os.path.isabs(key))
-        self.assertTrue(assume_writer_form, "用例前提不成立：key 不是写侧形态")
+        key = writer._norm(Path(os.sep) / "data" / "prov ")
+        self.assertEqual(os.path.normcase(str(Path(key).resolve())), key,
+                         "用例前提不成立：key 不是写侧形态（回环不闭合）")
         text = chr(10).join([
             f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
             f"2026-08-24T20:30:01+08:00 provider={key}",

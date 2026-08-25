@@ -223,12 +223,19 @@ def _current_segment(
             # 写入侧只在东八区落边界——别的时区产不出（同一原则顺带钉上）。
             return None, "corrupt_boundary"
         # 身份与戳同罪同治（codex P2）：写侧只产 `normcase(resolve())` 的
-        # 精确形态——normcase 不动点、绝对路径。此前读侧 `.strip()+normcase`
-        # 宽容化，`provider= /tmp/prov ` 这种写侧产不出的拼写会被洗成
-        # provider_key 并以「已确定」口气归属；而真以空白结尾的合法 POSIX
-        # 目录名反被 strip 改掉。拼写验不过 = 日志损坏，不硬解释。
+        # 精确形态。此前读侧 `.strip()+normcase` 宽容化，`provider= /tmp/x `
+        # 这种写侧产不出的拼写会被洗成 provider_key 并以「已确定」口气归属；
+        # 而真以空白结尾的合法 POSIX 目录名反被 strip 改掉。判据是**完整
+        # 回环**——stamped 必须等于它自己的 resolve+normcase（半套「不动点
+        # +isabs」放过 `/a/../b` 这类 resolve 早消掉的拼写，还把它误判成
+        # foreign：给操作人的解释从「日志损坏」变成「跨 provider 交错」，
+        # codex 第二轮 P2）。解析不动 = 同一处置。
         stamped = match.group("provider")
-        if os.path.normcase(stamped) != stamped or not os.path.isabs(stamped):
+        try:
+            canonical = os.path.normcase(str(Path(stamped).resolve()))
+        except (OSError, ValueError):
+            return None, "corrupt_boundary"
+        if canonical != stamped:
             return None, "corrupt_boundary"
     if any(match.group("provider") != provider_key for match in boundaries):
         return None, "foreign_boundary"
