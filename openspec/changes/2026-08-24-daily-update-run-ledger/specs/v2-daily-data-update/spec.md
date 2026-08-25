@@ -65,6 +65,12 @@ the derived value.
   "foreign" label is reserved for a fully valid record whose only difference
   is its identity
 
+#### Scenario: a bad byte inside a JSON string is corruption, not data
+- **WHEN** a ledger line contains invalid UTF-8 inside a string field, where
+  replacement decoding would yield syntactically valid JSON
+- **THEN** the line counts as malformed — decoding is strict per line, so
+  silently rewritten data is never presented as a real run
+
 ### Requirement: 每次运行 SHALL 在日志里落一个带日期的运行边界
 
 `run_daily_update` SHALL write one boundary line into the shared log at the
@@ -124,6 +130,16 @@ the duplication this repository keeps paying for.
   foreign boundary is present, or because no boundary is visible
 - **THEN** the operator is told which of those it was, not a blanket "no
   boundary in the window" that is false in the first two cases
+
+#### Scenario: certainty additionally requires the boundary to match the shown status
+- **WHEN** progress is attributed to a boundary whose timestamp differs from
+  the `started_at` of the status record the page is displaying — possible
+  because status writes are best-effort and the log and the artifact advance
+  independently
+- **THEN** the page says the two disagree and that the progress belongs to the
+  boundary's run, instead of presenting it under the displayed record's
+  identity — the writer stamps status and boundary with the same
+  `started_at.isoformat()`, so exact equality identifies the same run
 
 #### Scenario: another provider's boundary is not adopted
 - **WHEN** the boundary names a different provider directory

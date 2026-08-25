@@ -215,11 +215,26 @@ elif _status.kind == "running":
         "分母是该端点该年的票数,不是整轮进度(fetch 只是六个阶段中的一个)。")
     if _progress is None:
         st.caption("⏳ 日志尾部没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
-    elif _attributed.attributed:
+    elif _attributed.attributed and (
+            _attributed.boundary_stamp == (_status.started_at or "")):
+        # 归属确定,且边界与**上面显示的那条状态记录**是同一次运行:写入侧在
+        # 同一次运行里用同一个 started_at.isoformat() 写状态与边界,精确相等。
         st.caption(
             f"⏳ 本次运行的最后一条进度:{_progress.describe()}。"
             f"归属由运行边界确定(该次运行始于 "
             f"**{_attributed.boundary_stamp}**),不是推断出来的。{_scope}"
+        )
+    elif _attributed.attributed:
+        # 边界与状态记录**对不上**:状态写入是 best-effort(写失败只记 ERROR,
+        # 运行照常),于是日志与状态工件可以各自往前走——旧运行留下 running
+        # 状态、新运行只落了边界。这条进度属于**边界那次**运行,把它说成
+        # 上面显示的那次,又是把交错讲成确定(codex P2)。
+        st.caption(
+            f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
+            f"日志边界显示有一次始于 **{_attributed.boundary_stamp}** 的运行,"
+            f"而上面的状态记录写的是 **{_status.started_at or '?'}** —— 两者"
+            "**对不上**(状态工件可能写失败或已陈旧)。这条进度属于边界那次"
+            f"运行,不属于上面显示的状态记录。{_scope}"
         )
     else:
         # 不知道就说不知道,并说**真原因**:三种失败条件对操作人的下一步不同,

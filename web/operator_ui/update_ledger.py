@@ -181,19 +181,20 @@ def read_ledger(
             kind="unreadable", path=path,
             error=f"{type(exc).__name__}: {exc}")
 
-    # 与写入侧一样按 UTF-8 解码；坏字节用替换字符而不是让整份台账炸掉——
-    # 那一行随后多半解析失败，于是被计入 malformed，信息不会被悄悄吞掉。
-    text = raw.decode("utf-8", errors="replace")
     provider_key = os.path.normcase(str(provider_dir.resolve()))
     runs: list[LedgerRun] = []
     malformed = 0
     foreign = 0
-    for line in text.splitlines():
-        if not line.strip():
+    # **逐行严格**解码。整份 replace-解码曾以为「坏行随后多半解析失败」——
+    # 错：坏字节落在 JSON 字符串**里面**（比如 detail）时，替换字符 `�` 仍是
+    # 合法 JSON，那行验形照过、渲染成一次真实运行、malformed 计零——把被
+    # 悄悄改写过的数据当成事实交给操作人（codex P2）。解码失败 = 坏行。
+    for raw_line in raw.split(b"\n"):
+        if not raw_line.strip():
             continue
         try:
-            record = json.loads(line)
-        except ValueError:
+            record = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
             malformed += 1
             continue
         if not isinstance(record, dict) or not _is_valid_v1(record):

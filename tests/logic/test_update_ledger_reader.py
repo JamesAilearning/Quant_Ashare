@@ -146,6 +146,28 @@ class OneBadLineDoesNotPoisonTheLedger(unittest.TestCase):
         self.assertEqual(1, len(history.runs))
         self.assertEqual(1, history.malformed)
 
+    def test_a_bad_byte_inside_a_json_string_is_malformed(self) -> None:
+        """坏字节落在 JSON 字符串**里面**时，替换解码会把它洗成合法行。
+
+        整份 `errors="replace"` 解码后，detail 里的坏字节变成 `�`，JSON 照样
+        合法、验形照过、渲染成一次真实运行、malformed 计零——被悄悄改写过的
+        数据成了「事实」（codex P2）。逐行严格解码：解码失败 = 坏行。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            good = json.dumps(_record(provider, exit_code=0)).encode("utf-8")
+            broken = json.dumps(_record(provider, exit_code=11)).encode("utf-8")
+            # 在 detail 字符串里塞一个非法 UTF-8 字节 —— JSON 结构不受影响。
+            broken = broken.replace(b"fetch failed", b"fetch \xc3(failed")
+            path.write_bytes(good + b"\n" + broken + b"\n")
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual(1, len(history.runs), "好行也被带走了")
+        self.assertEqual(
+            1, history.malformed,
+            "字符串里带坏字节的行被替换字符洗白成了一次真实运行")
+
     def test_missing_and_unreadable_are_different_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
@@ -585,6 +607,30 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertTrue(attributed.attributed)
         self.assertEqual("", attributed.unattributed_reason,
                          "归属确定时不该带失败原因")
+
+    def test_certainty_requires_the_boundary_to_match_the_status_record(
+            self) -> None:
+        """「确定归属」的口气只许在边界与显示的状态记录**同一次运行**时用。
+
+        状态写入是 best-effort（写失败只记 ERROR），日志与状态工件可以各自
+        往前走：旧运行留下 running 状态、新运行只落了边界——把新进度说成
+        显示的那次，又是把交错讲成确定（codex P2）。写入侧在同一次运行里用
+        同一个 `started_at.isoformat()` 写两者，所以精确相等即同一次。
+        """
+        source = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                  ).read_text(encoding="utf-8")
+        self.assertIn(
+            '_attributed.boundary_stamp == (_status.started_at or "")', source,
+            "确定口气的分支没有以「边界==状态记录」为闸")
+        self.assertIn("对不上", source,
+                      "没有为边界与状态不一致的情形准备如实措辞")
+
+    def test_the_writer_stamps_status_and_boundary_identically(self) -> None:
+        # 上一条相关性的**前提**：同一次运行里状态记录与边界写同一个戳。
+        # 用写侧源码钉住——两处都必须是同一个 started_at 的 isoformat()。
+        source = Path(writer.__file__).read_text(encoding="utf-8")
+        self.assertIn('"started_at": started_at.isoformat()', source)
+        self.assertIn("run_boundary_line(started_at", source)
 
     def test_the_page_speaks_all_three_reasons(self) -> None:
         # 页面的未归属分支必须按原因措辞——只要有一个键没接上，那种情形就
