@@ -283,6 +283,27 @@ class ARaisingStageStillLeavesATerminalRecord(unittest.TestCase):
                              "零码 SystemExit 造出了矛盾终录")
             self.assertEqual("exception", rows[0]["failed_stage"])
 
+    def test_a_surrogate_in_a_returned_detail_still_lands(self) -> None:
+        """捕获后**返回**的细节同样要过消毒（codex P2）。
+
+        启动修复/swap 接 OSError 后把消息当 detail 返回——带代理字节时原样
+        送进两个写入器，_append_ledger 的吞噬契约把 UnicodeEncodeError 吃
+        掉，台账恰好漏掉终录。终态构造与 crash 共用同一道消毒出口。
+        """
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _box(Path(t))
+            dirty = "swap failed at path-" + chr(0xDC80) + "-broken"
+            with mock.patch.object(
+                    du, "_execute_daily_update",
+                    return_value=(16, "swap", dirty)):
+                code = du.run_daily_update(cfg, _runners())  # type: ignore[arg-type]
+            self.assertEqual(16, code)
+            rows = _lines(cfg)
+            self.assertEqual(1, len(rows), "带代理字节的终录被写入器吞掉了")
+            self.assertIn(chr(92) + "udc80", rows[0]["detail"],
+                          "残迹没以可读转义保留")
+
     def test_a_surrogate_in_the_exception_still_lands_in_the_ledger(
             self) -> None:
         """异常消息带代理字节（surrogateescape 文件名，产线可达）。

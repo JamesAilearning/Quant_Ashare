@@ -205,7 +205,12 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
             return False
     if finished < started:
         return False
-    return isinstance(record.get("detail"), str)
+    if not isinstance(record.get("detail"), str):
+        return False
+    # 写入侧只追加**终态**行（state="finished"——crash 路径与正常终态同）。
+    # 缺 state 或 state="running" 的行不是写侧产得出的形态：放进来会被工作
+    # 台当成一次已完成的历史渲染（codex P2）。同一原则：写侧产不出 = 坏行。
+    return record.get("state") == "finished"
 
 
 def _describes(record: object, provider_key: str) -> bool:

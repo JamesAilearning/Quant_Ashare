@@ -222,6 +222,21 @@ def _dropped_notice(count: int) -> str:
     return f"（中间另有 {count} 条错误未列出，完整内容见日志）"
 
 
+def _single_line_detail(text: str) -> str:
+    """终录 detail 的统一出口：backslashreplace 消毒 + 折单行 + 截断。
+
+    crash 路径与正常终态**共用**——阶段捕获后**返回**的消息同样可携带代理
+    转义的文件系统字节（启动修复/swap 接 OSError 原样转身，产线可达），
+    原样送进两个写入器会在 UnicodeEncodeError 上被吞掉：台账恰好漏掉终录
+    （codex P2，与 crash 消毒同根因的返回路径形态）。
+    """
+    return " / ".join(
+        part.strip()
+        for part in text.encode("utf-8", "backslashreplace").decode("utf-8")
+        .splitlines() if part.strip()
+    )[:_STAGE_DETAIL_MAX_CHARS]
+
+
 def _stage_detail(summary: str, captured: Sequence[str]) -> str:
     """把阶段自己的 ERROR 行折进状态工件的单行 `detail`。
 
@@ -1000,17 +1015,9 @@ def run_daily_update(
             "finished_at": crash_at.isoformat(),
             "exit_code": crash_code,
             "failed_stage": "exception",
-            # 消毒照抄 _stage_detail 的先例：异常消息可以携带代理转义的
-            # 文件系统字节（OSError 带 surrogateescape 文件名，产线可达），
-            # 原样内插会让两个写入器都在 UnicodeEncodeError 上吞掉——
-            # crash 记录恰好被它要防的那类失败打穿（codex P2）。
-            # backslashreplace 留可读残迹；折单行；截断。
-            "detail": " / ".join(
-                part.strip()
-                for part in f"{type(exc).__name__}: {exc}"
-                .encode("utf-8", "backslashreplace").decode("utf-8")
-                .splitlines() if part.strip()
-            )[:_STAGE_DETAIL_MAX_CHARS],
+            # 消毒走统一出口（异常消息可携带代理转义的文件系统字节——
+            # OSError 带 surrogateescape 文件名，产线可达；codex P2）。
+            "detail": _single_line_detail(f"{type(exc).__name__}: {exc}"),
         }
         _record_status(status_path, crash)
         _append_ledger(
@@ -1025,7 +1032,9 @@ def run_daily_update(
         "finished_at": finished_at.isoformat(),
         "exit_code": exit_code,
         "failed_stage": failed_stage,
-        "detail": detail,
+        # 与 crash 路径同一道消毒出口：捕获后**返回**的消息同样可携带代理
+        # 字节，原样送写入器会在 UnicodeEncodeError 上被吞掉（codex P2）。
+        "detail": _single_line_detail(detail),
     }
     _record_status(status_path, terminal)
     # 台账行**就是**那条终态记录 + 它自己的 schema 版本。不另造一套字段:两套

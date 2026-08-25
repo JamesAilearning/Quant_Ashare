@@ -50,6 +50,9 @@ def _record(provider: Path, *, exit_code: int, day: str = "2026-08-21") -> dict:
         "schema_version": LEDGER_SCHEMA_VERSION,
         "provider_dir": writer._norm(provider),
         "run_date": day,
+        # 写入侧只追加终态行——fixture 镜像写侧真实形态（缺它曾让验形
+        # 少一道闸而测试全绿，codex P2）。
+        "state": "finished",
         "started_at": f"{day}T20:30:00+08:00",
         "finished_at": f"{day}T22:22:00+08:00",
         "exit_code": exit_code,
@@ -182,6 +185,22 @@ class OneBadLineDoesNotPoisonTheLedger(unittest.TestCase):
         self.assertEqual(
             1, history.malformed,
             "字符串里带坏字节的行被替换字符洗白成了一次真实运行")
+
+    def test_a_non_terminal_state_is_malformed_not_history(self) -> None:
+        # 写入侧只追加 state="finished" 的终态行（crash 路径与正常终态同）
+        # ——缺 state 或 state="running" 的行不是写侧产得出的形态，放进来
+        # 会被工作台当成一次已完成的历史渲染（codex P2）。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            no_state = _record(provider, exit_code=0)
+            no_state.pop("state")
+            running = {**_record(provider, exit_code=0), "state": "running"}
+            _write(path, [no_state, running, _record(provider, exit_code=11)])
+            history = read_ledger(path, provider_dir=provider)
+        self.assertEqual(1, len(history.runs), "非终态行混进了历史")
+        self.assertEqual(2, history.malformed, "非终态行没被记成坏行")
 
     def test_missing_and_unreadable_are_different_kinds(self) -> None:
         with tempfile.TemporaryDirectory() as t:
