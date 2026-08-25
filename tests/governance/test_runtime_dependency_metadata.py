@@ -226,6 +226,20 @@ def _split_commands(script: str) -> list[str]:
             flush()
             index += 1
             continue
+        if char == ">":
+            # 把 `>` / `>>` / `>&fd` 当整体消费——否则 `2>&1` 里的 `&` 会被
+            # 分隔符分支拦腰截断，凭空多出一条命令（重定向剥离在 token 层，
+            # 前提是操作符先完整地活到那里）。
+            cursor = index + 1
+            if script[cursor:cursor + 1] == ">":
+                cursor += 1
+            if script[cursor:cursor + 1] == "&":
+                cursor += 1
+                while script[cursor:cursor + 1].isdigit():
+                    cursor += 1
+            buffer.append(script[index:cursor])
+            index = cursor
+            continue
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
@@ -251,15 +265,45 @@ def _split_commands(script: str) -> list[str]:
     return segments
 
 
+#: 独立的重定向操作符（POSIX 定义的闭集）与带粘连目标的形态。`2>&1` 这类
+#: fd 复制自含目标；`> f` 的目标是下一个 token；`>f` 粘连。引号内的 `>`
+#: 在分词后不带引号，但它嵌在词中间（`foo>=1,<2`）而不是词首——不误伤。
+_REDIR_SELF = re.compile(r"^\d*>&\d+$|^&>>?$|^\d*>>?$|^<$")
+_REDIR_ATTACHED = re.compile(r"^(\d*>>?|<)(?P<target>[^&=<>].*)$")
+
+
+def _strip_redirections(tokens: list[str]) -> list[str]:
+    """剥掉重定向操作符与其目标——它们是 shell 语法，不是命令实参。
+
+    `pip install "foo>=1,<2" > install.log` 里 `>` 与 `install.log` 由 shell
+    消费；留在 token 里，直接目标守卫会把 `install.log` 报成无上界的包——
+    重定向输出这件无辜事把治理打红（codex P2）。
+    """
+    out: list[str] = []
+    consume_next = False
+    for token in tokens:
+        if consume_next:
+            consume_next = False
+            continue
+        if _REDIR_SELF.match(token):
+            # `2>&1` / `>&2` 自含目标；裸 `>`/`>>`/`<`/`2>` 吃下一个 token。
+            consume_next = "&" not in token
+            continue
+        if _REDIR_ATTACHED.match(token):
+            continue
+        out.append(token)
+    return out
+
+
 def _commands(script: str) -> list[list[str]]:
     """把一段 shell 切成若干条命令，每条是一串实参。
 
     词法器已经保证每个片段里的引号是配平的，`shlex` 在这里只负责去引号与
-    分词——引号形态（单/双/不加）由它统一处理。
+    分词——引号形态（单/双/不加）由它统一处理；重定向随后剥离。
     """
     return [
         args for segment in _split_commands(script)
-        if (args := shlex.split(segment, posix=True))
+        if (args := _strip_redirections(shlex.split(segment, posix=True)))
     ]
 
 
@@ -287,26 +331,41 @@ def _environment_keys(document: object) -> list[str]:
     return keys
 
 
-def _run_scripts(workflow: Path) -> list[str]:
-    """workflow 里**真正会执行**的那些 `run` 块。
+def _run_scripts(
+    workflow: Path, *, unconditional_only: bool = False,
+) -> list[str]:
+    """workflow 里的 `run` 块；可选只取**无条件**步骤的。
 
-    按结构解析：YAML 取到 `steps[].run`，那才是会执行的东西；`name:` 之类的
-    元数据字段天然被排除（codex 早前一条 P2）。注释、续行、引号都交给词法器。
+    按结构解析：YAML 取到 `steps[].run`（`name:` 之类元数据天然排除）。
+    step 或 job 带 `if:` 时 GitHub Actions 可能跳过它——被跳过的安装不是
+    安装（codex P1）。方向分析定用法：**presence 类底数**（qlib 在场）只数
+    无条件步骤——把条件安装当在场，某条矩阵腿会在 importorskip 下静默绿；
+    **bounds/形状类扫描**照扫全部步骤——多扫只会更严，漏扫才是洞。
     """
     document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     scripts: list[str] = []
     for job in (document or {}).get("jobs", {}).values():
-        for step in (job or {}).get("steps", []) or []:
-            script = (step or {}).get("run")
-            if isinstance(script, str):
-                scripts.append(script)
+        job = job or {}
+        job_conditional = "if" in job
+        for step in job.get("steps", []) or []:
+            step = step or {}
+            script = step.get("run")
+            if not isinstance(script, str):
+                continue
+            if unconditional_only and (job_conditional or "if" in step):
+                continue
+            scripts.append(script)
     return scripts
 
 
-def _workflow_commands(workflow: Path) -> list[list[str]]:
+def _workflow_commands(
+    workflow: Path, *, unconditional_only: bool = False,
+) -> list[list[str]]:
     """这个 workflow 里全部会执行的命令。"""
     return [
-        command for script in _run_scripts(workflow)
+        command
+        for script in _run_scripts(
+            workflow, unconditional_only=unconditional_only)
         for command in _commands(script)
     ]
 
@@ -345,7 +404,9 @@ def _is_pip_install(command: list[str]) -> bool:
     """
     tokens = list(command)
     # 语法顺序：保留字引导复合命令在先，赋值前缀在后，然后才是可执行体。
+    stripped_reserved = False
     while tokens and tokens[0] in _RESERVED_WORDS:
+        stripped_reserved = True
         tokens.pop(0)
     assignments: list[str] = []
     while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
@@ -400,6 +461,15 @@ def _is_pip_install(command: list[str]) -> bool:
     #  2. 子命令 = 可执行体后第一个不带 `-` 的 token；
     #  3. 子命令**之前**还有别的选项 token → 有的全局选项接值（如 --log
     #     PATH），值与子命令无从区分——多义即响亮，与本地目标那条同一处置。
+    if stripped_reserved:
+        # `if pip install <qlib>; then …` 里安装是**条件**：失败被 if 吞掉、
+        # 步骤照样绿地跑向 pytest，而 importorskip 让 qlib 侧静默蒸发；
+        # `then pip install` 的**体**又只在条件成立时运行（codex P1，与
+        # `||` 同根：执行结果/执行与否无法确立）。条件构造内的 pip 安装
+        # 一律响亮，请拆成独立步骤。
+        raise AmbiguousPipCommand(
+            "pip 安装在条件构造（if/while/until/then/…）内——执行结果无法"
+            "确立；请拆成独立命令或步骤")
     if any(token in ("-h", "--help") for token in rest):
         return False
     # `--dry-run` 由 pip 自己定义为「Don't actually install anything」——
@@ -975,6 +1045,63 @@ class AShellLineIsSplitIntoCommands(unittest.TestCase):
         with self.assertRaises(UnlexableShell):
             _commands("echo `pip --version`")
 
+    def test_redirections_are_shell_syntax_not_arguments(self) -> None:
+        """`pip install "foo>=1,<2" > install.log` 的 `>` 与目标由 shell 消费。
+
+        留在 token 里，直接目标守卫把 `install.log` 报成无上界的包——重定向
+        输出这件无辜事把治理打红（codex P2）。剥独立/粘连/fd 复制三种形态；
+        引号里词中的 `>`（版本约束）不误伤。
+        """
+        self.assertEqual(
+            [["pip", "install", "foo>=1,<2"]],
+            _commands('pip install "foo>=1,<2" > install.log'))
+        self.assertEqual(
+            [["pip", "install", "x<1"]],
+            _commands("pip install x<1 2>&1 >>log.txt"))
+        self.assertEqual(
+            [["echo", "hi"]], _commands("echo hi >out.txt"))
+        count, problems = _direct_install_targets(
+            _commands('pip install "foo>=1,<2" > install.log')[0])
+        self.assertEqual((1, []), (count, problems),
+                         "重定向目标被当成了安装目标")
+
+    def test_a_conditional_step_does_not_satisfy_presence(self) -> None:
+        """`if:` 可跳过的步骤里的安装不算「在场」。
+
+        某条矩阵腿跳过 qlib 安装步骤时，扁平化命令列表里它仍然在——
+        `_pytest_without_qlib` 被满足而那条腿在 importorskip 下静默绿
+        （codex P1）。presence 只数无条件步骤；bounds/形状扫描照扫全部。
+        """
+        import tempfile as _tf
+        doc = """
+jobs:
+  j:
+    steps:
+      - run: pytest tests/
+        if: matrix.os == 'ubuntu-latest'
+      - run: pip install git+https://github.com/microsoft/qlib.git@{sha}
+        if: matrix.os == 'ubuntu-latest'
+""".format(sha="a" * 40)
+        with _tf.TemporaryDirectory() as t:
+            wf = Path(t) / "w.yml"
+            wf.write_text(doc, encoding="utf-8")
+            everything = _workflow_commands(wf)
+            unconditional = _workflow_commands(wf, unconditional_only=True)
+        self.assertTrue(_runs_pytest(everything), "条件腿的 pytest 也要被看见")
+        self.assertEqual([], unconditional, "带 if: 的步骤不该算无条件")
+        self.assertTrue(
+            _pytest_without_qlib(unconditional) or not unconditional,
+            "条件安装满足了 presence —— 判据没落在无条件步骤上")
+        # 接线钉：真数据守卫必须真的传 unconditional_only=True——真实
+        # workflow 的 qlib 安装本就无条件，接线退化在干净数据上测不出
+        # （变异 CE 实测），只能钉调用点源码。
+        import inspect as _inspect
+        guard_src = _inspect.getsource(
+            EveryPytestWorkflowInstallsQlibItself
+            .test_each_pytest_workflow_carries_its_own_install)
+        self.assertIn("unconditional_only=True", guard_src,
+                      "presence 守卫没有把判据落在无条件步骤上")
+
     def test_a_short_circuit_right_side_is_refused(self) -> None:
         """`true || pip install <窗口> <qlib>`：右侧从不运行、步骤照样绿。
 
@@ -1361,10 +1488,12 @@ class EveryPytestWorkflowInstallsQlibItself(unittest.TestCase):
         pytest_workflows = 0
         offenders = []
         for workflow in _workflows():
-            commands = _workflow_commands(workflow)
-            if _runs_pytest(commands):
+            # pytest 检测扫**全部**步骤（条件腿也要 qlib）；qlib 在场只数
+            # **无条件**步骤——`if:` 可跳过的安装不是安装（codex P1）。
+            if _runs_pytest(_workflow_commands(workflow)):
                 pytest_workflows += 1
-                if _pytest_without_qlib(commands):
+                if _pytest_without_qlib(_workflow_commands(
+                        workflow, unconditional_only=True)):
                     offenders.append(workflow.name)
         self.assertEqual([], offenders, "这些 workflow 跑 pytest 却不装 qlib")
         self.assertGreaterEqual(
@@ -1413,22 +1542,24 @@ class TheQlibPinMustBeARealInstall(unittest.TestCase):
         self.assertFalse(
             _is_pip_install(_commands('pip install --dry-run ".[dev]"')[0]))
 
-    def test_a_control_keyword_does_not_hide_the_install(self) -> None:
-        """`if pip install …; then` 的可执行体是 `pip`，不是 `if`。
+    def test_an_install_inside_a_conditional_construct_is_loud(self) -> None:
+        """条件构造内的 pip 安装——执行结果/执行与否无法确立。
 
-        保留字引导复合命令；只认第 0 个 token，条件化的安装整条从覆盖面里
-        消失，而 workflow 里写 `if pip install…` 完全合法（codex P2）。
-        保留字是 POSIX.1-2017 §2.4 定义的闭集，不是我在枚举写法。
+        `if pip install <qlib>; then …`：安装失败被 if 吞掉、步骤照样绿地跑
+        向 pytest，importorskip 让 qlib 侧静默蒸发；`then pip install` 的体
+        又只在条件成立时运行（codex P1，两轮判读的合并终态：先前认「可执行
+        体在保留字之后」只对了一半——认出来之后还要问执行可不可确立）。
+        保留字仍是 POSIX 闭集；条件构造内的安装一律响亮，拆成独立步骤。
         """
-        script = 'if pip install ".[research]"; then echo ok; fi'
-        first = _commands(script)[0]
-        self.assertTrue(_is_pip_install(first), "if 后面的安装没被认出来")
-        for keyword in ("while", "until", "elif", "else", "do", "then", "!"):
+        for keyword in ("if", "while", "until", "elif", "else", "do", "then", "!"):
             with self.subTest(保留字=keyword):
-                self.assertTrue(_is_pip_install(
-                    _commands(f'{keyword} pip install ".[x]"')[0]))
-        # 反面：保留字自己不是可执行体。
+                with self.assertRaises(AmbiguousPipCommand):
+                    _is_pip_install(
+                        _commands(f'{keyword} pip install ".[x]"')[0])
+        # 反面：保留字后的**非安装**命令不响亮（条件本身随便写）；
+        # 无保留字的安装照常认。
         self.assertFalse(_is_pip_install(_commands("if true")[0]))
+        self.assertTrue(_is_pip_install(_commands('pip install ".[x]"')[0]))
 
 
 class ParenthesesAreCommandSyntaxNotWordCharacters(unittest.TestCase):
@@ -1722,7 +1853,8 @@ class EveryRestatementOfAPinnedWindowMatches(unittest.TestCase):
         commands = [
             (workflow.name, command)
             for workflow in _workflows()
-            for command in _qlib_pin_installs(_workflow_commands(workflow))
+            for command in _qlib_pin_installs(_workflow_commands(
+                workflow, unconditional_only=True))
         ]
         self.assertGreaterEqual(
             len(commands), 1, "没有在项目之前装 qlib 的命令 —— 本守卫已失效")

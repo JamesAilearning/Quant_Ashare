@@ -274,12 +274,29 @@ that actually produces the anchor.
   into silently green test legs
 
 #### Scenario: execution that cannot be established is refused
-- **WHEN** a run block chains with `||` (the right side runs only on failure)
-  or invokes a variable-expanded executable such as `$INSTALLER install …`
+- **WHEN** a run block chains with `||` (the right side runs only on failure),
+  invokes a variable-expanded executable such as `$INSTALLER install …`, or
+  places a pip install inside a conditional construct (`if pip install …;
+  then` — the failure is swallowed by the conditional; `then pip install` —
+  the body may never run)
 - **THEN** the lexer or classifier refuses loudly instead of counting a
   command whose execution the text cannot establish — control flow and
   variable evaluation are not modelled, `&&` chains stay accepted because
   every segment either runs or fails the step loudly
+
+#### Scenario: a conditionally-skipped step does not satisfy presence
+- **WHEN** the qlib install sits in a step (or job) carrying `if:` — GitHub
+  Actions may skip it on some matrix legs
+- **THEN** it does not count toward the per-workflow qlib presence floor,
+  while bounds and shape scans still read every step (reading more only
+  tightens them)
+
+#### Scenario: redirections are shell syntax, not arguments
+- **WHEN** a pip install redirects its output — `> install.log`, `2>&1`,
+  attached `>file`
+- **THEN** the operators and their targets are stripped before
+  classification, so redirecting output can neither invent an unbounded
+  target nor split a command apart
 
 #### Scenario: the qlib pin must sit on an actual install
 - **WHEN** the qlib URL appears only in a command that is not a pip install —
