@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
@@ -17,7 +18,10 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
-from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+from web.operator_ui.pages._ops_cockpit_helpers import (
+    BundleFreshness,
+    RetrainWindow,
+)
 from web.operator_ui.update_status import NO_REASON_MARK, UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
@@ -222,8 +226,11 @@ __all__ = [
     "DailySignalSummary",
     "OperationalSummary",
     "SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION",
+    "TodaysAnswer",
+    "model_age_rows",
     "summarise_daily_signal",
     "summarise_operations",
+    "todays_buy_answer",
 ]
 
 def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
@@ -260,3 +267,109 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
             "仓库无机器可读的重训到期锚）",
         ),
     ]
+
+
+_ANSWER_DISCLAIMER = "本句只汇总既有工件与出单侧判据，不是订单，也不授予交易许可。"
+
+
+@dataclass(frozen=True)
+class TodaysAnswer:
+    """One synthesized sentence answering「今天要不要买」.
+
+    * ``buy``            — 今天是执行日且工件是再平衡指令（仍须人工核对）。
+    * ``watch``          — 今天是执行日且工件明说 HOLD：不买，观察。
+    * ``no_instruction`` — 没有面向今天的指令（尚无工件 / 指令面向别的日子）；
+                           不是错误态，是「流程还没走到」。
+    * ``unanswerable``   — 回答不了：出单侧判据拒绝（陈旧/完整性）、裁决不可
+                           达，或工件本身需要核查。
+    """
+
+    state: str
+    value: str
+    detail: str
+
+
+def todays_buy_answer(
+    signal: DailySignalSummary,
+    freshness: BundleFreshness,
+    today: date,
+) -> TodaysAnswer:
+    """合成「今天要不要买」——用户每天真正要问的那一句（UI 已批序列④）。
+
+    **零新判定**：陈旧与完整性用出单侧自己的裁决（`bundle_freshness` /
+    `recommender_integrity_check`，今日待办队列同款消费面——#461 首版另写
+    一份三个决策全错的教训在档）；节奏（HOLD / 再平衡）用 `summarise_daily_
+    signal` 已核验过来源的分类；「这份指令是不是说给今天的」只看
+    `entry_date == today`（出单协议：entry 是收盘后生成、面向下一交易日的
+    执行日）。本函数只做措辞与优先级，不碰任何一份原始工件。
+
+    优先级：出单侧判据先行——出单侧今天会拒时，即使手上有一份看起来是今天
+    的指令也**拒答**（该组合正常流程到不了：entry==今天 蕴含数据新到昨收；
+    真到了说明有一侧在说谎，拒答比选边站诚实）。
+
+    「不回答」分两种，绝不混用：``no_instruction`` 是流程态（没有面向今天的
+    指令，如实点名最新指令面向哪天），``unanswerable`` 是异常态（判据拒绝
+    或工件需核查，带原因）。
+    """
+    if not getattr(freshness, "known", False):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧新鲜度裁决不可达：{freshness.message or '原因未记录'}。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if freshness.refuses_today:
+        behind = (
+            f"数据尾落后 {freshness.days_behind} 天，超出出单上限 "
+            f"{freshness.max_age_days} 天"
+            if freshness.days_behind is not None
+            else "数据陈旧超出出单上限")
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧今天会拒：{behind}。先修数据再谈信号。{_ANSWER_DISCLAIMER}",
+        )
+    if freshness.integrity_accepted is not True:
+        reason = (
+            freshness.integrity_reason or "完整性未评估"
+            if freshness.integrity_accepted is None
+            else freshness.integrity_reason or "原因未记录")
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧完整性闸未放行：{reason}。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind == "missing":
+        return TodaysAnswer(
+            "no_instruction", "没有面向今天的指令",
+            f"尚无日度信号工件；请先在运行中心生成。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind not in ("hold", "rebalance", "daily"):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"最新工件需要核查：{signal.detail}{_ANSWER_DISCLAIMER}",
+        )
+    # 已核验的三类工件都带严格 ISO entry_date（summarise_daily_signal 的
+    # 边界保证），这里直接消费，不再验一遍。
+    entry = date.fromisoformat(str(signal.entry_date))
+    if entry != today:
+        which = "尚未生成（昨晚流程没跑？）" if entry < today else "面向未来执行日"
+        return TodaysAnswer(
+            "no_instruction", "没有面向今天的指令",
+            f"最新指令的执行日是 {signal.entry_date}，不是今天——今天的信号"
+            f"{which}。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind == "hold":
+        return TodaysAnswer(
+            "watch", "不买 · 观察日",
+            f"今天（{today.isoformat()}）是 HOLD 日，无需买入；下一再平衡日："
+            f"{signal.next_rebalance_date or '未记录'}。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind == "rebalance":
+        return TodaysAnswer(
+            "buy", "有买入指令（待人工核对）",
+            f"今天（{today.isoformat()}）是再平衡执行日——去日度决策页逐项"
+            f"人工核对后再执行。{_ANSWER_DISCLAIMER}",
+        )
+    return TodaysAnswer(
+        "unanswerable", "无法给出",
+        "工件是日频形态但不带 HOLD/再平衡节奏标记，本页合成不了三态；"
+        f"请在详情页人工判读。{_ANSWER_DISCLAIMER}",
+    )
