@@ -28,6 +28,14 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第二十三轮：一个 P2 —— design 的状态戳语义第三处收尾
+
+run-center delta 与实现的终态是「戳不等 → 归属仍确定、披露两本账不一致」，
+而 design.md 的三前提列表还把戳相等当**确定性**前提、并把它算进「无法归属」
+——同一场景两个契约。改为两前提管确定性、戳相等只管呈现身份。这是该语义在
+文档面的第三处（run-center delta → daily-data 场景 → design 正文），本次
+grep 过 design 全文确认无第四处。
+
 ## codex 第二十二轮：一个 P2 —— 对不可信内容 resolve 要兜底
 
 身份检查抬到 resolve 不动点后，`Path(stamped).resolve()` 对文件系统非法的
