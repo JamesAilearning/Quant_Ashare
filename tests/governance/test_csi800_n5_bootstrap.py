@@ -182,8 +182,6 @@ class BootstrapGateSemantics(unittest.TestCase):
             parse_recert_status(path.read_text(encoding="utf-8"))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 # 季度维护成员 m4（chore/csi800-n5-m4-preset，跑前钉死）。窗口按三成员
@@ -240,3 +238,6 @@ class MaintenanceMemberM4Pins(unittest.TestCase):
         self.assertEqual("csi800", cfg["instruments"])
         self.assertEqual("SH000906TR", cfg["benchmark_code"])
 
+
+if __name__ == "__main__":
+    unittest.main()
