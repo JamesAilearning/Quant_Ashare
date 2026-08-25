@@ -348,7 +348,7 @@ def _is_pip_install(command: list[str]) -> bool:
     # 分辨哪些 PIP_* 是「行为改变的」需要 pip 的选项表——pip 的、随版本变，
     # 不该由本守卫维护。与选项歧义同一处置：**多义即响亮**，药方是把配置
     # 写成显式 flag（flag 受 --dry-run / 文件引入等既有判据管辖）。
-    pip_environment = [a for a in assignments if a.startswith("PIP_")]
+    pip_environment = [a for a in assignments if _PIP_ENV_TOKEN.match(a)]
     if pip_environment:
         raise AmbiguousPipCommand(
             f"pip 行为经环境赋值注入：{pip_environment} —— 命令文本推导"
@@ -417,6 +417,29 @@ _IMMUTABLE_SHA = re.compile(r"^[0-9a-f]{40}$")
 #: 装文件里列的每一个包，`-c/--constraint` 用文件约束解析）。命令文本推导
 #: 看不见文件内容——静默跳过就是覆盖面在文件里的每一行上空着（codex P2）。
 _FILE_SOURCED_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
+#: pip 环境配置的 **token 形状**：`PIP_<OPTION>=…`。载体不枚举——行内前缀、
+#: `export`、`env`、`set` 都只是把这个形状送进环境的不同姿势；Windows 上
+#: 环境名大小写不敏感，`pip_dry_run=1` 与 `PIP_DRY_RUN=1` 等效（codex
+#: P1+P2）。任何命令的任何 token 长成这样，pip 的行为就可能被无形改写。
+_PIP_ENV_TOKEN = re.compile(r"^pip_[a-z0-9_]*=", re.IGNORECASE)
+
+
+def _pip_environment_offenders(commands: list[list[str]]) -> list[str]:
+    """这些命令里所有 `PIP_*=` 形状的 token——pip 配置注入的痕迹。
+
+    抽成 helper 是**作证**需要：真实 workflow 是干净的，负断言测不出扫描
+    被删（变异 BO 实测如此）；helper 可以拿合成命令直接单测，真数据上只
+    留底数断言。
+    """
+    return [
+        token for command in commands for token in command
+        if _PIP_ENV_TOKEN.match(token)
+    ]
+
+
+def _pip_env_key_offenders(keys: list[str]) -> list[str]:
+    """env 键里配置 pip 的那些（大小写不敏感——Windows 腿）。同上，可单测。"""
+    return [key for key in keys if key.upper().startswith("PIP_")]
 
 # pyproject 里承载 requirement 的三处（标准定的闭集）：
 #   PEP 518 `[build-system].requires` · PEP 621 `[project].dependencies` ·
@@ -1015,6 +1038,7 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
         即响亮，含此前当反例用过的 PIP_NO_CACHE_DIR：一视同仁。
         """
         for line in ('PIP_DRY_RUN=1 pip install ".[dev]"',
+                     'pip_dry_run=1 pip install ".[dev]"',
                      'PIP_NO_CACHE_DIR=1 pip install ".[dev]"',
                      'PIP_REQUIREMENT=r.txt python -m pip install .'):
             with self.subTest(line=line):
@@ -1134,6 +1158,42 @@ class EveryDirectWorkflowInstallTargetIsBounded(unittest.TestCase):
         self.assertTrue(problems, "未钉 commit 的源码安装没被点名")
 
 
+class NoCommandAnywhereCarriesAPipEnvironmentToken(unittest.TestCase):
+    """`PIP_*=` 形状的 token 在**任何**命令里出现都响亮——载体不枚举。
+
+    行内前缀已拦，但 `export PIP_DRY_RUN=1; pip install …` 把赋值放在**另一
+    条命令**里、随后持续生效（codex P1）；`env PIP_X=1 pip …` 又是一种载体。
+    与其枚举 export/env/set，不如认形状：这个 token 无论坐在哪条命令里，
+    唯一的作用就是配置 pip。大小写不敏感（Windows 腿）。
+    """
+
+    def test_no_workflow_command_carries_the_shape(self) -> None:
+        scanned = 0
+        offenders: list[str] = []
+        for workflow in _workflows():
+            commands = _workflow_commands(workflow)
+            scanned += len(commands)
+            offenders.extend(
+                f"{workflow.name}: {token}"
+                for token in _pip_environment_offenders(commands))
+        self.assertEqual([], offenders, "有命令在经环境配置 pip")
+        self.assertGreaterEqual(scanned, 10, f"只扫到 {scanned} 条命令")
+
+    def test_every_carrier_spelling_is_caught(self) -> None:
+        # 直接对着**上面那条真数据守卫用的同一个 helper** 测——真实 workflow
+        # 是干净的，负断言测不出扫描被删（变异 BO），作证要在 helper 层做。
+        for line in ("export PIP_DRY_RUN=1",
+                     "env pip_dry_run=1 pip install .",
+                     "set PIP_REQUIREMENT=r.txt"):
+            with self.subTest(line=line):
+                self.assertTrue(
+                    _pip_environment_offenders(_commands(line)),
+                    "这种载体里的 PIP_*= 形状没被认出来")
+        # 反面：非 PIP_ 前缀的赋值不拦。
+        self.assertEqual(
+            [], _pip_environment_offenders(_commands("export RUST_LOG=debug")))
+
+
 class WorkflowEnvironmentCannotConfigurePip(unittest.TestCase):
     """workflow / job / step 的 `env:` 会施加到 run 命令上。
 
@@ -1150,8 +1210,8 @@ class WorkflowEnvironmentCannotConfigurePip(unittest.TestCase):
             keys = _environment_keys(document)
             seen += len(keys)
             offenders.extend(
-                f"{workflow.name}: {key}" for key in keys
-                if key.startswith("PIP_"))
+                f"{workflow.name}: {key}"
+                for key in _pip_env_key_offenders(keys))
         self.assertEqual(
             [], offenders,
             "workflow env 在配置 pip —— run 文本上看不见它改变了什么")
@@ -1163,13 +1223,18 @@ class WorkflowEnvironmentCannotConfigurePip(unittest.TestCase):
         document = {
             "env": {"PIP_A": "1"},
             "jobs": {"j": {
-                "env": {"PIP_B": "1"},
+                "env": {"pip_b": "1"},        # 小写同效（Windows 腿）
                 "steps": [{"run": "pip install .", "env": {"PIP_C": "1"}}],
             }},
         }
-        self.assertEqual(
-            ["PIP_A", "PIP_B", "PIP_C"], _environment_keys(document),
-            "三层 env 没有全部被收集")
+        keys = _environment_keys(document)
+        self.assertEqual(["PIP_A", "pip_b", "PIP_C"], keys,
+                         "三层 env 没有全部被收集")
+        # 对着真数据守卫用的同一个 helper 测——含小写键（Windows 腿等效）。
+        self.assertEqual(["PIP_A", "pip_b", "PIP_C"],
+                         _pip_env_key_offenders(keys),
+                         "小写的 pip 键没被认出来")
+        self.assertEqual([], _pip_env_key_offenders(["RUN_E2E", "REASON"]))
 
 
 class TheQlibPinMustBeARealInstall(unittest.TestCase):

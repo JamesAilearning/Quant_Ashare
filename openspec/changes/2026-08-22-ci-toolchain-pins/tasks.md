@@ -15,6 +15,20 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第十八轮：一个 P1 + 一个 P2 —— 载体不枚举，认形状；大小写不敏感
+
+**P1 `export PIP_DRY_RUN=1; pip install …`**：赋值坐在另一条命令里、随后
+持续生效，行内前缀检查看不见。修法不枚举载体（export/env/set/…），认
+**token 形状**：`PIP_*=` 无论坐在哪条命令里，唯一的作用就是配置 pip——
+全命令扫描，命中即响亮。**P2 大小写**：Windows 腿环境名大小写不敏感，
+`pip_dry_run=1` 与 `PIP_DRY_RUN=1` 等效——形状正则与三层 env 键检查都改
+大小写不敏感。
+
+**变异揭出两条守卫在干净数据上空转**（BO/BQ：真实 workflow 没有违例 token，
+负断言测不出扫描被删）——按本 PR 既立的**两层作证**模式收：把扫描抽成
+helper（`_pip_environment_offenders` / `_pip_env_key_offenders`），真数据
+守卫消费 helper 且只留底数断言，合成数据直接单测 helper。复验三条全咬。
+
 ## codex 第十七轮：一个 P1 + 一个 P2 —— env 的三层注入面、附着式短选项
 
 **P1 workflow `env:` 也能配置 pip。** GitHub Actions 把 workflow/job/step

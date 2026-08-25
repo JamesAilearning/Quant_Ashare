@@ -230,6 +230,13 @@ that actually produces the anchor.
 - **THEN** the guard refuses loudly and demands explicit flags, which the
   existing dry-run and file-sourcing judgements then govern
 
+#### Scenario: a pip environment token is refused wherever it sits
+- **WHEN** a token shaped `PIP_*=` appears in ANY command — as an inline
+  prefix, after `export`, behind `env` or `set`, in any letter case (Windows
+  environment names are case-insensitive)
+- **THEN** the governance test fails naming it: carriers are not enumerated,
+  the shape is what configures pip
+
 #### Scenario: workflow env mappings cannot configure pip either
 - **WHEN** a `PIP_*` key is declared in a workflow-, job-, or step-level `env:`
   mapping — GitHub Actions applies all three to the run command, invisibly to
