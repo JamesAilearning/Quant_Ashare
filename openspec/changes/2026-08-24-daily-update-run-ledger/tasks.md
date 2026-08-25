@@ -28,6 +28,18 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十二轮：一个 P2 + 一个 P2 —— 时间戳要解析得动、第二份 delta 也要对齐
+
+**非空还不够，得解析得动。** `run_date: "foobar"` 配胡话时间戳通过非空检查，
+被渲染成一次「真实」运行。按写入侧的产出验：ISO 日期、带时区的 ISO 时间戳、
+结束不早于开始；验不过就是坏行。
+
+**v2-run-center-page 那份 delta 漏对齐了。** 上一轮改了 design.md 与
+v2-daily-data-update，而同一 change 里的第二份 delta 还写着「找到本 provider
+边界即确定」。按终态重写（三前提 + 真原因 + 外来边界在场即败）。教训并入
+[规格自相矛盾防线]：**改完要 grep 的是整个 change 目录，不是记忆里想到的
+那几个文件**。
+
 ## codex 第十一轮：两个 P2 —— 文档与终态实现的矛盾（防「按旧文档回退」）
 
 design.md 还写着「窗口里找得到边界→归属确定」——那是被评审连打三层之前的

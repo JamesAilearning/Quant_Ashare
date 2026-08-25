@@ -92,6 +92,13 @@ the derived value.
   "foreign" label is reserved for a fully valid record whose only difference
   is its identity
 
+#### Scenario: unparseable dates and timestamps are corruption, not history
+- **WHEN** a row's `run_date` is not an ISO date, a timestamp is not a
+  timezone-aware ISO datetime, or `finished_at` precedes `started_at` — none
+  of which the writer ever emits
+- **THEN** the row counts as malformed rather than being rendered as a real
+  run with nonsense dates
+
 #### Scenario: a bad byte inside a JSON string is corruption, not data
 - **WHEN** a ledger line contains invalid UTF-8 inside a string field, where
   replacement decoding would yield syntactically valid JSON

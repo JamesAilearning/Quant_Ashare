@@ -311,6 +311,34 @@ class ARecordThatIsNotInterpretableIsMalformedNotAFailedRun(unittest.TestCase):
                         0, self._one(provider, path, exit_code=0,
                                      failed_stage=None, **{field: ""}))
 
+    def test_gibberish_dates_and_timestamps_are_not_a_run(self) -> None:
+        """非空还不够——`run_date: "foobar"` 配胡话时间戳曾照样通过。
+
+        写入侧固定产 ISO 日期 + 带时区的 ISO 时间戳、结束不早于开始；验不过
+        的行是坏行，不硬渲染成「真实」运行（codex P2）。
+        """
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            path = ledger_path_for_provider(provider)
+            cases = [
+                {"run_date": "foobar"},
+                {"started_at": "not-a-time"},
+                {"finished_at": "still-not-a-time"},
+                # 无时区（naive）的时间戳不是写入侧的产出。
+                {"started_at": "2026-08-21T20:30:00"},
+                # 结束早于开始。
+                {"started_at": "2026-08-21T22:00:00+08:00",
+                 "finished_at": "2026-08-21T20:00:00+08:00"},
+            ]
+            for override in cases:
+                with self.subTest(override=override):
+                    self.assertEqual(0, self._one(provider, path, **override))
+            # 反面：写入侧的正常产出必须照常读进来。
+            _write(path, [_record(provider, exit_code=0)])
+            self.assertEqual(
+                1, len(read_ledger(path, provider_dir=provider).runs))
+
     def test_a_boolean_or_float_schema_version_is_not_v1(self) -> None:
         """JSON 的 `true` 与 `1.0` 在 Python 里都 `== 1`。
 

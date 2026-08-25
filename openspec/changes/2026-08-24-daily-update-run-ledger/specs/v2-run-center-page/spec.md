@@ -4,12 +4,14 @@
 
 ### Requirement: 进度归属 SHALL 以运行边界为准，取不到边界时如实说不知道
 
-The run-center page SHALL attribute the fetch-progress line it surfaces by
-locating the most recent run boundary in the log text it read, and SHALL treat
-a boundary naming another provider as not this run's. When the text contains no
-boundary the page SHALL say attribution is unknown, exactly as it did before
-boundaries existed, and SHALL NOT substitute any heuristic for the missing
-boundary.
+The run-center page SHALL attribute the fetch-progress line it surfaces to a
+run ONLY when the window it read covers the whole log, every boundary in it
+names this provider, and the boundary's stamp equals the `started_at` of the
+status record the page is displaying. When any of those preconditions fails
+the page SHALL say attribution is unknown AND which precondition failed —
+truncated window, foreign boundary present, no boundary, or a boundary that
+does not match the displayed status record — exactly as honestly as it did
+before boundaries existed, and SHALL NOT substitute any heuristic.
 
 The progress reader previously could not attribute at all: log lines carry only
 `HH:MM:SS`, so a line from yesterday's 21:00 run is indistinguishable from
@@ -22,18 +24,25 @@ endpoint-year's ticker count, while fetch is only the second of six stages, so
 rendering it as a bar tells the operator the run is fractionally complete when
 it is not.
 
-#### Scenario: progress after a boundary is attributed to that run
-- **WHEN** the text read contains a boundary for this provider and a progress
-  line after it
-- **THEN** the page presents that progress as belonging to the current run
+#### Scenario: progress is attributed only under the full preconditions
+- **WHEN** the window read covers the whole log, every boundary in it names
+  this provider, a progress line follows the last one, and that boundary's
+  stamp equals the displayed status record's `started_at`
+- **THEN** the page presents that progress as certainly belonging to that run
 
-#### Scenario: no boundary in the window keeps the honest disclosure
-- **WHEN** the text read contains no boundary
-- **THEN** the page keeps saying which run the line belongs to is unknown
+#### Scenario: any failed precondition keeps the honest disclosure, with the reason
+- **WHEN** the window is truncated, a foreign boundary is present, no boundary
+  is visible, or the boundary does not match the displayed status record
+- **THEN** the page says attribution is unknown and states which of those it
+  was — a truncated window is the common case and must not be described as
+  "no boundary"
 
-#### Scenario: a foreign boundary is ignored
-- **WHEN** the only boundary present names a different provider directory
-- **THEN** it is not used to attribute this provider's progress
+#### Scenario: a foreign boundary is ignored, and defeats certainty
+- **WHEN** a boundary naming a different provider directory appears anywhere
+  in the window
+- **THEN** it is never used to attribute this provider's progress, and its
+  mere presence makes attribution unknown — the providers share one log and
+  their lines can interleave
 
 #### Scenario: progress is still not a percentage
 - **WHEN** a progress line is surfaced

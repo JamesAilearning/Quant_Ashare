@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 # Mirrors src/data_pipeline/daily_update.py LEDGER_FILENAME / LEDGER_SCHEMA_VERSION.
@@ -155,6 +155,20 @@ def _is_valid_v1(record: dict[str, object]) -> bool:
         isinstance(record.get(key), str) and record.get(key)
         for key in _REQUIRED_NONEMPTY
     ):
+        return False
+    # 非空还不够，得**解析得动**：`run_date: "foobar"` 配三个胡话时间戳照样
+    # 通过非空检查，被渲染成一次「真实」运行（codex P2）。写入侧固定产
+    # ISO 日期 + 带时区的 ISO 时间戳，且结束不早于开始——按写入侧的产出
+    # 验，验不过就是坏行，不硬渲染。
+    try:
+        date.fromisoformat(str(record["run_date"]))
+        started = datetime.fromisoformat(str(record["started_at"]))
+        finished = datetime.fromisoformat(str(record["finished_at"]))
+    except ValueError:
+        return False
+    if started.tzinfo is None or finished.tzinfo is None:
+        return False
+    if finished < started:
         return False
     return isinstance(record.get("detail"), str)
 
