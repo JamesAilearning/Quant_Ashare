@@ -222,17 +222,33 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         # 取 `open(...)` 的 mode **实参**，不在源码文本里找引号 —— `ast.unparse`
         # 会把引号统一掉，按字面形态判会红得毫无信息（本仓刚为「字面形态」那一带
         # 付过学费）。
-        modes = {
+        # 追加句柄现在经 os.open(flags) + fdopen("ab")：fdopen 的 mode 是
+        # 常量实参、os.open 的 flags 是表达式，分别钉。Path.open 只许剩只读。
+        path_open_modes = {
             node.args[0].value
             for node in ast.walk(fn)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute) and node.func.attr == "open"
+            and not (isinstance(node.func.value, ast.Name)
+                     and node.func.value.id == "os")
             and node.args and isinstance(node.args[0], ast.Constant)
         }
-        self.assertTrue(modes, "找不到任何 open 调用 —— 本守卫已失效")
-        self.assertIn("ab", modes, "追加句柄没了")
-        # symlink 拒随是承重的（`open("ab")` 会跟随链接、写进别人的历史），
-        # 而行为测试在无符号链接权限的机器上会 skip —— 源码级钉住它在场。
+        fdopen_modes = {
+            node.args[1].value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "fdopen"
+            and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+        }
+        self.assertEqual({"ab"}, fdopen_modes, "追加句柄没了")
+        self.assertLessEqual(
+            path_open_modes, {"rb"},
+            f"出现了只读之外的 Path.open：{path_open_modes} —— "
+            f"「只可追加」不再成立")
+        # symlink 拒随是承重的，且是**两层**：前置 is_symlink（Windows 主
+        # 防线；行为测试无权限会 skip）+ O_NOFOLLOW（POSIX 上把 check-then-
+        # use 竞态关死，打开动作本身遇链接原子失败）。源码级分别钉。
         called = {
             node.func.attr
             for node in ast.walk(fn)
@@ -240,9 +256,12 @@ class TheLedgerIsAppendOnly(unittest.TestCase):
         }
         self.assertIn("is_symlink", called,
                       "_append_ledger 不再检查符号链接 —— 拒随防线没了")
-        self.assertLessEqual(
-            modes, {"ab", "rb"},
-            f"出现了追加/只读之外的打开方式：{modes} —— 「只可追加」不再成立")
+        body_src = ast.unparse(fn)
+        for bearing in ("O_APPEND", "O_NOFOLLOW", "O_CREAT"):
+            with self.subTest(承重位=bearing):
+                self.assertIn(
+                    bearing, body_src,
+                    f"os.open flags 丢了 {bearing} —— 追加/拒随语义不再成立")
         # 另外三种截断途径同样不许出现。
         body = ast.unparse(fn)
         for forbidden in ("write_text", "os.replace", "truncate", "write_bytes"):

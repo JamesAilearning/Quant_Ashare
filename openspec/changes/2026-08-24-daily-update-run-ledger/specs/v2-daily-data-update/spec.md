@@ -45,6 +45,14 @@ the derived value.
 - **THEN** no ledger line is appended, so a refused second run cannot pollute
   the history of the run holding the lock
 
+#### Scenario: the append never follows a symlink, atomically where possible
+- **WHEN** the derived ledger path is (or becomes, between check and open) a
+  symlink to somewhere else — another provider's history included
+- **THEN** the append refuses: the open itself carries `O_NOFOLLOW` where the
+  platform provides it (failing atomically on a link), with a pre-check as the
+  primary line on Windows where symlink creation is privileged; the run's exit
+  code is unaffected either way
+
 #### Scenario: a torn tail cannot swallow the new line
 - **WHEN** a previous process died mid-write leaving a final line without its
   newline

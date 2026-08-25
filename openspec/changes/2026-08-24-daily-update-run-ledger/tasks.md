@@ -28,6 +28,15 @@
 - [x] `openspec validate --strict` valid
 - [ ] codex CLEAN + CI 七绿 → STOP 等 merge
 
+## codex 第十六轮：一个 P2 —— 先查再开是竞态，打开动作自己要拒随
+
+上一轮的 `is_symlink()` 前置检查与 `open("ab")` 是两次文件系统操作——中间
+路径可以被换成链接（check-then-use）。改为 os.open 带 `O_NOFOLLOW`（POSIX
+上遇链接**原子地** ELOOP 失败）+ fdopen("ab")；Windows 没有 O_NOFOLLOW
+（getattr 得 0），保留前置检查为主防线——那里创建符号链接本就需要特权，
+残余竞态窗口如实记录。append-only 守卫随新结构重钉：fdopen mode 只许 "ab"、
+Path.open 只许 "rb"、三个承重 flag（O_APPEND/O_NOFOLLOW/O_CREAT）逐一钉住。
+
 ## codex 第十五轮：两个 P2 —— 派生位上的符号链接、我自己造的规格矛盾
 
 **symlink 拒随。** B 名下的台账名被链到 A 的台账时，`open("ab")` 跟随链接、

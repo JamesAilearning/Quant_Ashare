@@ -263,10 +263,12 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
       后面再跟一条健康的行。
     """
     try:
-        # 目标是符号链接就**拒绝追加**：`open("ab")` 会跟随链接——B 名下的
-        # 台账名被链到 A 的台账时，B 的记录会直接写进 A 的历史，而构造期
-        # 检查解析的是各自配置的路径、看不见事后落在派生位上的链接
-        # （codex P2）。拒绝并记 ERROR，退出码照旧不受影响。
+        # 符号链接不许跟随：B 名下的台账名被链到 A 的台账时，跟随的追加会
+        # 把 B 的记录写进 A 的历史。「先查再开」是 check-then-use 竞态——
+        # 检查与 open 之间路径可以被换成链接（codex 两轮 P2）。所以打开动作
+        # 本身带 O_NOFOLLOW（POSIX 上遇链接原子地 ELOOP 失败）；Windows 没有
+        # O_NOFOLLOW（getattr 得 0），保留前置 is_symlink 作为主防线——那里
+        # 创建符号链接本就需要特权，竞态窗口如实记录为已知残余。
         if path.is_symlink():
             _logger.error(
                 "run-ledger target %s is a SYMLINK — refusing to append "
@@ -281,7 +283,12 @@ def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
                 tail.seek(-1, os.SEEK_END)
                 if tail.read(1) != b"\n":
                     line = b"\n" + line
-        with path.open("ab") as handle:
+        flags = (
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        with os.fdopen(os.open(str(path), flags, 0o644), "ab") as handle:
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())
