@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
 from pathlib import Path
 
 from web.operator_ui.incumbent import IncumbentIdentity
@@ -319,19 +318,17 @@ class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
 
 
 class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
-    """「今天要不要买」合成句（UI 已批序列④）——三态 + 如实边缘。
+    """「今天要不要买」合成句（UI 已批序列④）——零自造、零时钟。
 
-    helper 零自造判定：陈旧/完整性来自出单侧裁决（BundleFreshness），节奏来
-    自已核验来源的 summarise_daily_signal，「说给今天」只看 entry_date。
+    数据包前置=出单侧 usable 全额；节奏与候选基数=已核验信号分类；
+    「新不新」= entry_date（已收盘会话）对出单侧日历尾，不比挂钟。
     """
-
-    _TODAY = date(2026, 8, 26)
 
     @staticmethod
     def _fresh(**overrides: object) -> BundleFreshness:
         base: dict[str, object] = dict(
-            known=True, tail_date="2026-08-25", days_behind=1,
-            max_age_days=14, headroom_days=13, refuses_today=False,
+            known=True, tail_date="2026-08-26", days_behind=0,
+            max_age_days=14, headroom_days=14, refuses_today=False,
             integrity_accepted=True)
         base.update(overrides)
         return BundleFreshness(**base)  # type: ignore[arg-type]
@@ -344,61 +341,59 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         base.update(overrides)
         return DailySignalSummary(**base)  # type: ignore[arg-type]
 
-    def test_a_rebalance_instruction_for_today_says_buy(self) -> None:
-        got = todays_buy_answer(
-            self._signal("rebalance"), self._fresh(), self._TODAY)
-        self.assertEqual("buy", got.state)
-        self.assertIn("有买入指令", got.value)
-        self.assertIn("人工核对", got.detail, "买入态不许省掉人工核对义务")
+    def test_a_current_rebalance_names_count_and_closed_session(self) -> None:
+        got = todays_buy_answer(self._signal("rebalance"), self._fresh())
+        self.assertEqual("rebalance", got.state)
+        self.assertIn("有再平衡指令", got.value)
+        self.assertIn("人工核对", got.detail, "指令态不许省掉人工核对义务")
         self.assertIn("5 只候选", got.detail, "候选数没如实说出")
 
-    def test_an_empty_rebalance_list_is_not_a_buy_instruction(self) -> None:
-        # 空清单是合法产出（--topk 0 / 全部候选被掩蔽，codex P1）——
-        # 零个买入对象时最显眼的卡片不许说「买」。
+    def test_the_card_never_calls_entry_a_buy_day(self) -> None:
+        # 基线契约（v2-daily-decision-page）：entry_date 是**已收盘会话**、
+        # 清单不是「明早买入」指令、真实订单如何收敛是操作人的执行惯例
+        # （codex #468 P1：把 entry 等同「今天买」会怂恿对已收盘价下单）。
+        for signal in (self._signal("rebalance"),
+                       self._signal("rebalance", pick_count=0),
+                       self._signal("hold")):
+            got = todays_buy_answer(signal, self._fresh())
+            with self.subTest(kind=signal.kind, picks=signal.pick_count):
+                self.assertIn("已收盘会话", got.detail,
+                              "已收盘披露没跟着工件走到本卡")
+                self.assertNotIn("执行日", got.detail,
+                                 "把已收盘会话说成了执行日")
+                self.assertNotIn("今天（", got.detail,
+                                 "又把挂钟日期塞回了指令语义")
+        rebalance = todays_buy_answer(self._signal("rebalance"), self._fresh())
+        self.assertIn("执行惯例", rebalance.detail,
+                      "收敛方式归执行惯例这句丢了")
+
+    def test_a_current_hold_says_watch_and_names_the_next_day(self) -> None:
         got = todays_buy_answer(
-            self._signal("rebalance", pick_count=0), self._fresh(),
-            self._TODAY)
+            self._signal("hold", next_rebalance_date="2026-08-28"),
+            self._fresh())
         self.assertEqual("watch", got.state)
-        self.assertIn("不买", got.value)
+        self.assertIn("不动", got.value)
+        self.assertIn("2026-08-28", got.detail, "下一再平衡日没说出来")
+
+    def test_an_empty_rebalance_list_is_not_an_instruction(self) -> None:
+        # 空清单是合法产出（--topk 0 / 全部候选被掩蔽，codex P1）。
+        got = todays_buy_answer(
+            self._signal("rebalance", pick_count=0), self._fresh())
+        self.assertEqual("watch", got.state)
         self.assertIn("清单为空", got.value)
         self.assertIn("没有买入对象", got.detail)
 
     def test_a_rebalance_without_a_cardinality_refuses_to_answer(self) -> None:
-        # 接线保险：候选数没随核验结果传递（None）时不许猜有对象。
         got = todays_buy_answer(
-            self._signal("rebalance", pick_count=None), self._fresh(),
-            self._TODAY)
+            self._signal("rebalance", pick_count=None), self._fresh())
         self.assertEqual("unanswerable", got.state)
         self.assertIn("候选数", got.detail)
 
-    def test_a_health_precondition_failure_blocks_a_buy_answer(self) -> None:
-        # 年龄与完整性都过、健康摘要仍扣分（如 instruments 缺失）——
-        # usable=False 时说「买」会与同页健康卡自相矛盾（codex P1）。
-        got = todays_buy_answer(
-            self._signal("rebalance"),
-            self._fresh(health_status="error",
-                        health_warnings=("instruments 目录缺失",)),
-            self._TODAY)
-        self.assertEqual("unanswerable", got.state)
-        self.assertIn("instruments 目录缺失", got.detail,
-                      "健康扣分的原因没活到可见文案")
-        self.assertIn("健康状态 error", got.detail)
-
-    def test_a_hold_for_today_says_watch_and_names_the_next_day(self) -> None:
-        got = todays_buy_answer(
-            self._signal("hold", next_rebalance_date="2026-08-28"),
-            self._fresh(), self._TODAY)
-        self.assertEqual("watch", got.state)
-        self.assertIn("不买", got.value)
-        self.assertIn("2026-08-28", got.detail, "下一再平衡日没说出来")
-
     def test_staleness_beats_a_seemingly_current_instruction(self) -> None:
-        # 优先级钉：出单侧今天会拒时，即使工件看起来是今天的也拒答——
-        # 该组合正常流程到不了，真到了说明有一侧在说谎，拒答比选边站诚实。
+        # 优先级钉：出单侧今天会拒时，即使工件看起来对得上数据尾也拒答。
         got = todays_buy_answer(
             self._signal("rebalance"),
-            self._fresh(refuses_today=True, days_behind=15, headroom_days=0),
-            self._TODAY)
+            self._fresh(refuses_today=True, days_behind=15, headroom_days=0))
         self.assertEqual("unanswerable", got.state)
         self.assertIn("15", got.detail, "落后天数没如实说出")
         self.assertIn("14", got.detail, "出单上限没如实说出")
@@ -407,31 +402,46 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         got = todays_buy_answer(
             self._signal("rebalance"),
             self._fresh(integrity_accepted=False,
-                        integrity_reason="built_from_holey_fetch"),
-            self._TODAY)
+                        integrity_reason="built_from_holey_fetch"))
         self.assertEqual("unanswerable", got.state)
         self.assertIn("built_from_holey_fetch", got.detail)
 
     def test_an_unevaluated_integrity_gate_is_not_treated_as_open(self) -> None:
         got = todays_buy_answer(
-            self._signal("rebalance"),
-            self._fresh(integrity_accepted=None), self._TODAY)
+            self._signal("rebalance"), self._fresh(integrity_accepted=None))
         self.assertEqual("unanswerable", got.state)
         self.assertIn("完整性", got.detail)
+
+    def test_a_health_precondition_failure_blocks_the_answer(self) -> None:
+        # 年龄与完整性都过、健康摘要仍扣分——usable=False 时给出指令会与
+        # 同页健康卡自相矛盾（codex P1）。
+        got = todays_buy_answer(
+            self._signal("rebalance"),
+            self._fresh(health_status="error",
+                        health_warnings=("instruments 目录缺失",)))
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("instruments 目录缺失", got.detail,
+                      "健康扣分的原因没活到可见文案")
+        self.assertIn("健康状态 error", got.detail)
 
     def test_an_unreachable_freshness_verdict_is_stated(self) -> None:
         got = todays_buy_answer(
             self._signal("rebalance"),
             self._fresh(known=False, refuses_today=None,
-                        integrity_accepted=None, message="日历尾不可读"),
-            self._TODAY)
+                        integrity_accepted=None, tail_date=None,
+                        message="日历尾不可读"))
         self.assertEqual("unanswerable", got.state)
         self.assertIn("日历尾不可读", got.detail, "裁决不可达的原因没活下来")
 
+    def test_a_verdict_without_a_tail_cannot_compare_currency(self) -> None:
+        got = todays_buy_answer(
+            self._signal("rebalance"), self._fresh(tail_date=None))
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("日历尾", got.detail)
+
     def test_a_missing_artifact_is_a_flow_state_not_an_error(self) -> None:
         got = todays_buy_answer(
-            DailySignalSummary("missing", "尚无日度信号工件。"),
-            self._fresh(), self._TODAY)
+            DailySignalSummary("missing", "尚无日度信号工件。"), self._fresh())
         self.assertEqual("no_instruction", got.state)
         self.assertIn("运行中心", got.detail)
 
@@ -439,46 +449,45 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         got = todays_buy_answer(
             self._signal("needs_verification",
                          detail="工件来源无法与现任模型确认。"),
-            self._fresh(), self._TODAY)
+            self._fresh())
         self.assertEqual("unanswerable", got.state)
         self.assertIn("工件来源无法与现任模型确认", got.detail,
                       "核查原因没活下来")
 
-    def test_a_stale_instruction_names_its_entry_date(self) -> None:
+    def test_data_moving_past_the_instruction_is_a_flow_state(self) -> None:
+        # 数据尾走到了最新指令之后 = 出单没跟上——流程态，两个日期点名。
         got = todays_buy_answer(
-            self._signal("rebalance", entry_date="2026-08-24"),
-            self._fresh(), self._TODAY)
+            self._signal("rebalance", entry_date="2026-08-24"), self._fresh())
         self.assertEqual("no_instruction", got.state)
-        self.assertIn("2026-08-24", got.detail, "旧指令的执行日没点名")
-        self.assertIn("尚未生成", got.detail)
+        self.assertIn("2026-08-24", got.detail, "旧指令的会话没点名")
+        self.assertIn("2026-08-26", got.detail, "数据尾没点名")
+        self.assertIn("运行中心", got.detail)
 
-    def test_a_future_instruction_is_not_todays(self) -> None:
+    def test_an_instruction_ahead_of_the_data_tail_is_abnormal(self) -> None:
+        # 产出器出不了未收盘会话的清单——工件声称的会话晚于数据尾，
+        # 两侧必有一侧在说谎，拒答并点名两个日期。
         got = todays_buy_answer(
-            self._signal("hold", entry_date="2026-08-27"),
-            self._fresh(), self._TODAY)
-        self.assertEqual("no_instruction", got.state)
+            self._signal("rebalance", entry_date="2026-08-27"), self._fresh())
+        self.assertEqual("unanswerable", got.state)
         self.assertIn("2026-08-27", got.detail)
-        self.assertIn("未来", got.detail)
+        self.assertIn("2026-08-26", got.detail)
 
     def test_an_unmarked_daily_artifact_cannot_be_synthesized(self) -> None:
-        got = todays_buy_answer(
-            self._signal("daily"), self._fresh(), self._TODAY)
+        got = todays_buy_answer(self._signal("daily"), self._fresh())
         self.assertEqual("unanswerable", got.state)
         self.assertIn("节奏标记", got.detail)
 
     def test_every_state_carries_the_not_an_order_disclaimer(self) -> None:
         answers = [
-            todays_buy_answer(self._signal("rebalance"), self._fresh(),
-                              self._TODAY),
-            todays_buy_answer(self._signal("hold"), self._fresh(),
-                              self._TODAY),
+            todays_buy_answer(self._signal("rebalance"), self._fresh()),
+            todays_buy_answer(self._signal("hold"), self._fresh()),
             todays_buy_answer(DailySignalSummary("missing", "尚无。"),
-                              self._fresh(), self._TODAY),
+                              self._fresh()),
             todays_buy_answer(self._signal("rebalance"),
-                              self._fresh(refuses_today=True), self._TODAY),
+                              self._fresh(refuses_today=True)),
         ]
         self.assertEqual(
-            {"buy", "watch", "no_instruction", "unanswerable"},
+            {"rebalance", "watch", "no_instruction", "unanswerable"},
             {a.state for a in answers}, "四态没有各出一个代表")
         for answer in answers:
             with self.subTest(state=answer.state):
@@ -486,12 +495,12 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                               "合成句丢了「不是订单」的免责声明")
 
     def test_the_page_wires_the_synthesis_with_the_shared_verdicts(self) -> None:
-        # 接线钉：合成句必须消费页面里那份出单侧裁决与 CN 日历日，
-        # 且四个状态都有显式配色（漏一个就是 KeyError 或静默缺省）。
+        # 接线钉：合成句必须消费页面里那份出单侧裁决（零时钟——挂钟参数
+        # 已按 codex P1 移除），且四个状态都有显式配色。
         source = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
                   / "pages" / "today_workbench.py").read_text(encoding="utf-8")
-        self.assertIn("todays_buy_answer(signal, _freshness, cn_today())",
+        self.assertIn("todays_buy_answer(signal, _freshness)",
                       source, "合成句没有接共享裁决")
-        for state in ("buy", "watch", "no_instruction", "unanswerable"):
+        for state in ("rebalance", "watch", "no_instruction", "unanswerable"):
             self.assertIn(f'"{state}":', source,
                           f"页面没有为 {state} 配色")

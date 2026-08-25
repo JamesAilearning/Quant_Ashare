@@ -390,13 +390,13 @@ with signal_col:
 # 回填顶部的合成句（UI 已批序列④，P0）：三态 + 如实边缘，判定全部来自
 # 上面已算好的裁决——helper 零自造（见 todays_buy_answer docstring）。
 _ANSWER_COLORS: dict[str, _CardColor] = {
-    "buy": "warning",          # 有指令 ≠ 已授权：仍须人工核对，不给绿灯色
+    "rebalance": "warning",    # 有指令 ≠ 已授权：仍须人工核对，不给绿灯色
     "watch": "default",
     "no_instruction": "warning",
     "unanswerable": "negative",
 }
 with _answer_slot:
-    _answer = todays_buy_answer(signal, _freshness, cn_today())
+    _answer = todays_buy_answer(signal, _freshness)
     _render_card(
         "今天要不要买",
         _answer.value,
