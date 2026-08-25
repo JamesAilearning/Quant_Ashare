@@ -944,6 +944,43 @@ class AttributionComesFromTheBoundaryNotAHeuristic(unittest.TestCase):
         self.assertFalse(got.attributed)
         self.assertEqual("corrupt_boundary", got.unattributed_reason)
 
+    def test_a_symlink_loop_boundary_is_corrupt_not_a_crash(self) -> None:
+        """符号链接环让 resolve 抛 RuntimeError（3.10–3.12 实测）。
+
+        逃出兜底整个 run_center 页就崩——该判 corrupt_boundary（codex P2，
+        台账读者同款处置）。真环难以可移植地构造，按既有受控模拟：只对带
+        标记的身份让 resolve 抛 RuntimeError，其余路径走真实现。
+        """
+        import unittest.mock as mock
+
+        import web.operator_ui.update_progress as progress_mod
+        real_path = progress_mod.Path
+
+        class _MaybeLooping:
+            def __init__(self, arg: object) -> None:
+                self._arg = str(arg)
+
+            def resolve(self):
+                # normcase 在 Windows 上小写化——标记匹配大小写不敏感。
+                if "symlink-loop" in self._arg.lower():
+                    raise RuntimeError("Symlink loop from ...")
+                return real_path(self._arg).resolve()
+
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            looped = os.path.normcase(str(Path(t) / "SYMLINK-LOOP"))
+            text = chr(10).join([
+                f"20:30:01 [x] INFO — {RUN_BOUNDARY_MARK} "
+                f"2026-08-24T20:30:01+08:00 provider={looped}",
+                f"20:31:00{_PROGRESS_LINE}",
+            ])
+            with mock.patch.object(progress_mod, "Path", _MaybeLooping):
+                got = last_fetch_progress_for_run(
+                    text, provider_dir=provider, window_complete=True)
+        self.assertFalse(got.attributed, "符号链接环边界被当真了（或页崩了）")
+        self.assertEqual("corrupt_boundary", got.unattributed_reason)
+
     def test_a_crlf_terminated_boundary_still_attributes(self) -> None:
         r"""行尾 `\r` 是词法层的终结符残留，不是身份内容。
 

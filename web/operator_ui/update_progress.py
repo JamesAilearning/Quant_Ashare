@@ -233,7 +233,9 @@ def _current_segment(
         stamped = match.group("provider")
         try:
             canonical = os.path.normcase(str(Path(stamped).resolve()))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError = 符号链接环（3.10–3.12 实测，台账读者同款处
+            # 置）——不接住它，一条恶意/损坏边界就崩掉整个 run_center 页。
             return None, "corrupt_boundary"
         if canonical != stamped:
             return None, "corrupt_boundary"
