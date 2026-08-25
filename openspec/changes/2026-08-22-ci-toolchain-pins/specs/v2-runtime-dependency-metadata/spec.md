@@ -16,7 +16,9 @@ than be skipped. A local-project
 install SHALL be recognised by its TARGET (`.` or `.[extras]`), not by which
 editable spelling precedes it, and a pip invocation by its EXECUTABLE — `pip`
 with pip's own version-suffix naming scheme, path-prefixed or via `python -m
-pip` — not by one literal spelling. Dependencies that JUDGE the
+pip`, in the command's EXECUTABLE POSITION (after POSIX assignment prefixes) —
+not by one literal spelling, and not by scanning arguments: `pip install …`
+quoted inside an `echo` is an example being logged, not an installation. Dependencies that JUDGE the
 code (the test runner and its plugins, the type checker, the linter) SHALL be
 bounded at the NEXT minor version; libraries the code merely uses MAY be bounded
 at the major version.
@@ -137,6 +139,19 @@ that actually produces the anchor.
   prefix, or through `python -m pip`
 - **THEN** the install enters the derived coverage the same way, while
   lookalikes such as `pipx` do not
+
+#### Scenario: pip named in an argument is not an installation
+- **WHEN** a command merely mentions an install — `echo pip install -e
+  ".[research]"` logging an example
+- **THEN** it contributes nothing to the derived coverage, because the
+  executable is a position, not a substring — a false positive here turns
+  governance red for dependencies CI never installs
+
+#### Scenario: subshell parentheses are command syntax
+- **WHEN** an install is wrapped in unquoted grouping parentheses or appears
+  inside a command substitution
+- **THEN** it is recognised like any other command, while parentheses inside
+  quotes remain word characters
 
 #### Scenario: only executable content counts as an install
 - **WHEN** a workflow carries an installation line inside a shell comment, or a

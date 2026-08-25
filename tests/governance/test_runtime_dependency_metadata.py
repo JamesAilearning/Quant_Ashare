@@ -26,7 +26,9 @@ _WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
 _LOCAL_TARGET = re.compile(r"^\.(?:\[(?P<extras>[^\]]+)\])?$")
 
 #: 命令分隔符。POSIX shell 在这些记号处结束一条命令——由语法定义，不是我在
-#: 枚举写法。分组括号**不在其中**：`(` 在 `$(` 里是展开的一部分，不是边界。
+#: 枚举写法。未加引号的 `(`/`)` 同样是命令语法（子 shell 分组、命令替换的
+#: 边界），在词法器主循环里单独处理——`(pip install …)` 合法，把括号焊在
+#: token 上会让 `_is_pip_install` 与 `_local_target` 都认不出它（codex P2）。
 _SEPARATORS = ("&&", "||", ";;", ";", "|", "&")
 
 
@@ -128,6 +130,15 @@ def _split_commands(script: str) -> list[str]:
             flush()
             index = skip_heredoc_bodies(index + 1) if pending_heredocs else index + 1
             continue
+        if char in "()":
+            # 未加引号的括号是命令边界（子 shell 分组、命令替换）。命令替换
+            # 的 `$(` 不需要单列：`(` 在这里断开、配对的 `)` 也在这里断开，
+            # 内部本身就是命令、照常扫描；`$` 留在外层片段的 token 上，对
+            # 「这条是不是 pip 安装」的判定无影响——曾单列过一个 `$(` 分支，
+            # 变异证明它是**死代码**（裸括号规则已覆盖），删。
+            flush()
+            index += 1
+            continue
         separator = next(
             (sep for sep in _SEPARATORS if script.startswith(sep, index)), None)
         if separator is not None:
@@ -180,22 +191,33 @@ def _workflow_commands(workflow: Path) -> list[list[str]]:
 
 
 #: pip 自己的可执行体命名规则：`pip`、`pip3`、`pip3.12`。这是 pip 安装器写
-#: 死的方案（`pip` + 解释器版本后缀），不是我在枚举拼写。
+#: 死的方案（`pip` + 解释器版本后缀），不是我在枚举拼写。python 同一方案。
 _PIP_EXECUTABLE = re.compile(r"^pip[\d.]*$")
+_PYTHON_EXECUTABLE = re.compile(r"^python[\d.]*$")
+#: POSIX 简单命令允许的前缀：`VAR=value` 赋值。可执行体在它们**之后**。
+_ASSIGNMENT_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 
 
 def _is_pip_install(command: list[str]) -> bool:
     """这条命令是不是一次 pip 安装。
 
-    认**可执行体**，不认 `pip` 一种拼写——`pip3 install ".[research]"` 同样
-    合法，只匹配字面 `pip` 会把它整条排除在推导覆盖面之外，而现有 workflow
-    让计数断言照样绿着（codex P2；与「认目标不认 flag」同一课）。路径前缀取
-    basename，`python -m pip …` 由裸 `pip` token 覆盖。
+    认**可执行体的位置**，不是在实参里扫 `pip` 这个串——否则一条
+    `echo pip install -e ".[research]"`（比如打日志的示例）会被当成真安装，
+    research 组那些刻意无上界的依赖就把治理打红，而 CI 根本没装它们
+    （codex P2）。可执行体 = 跳过 POSIX 赋值前缀后的第一个 token：basename
+    是 pip 命名方案（`pip`/`pip3`/`pip3.12`，路径前缀取 basename）即 pip
+    本体；是 python 且紧跟 `-m pip` 即模块形态。`pipx` 形近不算。
     """
-    for index, token in enumerate(command):
-        name = token.replace("\\", "/").rsplit("/", 1)[-1]
-        if _PIP_EXECUTABLE.match(name):
-            return "install" in command[index + 1:]
+    tokens = list(command)
+    while tokens and _ASSIGNMENT_PREFIX.match(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return False
+    name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if _PYTHON_EXECUTABLE.match(name) and tokens[1:3] == ["-m", "pip"]:
+        return "install" in tokens[3:]
+    if _PIP_EXECUTABLE.match(name):
+        return "install" in tokens[1:]
     return False
 
 
@@ -519,13 +541,55 @@ class APipInstallIsRecognisedByItsExecutable(unittest.TestCase):
                 self.assertTrue(_is_pip_install(_commands(line)[0]),
                                 "这种 pip 写法没被认出来 —— 覆盖面在此静默缩水")
 
+    def test_an_assignment_prefix_does_not_hide_the_executable(self) -> None:
+        # POSIX 允许 `VAR=value cmd …`——可执行体在赋值前缀之后。
+        self.assertTrue(_is_pip_install(
+            _commands('PIP_NO_CACHE_DIR=1 pip install ".[dev]"')[0]))
+
     def test_a_lookalike_executable_is_not_pip(self) -> None:
         # `pipx install` 装的是隔离环境里的应用，不是项目依赖。
         self.assertFalse(_is_pip_install(_commands("pipx install ruff")[0]))
 
+    def test_pip_as_an_argument_is_not_an_install(self) -> None:
+        """`pip` 出现在**实参**里不算——可执行体是位置，不是子串。
+
+        `echo pip install -e ".[research]"` 只是打日志的示例，把它当真安装，
+        research 组那些刻意无上界的依赖就把治理打红，而 CI 根本没装它们
+        （codex P2）。误报与漏报同样是错的。
+        """
+        for line in ('echo pip install -e ".[research]"',
+                     "echo install pip"):
+            with self.subTest(line=line):
+                self.assertFalse(_is_pip_install(_commands(line)[0]))
+
     def test_install_must_follow_the_executable(self) -> None:
         self.assertFalse(_is_pip_install(_commands("pip download numpy")[0]))
-        self.assertFalse(_is_pip_install(_commands("echo install pip")[0]))
+
+
+class ParenthesesAreCommandSyntaxNotWordCharacters(unittest.TestCase):
+    """未加引号的 `(`/`)` 是 POSIX 的命令语法，不是词的一部分。
+
+    `(pip install -e ".[research]")` 合法；把括号焊在 token 上，
+    `_is_pip_install` 与 `_local_target` 都认不出它，那组 extra 静默脱离
+    覆盖面（codex P2）。
+    """
+
+    def test_a_subshell_install_is_recognised(self) -> None:
+        got = _commands('(pip install -e ".[research]")')
+        self.assertEqual(1, len(got))
+        self.assertTrue(_is_pip_install(got[0]), "子 shell 里的安装没被认出来")
+        matched = _local_target(got[0])
+        self.assertIsNotNone(matched, "子 shell 里的本地目标没被认出来")
+        assert matched is not None
+        self.assertEqual("research", matched.group("extras"))
+
+    def test_a_command_substitution_is_split_out(self) -> None:
+        got = _commands('echo "v=" $(pip --version)')
+        self.assertIn(["pip", "--version"], got, "$() 里的命令没被拆出来")
+
+    def test_a_quoted_parenthesis_is_still_a_word_character(self) -> None:
+        self.assertEqual([["echo", "(not a subshell)"]],
+                         _commands('echo "(not a subshell)"'))
 
 
 class RuntimeDependencyMetadataTests(unittest.TestCase):
