@@ -15,6 +15,18 @@
 - [x] 变异累计 **33 条全咬**（含**两条反向**：注释掉的安装行、step name 里的
       假安装，都不该让治理变红）
 
+## codex 第十七轮：一个 P1 + 一个 P2 —— env 的三层注入面、附着式短选项
+
+**P1 workflow `env:` 也能配置 pip。** GitHub Actions 把 workflow/job/step
+三层 env 施加到 run 命令上——`env: {PIP_DRY_RUN: "1"}` 让步骤里的安装什么都
+不装，run 文本毫无痕迹。`_environment_keys` 收齐三层键，任何 `PIP_*` 键即
+响亮；底数断言钉住收集真的读到了现有声明（RUN_E2E ×N、REASON），单元用例
+钉三层全见。
+
+**P2 附着式短选项值。** optparse 允许 `-rrequirements.txt`——只认精确
+`-r` 与 `=` 连写，这种形态落进无条件 continue。顺手把同一条规则下的
+`-e.[research]` 一起收（目标候选），不留给下一轮。
+
 ## codex 第十六轮：一个 P1 —— pip 行为可经环境注入
 
 `PIP_DRY_RUN=1 pip install <窗口> <qlib pin>`：pip 把每个选项都映射成

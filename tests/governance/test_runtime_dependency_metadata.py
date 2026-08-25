@@ -254,6 +254,30 @@ def _commands(script: str) -> list[list[str]]:
     ]
 
 
+def _environment_keys(document: object) -> list[str]:
+    """workflow / job / step 三层 `env:` 映射里声明的全部键。
+
+    GitHub Actions 把这三层 env 施加到 run 命令上——`_run_scripts` 只取 run
+    文本，看不见 `env: {PIP_DRY_RUN: "1"}` 让 pip 什么都不装、
+    `PIP_REQUIREMENT` 从文件注入依赖（codex P1）。收集键交给守卫，与行内
+    `PIP_*=` 赋值同一处置：多义即响亮。
+    """
+    keys: list[str] = []
+    root = document if isinstance(document, dict) else {}
+    for env in (root.get("env"),):
+        if isinstance(env, dict):
+            keys.extend(str(k) for k in env)
+    for job in (root.get("jobs") or {}).values():
+        job = job or {}
+        if isinstance(job.get("env"), dict):
+            keys.extend(str(k) for k in job["env"])
+        for step in job.get("steps") or []:
+            step = step or {}
+            if isinstance(step.get("env"), dict):
+                keys.extend(str(k) for k in step["env"])
+    return keys
+
+
 def _run_scripts(workflow: Path) -> list[str]:
     """workflow 里**真正会执行**的那些 `run` 块。
 
@@ -470,9 +494,21 @@ def _direct_install_targets(command: list[str]) -> tuple[int, list[str]]:
             # 从文件引入安装内容的选项不许静默跳过：pip 会安装/约束文件里的
             # 每一行，而命令文本推导看不见它们（codex P2）。裸形态与 `=`
             # 连写形态都拦。
-            if token in _FILE_SOURCED_OPTIONS or any(
-                token.startswith(f"{option}=")
-                for option in _FILE_SOURCED_OPTIONS
+            if (
+                token in _FILE_SOURCED_OPTIONS
+                or any(
+                    token.startswith(f"{option}=")
+                    for option in _FILE_SOURCED_OPTIONS
+                )
+                # 附着式短选项值：pip 接受 `-rrequirements.txt`（optparse
+                # 规则，值直接粘在短选项后）。只认精确 `-r` 与 `=` 连写，
+                # 这种形态落进无条件 continue，文件内容照样绕过覆盖面
+                # （codex P2）。
+                or (
+                    not token.startswith("--")
+                    and len(token) > 2
+                    and token[:2] in ("-r", "-c")
+                )
             ):
                 problems.append(
                     f"从文件引入安装内容：{token} —— 覆盖面推导看不见文件"
@@ -526,6 +562,14 @@ def _local_target_candidates(command: list[str]) -> list[str]:
     for token in command:
         if token.startswith("--editable="):
             values.append(token[len("--editable="):])
+        elif (
+            token.startswith("-e")
+            and not token.startswith("--")
+            and len(token) > 2
+        ):
+            # 附着式短选项值（`-e.[research]`）——与 `-r` 附着形态同一条
+            # optparse 规则；只认裸 token 会让这条 extra 静默脱离覆盖面。
+            values.append(token[2:])
         elif not token.startswith("-"):
             values.append(token)
     return values
@@ -903,6 +947,13 @@ class TheLocalProjectTargetIsRecognisedRegardlessOfSpelling(unittest.TestCase):
         assert matched is not None
         self.assertEqual("research", matched.group("extras"))
 
+    def test_an_attached_editable_target_is_found(self) -> None:
+        # `-e.[research]`：附着式短选项值里的本地目标，同一条 optparse 规则。
+        matched = _local_target(_commands("pip install -e.[research]")[0])
+        self.assertIsNotNone(matched, "附着式 -e 目标没被认出来")
+        assert matched is not None
+        self.assertEqual("research", matched.group("extras"))
+
     def test_an_equals_joined_editable_target_is_found(self) -> None:
         """`pip install --editable=.[research]` 的目标藏在 `=` 后面。
 
@@ -1050,10 +1101,14 @@ class EveryDirectWorkflowInstallTargetIsBounded(unittest.TestCase):
         """`--requirement=requirements.txt` 会装文件里的每一个包。
 
         整个 token 被当普通选项跳过，文件里潜在无上界的依赖静默绕过守卫
-        （codex P2）。裸形态 `-r` 同拦；约束文件 `-c/--constraint` 同理。
+        （codex P2）。裸形态 `-r`、`=` 连写、**附着式**短选项值
+        （`-rrequirements.txt`，optparse 规则）三种形态同拦；约束文件
+        `-c/--constraint` 同理。
         """
         for line in ("pip install --requirement=requirements.txt",
                      "pip install -r requirements.txt",
+                     "pip install -rrequirements.txt",
+                     "pip install -cconstraints.txt x>=1,<2",
                      "pip install --constraint=c.txt x>=1,<2"):
             with self.subTest(line=line):
                 _, problems = _direct_install_targets(_commands(line)[0])
@@ -1077,6 +1132,44 @@ class EveryDirectWorkflowInstallTargetIsBounded(unittest.TestCase):
         _, problems = _direct_install_targets(
             _commands("pip install git+https://github.com/x/y.git")[0])
         self.assertTrue(problems, "未钉 commit 的源码安装没被点名")
+
+
+class WorkflowEnvironmentCannotConfigurePip(unittest.TestCase):
+    """workflow / job / step 的 `env:` 会施加到 run 命令上。
+
+    `env: {PIP_DRY_RUN: "1"}` 让步骤里的 pip 什么都不装、`PIP_REQUIREMENT`
+    从文件注入依赖——而 run 文本上毫无痕迹（codex P1）。与行内 `PIP_*=`
+    赋值同一处置：任何一层 env 声明 `PIP_*` 键即响亮。
+    """
+
+    def test_no_workflow_env_declares_a_pip_key(self) -> None:
+        seen = 0
+        offenders: list[str] = []
+        for workflow in _workflows():
+            document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+            keys = _environment_keys(document)
+            seen += len(keys)
+            offenders.extend(
+                f"{workflow.name}: {key}" for key in keys
+                if key.startswith("PIP_"))
+        self.assertEqual(
+            [], offenders,
+            "workflow env 在配置 pip —— run 文本上看不见它改变了什么")
+        # 底数：test.yml 的多个步骤声明 RUN_E2E，regen-baseline 声明 REASON。
+        # 读到 0 个键说明 env 收集失效——守卫在整个注入面上空转。
+        self.assertGreaterEqual(seen, 3, f"只读到 {seen} 个 env 键")
+
+    def test_every_declaration_level_is_seen(self) -> None:
+        document = {
+            "env": {"PIP_A": "1"},
+            "jobs": {"j": {
+                "env": {"PIP_B": "1"},
+                "steps": [{"run": "pip install .", "env": {"PIP_C": "1"}}],
+            }},
+        }
+        self.assertEqual(
+            ["PIP_A", "PIP_B", "PIP_C"], _environment_keys(document),
+            "三层 env 没有全部被收集")
 
 
 class TheQlibPinMustBeARealInstall(unittest.TestCase):

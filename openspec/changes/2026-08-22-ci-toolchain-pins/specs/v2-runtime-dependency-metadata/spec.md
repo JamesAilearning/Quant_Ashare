@@ -230,6 +230,19 @@ that actually produces the anchor.
 - **THEN** the guard refuses loudly and demands explicit flags, which the
   existing dry-run and file-sourcing judgements then govern
 
+#### Scenario: workflow env mappings cannot configure pip either
+- **WHEN** a `PIP_*` key is declared in a workflow-, job-, or step-level `env:`
+  mapping — GitHub Actions applies all three to the run command, invisibly to
+  its text
+- **THEN** the governance test fails naming the key, with a floor proving the
+  env collection actually read the existing declarations
+
+#### Scenario: attached short-option values are the same option
+- **WHEN** a file-sourcing or editable option carries its value attached —
+  `-rrequirements.txt`, `-e.[extras]` — as optparse permits
+- **THEN** it is treated exactly like the spaced or `=`-joined spelling:
+  file-sourcing is refused loudly, an editable target enters the coverage
+
 #### Scenario: a dry run is not an install
 - **WHEN** a pip install carries `--dry-run` — defined by pip as not actually
   installing anything
