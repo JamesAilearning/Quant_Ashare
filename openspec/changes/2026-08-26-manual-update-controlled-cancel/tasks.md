@@ -26,6 +26,22 @@
 - [x] 定向 7 passed / 1 skipped（POSIX 腿）；logic 全量见 PR 实测数字
 - [x] openspec validate --strict valid
 
+## codex 第一轮（2×P1 + 1×P2）
+
+- [x] P1 切换窗：取消可落在 swap 两段 rename 之间（canonical 暂缺,下次
+      启动修复复原——swap 基线本就只承诺 crash-atomicity + 事后修复）。
+      cancel_update 退出后做 canonical 存在性检查（纯文件系统,不 import
+      管线层）,命中即 swap_interrupted=True + SWAP WINDOW 标记 + 页面响
+      亮指引立即重跑;确认措辞与规格改口,不再说「在线数据不受影响」的
+      绝对句。变异去检测 1f 咬住
+- [x] P1 证据跨 rerun：硬杀留下的 running 若只在首个渲染更正,一次 rerun
+      就退回「正在更新」并锁启动闸到六小时线。持久证据键按状态戳**精确
+      相等**绑定被取消那一次（cancelled_run_matches 纯 helper,真值表
+      钉）,running 分支专属措辞+启动闸解锁,状态被接替即退役。变异松相
+      等 3f 咬住
+- [x] P2 失败保句柄：cancel_failed 时进程可能还活着——句柄是唯一合法取
+      消凭据,只有确认终局（cancelled/already_finished）才交出
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

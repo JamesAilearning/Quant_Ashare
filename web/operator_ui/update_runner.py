@@ -273,6 +273,11 @@ class UpdateCancel:
     graceful: bool = False
     returncode: int | None = None
     error: str = ""
+    #: 取消恰好落在两段 rename 的切换窗内（canonical 目录暂缺,由下次更新
+    #: 的启动修复复原——swap 的基线契约本就只承诺 crash-atomicity + 事后
+    #: 修复）。True 时页面必须**响亮**指引立即重跑更新,不许再说「在线数据
+    #: 不受影响」（codex #470 P1）。
+    swap_interrupted: bool = False
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -294,10 +299,25 @@ def _append_cancel_marker(log_path: Path | None, text: str) -> None:
             fh.flush()
 
 
+def cancelled_run_matches(
+    status_started_at: str | None, evidence_started_at: str | None,
+) -> bool:
+    """本会话的取消证据是否覆盖当前 ``running`` 状态记录。
+
+    钉**精确相等**的状态戳身份（与边界归属同款纪律）:戳一致 = 就是被取消
+    的那一次;任何新运行会写新的 ``started_at``,证据即刻失效——绝不覆盖
+    别人的运行。任一侧为空都不覆盖:无法证明同一性就不声称（codex #470
+    P1:硬杀留下的 running 记录若只在取消后首个渲染被更正,一次 rerun 就
+    会退回「正在更新」并锁住启动按钮直到六小时陈旧线）。
+    """
+    return bool(status_started_at) and status_started_at == evidence_started_at
+
+
 def cancel_update(
     process: subprocess.Popen[bytes],
     log_path: Path | None,
     *,
+    provider_dir: Path | None = None,
     grace_seconds: float = _CANCEL_GRACE_SECONDS,
 ) -> UpdateCancel:
     """受控取消一次**本会话启动的**手动更新。
@@ -362,8 +382,23 @@ def cancel_update(
         log_path,
         "cancel outcome: process exited "
         f"(returncode={process.returncode}, graceful={graceful})")
+    # 切换窗检测（codex #470 P1）:swap 是两段 rename——若取消恰好落在
+    # 「live→.bak 之后、.new→live 之前」,canonical 目录此刻**不存在**,
+    # 要到下次更新的启动修复才复原（swap 基线契约:crash-atomicity + 事后
+    # 修复）。纯文件系统存在性检查,不 import 管线层（读侧边界纪律）。
+    swap_interrupted = False
+    if provider_dir is not None:
+        with contextlib.suppress(OSError):
+            swap_interrupted = not provider_dir.exists()
+        if swap_interrupted:
+            _append_cancel_marker(
+                log_path,
+                "cancel landed inside the SWAP WINDOW: canonical provider "
+                "dir is missing; run the update again — startup repair "
+                "restores it")
     return UpdateCancel(
-        kind="cancelled", graceful=graceful, returncode=process.returncode)
+        kind="cancelled", graceful=graceful, returncode=process.returncode,
+        swap_interrupted=swap_interrupted)
 
 
 def default_log_path(provider_dir: Path) -> Path:

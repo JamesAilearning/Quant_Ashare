@@ -19,6 +19,7 @@ from web.operator_ui.update_runner import (
     UpdateCancel,
     UpdateLaunch,
     cancel_update,
+    cancelled_run_matches,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -121,6 +122,86 @@ class CancelOutcomesAreHonest(unittest.TestCase):
             finally:
                 if proc.poll() is None:
                     proc.kill()
+
+
+class HardCancelEvidenceIsDurable(unittest.TestCase):
+    def test_the_match_is_exact_stamp_identity(self) -> None:
+        # 证据按状态戳**精确相等**绑定（与边界归属同款纪律）：任一侧空
+        # 不覆盖、错戳不覆盖——绝不把别人的运行说成已取消。
+        self.assertTrue(cancelled_run_matches(
+            "2026-08-26T21:00:00+08:00", "2026-08-26T21:00:00+08:00"))
+        for status, evidence in (
+            (None, "2026-08-26T21:00:00+08:00"),
+            ("", "2026-08-26T21:00:00+08:00"),
+            ("2026-08-26T21:00:00+08:00", None),
+            ("2026-08-26T21:00:00+08:00", ""),
+            ("2026-08-26T21:00:00+08:00", "2026-08-26T22:00:00+08:00"),
+        ):
+            with self.subTest(status=status, evidence=evidence):
+                self.assertFalse(cancelled_run_matches(status, evidence))
+
+    def test_a_swap_window_hit_is_reported_loudly(self) -> None:
+        # 取消恰好落在两段 rename 之间：canonical 目录缺位——不许再说
+        # 「在线数据不受影响」，要响亮报 swap_interrupted 并落标记
+        # （codex #470 P1）。
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                log = Path(t) / "log.log"
+                missing = Path(t) / "provider_gone"
+                got = cancel_update(
+                    proc, log, provider_dir=missing, grace_seconds=3)
+                self.assertEqual("cancelled", got.kind)
+                self.assertTrue(got.swap_interrupted,
+                                "canonical 缺位没被判切换窗命中")
+                self.assertIn("SWAP WINDOW",
+                              log.read_text(encoding="utf-8"))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_an_intact_provider_is_not_a_swap_hit(self) -> None:
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                intact = Path(t) / "provider"
+                intact.mkdir()
+                got = cancel_update(
+                    proc, Path(t) / "log.log",
+                    provider_dir=intact, grace_seconds=3)
+                self.assertEqual("cancelled", got.kind)
+                self.assertFalse(got.swap_interrupted, "完好目录被误报")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_the_page_keeps_evidence_across_reruns(self) -> None:
+        # 多次 rerun 的语义由纯 helper + 页面接线共同承担：证据键持久
+        # （不 pop 掉除非状态被接替）、覆盖用精确相等 helper、running
+        # 分支有专属「已取消」措辞、启动闸被解锁。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        for needle, why in (
+            ("_CANCELLED_EVIDENCE_KEY", "持久证据键"),
+            ("cancelled_run_matches(", "覆盖走精确相等 helper"),
+            ("_cancel_evidence.get(\"started_at\")", "证据字段取用"),
+            ("_running_fresh = False", "启动闸解锁"),
+            ("已被本会话", "running 分支的已取消措辞"),
+            ("st.session_state.pop(_CANCELLED_EVIDENCE_KEY, None)",
+             "状态被接替时证据退役"),
+        ):
+            self.assertIn(needle, page, f"页面缺 {why}")
+
+    def test_a_failed_cancel_keeps_the_handle(self) -> None:
+        # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
+        # 丢了就只剩任务管理器（codex #470 P2）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn(
+            'if _outcome.kind in ("cancelled", "already_finished"):', page,
+            "句柄的交出没有以确认终局为条件")
 
 
 class TheCancelChannelIsTheHandleNotThePid(unittest.TestCase):

@@ -52,6 +52,7 @@ from web.operator_ui.update_runner import (
     build_update_argv,
     calendar_gate_warning,
     cancel_update,
+    cancelled_run_matches,
     default_log_path,
     gate_today,
     launch_daily_update,
@@ -96,6 +97,10 @@ _LAST_LAUNCH_KEY = "run_center::last_launch"
 _LIVE_RUN_KEY = "run_center::live_manual_run"
 _CANCEL_ARM_KEY = "run_center::cancel_armed"
 _LAST_CANCEL_KEY = "run_center::last_cancel"
+#: 硬杀成功后的**持久**证据（不随 rerun 消失,codex #470 P1）:被取消那次
+#: 运行的状态戳。running 记录的戳与它精确相等时,页面按「已取消」呈现并
+#: 解锁启动闸;新运行写新戳,证据自动退役。
+_CANCELLED_EVIDENCE_KEY = "run_center::cancelled_evidence"
 
 # Streamlit's SessionStateProxy exposes the mapping operations used below, but
 # its stubs do not inherit MutableMapping.  Keep the cast at the UI boundary;
@@ -180,6 +185,22 @@ _running_fresh = (
     and record_matches_provider(_status, _provider_path)
     and _status_class == RUNNING_FRESH
 )
+# 句柄证据覆盖（codex #470 P1）:硬杀留下的 running 记录没有终态,若只在
+# 取消后首个渲染更正,任何 rerun 都会退回「正在更新」并锁住启动按钮直到
+# 六小时陈旧线。证据按状态戳精确相等绑定到**被取消的那一次**;戳变了
+# （新运行/终态）即退役。
+_cancel_evidence = st.session_state.get(_CANCELLED_EVIDENCE_KEY)
+_cancelled_this_run = (
+    isinstance(_cancel_evidence, dict)
+    and _status.kind == "running"
+    and cancelled_run_matches(
+        _status.started_at, _cancel_evidence.get("started_at"))
+)
+if isinstance(_cancel_evidence, dict) and not _cancelled_this_run:
+    # 状态已被接替——证据退役,绝不覆盖别人的运行。
+    st.session_state.pop(_CANCELLED_EVIDENCE_KEY, None)
+if _cancelled_this_run:
+    _running_fresh = False
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
     _status, _provider_path
@@ -197,7 +218,13 @@ elif _status.kind == "corrupt":
     st.error(f"⚠ 状态记录损坏(绝不用默认值顶替):{_status.error}")
 elif _status.kind == "running":
     _cls = _status_class  # 同一次分类,勿重算(见上)
-    if _cls == RUNNING_FRESH:
+    if _cancelled_this_run:
+        st.warning(
+            f"⛔ 该 running 记录(始于 {_status.started_at})已被本会话"
+            "**取消**——进程经句柄确认退出,不会再写终态;这不是仍在运行。"
+            "单飞锁已随进程释放,可直接重新启动更新。"
+        )
+    elif _cls == RUNNING_FRESH:
         st.info(f"🔄 一次更新正在进行:始于 {_status.started_at}。")
     elif _cls == RUNNING_STALE:
         st.warning(
@@ -487,11 +514,14 @@ if _live_proc is not None:
             st.rerun()
     else:
         st.error(
-            "确认取消这次手动更新？**在线数据不受影响**——管线只有校验"
-            "通过后才原子切换，取消发生在切换前，数据仍是最后一次成功"
-            "更新的那份。Windows 下为强制终止：状态工件会停在 running"
-            "（本页据句柄证据如实标注，不伪造终态）；单飞锁随进程消亡"
-            "自动释放；遗留半成品由下次运行的启动修复清理。"
+            "确认取消这次手动更新？管线只有校验通过后才原子切换——除"
+            "**切换瞬间的两段重命名窗口**外，取消不影响在线数据（仍是最"
+            "后一次成功更新的那份）；若恰好落在切换窗内，本页会响亮提示"
+            "并指引立即重跑更新（启动修复自动复原,swap 契约本就承诺"
+            "crash-atomicity + 事后修复）。Windows 下为强制终止：状态工"
+            "件会停在 running（本页据句柄证据持续如实标注，不伪造终态）；"
+            "单飞锁随进程消亡自动释放；遗留半成品由下次运行的启动修复"
+            "清理。"
         )
         _c1, _c2 = st.columns(2)
         with _c1:
@@ -503,14 +533,26 @@ if _live_proc is not None:
             ):
                 _lp = (_live_run or {}).get("log_path") or ""
                 _outcome = cancel_update(
-                    _live_proc, Path(_lp) if _lp else None)
+                    _live_proc, Path(_lp) if _lp else None,
+                    provider_dir=_provider_path)
                 st.session_state[_LAST_CANCEL_KEY] = {
                     "kind": _outcome.kind,
                     "graceful": _outcome.graceful,
                     "returncode": _outcome.returncode,
                     "error": _outcome.error,
+                    "swap_interrupted": _outcome.swap_interrupted,
                 }
-                st.session_state.pop(_LIVE_RUN_KEY, None)
+                if _outcome.kind in ("cancelled", "already_finished"):
+                    # 只有确认终局才交出句柄——cancel_failed 时进程可能
+                    # 还活着,句柄是唯一合法取消凭据,丢了就只剩任务管理
+                    # 器（codex #470 P2）。
+                    st.session_state.pop(_LIVE_RUN_KEY, None)
+                if _outcome.kind == "cancelled" and not _outcome.graceful:
+                    # 硬杀成功:running 记录不会再有终态——按状态戳存持久
+                    # 证据,跨 rerun 更正呈现并解锁启动闸（codex P1）。
+                    st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                        "started_at": _status.started_at or "",
+                    }
                 st.session_state.pop(_CANCEL_ARM_KEY, None)
                 st.rerun()
         with _c2:
@@ -539,10 +581,17 @@ if isinstance(_last_cancel, dict):
         else:
             st.success(
                 "已取消（强制终止，returncode="
-                f"{_last_cancel.get('returncode')}）。在线数据未受影响。"
+                f"{_last_cancel.get('returncode')}）。"
                 "**状态工件仍标 running**——被强杀的进程没有机会写终态，"
-                "这是句柄证据下的如实呈现，不是仍在运行；单飞锁已自动"
-                "释放，下次更新照常。"
+                "本页将持续按「已取消」如实标注（跨刷新有效），启动按钮"
+                "已解锁；单飞锁已自动释放，下次更新照常。"
+            )
+        if _last_cancel.get("swap_interrupted"):
+            st.error(
+                "⚠ 本次取消**恰好落在切换窗内**：canonical 数据目录此刻"
+                "缺位（swap 契约的 crash 态）。请**立即重新启动一次更新**"
+                "——启动修复会自动复原（.bak/.new 均在）；在此之前出单侧"
+                "会拒绝读取，这是 fail-loud 而非数据丢失。"
             )
     else:
         st.error(
