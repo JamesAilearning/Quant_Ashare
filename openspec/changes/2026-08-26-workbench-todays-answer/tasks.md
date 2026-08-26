@@ -158,6 +158,15 @@
       fail-loud，源码核证）——逐行验约看不见跨行重复，基数会把一只标的
       报成 2 只候选。违约=需核查点名重复代码；变异去唯一性 1 failed 咬住
 
+## 第十七轮（codex 2×P2：断秩/乱序清单 + HOLD 周末日期）
+
+- [x] 序与秩验约（canonical 契约 v2-daily-stock-recommendation 明文：
+      Ranks SHALL be contiguous 1..N、按分降序稳定排序）：断秩 [2]/重秩
+      [1,1]/乱序分=需核查；并列分合法不误伤；fixture 分随秩降修正
+- [x] HOLD 的 next 收紧到「交易日且最早为 entry」：as_of 与 entry 之间无
+      会话，早于 entry 或落周末的值产出器产不出（周六在 as_of 后照样坏）
+- [x] 变异三发（去秩 2f/去序 1f/谓词回退 as_of 1f）全咬
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

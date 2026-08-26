@@ -33,7 +33,8 @@ def _pick(rank: int, code: str) -> dict[str, object]:
         "rank": rank,
         "stock_code": code,
         "stock_name": f"股票{rank}",
-        "predicted_score": 0.1 * rank,
+        # 分随秩降——canonical 契约按分降序（升序 fixture 会被序验约拒）。
+        "predicted_score": round(1.0 - 0.1 * rank, 6),
         "tradable_flag": True,
         "unavailable_reason": "",
     }
@@ -293,6 +294,57 @@ class DailySignalSummaryTests(unittest.TestCase):
         self.assertEqual("needs_verification", got.kind,
                          "重复代码被数成了两只候选")
         self.assertIn("SH600000", got.detail)
+
+    def test_noncontiguous_ranks_or_unsorted_scores_are_unverifiable(
+            self) -> None:
+        # canonical 契约：Ranks SHALL be contiguous 1..N、按分降序稳定
+        # 排序——断秩/重秩/乱序清单产出器产不出（codex P2）。
+        for label, picks in (
+            ("断秩 [2]", [{**_pick(1, "SH600000"), "rank": 2}]),
+            ("重秩 [1,1]", [_pick(1, "SH600000"),
+                            {**_pick(2, "SZ000001"), "rank": 1}]),
+            ("乱序分", [{**_pick(1, "SH600000"), "predicted_score": 0.1},
+                        {**_pick(2, "SZ000001"), "predicted_score": 0.5}]),
+        ):
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                payload["picks"] = picks
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual("needs_verification", got.kind,
+                                 "断秩/乱序清单被当成了已核验")
+        # 等分合法（稳定排序允许并列）。
+        payload = _ensemble_payload()
+        payload["picks"] = [{**_pick(1, "SH600000"), "predicted_score": 0.5},
+                            {**_pick(2, "SZ000001"), "predicted_score": 0.5}]
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("rebalance", got.kind, "并列分被误伤")
+
+    def test_a_hold_next_date_before_entry_or_on_weekend_is_refused(
+            self) -> None:
+        # HOLD 的 next 是交易日且最早为 entry（next 严格 > as_of 的首个
+        # 再平衡交易日；as_of 与 entry 之间无会话）——早于 entry 或落周末
+        # 的值产出器产不出（codex P2：周六在 as_of 之后照样是坏值）。
+        for label, value, expect in (
+            ("周六（as_of 后 entry 前）", "2026-08-22", "needs_verification"),
+            ("等于 entry 合法", "2026-08-19", "hold"),
+        ):
+            with self.subTest(label=label):
+                payload = _ensemble_payload(rebalance_day=False)
+                # as_of=2026-08-18（周二）；构造周五 as_of 场景需换日期：
+                # 用真实 2026-08-21（周五）/entry 08-24（周一）/next 周六 08-22。
+                if label.startswith("周六"):
+                    payload["as_of_date"] = "2026-08-21"
+                    payload["entry_date"] = "2026-08-24"
+                payload["next_rebalance_date"] = value
+                artifact_date = str(payload["as_of_date"])
+                got = summarise_daily_signal(
+                    artifact_date, payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual(expect, got.kind, f"{label} 判错")
 
     def test_a_rebalance_day_next_equal_to_as_of_is_legal(self) -> None:
         # 再平衡日本身就是锚：next_rebalance_date(d) == d 合法，不受 HOLD

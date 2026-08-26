@@ -214,6 +214,28 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 序与秩验约（canonical 契约 v2-daily-stock-recommendation：Ranks
+    # SHALL be contiguous 1..N，按 predicted_score 降序稳定排序）——
+    # [2] 或 [1,1] 这类断秩/乱序清单产出器产不出，基数照数会拿损坏工件
+    # 驱动头卡（codex P2）。
+    ranks = [pick["rank"] for pick in payload["picks"]]
+    if ranks != list(range(1, len(ranks) + 1)):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选 rank 序列 {ranks} 不是连续 1..N——canonical 契约"
+            "明文 contiguous，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    scores = [pick["predicted_score"] for pick in payload["picks"]]
+    if any(scores[i] < scores[i + 1] for i in range(len(scores) - 1)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件候选 predicted_score 非降序——canonical 契约按分降序稳定"
+            "排序，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
 
     cadence = hold_state(payload)
     if cadence.malformed is not None:
@@ -241,15 +263,17 @@ def summarise_daily_signal(
                 if not strict:
                     next_problem = f"不是严格 ISO 日期（实际 {raw_next!r}）"
                 elif (payload.get("rebalance_day") is False
-                        and raw_next <= str(as_of_date)):
+                        and (raw_next < str(entry_date)
+                             or date.fromisoformat(raw_next).weekday() >= 5)):
                     # 产出器契约：next_rebalance_date(d) = 首个再平衡日
                     # >= d，HOLD 日的 as_of 本身不是再平衡日 → 严格大于。
                     # 过去/当日值是产出器产不出的——头卡把它宣布成「下一
                     # 再平衡日」是拿损坏工件报日程（codex P2）。再平衡日
                     # 工件的 next == as_of 合法，不在此限。
                     next_problem = (
-                        f"不晚于 as_of_date（{raw_next} <= {as_of_date}）"
-                        "——HOLD 日的下一再平衡日必须在未来")
+                        f"不可能的取值（{raw_next}）：HOLD 日的下一再平衡"
+                        f"日是交易日且最早为 entry（{entry_date}）——早于"
+                        " entry 或落在周末的值产出器产不出")
         if next_problem is not None:
             return DailySignalSummary(
                 "needs_verification",
