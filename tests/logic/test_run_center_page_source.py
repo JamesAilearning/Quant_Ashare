@@ -139,7 +139,9 @@ class PageSourceTests(unittest.TestCase):
         # 的「有界」窗口形同虚设,会一直轮询下去。
         self.assertIn("_await_deadline", self.src)
         fragment_at = self.src.index("def _watch_update_completion()")
-        body = self.src[fragment_at : fragment_at + 1400]
+        # 窗宽随片段体增长放大（第九/十二轮加了未决取消支路），断言意图
+        # 一字未动：到期判断仍在片段体内。
+        body = self.src[fragment_at : fragment_at + 3000]
         self.assertIn("await_window_expired", body)
         self.assertIn("st.rerun(scope=\"app\")", body)
         # 签名分支必须 return,否则到期判断会在同一次 tick 里重复触发。

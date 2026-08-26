@@ -430,6 +430,35 @@ def terminal_record_confirms_the_run(
     return launched <= started <= finished <= exited
 
 
+def observe_own_running_record(
+    process: subprocess.Popen[bytes], provider_dir: Path,
+) -> str | None:
+    """在进程**可证活着**的时刻,观察它自己写下的 running 记录戳。
+
+    迟到收养需要一个**不可能越过被杀进程真实生存期**的身份（codex 第十
+    二轮 P2:观测时刻上界留了「真实死亡→观测」最长一个轮询周期的空窗,
+    OS 可在其中把 pid 回收给接替的调度器运行——戳和 pid 双双落窗,活运
+    行被标成已取消）。取法=活→读→活 三步:两次 ``poll()`` 都在世,期间
+    这个 pid 被该子进程**持续持有**,不可能被回收——读到的「pid==句柄」
+    记录必然是它自己写的。返回该记录的 ``started_at`` 作精确身份候选;
+    观察不到（进程已死/记录不是它的/属别的 provider/推导不出状态路径）
+    返回 None——收养侧对 None fail-closed:宁可孤儿等六小时陈旧线,不
+    收养证不出身份的记录。
+    """
+    if process.poll() is not None:
+        return None
+    try:
+        status = read_update_status(status_path_for_provider(provider_dir))
+    except ValueError:
+        return None
+    if (status.kind == "running"
+            and record_matches_provider(status, provider_dir)
+            and status.pid == process.pid
+            and process.poll() is None):
+        return status.started_at or None
+    return None
+
+
 def cancelled_run_matches(
     status_started_at: str | None, evidence_started_at: str | None,
 ) -> bool:
@@ -580,13 +609,13 @@ def _confirmed_death_outcome(
     只会分叉（codex 第九轮 P2 正是补结算那份漏了切换窗检查）。
 
     ``exited_at``:当场路径 = 确认死亡的当刻（codex 第六轮 P1:晚采会把
-    接替者框进窗）;迟到路径 = 补结算入口的观测时刻,≥ 真实死亡且是可得
-    的最紧上界——它**就是**迟到收养的时间上界（codex 第十一轮 P2:第八
-    轮曾用请求时刻当上界,其前提「被杀那次的 started_at 必早于请求」在
-    「spawn 之后、写 running 之前确认取消」的窗口里不成立——子进程可在
-    请求之后才写出自己的记录,请求时刻上界会把真孤儿拒之窗外、锁页六小
-    时。pid 身份已是主判据,窗口只剩防 pid 复用一职,上界只须 ≥ 真实
-    死亡）。
+    接替者框进窗）,是当场收养的时间上界;迟到路径 = 补结算入口的观测
+    时刻,**仅作呈报**,不当收养界——观测可晚于真实死亡最长一个轮询周
+    期,该空窗内 pid 可被回收给接替运行（codex 第十二轮 P2）。迟到收养
+    的身份是 ``observe_own_running_record`` 在进程可证活着时观察到的
+    精确戳候选（第八轮的请求时刻上界、第十一轮的观测时刻上界先后被证
+    伪:前者拒真孤儿,后者收回收 pid 的接替者——生存期内观察是唯一
+    两头都站得住的取法）。
 
     ``launched_at``:本会话 spawn 前采样的下界,供 graceful 终态核实的
     时间窗用;调用方没有它（None）时终态核实 fail-closed。

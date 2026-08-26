@@ -113,15 +113,21 @@ as pending context — the settlement trigger and audit stamp, NOT the
 evidence bound: a kill can complete AFTER the failed attempt returns, and
 the handle-retire path must then settle the evidence instead of treating
 the late death as an ordinary self-completion that leaves the orphaned
-record blocking launches. The late adoption's time bound SHALL be the
-death-observation moment sampled at the settlement boundary's entry
-(before the status reread, same sample-then-read discipline as the
-immediate path) — NOT the request moment: the child can write its
-`running` record after the request was captured but before the kill takes
-effect, and a request-time bound would reject that genuine orphan and
-leave it blocking launches to the staleness threshold. With the process
-identity as the primary discriminator, the window's only remaining job is
-pid-reuse defence, which any bound at or after the real death serves.
+record blocking launches. The late adoption's identity SHALL be a
+LIFETIME-OBSERVED exact stamp: while the pending process is still provably
+alive (alive-poll → status read → alive-poll — the pid is continuously
+held between the two polls, so it cannot have been recycled), the page
+records the `started_at` of the run's OWN `running` record (matching
+provider and pid) as the adoption candidate, refreshed at the failed
+attempt itself and on every watcher tick; settlement adopts only a record
+whose stamp EQUALS that candidate and whose pid equals the killed
+handle's. Neither a request-time bound nor a death-observation bound is
+admissible: the request moment rejects a genuine record the child writes
+after the request was captured, and the observation moment — up to one
+polling period after the real death — admits a scheduler replacement that
+received the recycled pid inside that gap. Absent a lifetime-observed
+candidate, settlement SHALL NOT adopt (fail-closed: an orphan waiting out
+the staleness threshold beats labelling a live replacement as cancelled).
 
 Late settlement SHALL owe the FULL cancel epilogue, not just the evidence:
 the same outcome marker (labelled as a late exit), the same strict
@@ -250,10 +256,21 @@ operator sees.
 - **GIVEN** a cancel confirmed in the window after the spawn but before the
   child wrote its `running` record, whose kill times out while the child
   writes that record, with the death arriving late
+- **WHEN** the watcher observes that record while the process is still
+  provably alive and the pending settlement later binds the evidence
+- **THEN** the record — its stamp equal to the lifetime-observed candidate,
+  its pid equal to the killed handle's — is adopted, and the orphan does
+  not block launches to the staleness threshold
+
+#### Scenario: a replacement on a recycled pid is not adopted late
+
+- **GIVEN** a killed child whose death the watcher observes up to one
+  polling period late, while a scheduler replacement received the recycled
+  pid and wrote its own `running` record inside that gap
 - **WHEN** the pending settlement binds the evidence
-- **THEN** the record — written after the request moment but inside the
-  launch-to-observed-death window with the killed pid — is adopted, and
-  the orphan does not block launches to the staleness threshold
+- **THEN** the replacement's record is refused — its stamp equals no
+  lifetime-observed candidate — and the live run keeps rendering as
+  running with the launch gates closed
 
 #### Scenario: a stale terminal artifact with a reused pid is not verified
 

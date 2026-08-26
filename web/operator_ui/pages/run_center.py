@@ -59,6 +59,7 @@ from web.operator_ui.update_runner import (
     launch_daily_update,
     log_tail,
     log_window,
+    observe_own_running_record,
     range_problem,
     settle_late_cancel,
 )
@@ -395,10 +396,19 @@ if _watching:
         # 进度都可能不再变化——没有这一支,主脚本里的补结算块要等操作人
         # 手动交互才会重新执行,死进程的取消控件与孤儿 running 会一直
         # 挂着。句柄一死就把整页拉起来,让补结算当场跑。
-        if (_pending_cancel_proc is not None
-                and _pending_cancel_proc.poll() is not None):
-            st.rerun(scope="app")
-            return
+        if _pending_cancel_proc is not None:
+            if _pending_cancel_proc.poll() is not None:
+                st.rerun(scope="app")
+                return
+            # 还活着:趁生存期**可证**时刷新它自己写的记录戳（codex 第
+            # 十二轮 P2——迟到收养的身份候选,pid 在两次 poll 之间被子
+            # 进程持续持有,不可能被回收;死后观测到的任何记录都可能是
+            # 回收 pid 的接替者,不能再当身份）。fragment 每次整页渲染
+            # 也执行一遍,交互驱动的刷新一并覆盖。
+            _own = observe_own_running_record(
+                _pending_cancel_proc, _provider_path)
+            if _own and isinstance(_session_live, dict):
+                _session_live["cancel_pending_own_started_at"] = _own
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
         # 执行,所以主脚本里算出的窗口判断在片段注册之后永远不会被重新求值。
         # 子进程若在写出 running 记录前就死掉(例如撞单飞锁秒退 exit 17),
@@ -574,25 +584,22 @@ if _live_proc is not None and _live_proc.poll() is not None:
             markers_written=_late_markers,
             launched_at=_live_run.get("launched_at")
             if isinstance(_live_run, dict) else None)
-        # 证据落盘。时间上界=补结算入口采样的死亡观测时刻
-        # （_late_outcome.exited_at,采样先于下面的状态重读——与当场路
-        # 径同款「先定界再读」纪律）。第八轮曾用请求时刻当上界,其前提
-        # 「被杀那次的 started_at 必早于请求」在「spawn 之后、写 running
-        # 之前确认取消」的窗口里不成立——子进程可在请求之后才写出自己的
-        # 记录,请求时刻会把真孤儿拒之窗外、锁页六小时（codex 第十一轮
-        # P2）。pid 身份是主判据（夺锁调度器身份不同不收养,第九轮）,
-        # 窗口只剩防 pid 复用一职,上界只须 ≥ 真实死亡。
+        # 证据落盘。身份=**生存期内观察到的精确戳候选**（codex 第十二轮
+        # P2:第八轮的请求时刻上界拒真孤儿、第十一轮的观测时刻上界收回
+        # 收 pid 的接替者——死亡观测可晚于真实死亡最长一个轮询周期,该
+        # 空窗内 OS 可把 pid 回收给接替的调度器运行,戳与 pid 双双落窗。
+        # 唯一两头都站得住的身份:趁进程可证活着时（confirm 当刻 + watcher
+        # 每拍）观察它自己写的记录戳,补结算只收养**精确相等**的那条;
+        # 没有候选=证不出身份,fail-closed 不收养,孤儿等陈旧线。）
+        _own_stamp = (
+            _live_run.get("cancel_pending_own_started_at")
+            if isinstance(_live_run, dict) else None)
         _late_status = read_update_status(_status_path)
         _late_evidence = (
             _late_status.kind == "running"
             and record_matches_provider(_late_status, _provider_path)
-            and evidence_binds_to_killed_run(
-                _late_status.started_at,
-                _live_run.get("launched_at")
-                if isinstance(_live_run, dict) else None,
-                _late_outcome.exited_at,
-                record_pid=_late_status.pid,
-                killed_pid=_live_proc.pid))
+            and _late_status.pid == _live_proc.pid
+            and cancelled_run_matches(_late_status.started_at, _own_stamp))
         if _late_evidence:
             st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                 "started_at": _late_status.started_at or "",
@@ -701,6 +708,13 @@ if _live_proc is not None:
                     # 了,审计链仍缺头两条——补结算不得从乐观缺省重来。
                     _live_run["cancel_pending_markers_written"] = (
                         _outcome.markers_written)
+                    # 趁进程此刻可能还活着,立即观察一次它自己写的记录
+                    # 戳（codex 第十二轮 P2:迟到收养的身份候选只能在
+                    # 生存期内取——此后 watcher 每 30 秒续刷）。
+                    _own_now = observe_own_running_record(
+                        _live_proc, _provider_path)
+                    if _own_now:
+                        _live_run["cancel_pending_own_started_at"] = _own_now
                 if (_outcome.kind == "cancelled"
                         and not _outcome.terminal_recorded):
                     # 进程死了且**没有核实到**它写下终态——硬杀必然如此;
