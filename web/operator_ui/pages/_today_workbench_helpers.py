@@ -200,6 +200,20 @@ def summarise_daily_signal(
                 as_of_date=as_of_date,
                 entry_date=entry_date,
             )
+    # 清单级验约：同一 stock_code 出现两次是产出器产不出的形态——上游
+    # _scores_to_inst_map 的 unique-instruments 守卫在构造 picks 之前就
+    # fail-loud（其 docstring 明言）。逐行验约看不见跨行重复，基数会把
+    # 「两行一只标的」报成「2 只候选」（codex P2）。
+    codes = [str(pick["stock_code"]) for pick in payload["picks"]]
+    if len(codes) != len(set(codes)):
+        duplicated = sorted({c for c in codes if codes.count(c) > 1})
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选包含重复代码 {duplicated}——产出器上游对重复标的 "
+            "fail-loud，产不出这种清单；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
 
     cadence = hold_state(payload)
     if cadence.malformed is not None:

@@ -281,6 +281,19 @@ class DailySignalSummaryTests(unittest.TestCase):
                 if expect == "needs_verification":
                     self.assertIn("next_rebalance_date", got.detail)
 
+    def test_duplicate_pick_codes_are_unverifiable(self) -> None:
+        # 同一 stock_code 两行是产出器产不出的（_scores_to_inst_map 的
+        # unique-instruments 守卫在构造 picks 前 fail-loud）——逐行验约看
+        # 不见跨行重复，基数会把一只标的报成 2 只候选（codex P2）。
+        payload = _ensemble_payload()
+        payload["picks"] = [_pick(1, "SH600000"), _pick(2, "SH600000")]
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("needs_verification", got.kind,
+                         "重复代码被数成了两只候选")
+        self.assertIn("SH600000", got.detail)
+
     def test_a_rebalance_day_next_equal_to_as_of_is_legal(self) -> None:
         # 再平衡日本身就是锚：next_rebalance_date(d) == d 合法，不受 HOLD
         # 侧「必须在未来」的限制。

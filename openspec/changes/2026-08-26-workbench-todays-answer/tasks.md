@@ -151,6 +151,13 @@
 - [x] 边界本体镜像 NUL 用例（日历尾/完整性 must not raise）；变异两发
       （去边界代理分支 3f / 去 strip 1f）全咬
 
+## 第十六轮（codex P2：重复代码抬基数）
+
+- [x] 清单级唯一性验约：同 stock_code 两行是产出器产不出的
+      （_scores_to_inst_map 的 unique-instruments 守卫在构造 picks 前
+      fail-loud，源码核证）——逐行验约看不见跨行重复，基数会把一只标的
+      报成 2 只候选。违约=需核查点名重复代码；变异去唯一性 1 failed 咬住
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
