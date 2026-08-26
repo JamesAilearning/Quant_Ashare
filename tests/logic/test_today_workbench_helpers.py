@@ -256,6 +256,27 @@ class DailySignalSummaryTests(unittest.TestCase):
                                  "类型违约被降级成了缺席")
                 self.assertIn(field, got.detail)
 
+    def test_a_malformed_next_rebalance_date_is_unverifiable(self) -> None:
+        # 产出器只写严格 ISO 或 null（日历尾附近合法 None）——hold_state
+        # 刻意宽容，`123`/"tomorrow" 会被头卡当成已核验 HOLD 宣布「无需
+        # 动作」（codex P2）。验约在核验层，宽容展示层不动。
+        for label, value, expect in (
+            ("int", 123, "needs_verification"),
+            ("非 ISO", "tomorrow", "needs_verification"),
+            ("宽 ISO", "2026-8-25", "needs_verification"),
+            ("null 合法", None, "hold"),
+        ):
+            with self.subTest(label=label):
+                payload = _ensemble_payload(rebalance_day=False)
+                payload["next_rebalance_date"] = value
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual(expect, got.kind,
+                                 "损坏节奏日期被当成了已核验 HOLD")
+                if expect == "needs_verification":
+                    self.assertIn("next_rebalance_date", got.detail)
+
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
             ("missing", None),

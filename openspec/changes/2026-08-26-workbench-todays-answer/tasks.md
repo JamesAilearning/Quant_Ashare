@@ -116,6 +116,13 @@
       改按宿主构造（os.path.join(abspath(os.sep), ...)），两平台皆合法
       完全限定；留存测试的字面拼写保留（只验 pass-through 不过边界）
 
+## 第十二轮（codex P2：损坏节奏日期上头卡）
+
+- [x] next_rebalance_date 验约（严格 ISO 或 null——产出器值域；日历尾附近
+      合法 None；缺键=cadence-1 合法形态）：hold_state 刻意宽容（展示层
+      不动），核验层把 `123`/"tomorrow" 判需核查，不再当已核验 HOLD 宣布
+      「无需动作」；变异去验约 3 failed 咬住
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 
 from web.operator_ui.incumbent import (
     IncumbentIdentity,
@@ -208,6 +209,31 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 节奏日期验约（codex P2）：产出器只写严格 ISO 日期或 null（日历尾附
+    # 近合法 None）——hold_state 刻意宽容（非 str 静默成 None、非 ISO 原样
+    # 保留），把 `123`/"tomorrow" 这类产出器产不出的值放到头卡上宣布
+    # 「HOLD 无需动作」是拿损坏工件下结论。缺键 = cadence-1 合法形态。
+    if "next_rebalance_date" in payload:
+        raw_next = payload["next_rebalance_date"]
+        next_problem: str | None = None
+        if raw_next is not None:
+            if not isinstance(raw_next, str):
+                next_problem = f"非 str/null（实际 {type(raw_next).__name__}）"
+            else:
+                try:
+                    strict = date.fromisoformat(raw_next).isoformat() == raw_next
+                except ValueError:
+                    strict = False
+                if not strict:
+                    next_problem = f"不是严格 ISO 日期（实际 {raw_next!r}）"
+        if next_problem is not None:
+            return DailySignalSummary(
+                "needs_verification",
+                f"工件 next_rebalance_date {next_problem}——产出器只写严格 "
+                "ISO 或 null，需核查。",
+                as_of_date=as_of_date,
+                entry_date=entry_date,
+            )
     # 数据来源原样留存（meta 在上方已通过形态核验，必为 dict）。产出器
     # 无条件写 provider_uri；bundle_tag 在 bundle 无身份块时合法为 None。
     meta_block = payload.get("meta")
