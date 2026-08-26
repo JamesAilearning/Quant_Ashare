@@ -571,11 +571,17 @@ if _live_proc is not None and _live_proc.poll() is not None:
         _late_outcome = settle_late_cancel(
             _live_proc, Path(_late_lp) if _late_lp else None,
             provider_dir=_provider_path,
-            markers_written=_late_markers)
-        # 证据落盘（时间上界=当时的请求时刻:被杀那次的 started_at 必早
-        # 于请求,接替者必晚于真实死亡>请求;绑定另要求记录 pid == 被杀
-        # 句柄 pid——时间窗内起跑的夺锁调度器不是被杀的那个进程,身份
-        # 不同不收养,见 evidence_binds_to_killed_run 第九轮说明）。
+            markers_written=_late_markers,
+            launched_at=_live_run.get("launched_at")
+            if isinstance(_live_run, dict) else None)
+        # 证据落盘。时间上界=补结算入口采样的死亡观测时刻
+        # （_late_outcome.exited_at,采样先于下面的状态重读——与当场路
+        # 径同款「先定界再读」纪律）。第八轮曾用请求时刻当上界,其前提
+        # 「被杀那次的 started_at 必早于请求」在「spawn 之后、写 running
+        # 之前确认取消」的窗口里不成立——子进程可在请求之后才写出自己的
+        # 记录,请求时刻会把真孤儿拒之窗外、锁页六小时（codex 第十一轮
+        # P2）。pid 身份是主判据（夺锁调度器身份不同不收养,第九轮）,
+        # 窗口只剩防 pid 复用一职,上界只须 ≥ 真实死亡。
         _late_status = read_update_status(_status_path)
         _late_evidence = (
             _late_status.kind == "running"
@@ -584,7 +590,7 @@ if _live_proc is not None and _live_proc.poll() is not None:
                 _late_status.started_at,
                 _live_run.get("launched_at")
                 if isinstance(_live_run, dict) else None,
-                _pending_at,
+                _late_outcome.exited_at,
                 record_pid=_late_status.pid,
                 killed_pid=_live_proc.pid))
         if _late_evidence:
@@ -645,13 +651,19 @@ if _live_proc is not None:
                 use_container_width=True,
             ):
                 _lp = (_live_run or {}).get("log_path") or ""
-                # 请求时刻——迟到死亡补结算的时间上界（codex 第八轮 P2）：
-                # 被杀那次的 started_at 必然早于请求；接替者必然晚于真实
-                # 死亡 > 请求。比死亡观测时刻更紧且此刻就有。
+                # 请求时刻——迟到死亡补结算的**触发标记 + 审计戳**
+                # （codex 第八轮 P2 引入）。不再当绑定上界用：子进程可在
+                # 请求之后才写出自己的 running 记录,请求时刻上界会把真孤
+                # 儿拒之窗外（codex 第十一轮 P2）——绑定上界改用补结算入
+                # 口的死亡观测时刻。
                 _cancel_requested_at = datetime.now(tz=_CN_TZ).isoformat()
                 _outcome = cancel_update(
                     _live_proc, Path(_lp) if _lp else None,
-                    provider_dir=_provider_path)
+                    provider_dir=_provider_path,
+                    # graceful 终态核实的时间窗下界（codex 第十一轮
+                    # P2：纯 pid 会把复用同 pid 的陈年 finished 工件核
+                    # 实成本次终态）。
+                    launched_at=(_live_run or {}).get("launched_at"))
                 st.session_state[_LAST_CANCEL_KEY] = {
                     "kind": _outcome.kind,
                     "graceful": _outcome.graceful,

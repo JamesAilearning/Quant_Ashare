@@ -384,25 +384,50 @@ def evidence_binds_to_killed_run(
 
 
 def terminal_record_confirms_the_run(
-    provider_dir: Path | None, pid: int,
+    provider_dir: Path | None,
+    pid: int,
+    *,
+    launched_at: str | None,
+    exited_at: str | None,
 ) -> bool:
     """状态工件里是否有**本次运行自己写下的**终态记录。
 
     graceful 的「编排器自己写下了终态记录」不许从**及时退出**推断
     （codex 第十轮 P2）:SIGINT 可以落在编排器还在 import/解析配置/拿单飞
     锁的阶段——终录路径尚未就位,进程照样在宽限窗内体面退出,而工件此刻
-    要么缺失、要么还是**上一次**运行的记录。核实=finished 且写者 pid ==
-    被杀句柄 pid（复用第九轮的进程身份判据）;旧记录无 pid / 记录还是
-    running / 工件缺失或损坏,一律 False——证不出来就不声称。
+    要么缺失、要么还是**上一次**运行的记录。
+
+    判据与收养同款,**身份+时间**合取（codex 第十一轮 P2:光有 pid 不够
+    ——本次 launch 可以复用某个**旧** finished 工件里存的 pid,SIGINT 又
+    把新子进程杀在写任何状态之前,纯 pid 会把陈年工件核实成本次终态）:
+
+    * 身份:finished 且写者 pid == 被杀句柄 pid（第九轮判据）。
+    * 时间窗:记录的 started_at/finished_at 都落在本次
+      ``launch ≤ started ≤ finished ≤ exit`` 内——旧工件的 started_at
+      必早于本次 launch,越界即拒。
+
+    旧记录无 pid / 还是 running / 工件缺失损坏 / 任一戳缺失或解析不动或
+    无时区,一律 False——证不出来就不声称。
     """
-    if provider_dir is None:
+    if provider_dir is None or not (launched_at and exited_at):
         return False
     try:
         status = read_update_status(status_path_for_provider(provider_dir))
     except ValueError:
         # 文件系统根这类推导不出状态路径的 provider——证不出来。
         return False
-    return status.kind == "finished" and status.pid == pid
+    if status.kind != "finished" or status.pid != pid:
+        return False
+    try:
+        started = datetime.fromisoformat(status.started_at)
+        finished = datetime.fromisoformat(status.finished_at)
+        launched = datetime.fromisoformat(launched_at)
+        exited = datetime.fromisoformat(exited_at)
+    except ValueError:
+        return False
+    if any(t.tzinfo is None for t in (started, finished, launched, exited)):
+        return False
+    return launched <= started <= finished <= exited
 
 
 def cancelled_run_matches(
@@ -425,6 +450,7 @@ def cancel_update(
     *,
     provider_dir: Path | None = None,
     grace_seconds: float = _CANCEL_GRACE_SECONDS,
+    launched_at: str | None = None,
 ) -> UpdateCancel:
     """受控取消一次**本会话启动的**手动更新。
 
@@ -499,7 +525,8 @@ def cancel_update(
                 markers_written=markers_written, kill_issued=True)
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
-        graceful=graceful, markers_written=markers_written, late=False)
+        graceful=graceful, markers_written=markers_written, late=False,
+        launched_at=launched_at)
 
 
 def settle_late_cancel(
@@ -508,6 +535,7 @@ def settle_late_cancel(
     *,
     provider_dir: Path | None = None,
     markers_written: bool = True,
+    launched_at: str | None = None,
 ) -> UpdateCancel:
     """``cancel_failed`` 之后进程**迟到死亡**的补结算边界。
 
@@ -531,7 +559,8 @@ def settle_late_cancel(
             "cancel_update")
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
-        graceful=False, markers_written=markers_written, late=True)
+        graceful=False, markers_written=markers_written, late=True,
+        launched_at=launched_at)
 
 
 def _confirmed_death_outcome(
@@ -542,6 +571,7 @@ def _confirmed_death_outcome(
     graceful: bool,
     markers_written: bool,
     late: bool,
+    launched_at: str | None,
 ) -> UpdateCancel:
     """确认死亡后的共同收尾:结局标记 + 切换窗检查 + 结果组装。
 
@@ -549,10 +579,17 @@ def _confirmed_death_outcome(
     共用——两条路对「进程死了之后还欠什么」的义务一字不差,分抄两份
     只会分叉（codex 第九轮 P2 正是补结算那份漏了切换窗检查）。
 
-    ``exited_at`` 语义按路径不同:当场路径 = 确认死亡的当刻（时间绑定
-    上界,晚采会把接替者框进窗——codex 第六轮 P1）;迟到路径 = 补结算
-    观测时刻,**晚于**真实死亡,绑定上界须由调用方用更紧的请求时刻
-    （``cancel_pending_at``）,不用这里的值。
+    ``exited_at``:当场路径 = 确认死亡的当刻（codex 第六轮 P1:晚采会把
+    接替者框进窗）;迟到路径 = 补结算入口的观测时刻,≥ 真实死亡且是可得
+    的最紧上界——它**就是**迟到收养的时间上界（codex 第十一轮 P2:第八
+    轮曾用请求时刻当上界,其前提「被杀那次的 started_at 必早于请求」在
+    「spawn 之后、写 running 之前确认取消」的窗口里不成立——子进程可在
+    请求之后才写出自己的记录,请求时刻上界会把真孤儿拒之窗外、锁页六小
+    时。pid 身份已是主判据,窗口只剩防 pid 复用一职,上界只须 ≥ 真实
+    死亡）。
+
+    ``launched_at``:本会话 spawn 前采样的下界,供 graceful 终态核实的
+    时间窗用;调用方没有它（None）时终态核实 fail-closed。
     """
     exited_at = datetime.now(tz=_CN_TZ).isoformat()
     markers_written = _append_cancel_marker(
@@ -605,9 +642,12 @@ def _confirmed_death_outcome(
                 "restores it") and markers_written
     # graceful 的终态声称要**核实**不要推断（codex 第十轮 P2）:进程死了,
     # 它的记录不会再变,此刻读是安全的。硬杀恒 False（不读——被强杀的进程
-    # 写没写终态由页面的重读收养链自己回答）。
+    # 写没写终态由页面的重读收养链自己回答）。身份+时间窗合取,见 helper
+    # （codex 第十一轮 P2:纯 pid 会把复用同 pid 的陈年 finished 工件核实
+    # 成本次终态）。
     terminal_recorded = graceful and terminal_record_confirms_the_run(
-        provider_dir, process.pid)
+        provider_dir, process.pid,
+        launched_at=launched_at, exited_at=exited_at)
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
         swap_interrupted=swap_interrupted, markers_written=markers_written,

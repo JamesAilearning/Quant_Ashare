@@ -225,12 +225,18 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 到六小时线（codex 第二轮 P1）。闸只放行**戳完全相等**的那一条。
         import json
 
+        from datetime import datetime, timedelta, timezone
+
         from web.operator_ui.update_runner import _blocking_run_status
         from web.operator_ui.update_status import status_path_for_provider
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
             provider.mkdir()
-            stamp = "2026-08-26T21:00:00+08:00"
+            # 相对当前时刻取戳——硬编码墙钟戳会在写下六小时后越过陈旧线,
+            # fresh running 变 stale 不再拦,用例静默失效（2026-08-27 实爆
+            # 的定时炸弹,与被测逻辑无关）。
+            _now = datetime.now(tz=timezone(timedelta(hours=8)))
+            stamp = _now.isoformat()
             import os as _os
             record = {
                 "schema_version": 1,
@@ -249,7 +255,7 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             # 错戳：不放行——绝不覆盖别的运行。
             self.assertIsNotNone(_blocking_run_status(
                 provider,
-                cancelled_started_at="2026-08-26T20:00:00+08:00"))
+                cancelled_started_at=(_now - timedelta(hours=1)).isoformat()))
 
     def test_the_evidence_stamp_is_reread_after_the_kill(self) -> None:
         # 子进程可能在页首读取之后才写下它的 running 记录——拿页首快照
@@ -500,9 +506,35 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
         self.assertIn("evidence_binds_to_killed_run(", settle,
                       "补结算块没做证据绑定")
-        # 锚串随第九轮更新（绑定调用多了 pid 身份参数），断言意图一字
-        # 未动：补结算的时间上界仍是请求时刻 _pending_at。
-        self.assertIn("_pending_at,", settle, "补结算上界没用请求时刻")
+        # 断言意图随第十一轮**刻意改判**：第八轮的请求时刻上界前提
+        # 「被杀那次的 started_at 必早于请求」在「spawn 之后、写 running
+        # 之前确认取消」的窗口里不成立——子进程可在请求之后才写出记录,
+        # 请求时刻会把真孤儿拒之窗外、锁页六小时（codex 第十一轮 P2）。
+        # 上界=补结算入口采样的死亡观测时刻;pid 身份是主判据,窗口只防
+        # pid 复用。
+        self.assertIn("_late_outcome.exited_at,", settle,
+                      "补结算上界没用死亡观测时刻")
+        self.assertNotIn("_pending_at,", settle,
+                         "请求时刻仍被当绑定上界（第十一轮已改判）")
+
+    def test_a_record_written_after_the_request_still_binds(self) -> None:
+        # 回归（codex 第十一轮 P2 的场景）：spawn 后、写 running 前确认取
+        # 消——请求 09:01,子进程 09:01:30 才写出自己的记录,kill 超时后
+        # 09:02 观测到死亡。用死亡观测时刻当上界,这条**真孤儿**必须能绑
+        # 定;用请求时刻当上界（第八轮的错法）它会被拒之窗外。
+        from web.operator_ui.update_runner import evidence_binds_to_killed_run
+        launched = "2026-08-27T09:00:00+08:00"
+        request = "2026-08-27T09:01:00+08:00"
+        record = "2026-08-27T09:01:30+08:00"
+        observed_exit = "2026-08-27T09:02:00+08:00"
+        self.assertTrue(evidence_binds_to_killed_run(
+            record, launched, observed_exit,
+            record_pid=4242, killed_pid=4242),
+            "请求后才写出的真孤儿没被死亡观测上界收进窗")
+        self.assertFalse(evidence_binds_to_killed_run(
+            record, launched, request,
+            record_pid=4242, killed_pid=4242),
+            "（对照）请求时刻上界确实会拒掉这条真孤儿——第八轮错法的实证")
 
     def test_a_late_settlement_owes_the_full_cancel_epilogue(self) -> None:
         # 迟到死亡的收尾义务与当场确认死亡**完全同款**（codex 第九轮
@@ -681,23 +713,53 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 "detail": "KeyboardInterrupt",
             }
             sp = status_path_for_provider(provider)
+            # 本次运行的时间窗（身份+时间合取——codex 第十一轮 P2：纯
+            # pid 会把复用同 pid 的陈年 finished 工件核实成本次终态）。
+            win = {"launched_at": "2026-08-27T08:59:00+08:00",
+                   "exited_at": "2026-08-27T09:02:00+08:00"}
             # 工件缺失：证不出来。
-            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
-            # finished 且 pid 属本次运行：核实成立。
+            self.assertFalse(
+                terminal_record_confirms_the_run(provider, 77, **win))
+            # finished、pid 属本次、戳落窗内：核实成立。
             sp.write_text(json.dumps({**base, "pid": 77}), encoding="utf-8")
-            self.assertTrue(terminal_record_confirms_the_run(provider, 77))
+            self.assertTrue(
+                terminal_record_confirms_the_run(provider, 77, **win))
+            # 同一工件,本次 launch 晚于它的 started_at（= 陈年工件恰好
+            # 复用同 pid）：时间窗拒。
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77,
+                launched_at="2026-08-27T09:30:00+08:00",
+                exited_at="2026-08-27T09:31:00+08:00"))
+            # 窗界缺失/finished 晚于观测退出：fail-closed。
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77, launched_at=None,
+                exited_at=win["exited_at"]))
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77, launched_at=win["launched_at"],
+                exited_at="2026-08-27T09:00:30+08:00"))
             # pid 不同（上一次运行的终态）/旧记录无 pid/还是 running：全拒。
             sp.write_text(json.dumps({**base, "pid": 78}), encoding="utf-8")
-            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+            self.assertFalse(
+                terminal_record_confirms_the_run(provider, 77, **win))
             sp.write_text(json.dumps(base), encoding="utf-8")
-            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+            self.assertFalse(
+                terminal_record_confirms_the_run(provider, 77, **win))
+            # 记录戳无时区：解析不进比较,拒。
+            sp.write_text(json.dumps({
+                **base, "pid": 77,
+                "started_at": "2026-08-27T09:00:00",
+            }), encoding="utf-8")
+            self.assertFalse(
+                terminal_record_confirms_the_run(provider, 77, **win))
             running = {k: v for k, v in base.items()
                        if k not in ("finished_at", "exit_code",
                                     "failed_stage", "detail")}
             sp.write_text(json.dumps({**running, "state": "running",
                                       "pid": 77}), encoding="utf-8")
-            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
-        self.assertFalse(terminal_record_confirms_the_run(None, 77))
+            self.assertFalse(
+                terminal_record_confirms_the_run(provider, 77, **win))
+        self.assertFalse(terminal_record_confirms_the_run(
+            None, 77, **win))
         # 页面接线：核实版声称以 terminal_recorded 为条件;未核实的
         # graceful 与硬杀同走孤儿收养（收养条件不再看 graceful）。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
@@ -709,6 +771,11 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertNotIn("and not _outcome.graceful:", page,
                          "收养仍按 graceful 分流——graceful 无终态的孤儿"
                          "会漏收养")
+        # 时间窗下界要从会话透传进两条取消边界（codex 第十一轮 P2）。
+        self.assertIn('launched_at=(_live_run or {}).get("launched_at")',
+                      page, "cancel_update 没拿到时间窗下界")
+        self.assertIn('launched_at=_live_run.get("launched_at")', page,
+                      "补结算没拿到时间窗下界")
 
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，

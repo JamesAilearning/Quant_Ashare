@@ -109,12 +109,19 @@ stale stamp would make the exact-match evidence retire on the next rerun,
 leaving the orphan blocking again. A failed cancel SHALL retain the live
 handle: it is the only permitted cancellation credential, and discarding it
 would leave no retry path. It SHALL also record the cancel-request moment
-as pending context: a kill can complete AFTER the failed attempt returns,
-and the handle-retire path must then settle the evidence (bounded by the
-request moment — the killed run's `started_at` necessarily precedes the
-request, while any replacement starts after the real death) instead of
-treating the late death as an ordinary self-completion that leaves the
-orphaned record blocking launches.
+as pending context — the settlement trigger and audit stamp, NOT the
+evidence bound: a kill can complete AFTER the failed attempt returns, and
+the handle-retire path must then settle the evidence instead of treating
+the late death as an ordinary self-completion that leaves the orphaned
+record blocking launches. The late adoption's time bound SHALL be the
+death-observation moment sampled at the settlement boundary's entry
+(before the status reread, same sample-then-read discipline as the
+immediate path) — NOT the request moment: the child can write its
+`running` record after the request was captured but before the kill takes
+effect, and a request-time bound would reject that genuine orphan and
+leave it blocking launches to the staleness threshold. With the process
+identity as the primary discriminator, the window's only remaining job is
+pid-reuse defence, which any bound at or after the real death serves.
 
 Late settlement SHALL owe the FULL cancel epilogue, not just the evidence:
 the same outcome marker (labelled as a late exit), the same strict
@@ -149,9 +156,14 @@ terminal-record path is armed — and the process still exits within the
 grace window while the artifact stays missing, stale, or still `running`.
 Verification SHALL require the status artifact to show a `finished` record
 whose writer pid equals the killed handle's pid (the same process identity
-the adoption uses); anything else — a running record, a pid-less record, a
-missing or corrupt artifact, an unverifiable provider — SHALL read as
-not-confirmed. A graceful exit WITHOUT a confirmed terminal record SHALL
+the adoption uses) AND whose `started_at`/`finished_at` both fall inside
+the session's launch-to-exit window — pid alone would let a launch that
+reuses the pid stored in an OLDER finished artifact verify that stale
+artifact as this run's terminal record when the signal kills the new child
+before it writes anything; anything else — a running record, a pid-less
+record, out-of-window or unparseable or zone-naive stamps, a missing or
+corrupt artifact, an unverifiable provider, an absent window bound — SHALL
+read as not-confirmed. A graceful exit WITHOUT a confirmed terminal record SHALL
 flow through the same orphan-adoption presentation as a forcible kill
 (worded honestly as a polite exit whose terminal record was not confirmed),
 because such an exit can leave the same orphaned `running` record a hard
@@ -232,6 +244,25 @@ operator sees.
 - **THEN** it performs the same strict swap-state inspection as an
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: a record written after the cancel request still settles
+
+- **GIVEN** a cancel confirmed in the window after the spawn but before the
+  child wrote its `running` record, whose kill times out while the child
+  writes that record, with the death arriving late
+- **WHEN** the pending settlement binds the evidence
+- **THEN** the record — written after the request moment but inside the
+  launch-to-observed-death window with the killed pid — is adopted, and
+  the orphan does not block launches to the staleness threshold
+
+#### Scenario: a stale terminal artifact with a reused pid is not verified
+
+- **GIVEN** a launch whose child received the same pid stored in an older
+  `finished` artifact and was killed before writing any status
+- **WHEN** the graceful outcome verifies the terminal record
+- **THEN** verification fails on the time window — the old artifact's
+  stamps predate this session's launch — and the page does not claim the
+  orchestrator wrote a terminal record
 
 #### Scenario: a failed kill call does not turn a natural finish into a cancel
 
