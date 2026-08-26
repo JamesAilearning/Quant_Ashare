@@ -451,6 +451,22 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('"launched_at": _pre_launch_at', page,
                       "会话下界没用前采时刻")
 
+    def test_a_late_death_after_failed_cancel_still_settles(self) -> None:
+        # cancel_failed 返回后进程才迟到死亡——退役块若当自然完成丢句柄，
+        # 孤儿 running 无证据锁页六小时（codex 第八轮 P2）。钉：失败时留
+        # 未决上下文（上界=请求时刻，比死亡观测更紧——被杀那次的
+        # started_at 必早于请求、接替者必晚于真实死亡>请求）；退役块凭它
+        # 补结算证据。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('_live_run["cancel_pending_at"] = _cancel_requested_at',
+                      page, "失败结局没留未决上下文")
+        self.assertIn("_cancel_requested_at = datetime.now", page)
+        retire = page.split("句柄退役")[0]
+        self.assertIn("evidence_binds_to_killed_run(", retire.split(
+            "迟到死亡补结算")[-1], "退役块没做补结算绑定")
+        self.assertIn("_pending_at)", page, "补结算上界没用请求时刻")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。

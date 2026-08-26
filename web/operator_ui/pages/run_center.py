@@ -530,7 +530,27 @@ _live_run = st.session_state.get(_LIVE_RUN_KEY)
 _live_proc = (
     _live_run.get("process") if isinstance(_live_run, dict) else None)
 if _live_proc is not None and _live_proc.poll() is not None:
-    # 进程已自行结束——句柄退役，成败由上方状态工件与台账自述。
+    _pending_at = (
+        _live_run.get("cancel_pending_at")
+        if isinstance(_live_run, dict) else None)
+    if _pending_at:
+        # 迟到死亡补结算（codex 第八轮 P2）：cancel_failed 返回后进程才
+        # 真死——这是 kill 导致的死亡,不是自然完成。此刻补做证据落盘
+        # （时间上界=当时的请求时刻:被杀那次的 started_at 必早于请求,
+        # 接替者必晚于真实死亡>请求,不会误收养）。
+        _late_status = read_update_status(_status_path)
+        if (_late_status.kind == "running"
+                and record_matches_provider(_late_status, _provider_path)
+                and evidence_binds_to_killed_run(
+                    _late_status.started_at,
+                    _live_run.get("launched_at")
+                    if isinstance(_live_run, dict) else None,
+                    _pending_at)):
+            st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                "started_at": _late_status.started_at or "",
+            }
+    # 进程已结束——句柄退役，成败由状态工件/台账（或上面补结算的证据）
+    # 自述。
     st.session_state.pop(_LIVE_RUN_KEY, None)
     st.session_state.pop(_CANCEL_ARM_KEY, None)
     _live_proc = None
@@ -563,6 +583,10 @@ if _live_proc is not None:
                 use_container_width=True,
             ):
                 _lp = (_live_run or {}).get("log_path") or ""
+                # 请求时刻——迟到死亡补结算的时间上界（codex 第八轮 P2）：
+                # 被杀那次的 started_at 必然早于请求；接替者必然晚于真实
+                # 死亡 > 请求。比死亡观测时刻更紧且此刻就有。
+                _cancel_requested_at = datetime.now(tz=_CN_TZ).isoformat()
                 _outcome = cancel_update(
                     _live_proc, Path(_lp) if _lp else None,
                     provider_dir=_provider_path)
@@ -585,6 +609,13 @@ if _live_proc is not None:
                     # 还活着,句柄是唯一合法取消凭据,丢了就只剩任务管理
                     # 器（codex #470 P2）。
                     st.session_state.pop(_LIVE_RUN_KEY, None)
+                elif (_outcome.kind == "cancel_failed"
+                        and isinstance(_live_run, dict)):
+                    # 取消未决上下文（codex 第八轮 P2）：kill 已发、宽限
+                    # 窗内没等到——进程可能在返回之后才迟到死亡。退役块
+                    # 凭这个标记补结算证据,否则迟到死亡被当自然完成、孤
+                    # 儿 running 无证据锁页六小时。
+                    _live_run["cancel_pending_at"] = _cancel_requested_at
                 if _outcome.kind == "cancelled" and not _outcome.graceful:
                     # 硬杀成功:running 记录不会再有终态——按状态戳存持久
                     # 证据,跨 rerun 更正呈现并解锁启动闸（codex P1）。

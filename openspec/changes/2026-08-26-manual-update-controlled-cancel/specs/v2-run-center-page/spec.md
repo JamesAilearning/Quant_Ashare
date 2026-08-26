@@ -95,7 +95,13 @@ its `running` record after the page render that armed the cancel, and a
 stale stamp would make the exact-match evidence retire on the next rerun,
 leaving the orphan blocking again. A failed cancel SHALL retain the live
 handle: it is the only permitted cancellation credential, and discarding it
-would leave no retry path.
+would leave no retry path. It SHALL also record the cancel-request moment
+as pending context: a kill can complete AFTER the failed attempt returns,
+and the handle-retire path must then settle the evidence (bounded by the
+request moment — the killed run's `started_at` necessarily precedes the
+request, while any replacement starts after the real death) instead of
+treating the late death as an ordinary self-completion that leaves the
+orphaned record blocking launches.
 
 #### Scenario: an accidental click after the run already finished
 
