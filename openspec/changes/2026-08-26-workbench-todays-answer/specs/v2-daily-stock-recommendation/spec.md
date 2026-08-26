@@ -37,6 +37,14 @@ that knows the resolved window, model and bundle) and carried on
 every constructor (including tests) is forced to supply it rather than silently
 omitting context. The buy-list CSV and the scored-audit CSV are unchanged.
 
+#### Scenario: a run_meta missing the nonce is refused at serialization
+
+- **GIVEN** a `DailyRecommendationResult` whose `run_meta` lacks the
+  `bundle_built_at` key (or carries a non-str, non-null value)
+- **WHEN** `write_outputs` runs
+- **THEN** it raises rather than emitting a schema-v2 artifact readers would
+  mistake for a legitimate pre-nonce file
+
 #### Scenario: the rebuild nonce rides the meta block
 
 - **GIVEN** a bundle whose `_fetch_integrity.json` was read during

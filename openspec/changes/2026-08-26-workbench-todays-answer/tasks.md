@@ -217,6 +217,14 @@
       ensemble 块 = malformed）——artifact_meta_status 按 ensemble 归类
       会忽略冲突单模身份，manifest 对得上就当已核验。变异 1f 咬住
 
+## 第二十三轮（P1：契约必备键没在序列化边界执法）
+
+- [x] write_outputs 逐字复制 run_meta——绕过 _assemble_run_meta 的调用方
+      漏 bundle_built_at 键会让读侧把缺席当「前 nonce 老工件」，防护静默
+      废掉。序列化边界执法（缺键/非 str 非 null 抛 DailyRecommendation
+      Error；null 合法照写）；_dummy_run_meta 迁移；规格补拒绝场景；
+      变异去执法 1f 咬住
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

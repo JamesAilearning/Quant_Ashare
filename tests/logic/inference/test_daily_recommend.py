@@ -919,6 +919,7 @@ def _dummy_run_meta(**overrides: object) -> dict[str, object]:
         "fit_end_for_inference": "2024-12-18",
         "provider_uri": "D:/qlib_data/my_cn_data_pit",
         "bundle_tag": "2025-06-30@sha256:deadbeef",
+        "bundle_built_at": "2025-06-30T20:10:00+08:00",
         "instruments": "csi300",
         "topk": 50,
     }
@@ -1033,6 +1034,36 @@ class WriteOutputsTests(unittest.TestCase):
             payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
         self.assertEqual(payload["artifact_schema_version"], 2)
         self.assertEqual(payload["meta"], meta)
+
+    def test_a_run_meta_without_the_nonce_is_refused(self) -> None:
+        # 契约把 bundle_built_at 定为必备键——write_outputs 逐字复制
+        # run_meta，绕过 _assemble_run_meta 的调用方漏键会让读侧把缺席当
+        # 「前 nonce 老工件」，原地重建防护被静默废掉；契约在哪执行就在哪
+        # 把门（codex #468 P1）。null 合法（无 stamp），非 str 非 null 拒。
+        from src.inference.daily_recommend import DailyRecommendationError
+
+        def _result(meta: dict) -> DailyRecommendationResult:
+            return DailyRecommendationResult(
+                as_of_date="2025-06-30", entry_date="2025-07-01",
+                picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+                scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+                run_meta=meta,
+            )
+        missing = _dummy_run_meta()
+        missing.pop("bundle_built_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(DailyRecommendationError):
+                write_outputs(_result(missing), tmp)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(DailyRecommendationError):
+                write_outputs(
+                    _result(_dummy_run_meta(bundle_built_at=123)), tmp)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_outputs(
+                _result(_dummy_run_meta(bundle_built_at=None)), tmp)
+            payload = json.loads(
+                Path(paths["json"]).read_text(encoding="utf-8"))
+        self.assertIsNone(payload["meta"]["bundle_built_at"])
 
     def test_null_bundle_tag_survives_serialization(self) -> None:
         # An unstamped bundle records bundle_tag null — never a fabricated

@@ -1313,6 +1313,21 @@ _BUY_LIST_COLUMNS = [
 def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, str]:
     """Write buy-list csv + json and the full scored audit csv. Returns
     the written paths."""
+    # 序列化边界执法（codex #468 P1）：契约把 meta.bundle_built_at 定为
+    # 必备键（str = stamp 的 built_at 镜像 / null = 无 stamp，绝不伪造）
+    # ——_assemble_run_meta 恒写它，但 run_meta 在此是逐字复制：绕过装配
+    # 器的调用方若漏键，读侧会把缺席当「前 nonce 时代的合法老工件」，原地
+    # 重建防护被静默废掉。契约在哪执行就在哪把门。
+    if "bundle_built_at" not in result.run_meta:
+        raise DailyRecommendationError(
+            "run_meta missing required key 'bundle_built_at' "
+            "(schema v2 contract: the rebuild nonce, str or null; "
+            "assemble meta via _assemble_run_meta)")
+    _built = result.run_meta["bundle_built_at"]
+    if _built is not None and not isinstance(_built, str):
+        raise DailyRecommendationError(
+            f"run_meta['bundle_built_at'] must be str or None, "
+            f"got {type(_built).__name__}")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = result.as_of_date
