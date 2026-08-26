@@ -100,6 +100,16 @@
       页面晚采会框进窗。区间断言 + 变异去采样 1f 咬住
 - [x] 零 spawn 守卫再次咬中注释字面,改述（本页零派生）
 
+## codex 第七轮（2×P2）
+
+- [x] P2 探测吞错：Path.exists() 把权限/IO 类 OSError 吞成 False——两次
+      失败探测拼成健康非切换态,graceful 又声称数据无恙。改严格 stat：
+      FileNotFoundError=确证不在,其它 OSError 上抛入 unknown 分支;变异
+      退回吞错 1f 咬住
+- [x] P2 审计警告困在 cancelled 分支：cancel_failed 的标记缺失永远渲染
+      不到。三个警告外提到共同作用域（swap 两条只在 cancelled 为真,共同
+      层无害）;缩进级 needle 钉共同作用域
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

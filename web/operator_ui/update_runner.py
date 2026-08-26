@@ -453,11 +453,21 @@ def cancel_update(
     swap_interrupted = False
     swap_state_unknown = False
     if provider_dir is not None:
+        def _present(path: Path) -> bool:
+            # 严格 stat 探测（codex 第七轮 P2）：Path.exists() 把权限/IO
+            # 类 OSError 吞成 False——「探测失败」会被读成「确证不在」，
+            # 两次失败探测拼成一个健康的非切换态。只有 FileNotFoundError
+            # 证明不在；其它 OSError 上抛给 unknown 分支。
+            try:
+                path.stat()
+            except FileNotFoundError:
+                return False
+            return True
         try:
             swap_interrupted = (
-                not provider_dir.exists()
-                and provider_dir.with_name(
-                    provider_dir.name + ".bak").exists())
+                not _present(provider_dir)
+                and _present(provider_dir.with_name(
+                    provider_dir.name + ".bak")))
         except OSError:
             # 检查自身失败 ≠ 状态健康——unknown 是第三态,页面必须说
             # 「核实不了,请人工确认」而不是照常声称数据无恙

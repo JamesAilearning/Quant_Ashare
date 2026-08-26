@@ -372,17 +372,23 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertFalse(got.markers_written, "失败结局的审计缺失被吞")
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertIn('in ("cancelled", "cancel_failed")', page,
-                      "页面标记警告没覆盖失败结局")
+        nl = chr(10)
+        self.assertIn(
+            nl + '    if (_last_cancel.get("kind") in '
+            '("cancelled", "cancel_failed")', page,
+            "标记警告没在共同作用域（困在 cancelled 分支里时 "
+            "cancel_failed 永远渲染不到——codex 第七轮 P2）")
 
     def test_an_uncheckable_swap_state_is_unknown_not_healthy(self) -> None:
         # 检查自身抛 OSError（卷不可用/权限）时不许当健康——unknown 是第
         # 三态，graceful 文案不许在未核实时声称数据无恙（codex 第五轮
         # P2）。
         class _RaisingDir:
+            # 严格探测走 stat（exists 会把 OSError 吞成 False——正是第七
+            # 轮修掉的坑）；PermissionError 是「探测失败」不是「确证不在」。
             name = "prov"
-            def exists(self):
-                raise OSError("volume gone")
+            def stat(self):
+                raise PermissionError("volume gone")
             def with_name(self, name):
                 return self
         proc = _spawn(_SLEEPER)
@@ -404,6 +410,13 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn("swap_state_unknown", page)
         self.assertIn("无法核实", page, "unknown 缺页面警告")
+        # FileNotFoundError 仍是「确证不在」：bootstrap 缺位照旧不误诊
+        # （由 test_bootstrap_absence... 用真目录覆盖，此处钉探测语义）。
+        src = (_ROOT / "web" / "operator_ui" / "update_runner.py"
+               ).read_text(encoding="utf-8")
+        self.assertIn("except FileNotFoundError:", src,
+                      "严格探测没有区分「不在」与「探测失败」")
+        self.assertIn("path.stat()", src, "探测没走 stat")
 
     def test_the_exit_bound_comes_from_the_cancel_boundary(self) -> None:
         # 上界必须在**确认死亡当刻**采样并由取消边界返回——死亡确认后

@@ -659,29 +659,32 @@ if isinstance(_last_cancel, dict):
                 "更正标注，页面按状态工件如实展示；单飞锁已自动释放，"
                 "下次更新照常。"
             )
-        if _last_cancel.get("swap_state_unknown"):
-            st.warning(
-                "⚠ 取消后**无法核实**数据目录状态（检查自身失败：卷不可"
-                "用/权限/IO 错）——本页不声称在线数据无恙；请人工确认 "
-                "provider 目录与 .bak/.new 的现状，必要时立即重跑更新。"
-            )
-        if (_last_cancel.get("kind") in ("cancelled", "cancel_failed")
-                and not _last_cancel.get("markers_written", True)):
-            st.warning(
-                "⚠ 取消已执行，但**日志标记写入失败**（权限/磁盘满？）——"
-                "这次操作在共享日志里没有审计线索；请检查 "
-                "`logs/daily_update.log` 的可写性。"
-            )
-        if _last_cancel.get("swap_interrupted"):
-            st.error(
-                "⚠ 本次取消**恰好落在切换窗内**：canonical 数据目录此刻"
-                "缺位（swap 契约的 crash 态）。请**立即重新启动一次更新**"
-                "——启动修复会自动复原（.bak/.new 均在）；在此之前出单侧"
-                "会拒绝读取，这是 fail-loud 而非数据丢失。"
-            )
     else:
         st.error(
             f"取消失败：{_last_cancel.get('error')}"
+        )
+    # 以下警告在**共同作用域**：cancel_failed 同样可能标记写失败——嵌在
+    # cancelled 分支里会让失败结局的审计缺失永远渲染不到（codex 第七轮
+    # P2）。swap 两条只在 cancelled 才可能为真，放共同层无害。
+    if _last_cancel.get("swap_state_unknown"):
+        st.warning(
+            "⚠ 取消后**无法核实**数据目录状态（检查自身失败：卷不可"
+            "用/权限/IO 错）——本页不声称在线数据无恙；请人工确认 "
+            "provider 目录与 .bak/.new 的现状，必要时立即重跑更新。"
+        )
+    if (_last_cancel.get("kind") in ("cancelled", "cancel_failed")
+            and not _last_cancel.get("markers_written", True)):
+        st.warning(
+            "⚠ 取消动作的**日志标记写入失败**（权限/磁盘满？）——这次"
+            "操作在共享日志里没有审计线索；请检查 "
+            "`logs/daily_update.log` 的可写性。"
+        )
+    if _last_cancel.get("swap_interrupted"):
+        st.error(
+            "⚠ 本次取消**恰好落在切换窗内**：canonical 数据目录此刻"
+            "缺位（swap 契约的 crash 态）。请**立即重新启动一次更新**"
+            "——启动修复会自动复原（.bak/.new 均在）；在此之前出单侧"
+            "会拒绝读取，这是 fail-loud 而非数据丢失。"
         )
 
 with st.expander("日志尾部(只读)"):
