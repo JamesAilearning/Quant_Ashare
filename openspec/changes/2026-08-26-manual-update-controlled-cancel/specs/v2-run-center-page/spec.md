@@ -162,7 +162,14 @@ pending context stands: a retry that terminates the process with its own
 markers written still reports the audit trail as incomplete when the
 earlier live attempt's markers were lost, and a repeated timeout never
 overwrites a stored marker failure with the newer attempt's success — the
-warning speaks for the WHOLE audit chain, not the latest attempt.
+warning speaks for the WHOLE audit chain, not the latest attempt. The
+accumulated marker state SHALL be updated by EVERY retry made while
+pending context stands, including a retry that issues no additional kill
+(its kill call raised): that retry's lost markers belong to the same
+pending cancellation's audit chain, and leaving the stored state untouched
+would let the eventual late settlement start from a stale success and
+report a complete chain. Such a kill-less retry SHALL NOT refresh the
+pending identity itself — the pending kill remains the earlier one.
 
 A graceful outcome's claim that the orchestrator wrote its own terminal
 record SHALL be VERIFIED, never inferred from timely process death: the
@@ -323,6 +330,16 @@ one period.
 - **THEN** the outcome still reports the audit trail as incomplete and the
   page still warns — the earlier live attempt remains unaudited regardless
   of the newer attempt's marker success
+
+#### Scenario: a kill-less retry's audit loss reaches the settlement
+
+- **GIVEN** a pending kill whose markers were written, followed by a retry
+  whose marker writes fail and whose kill call itself raises
+- **WHEN** the process later dies from the earlier kill and the settlement
+  seeds from the pending context
+- **THEN** the stored marker state carries the retry's loss — settlement
+  reports the audit chain incomplete and the page warns, instead of
+  starting from the stale success
 
 #### Scenario: a late settlement does not erase a lost audit trail
 

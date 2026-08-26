@@ -243,6 +243,18 @@
       重试成功→False 且本次标记确实写成;None/True 不误伤;再超时不洗
       白）+ 页面接线钉 + 变异去聚合咬住
 
+## codex 第十六轮（P2：kill 未发的重试也要把审计缺失写回未决）
+
+- [x] P2 未决在场（prior=True）+ 重试的 kill() 自身抛且标记写失败——
+      kill_issued 守卫拦住未决更新,存量 True 不动;进程随后死于**先前**
+      的 kill,迟到结算从陈旧 True 起步、报完整审计链,本次缺失的请求/
+      失败标记被抹掉。修=confirm 分支新增非 kill_issued 的 cancel_failed
+      支路:未决在场时把聚合值（cancel_update 已按 prior 种子聚合,False
+      不会被洗回）写回 `cancel_pending_markers_written`;不动
+      `cancel_pending_at`——本次没发 kill,未决身份仍属先前那次。真值
+      （prior True + 本次标记失败 → 聚合 False）+ 页面切片三钉（验未决
+      在场/写回聚合值/不新立未决身份）
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

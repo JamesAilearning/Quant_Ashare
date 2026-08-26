@@ -855,6 +855,46 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('prior_markers_written=(_live_run or {}).get(', page,
                       "重试没带上一次的标记状态")
 
+    def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:
+        # 未决在场 + 重试的 kill() 自身抛且标记写失败（codex 第十六轮
+        # P2）：kill_issued=False 的守卫会拦住未决上下文更新——存量
+        # True 不动,进程随后死于**先前**的 kill,迟到结算从陈旧 True 起
+        # 步、报完整审计链,本次缺失的请求/失败标记被抹掉。真值：prior
+        # True + 本次标记失败 → 聚合 False;页面在非 kill_issued 的
+        # cancel_failed 分支也要把聚合值写回未决上下文。
+        class _KillRaises:
+            pid = 999997
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                raise OSError("denied")
+            def wait(self, timeout=None):
+                raise AssertionError("不应走到 wait")
+        with tempfile.TemporaryDirectory() as t:
+            blocker = Path(t) / "blocker"
+            blocker.write_text("file", encoding="utf-8")
+            got = cancel_update(
+                _KillRaises(), blocker / "log.log",  # type: ignore[arg-type]
+                grace_seconds=0.5, prior_markers_written=True)
+            self.assertEqual("cancel_failed", got.kind)
+            self.assertFalse(got.kill_issued)
+            self.assertFalse(got.markers_written,
+                             "prior=True 也挡不住本次标记失败的聚合")
+        # 页面接线：kill 未发的 cancel_failed 分支,未决在场时写回聚合值
+        # （且不动 cancel_pending_at——未决身份仍属先前那次）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        _anchor = page.index("kill 调用没发出去的重试")
+        # 前探 400 字符盖住 elif 条件行,后探 900 盖住分支体。
+        killless = page[max(0, _anchor - 400):_anchor + 900]
+        self.assertIn('_live_run.get("cancel_pending_at")', killless,
+                      "非 kill_issued 分支没验未决在场")
+        self.assertIn('_live_run["cancel_pending_markers_written"] = (',
+                      killless, "聚合值没写回未决上下文")
+        self.assertNotIn('_live_run["cancel_pending_at"] =', killless,
+                         "kill 未发的重试不该新立未决身份")
+
     def test_a_graceful_claim_needs_a_verified_terminal_record(self) -> None:
         # 「编排器自己写下了终态记录」不许从**及时退出**推断（codex 第十
         # 轮 P2）：SIGINT 可落在 import/解析配置/拿锁阶段,终录路径尚未

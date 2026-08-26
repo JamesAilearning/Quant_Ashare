@@ -754,6 +754,18 @@ if _live_proc is not None:
                         _live_proc, _provider_path)
                     if _own_now:
                         _live_run["cancel_pending_own_started_at"] = _own_now
+                elif (_outcome.kind == "cancel_failed"
+                        and isinstance(_live_run, dict)
+                        and _live_run.get("cancel_pending_at")):
+                    # kill 调用没发出去的重试,但**先前的 kill 已在未决**
+                    # （codex 第十六轮 P2）：本次的标记缺失同属这条未决
+                    # 取消的审计链——聚合值（cancel_update 已按 prior 种
+                    # 子聚合,False 不被洗回）写回,否则迟到结算从陈旧
+                    # True 起步,报出完整审计链、抹掉本次缺失的请求/失败
+                    # 标记。不动 cancel_pending_at:本次没发 kill,未决
+                    # 身份仍属先前那次。
+                    _live_run["cancel_pending_markers_written"] = (
+                        _outcome.markers_written)
                 if (_outcome.kind == "cancelled"
                         and not _outcome.terminal_recorded):
                     # 进程死了且**没有核实到**它写下终态——硬杀必然如此;
