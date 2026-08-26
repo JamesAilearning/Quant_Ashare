@@ -43,7 +43,8 @@ NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行�
 # Exit-code → one-line Chinese meaning, mirroring the runbook table in
 # docs/runbook_daily_update_scheduling.md (the canonical exit-code reference).
 # All THREE copies (here / the runbook / daily_update.py's module docstring)
-# are pinned to the same code set by tests/logic/test_exit_code_semantics.py.
+# are pinned to the same code set (derived from daily_update's EXIT_*
+# constants) by tests/logic/test_failure_reason_reaches_the_operator.py.
 #
 # 一条码 = 一个**阶段**,不是一个原因。11 曾写作「查 token / 网络」,而 11 的实际
 # 条件是「01 以 0/3 以外任何码退出」——2026-08-17/20/21 连续三晚的 11 全都是
@@ -52,6 +53,7 @@ NO_REASON_MARK = "（该阶段未在日志中留下 ERROR；原因需查运行�
 # 句 ERROR),这张表只说死在哪一环。
 EXIT_CODE_MEANINGS: dict[int, str] = {
     0: "成功（含周末日历门 no-op）",
+    1: "未处理异常（阶段外抛，磁盘满/权限崩产线可达；异常本身见详情）",
     2: "配置/启动错误",
     10: "启动修复发现不可修复的 bundle 状态",
     11: "抓取硬失败（01 以非 0/3 退出；具体原因见详情）",

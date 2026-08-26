@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
@@ -180,6 +180,170 @@ class BootstrapGateSemantics(unittest.TestCase):
             from scripts.rotation_lib import parse_recert_status
 
             parse_recert_status(path.read_text(encoding="utf-8"))
+
+
+
+
+# 季度维护成员 m4（chore/csi800-n5-m4-preset，跑前钉死）。窗口按三成员
+# 既定算术实算：train 终点 = Q2 末、距 m3 90 天 ∈ [75,100]、跨度 729 天
+# ∈ [700,745]；valid = 训终后第 3 个交易日起 +3 个日历月回拉；test 为
+# 内嵌诊断段（非晋升证据），点火须待 bundle 尾 ≥ 2026-11-02。
+_M4_WINDOWS = (("2024-07-01", "2026-06-30"), ("2026-07-03", "2026-09-30"),
+               ("2026-10-12", "2026-10-30"))
+#: m4 两个段边界附近的 2026 交易日（合成日历，仅覆盖 embargo 判定所需的
+#: 「严格介于」区间；出处 = 上交所 2025-12-22 休市安排：国庆 10-01..10-07
+#: 休市、10-08 起照常开市，10-10(周六) 周末休市；6 月末-7 月初无假日）。
+_M4_BOUNDARY_SESSIONS = (
+    "2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02", "2026-07-03",
+    "2026-07-06",
+    "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-08", "2026-10-09",
+    "2026-10-12", "2026-10-13",
+)
+#: 六个窗口键之外，m4 必须与 m3 **逐字同族**——preset 的头注承诺如此，
+#: 治理在此作证（codex #466 P2：没有钉，之后一笔「顺手调参」静默失效
+#: 预注册）。
+_WINDOW_KEYS = ("train_start", "train_end", "valid_start", "valid_end",
+                "test_start", "test_end")
+
+
+class MaintenanceMemberM4Pins(unittest.TestCase):
+    @staticmethod
+    def _m4() -> dict:
+        path = _PRESETS / "csi800_n5_m4.yaml"
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_windows_are_the_preregistered_ones(self) -> None:
+        cfg = self._m4()
+        (train, valid, test) = _M4_WINDOWS
+        self.assertEqual(train, (cfg["train_start"], cfg["train_end"]))
+        self.assertEqual(valid, (cfg["valid_start"], cfg["valid_end"]))
+        self.assertEqual(test, (cfg["test_start"], cfg["test_end"]))
+
+    def test_window_boundaries_survive_calendar_arithmetic(self) -> None:
+        """字面钉之外的日历自检（codex #466 P2：只重复字面测不出算错）。
+
+        交易日推算依赖官方休市安排（2026 国庆 = 10-01..10-07 休市、10-08
+        开市，上交所 2025-12-22 通知）——那部分进不了 stdlib，出处钉在
+        preset 头注；此处管 stdlib 能管的：六个边界都得是周内日（周末边界
+        必错），且「点火须 bundle 尾 ≥ 2026-11-02」必须等于 test_end 之后
+        第一个周内日（T+1 结算日主张与数字互证，防改一处漏一处）。
+        """
+        cfg = self._m4()
+        for key in _WINDOW_KEYS:
+            day = date.fromisoformat(cfg[key])
+            self.assertLess(day.weekday(), 5, f"{key}={cfg[key]} 落在周末")
+        settlement = date.fromisoformat(cfg["test_end"]) + timedelta(days=1)
+        while settlement.weekday() >= 5:
+            settlement += timedelta(days=1)
+        self.assertEqual(date(2026, 11, 2), settlement,
+                         "头注的点火下限与 test_end 的 T+1 算术对不上")
+
+    def test_embargo_gaps_clear_the_canonical_validator(self) -> None:
+        """embargo 直接驱动运行时同一校验器（codex P2：weekday≠交易日）。
+
+        周内日自检管不住假日：两个边界改到只隔一个真实交易日的周内日，
+        weekday 检查照绿而 FeatureDatasetBuilder 的 validate_segment_embargo
+        点火即拒。所以这里拿官方休市安排合成的边界日历，喂**运行时那同一个
+        校验器**（钉调用同一函数的既定纪律），train→valid 与 valid→test 两
+        个边界都要过；再用负对照证明校验器在咬——空/错日历的绿不算数。
+        """
+        import dataclasses
+
+        from src.core._yaml_loader import load_yaml_with_inheritance
+        from src.core.pipeline import PipelineConfig
+        from src.data._segment_embargo import (
+            label_lookahead_days,
+            validate_segment_embargo,
+        )
+        cfg = self._m4()
+        # lookahead 不抄缺省值：生产 builder 传 label_lookahead_days(
+        # config.label_horizon_days)——config.yaml 日后改 horizon>1 时，
+        # 拿缺省 2 的治理会绿着而点火即拒（codex P2）。horizon 从**运行时
+        # 同一装载器**解析的合并配置取（extends 链生效值；未显式配置时按
+        # PipelineConfig 字段缺省，与运行时构造一致），再走同一推导函数。
+        merged = load_yaml_with_inheritance(_PRESETS / "csi800_n5_m4.yaml")
+        default_horizon = next(
+            f.default for f in dataclasses.fields(PipelineConfig)
+            if f.name == "label_horizon_days")
+        lookahead = label_lookahead_days(
+            merged.get("label_horizon_days", default_horizon))
+        calendar = [date.fromisoformat(d) for d in _M4_BOUNDARY_SESSIONS]
+        errors = validate_segment_embargo(
+            train_end=date.fromisoformat(cfg["train_end"]),
+            valid_start=date.fromisoformat(cfg["valid_start"]),
+            valid_end=date.fromisoformat(cfg["valid_end"]),
+            test_start=date.fromisoformat(cfg["test_start"]),
+            calendar=calendar,
+            lookahead_days=lookahead,
+        )
+        self.assertEqual([], errors, "m4 边界过不了运行时 embargo 校验器")
+        # 负对照：test_start 提前到假期后次日（10-09），严格介于 09-30 与
+        # 它之间只剩 10-08 一个交易日——同一校验器必须报错，否则上面的绿
+        # 只是校验器没在咬。
+        bitten = validate_segment_embargo(
+            train_end=date.fromisoformat(cfg["train_end"]),
+            valid_start=date.fromisoformat(cfg["valid_start"]),
+            valid_end=date.fromisoformat(cfg["valid_end"]),
+            test_start=date(2026, 10, 9),
+            calendar=calendar,
+            lookahead_days=lookahead,
+        )
+        self.assertTrue(bitten, "校验器没咬负对照——本用例的绿没有意义")
+
+    def test_the_header_discloses_truncated_diagnostics_at_floor(self) -> None:
+        # 下限点火时长视界诊断为空是**预告过的已知代价**（codex #466 P2），
+        # 不是异常——预告必须钉在操作人真正会读的 preset 头注里，且点名
+        # 21 个交易日与「非晋升证据」两个关键事实，防止后续编辑把披露删了
+        # 而点火下限还在（操作人读到 NaN 会当故障排查）。
+        text = (_PRESETS / "csi800_n5_m4.yaml").read_text(encoding="utf-8")
+        self.assertIn("21 个交易日", text, "缺 analyzer 视界事实")
+        self.assertIn("非晋升证据", text, "缺「诊断不进门」的定性")
+        self.assertIn("2026-11-02", text, "点火下限被改动或删除")
+
+    def test_serving_pins_arithmetic(self) -> None:
+        # 界值从 serving 契约本尊导入（codex P2：抄 75/100/700/745 字面会
+        # 在契约收紧时治理绿着而 load_ensemble_manifest 拒载——竞争快照）。
+        from src.inference.ensemble_serving import (
+            MEMBER_SPACING_DAYS_MAX,
+            MEMBER_SPACING_DAYS_MIN,
+            TRAIN_WINDOW_DAYS_MAX,
+            TRAIN_WINDOW_DAYS_MIN,
+        )
+        cfg = self._m4()
+        m3 = _load("m3")
+        gap = (date.fromisoformat(cfg["train_end"])
+               - date.fromisoformat(m3["train_end"])).days
+        span = (date.fromisoformat(cfg["train_end"])
+                - date.fromisoformat(cfg["train_start"])).days
+        self.assertGreaterEqual(gap, MEMBER_SPACING_DAYS_MIN,
+                                f"与 m3 的 fit_end 间距 {gap} 出 pin")
+        self.assertLessEqual(gap, MEMBER_SPACING_DAYS_MAX,
+                             f"与 m3 的 fit_end 间距 {gap} 出 pin")
+        self.assertGreaterEqual(span, TRAIN_WINDOW_DAYS_MIN,
+                                f"训窗跨度 {span} 出 pin")
+        self.assertLessEqual(span, TRAIN_WINDOW_DAYS_MAX,
+                             f"训窗跨度 {span} 出 pin")
+
+    def test_family_parity_outside_the_window_keys(self) -> None:
+        cfg = self._m4()
+        m3 = _load("m3")
+        stripped_m4 = {k: v for k, v in cfg.items() if k not in _WINDOW_KEYS}
+        stripped_m3 = {k: v for k, v in m3.items() if k not in _WINDOW_KEYS}
+        self.assertEqual(stripped_m3, stripped_m4,
+                         "m4 在窗口键之外与 m3 不同族——预注册被静默改动")
+
+    def test_the_guard_trio_and_device_are_pinned_directly(self) -> None:
+        # parity 之外再直接钉一层：m3 若也被改，parity 会双双漂移而绿着。
+        cfg = self._m4()
+        # 身份比对钉字面布尔（codex P2）：assertTrue 吃 truthy——m3/m4 同
+        # 漂成 YAML 字符串 "false" 时 parity 与 truthy 双双照绿，而
+        # PipelineConfig 不管这两个字段的运行时类型。
+        self.assertIs(True, cfg["attribution_sleeve_grouping"])
+        self.assertIs(True, cfg["risk_constraints_enabled"])
+        self.assertEqual("campaign_v1", cfg["risk_constraints_calibration"])
+        self.assertEqual("gpu", cfg["compute_device"])
+        self.assertEqual("csi800", cfg["instruments"])
+        self.assertEqual("SH000906TR", cfg["benchmark_code"])
 
 
 if __name__ == "__main__":

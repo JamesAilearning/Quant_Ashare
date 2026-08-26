@@ -439,6 +439,11 @@ class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
                   / "pages" / "today_workbench.py").read_text(encoding="utf-8")
         self.assertIn("model_age_rows(retrain_window(incumbent, cn_today()))",
                       source, "身份卡没有接生产运维页的同一推导")
+        self.assertGreaterEqual(
+            source.count(
+                "model_age_rows(retrain_window(incumbent, cn_today()))"),
+            3, "时效行没接到身份卡全部三个分支——unknown 的「无法推导+原因」"
+               "到不了卡上，规格场景落空（codex P2）")
 
 
 

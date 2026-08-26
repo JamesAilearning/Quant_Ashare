@@ -1,0 +1,60 @@
+# CSI800 N5 季度维护成员 m4 —— 跑前钉死（2026-08-25，季度重训操作卡
+# docs/csi800-n5-production-runbook.md「季度重训操作卡（维护路径）」）。
+#
+# 与自举三成员同族（Alpha158/LGB/csi800/campaign 三守卫），除窗口与本
+# 头注外与 csi800_n5_bootstrap_m3.yaml 逐字相同。
+#
+# 本成员窗口（交易日历实算至 2026-08-25 日历尾；规则经 m1/m2/m3 三份
+# preset 逐一复核一致）:
+#   train 2024-07-01..2026-06-30（729 天，24 个月滚动窗；终点 = Q2 末
+#         交易日，距 m3 fit_end 2026-04-01 共 90 天 ∈ [75,100] 间距 pin）
+#   valid 2026-07-03..2026-09-30（89 天 ≈ 3 个月；起点 = 训窗终点后第 3
+#         个交易日（LABEL_LOOKAHEAD_DAYS=2 embargo 合规），终点 = 起点
+#         +3 个日历月回拉交易日——2026-10-03 落国庆，回拉 09-30）
+#   test  2026-10-12..2026-10-30（管线内嵌【日频诊断】回测，非晋升证据；
+#         起点 = valid 终点后第 3 个交易日。2026 国庆休市为官方已公布
+#         值——上交所 2025-12-22 通知：10-01..10-07 休市，10-08 起照常
+#         开市——所以 10-08(1)/10-09(2) 后第 3 个交易日 = 10-12（周一），
+#         10-08/10-09 为 embargo 两日；长度 ≈3 周镜像 m3。
+#         qlib 回测需 test_end 的 T+1 结算日在册——所以点火必须等 bundle
+#         尾 ≥ 2026-11-02（10-30 之后首个交易日），否则 test 段物理不可
+#         回测（m3 的 v1 三元组正是钉在尾上被门拒——同一教训，这次把
+#         数字与点火时机**对齐**而不是留一句「点火前再改」）。
+#
+# manifest 算术自检（serving pins，src/inference/ensemble_serving.py）：
+# fit_end 间隔 90 天 ∈ [75,100]；训窗跨度 729 天 ∈ [700,745]。
+#
+# ⏰ 点火时机：bundle 尾 ≥ **2026-11-02**（test 终点 10-30 的 T+1 结算日
+# 在册；train/valid 只需 9-30 数据，但内嵌诊断段是 preset 的一部分——
+# 与 m3 家族同款，点火即全段可跑）。在此之前点火 = test 段不可回测，禁止。
+# 这与 m3 的实际节奏一致：其 valid 终 7-07、点火 ≈ 8 月初，间隔同为一个月。
+#
+# 下限点火的已知代价（如实预告，非异常）：SignalAnalyzer 的长视界诊断要
+# test 尾后 max(forward_periods)+1 = 21 个交易日（factor_max_decay_lag:
+# 20 继承自 config.yaml）——bundle 尾刚到 11-02 时 20 日 IC 会为空、更短
+# 视界被截断，运行照常完成并落盘。这与 m3 同款（test 尾 07-31、8 月初点
+# 火，同样截断）：诊断段**非晋升证据**，五门不消费它，故不作为点火前提；
+# 想要完整 20 日 IC 可等 bundle 尾 ≥ 约 2026-12-01 再跑，但不必等。
+#
+# 点火（GPU，操作人执行；单发，绝不与其它重型 run 并发）:
+#     python main.py config/presets/csi800_n5_m4.yaml
+# 产物: 运行目录下 model.pkl + trainer sidecar(<model>.pkl.meta.json)。
+# inference meta(<model>.meta.json) 由轮换执行器按 ④ 先例写入，
+# 不在训练阶段产生。后续:五门(retrain_gate member/ensemble 双 scope)
+# → rotate_ensemble_member plan/execute,均按季度重训操作卡逐步走。
+extends: ../../config.yaml
+
+instruments: "csi800"
+benchmark_code: "SH000906TR"
+# csi800 宇宙强制三守卫（v2-csi800-expansion-guards 配置级规则）
+attribution_sleeve_grouping: true
+risk_constraints_enabled: true
+risk_constraints_calibration: "campaign_v1"
+# 窗口显式钉死（不依赖 config.yaml 未来漂移）
+train_start: "2024-07-01"
+train_end: "2026-06-30"
+valid_start: "2026-07-03"
+valid_end: "2026-09-30"
+test_start: "2026-10-12"
+test_end: "2026-10-30"
+compute_device: "gpu"

@@ -283,6 +283,17 @@ class TheThreeExitCodeTablesAgree(unittest.TestCase):
         self.assertNotIn("token", meaning.lower())
         self.assertIn("详情", meaning, "得告诉操作人真正的原因去哪儿看")
 
+    def test_the_crash_code_names_the_exception_and_the_detail(self) -> None:
+        """回归钉（#465 codex P2）：crash 记录入账 1，表里却没有 1。
+
+        crash 路径把进程码 1 正式写进了状态与台账（磁盘满/权限崩产线可达），
+        而 UI 表只列 0/2/10-17——刚定义的失败被渲成「未知退出码」。1 不是
+        哪一环的专属码，含义必须说「异常」并把人指向详情（异常本身在那）。
+        """
+        meaning = EXIT_CODE_MEANINGS[du.EXIT_UNHANDLED_EXCEPTION]
+        self.assertIn("异常", meaning)
+        self.assertIn("详情", meaning, "得告诉操作人异常本身去哪儿看")
+
     def test_the_runbook_points_at_the_detail_field(self) -> None:
         body = _RUNBOOK.read_text(encoding="utf-8")
         row = [

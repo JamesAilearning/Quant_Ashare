@@ -8,6 +8,7 @@ short-circuits the rest; each failing stage maps to a DISTINCT exit code so a
 scheduler (Phase 4 — out of scope here) can tell where a run died:
 
     0  success
+    1  unhandled exception escaped a stage (crash recorded, then re-raised)
     2  configuration / setup error
     10 startup repair found an unrepairable bundle state
     11 fetch failed hard (01 exited anything other than 0 or 3)
@@ -17,6 +18,14 @@ scheduler (Phase 4 — out of scope here) can tell where a run died:
     15 validation failed (06 on the staged bundle)
     16 swap failed
     17 another run holds the single-flight lock for this provider (CLI; 阶段5 PR-P)
+
+Observability artifacts (never canonical inputs, see the run-status
+requirement): a run-status JSON rewritten each run, an append-only run LEDGER
+(`<provider>.daily_update_ledger.jsonl`) so a run of consecutive failures is
+visible at all, and one dated run BOUNDARY line in the shared log so a reader
+can tell which run a log segment belongs to. All three are written from
+``run_daily_update`` — the stage body below never touches them, and a failure
+to write any of them logs an ERROR and leaves the exit code alone.
 
 Path flow is END-TO-END EXPLICIT: the orchestrator passes every path to every
 numbered script as CLI argv (all six are pure-argparse — verified in Step 0; no
@@ -55,6 +64,7 @@ import importlib.util
 import json
 import logging
 import os
+import stat
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -95,10 +105,28 @@ STATUS_FILENAME = "daily_update_status.json"
 # (the two modules deliberately do not import each other).
 STATUS_SCHEMA_VERSION = 1
 
+# 运行台账(2026-08-24-daily-update-run-ledger):每次运行**追加**一行,只可追加
+# 不可覆盖。状态工件是单文件、每次运行盖掉上一次,所以它只回答「这一次怎么样」;
+# 台账回答「最近几次是什么形态」——2026-08-17/20/21 连着三晚失败拖到第三晚才被
+# 发现,正是因为没有任何东西记录那个**模式**。
+#
+# 刻意**没有** CLI 覆盖开关:路径由 provider 名派生,操作人无从指向别处,于是
+# `--status-path` 那一整套「改道后可能盖掉规范输入」的守卫在这里根本不需要。
+LEDGER_FILENAME = "daily_update_ledger.jsonl"
+LEDGER_SCHEMA_VERSION = 1
+
+# 运行边界:日志行只带 HH:MM:SS 不带日期,所以「昨天 21:00」与「今天 21:00」在
+# 数据里完全不可区分。`web/operator_ui/update_progress.py` 列了四种试过又否掉的
+# 启发式,结论是结构性的:要精确归属,得先让**写入侧**落一个带日期的边界。这就是
+# 那个边界。带 provider 是照抄状态工件的身份推理(codex #434 r18),这样读侧能
+# 拒绝别的 provider 留下的边界。
+RUN_BOUNDARY_MARK = "[daily_update] run started"
+
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "data_pipeline"
 
 # Exit codes (module-level constants so tests assert symbolically).
 EXIT_OK = 0
+EXIT_UNHANDLED_EXCEPTION = 1  # 阶段外抛未捕获异常：crash 记录入账后原样再抛,1 是解释器自己的进程码
 EXIT_CONFIG = 2
 EXIT_UNREPAIRABLE = 10
 EXIT_FETCH_HARD = 11
@@ -192,6 +220,21 @@ def _capture_stage_errors() -> Iterator[list[str]]:
 
 def _dropped_notice(count: int) -> str:
     return f"（中间另有 {count} 条错误未列出，完整内容见日志）"
+
+
+def _single_line_detail(text: str) -> str:
+    """终录 detail 的统一出口：backslashreplace 消毒 + 折单行 + 截断。
+
+    crash 路径与正常终态**共用**——阶段捕获后**返回**的消息同样可携带代理
+    转义的文件系统字节（启动修复/swap 接 OSError 原样转身，产线可达），
+    原样送进两个写入器会在 UnicodeEncodeError 上被吞掉：台账恰好漏掉终录
+    （codex P2，与 crash 消毒同根因的返回路径形态）。
+    """
+    return " / ".join(
+        part.strip()
+        for part in text.encode("utf-8", "backslashreplace").decode("utf-8")
+        .splitlines() if part.strip()
+    )[:_STAGE_DETAIL_MAX_CHARS]
 
 
 def _stage_detail(summary: str, captured: Sequence[str]) -> str:
@@ -298,22 +341,30 @@ class DailyUpdateError(RuntimeError):
     """Configuration / orchestration failure (fail-loud)."""
 
 
-def _status_path_from(provider_dir: Path) -> Path:
-    """``<provider>.<FILENAME>``, tolerating relative spellings.
+def _sibling_artifact_path(provider_dir: Path, filename: str) -> Path:
+    """``<provider>.<filename>``, tolerating relative spellings.
 
     ``resolve()`` first: a perfectly valid relative provider such as ``.``
     has an empty ``name``, and ``with_name`` raises ValueError on it — which
     would surface as a traceback rather than a message (codex #434 r5). A
     filesystem ROOT stays nameless even after resolving; there is no
     ``<root>.<name>`` sibling to write, so that is refused explicitly.
+
+    状态工件与运行台账共用这一处:两者的兄弟+名派生理由完全相同,而这些边角
+    (相对 ``.``、文件系统根)是 codex 逐个加固出来的——再推一遍只会推出一份
+    会与它分叉的副本。
     """
     resolved = provider_dir.resolve()
     if not resolved.name:
         raise ValueError(
-            f"无法从 provider 路径 {provider_dir!r} 推导状态工件位置:"
+            f"无法从 provider 路径 {provider_dir!r} 推导 {filename} 的位置:"
             f"它解析为文件系统根 {resolved!r},没有可派生的兄弟名"
         )
-    return resolved.with_name(f"{resolved.name}.{STATUS_FILENAME}")
+    return resolved.with_name(f"{resolved.name}.{filename}")
+
+
+def _status_path_from(provider_dir: Path) -> Path:
+    return _sibling_artifact_path(provider_dir, STATUS_FILENAME)
 
 
 def default_status_path(provider_dir: Path) -> Path:
@@ -377,6 +428,121 @@ def _write_status(path: Path, payload: Mapping[str, object]) -> None:
         except OSError:
             pass
         raise
+
+
+def default_ledger_path(provider_dir: Path) -> Path:
+    """运行台账位置:``<provider>.<LEDGER_FILENAME>``,无 CLI 覆盖。
+
+    与状态工件同样是**兄弟**(原子切换只重命名 provider 目录本身,兄弟因此存活)
+    且**名派生**(同一父目录下的两个 bundle 不会共用一份记录)。
+    """
+    return _sibling_artifact_path(provider_dir, LEDGER_FILENAME)
+
+
+def run_boundary_line(started_at: datetime, provider_dir: Path) -> str:
+    """写进日志的那一行运行边界(不含 logger 自己的前缀)。"""
+    return (f"{RUN_BOUNDARY_MARK} {started_at.isoformat()} "
+            f"provider={_norm(provider_dir)}")
+
+
+def _append_ledger(path: Path, payload: Mapping[str, object]) -> None:
+    """Best-effort append: 与状态工件**同一条**反向耦合契约。
+
+    可观测性失败绝不改变退出码,所以这里吞掉**一切**异常——不只是 ``OSError``:
+    ``ensure_ascii=False`` 遇到不成对代理会抛 ``UnicodeEncodeError``,
+    ``json.dumps`` 遇到不可序列化值会抛 ``TypeError``,任何一个漏网都会反转这条
+    保证(codex #434 r24 在 `_record_status` 上定下的规矩)。``BaseException``
+    (KeyboardInterrupt/SystemExit)仍然向上传。
+
+    追加纪律照抄本仓另一处 append-only 台账的写法(codex #330 P1 加固;那份在
+    web 层,而治理规矩禁止 `src/` 提它的名字,所以这里只讲道理不点名)。两点
+    都是承重的:
+
+    * **残尾隔离**——上一个进程若死在写一半、留下一条没有换行的尾行,直接追加
+      会把新记录焊到那个残片上:一条畸形行,而新记录从历史里静默消失。做法是在
+      **同一次** write 里前置一个换行,把残片隔离成它自己那条(被计数的)畸形行。
+    * **一次 write + flush + fsync**——进程被杀可以丢掉这一行,但绝不能留下半行
+      后面再跟一条健康的行。
+    """
+    try:
+        # 符号链接不许跟随：B 名下的台账名被链到 A 的台账时，跟随的追加会
+        # 把 B 的记录写进 A 的历史。「先查再开」是 check-then-use 竞态——
+        # 检查与 open 之间路径可以被换成链接（codex 两轮 P2）。所以打开动作
+        # 本身带 O_NOFOLLOW（POSIX 上遇链接原子地 ELOOP 失败）；Windows 没有
+        # O_NOFOLLOW（getattr 得 0），保留前置 is_symlink 作为主防线——那里
+        # 创建符号链接本就需要特权，竞态窗口如实记录为已知残余。
+        if path.is_symlink():
+            _logger.error(
+                "run-ledger target %s is a SYMLINK — refusing to append "
+                "through it (it may point at another provider's history); "
+                "the run's exit code is unaffected.", path,
+            )
+            return
+        line = json.dumps(dict(payload), ensure_ascii=False).encode("utf-8") + b"\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 残尾探针与追加**同一套**打开纪律：is_file()/stat() 之后路径可被换
+        # 成无读者的 FIFO，紧接着的 open("rb") 会先于追加那次非阻塞 open
+        # **阻塞等写者**——挂死照样发生，只是提前了一行（codex P2）。
+        probe_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        try:
+            probe_fd = os.open(str(path), probe_flags)
+        except FileNotFoundError:
+            probe_fd = -1
+        if probe_fd >= 0:
+            with os.fdopen(probe_fd, "rb") as tail:
+                info = os.fstat(tail.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    _logger.error(
+                        "run-ledger target %s is not a regular file "
+                        "(mode=%o) — refusing to append; the run's exit "
+                        "code is unaffected.", path, info.st_mode,
+                    )
+                    return
+                if info.st_size > 0:
+                    tail.seek(-1, os.SEEK_END)
+                    if tail.read(1) != b"\n":
+                        line = b"\n" + line
+        # O_NONBLOCK：派生位被预建成 FIFO 时，O_WRONLY 打开会**阻塞等
+        # 读者**——一次已完成的更新挂死在这里、握着单飞锁不放，反向耦合
+        # 契约（可观测性绝不影响运行）被一个 open 反转（codex P2）。带
+        # O_NONBLOCK 后无读者的 FIFO 直接 ENXIO（进吞噬通道）；有读者时
+        # open 成功，下面的 S_ISREG 拒掉它。常规文件不受 O_NONBLOCK 影响。
+        flags = (
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_BINARY", 0)
+        )
+        with os.fdopen(os.open(str(path), flags, 0o644), "ab") as handle:
+            # 对**已打开的描述符** fstat——查的就是拿到的 inode，没有
+            # check-then-use 窗口。两个判据（codex 两轮 P2）：
+            # * 必须是**常规文件**——FIFO/设备节点上的追加要么挂死要么写进
+            #   别的语义；
+            # * 硬链接数不得超过 1——O_NOFOLLOW 只管符号链接，硬链接两个
+            #   名字指同一个 inode，追加会改写链接另一头的内容。
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink > 1:
+                _logger.error(
+                    "run-ledger target %s is not a plain single-link regular "
+                    "file (mode=%o, nlink=%d) — refusing to append; the "
+                    "run's exit code is unaffected.",
+                    path, info.st_mode, info.st_nlink,
+                )
+                return
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception as exc:  # noqa: BLE001 — reverse-coupling contract
+        _logger.error(
+            "run-ledger append FAILED (%s): %s — the run's exit code is "
+            "unaffected; this run simply will not appear in the history.",
+            path, exc,
+        )
 
 
 def _record_status(path: Path, payload: Mapping[str, object]) -> None:
@@ -512,6 +678,68 @@ class DailyUpdateConfig:
                         f"artifact's write path would clobber a canonical "
                         f"input; refusing"
                     )
+        # codex #465 r6 P1: the run LEDGER is a writer too. Its path is
+        # DERIVED (<provider sibling>, no CLI override), so it cannot be
+        # typo'd directly — but the OTHER side of a collision can be: an
+        # operator can point --delisted-registry / --reference-cases / an
+        # explicit --status-path at exactly that spot. A terminal run would
+        # then append status JSON to a canonical input; worse, a status-path
+        # alias means every _record_status atomically REPLACES the
+        # supposedly append-only ledger. Same construction-time rejection,
+        # BEFORE any stage executes. (The ledger has no .tmp sibling — it is
+        # append-only by contract, so the derived path is the only target.)
+        ledger = _norm(default_ledger_path(self.provider_dir))
+        for label, root in (
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
+            ("<provider>.new", new_dir(self.provider_dir)),
+            ("<provider>.bak", bak_dir(self.provider_dir)),
+        ):
+            if _path_within(ledger, _norm(root)):
+                raise ValueError(
+                    f"运行台账的派生路径落在 {label} ({root}) 之内 — 台账追加"
+                    f"会写进 canonical 数据；拒绝（可观测性绝不影响数据）"
+                )
+        # 暂存兄弟不必查：暂存名 = 名字+".tmp"，而台账名以 .jsonl 结尾，
+        # `_status_tmp_path(x) == 台账` 无解——查一个不可构造的碰撞是死守卫。
+        #
+        # codex #465 r7 P2: 只比**本 provider** 的派生路径还不够。兄弟
+        # provider B 把 --status-path 指到 A 的台账上，B 的配置里
+        # `default_ledger_path(B)` 与之不等、照样通过——B 的第一次
+        # _record_status 就把 A 的只可追加历史原子替换成一条 status JSON。
+        # 单个配置看不见别的 provider，所以判据抬到**命名空间**：
+        # `*.{LEDGER_FILENAME}` 这个名字形状整体保留给台账写入者，任何
+        # 可配置路径都不许落在这个形状上——不必知道它是谁的台账。
+        reserved = f".{LEDGER_FILENAME}".lower()
+        for label, f in (
+            ("--delisted-registry", self.delisted_registry),
+            ("--reference-cases", self.reference_cases),
+            ("--status-path", final),
+            # codex #465 r8 P2: 可变**根**路径也在此列。B 把 --provider-dir
+            # 指到 A 的台账上，B 自己的派生台账只是后缀出现两次、相等检查
+            # 看不见——而一次成功重建后 swap() 会把 A 的台账 rename 成 .bak
+            # 再整个换掉，A 的历史就没了。tushare 根同理（fetch 直写其下）。
+            ("--provider-dir", self.provider_dir),
+            ("--tushare-dir", self.tushare_dir),
+            *(("单飞锁", lock_path_for(Path(os.path.abspath(r))))
+              for r in (self.provider_dir, self.tushare_dir,
+                        self.delisted_registry)),
+        ):
+            if ledger == _norm(f):
+                raise ValueError(
+                    f"运行台账的派生路径与 {label} ({f}) 重合 — 一边追加"
+                    f"一边整写会互相破坏；拒绝（可观测性绝不影响数据）"
+                )
+            # 查**每一段**路径组件，不只 basename：
+            # `<台账名>/status.json` 的叶子是无辜的 status.json，但写它要先
+            # mkdir 出台账那个名字的**目录**——随后 _append_ledger 撞上
+            # IsADirectoryError 被吞掉，运行永远进不了历史（codex P2）。
+            if any(part.endswith(reserved) for part in Path(_norm(f)).parts):
+                raise ValueError(
+                    f"{label} ({f}) 落在运行台账的保留命名空间"
+                    f"（*.{LEDGER_FILENAME}，含作为祖先目录）上 — 那是"
+                    f"（某个 provider 的）只可追加台账的名字形状；拒绝"
+                )
         # codex P2: a name-less path (".", a filesystem root) makes
         # _write_status's path.with_name() raise ValueError — which
         # _record_status does not catch (OSError only), so the mistake would
@@ -750,17 +978,72 @@ def run_daily_update(
         "run_date": run_date.isoformat(),
         "started_at": started_at.isoformat(),
     }
+    # 边界要在**任何阶段输出之前**落下 —— 它之后的每一行才属于本次运行。
+    # 走 `_logger.info` 而不是直接写文件:日志流由调用方(调度器 .bat / UI 启动器)
+    # 重定向,这里不该知道它落在哪儿。
+    _logger.info("%s", run_boundary_line(started_at, config.provider_dir))
     _record_status(status_path, {**base, "state": "running"})
-    exit_code, failed_stage, detail = _execute_daily_update(
-        config, runners, run_date=run_date)
-    _record_status(status_path, {
+    try:
+        exit_code, failed_stage, detail = _execute_daily_update(
+            config, runners, run_date=run_date)
+    except BaseException as exc:
+        # 阶段**抛异常**（而非返回退出码）时，下面的终态构造根本走不到——
+        # status 卡在 running、台账恰好漏掉最需要记的那次失败。这条路在
+        # 产线真实可达：atomic_write_parquet 重试后再抛 OSError，而 02 只
+        # 接 DelistedRegistryError（codex P1）。接 BaseException 而非
+        # Exception：进程内阶段都从 argparse.parse_args 进门，argv 契约
+        # 不符抛 SystemExit；操作人 Ctrl-C 抛 KeyboardInterrupt——两者都
+        # 绕过 Exception 捕获，状态同样卡死 running（codex P2）。此处只
+        # **记录后原样再抛**：不吞、不改映射、不碰阶段语义——观测写入自身
+        # 的失败仍由反向耦合契约吞掉，绝不反过来遮蔽原始异常。
+        crash_at = datetime.now(tz=_CN_TZ)
+        # 退出码尽量如实镜像进程行为：SystemExit 带非零 int code 时进程就
+        # 以它退出（argparse = 2，恰是 EXIT_CONFIG 的语义）；其余（含
+        # sys.exit(0)/None 从阶段中途冒出——那仍是异常终止，记 0 会违反
+        # 「失败记录带 failed_stage」不变式；KeyboardInterrupt 的平台码不
+        # 可移植）记 EXIT_UNHANDLED_EXCEPTION，真实类型在 detail 里。
+        crash_code = (
+            exc.code
+            if isinstance(exc, SystemExit)
+            and isinstance(exc.code, int)
+            and not isinstance(exc.code, bool)
+            and exc.code != 0
+            else EXIT_UNHANDLED_EXCEPTION)
+        crash = {
+            **base,
+            "state": "finished",
+            "finished_at": crash_at.isoformat(),
+            "exit_code": crash_code,
+            "failed_stage": "exception",
+            # 消毒走统一出口（异常消息可携带代理转义的文件系统字节——
+            # OSError 带 surrogateescape 文件名，产线可达；codex P2）。
+            "detail": _single_line_detail(f"{type(exc).__name__}: {exc}"),
+        }
+        _record_status(status_path, crash)
+        _append_ledger(
+            default_ledger_path(config.provider_dir),
+            {**crash, "schema_version": LEDGER_SCHEMA_VERSION},
+        )
+        raise
+    finished_at = datetime.now(tz=_CN_TZ)
+    terminal = {
         **base,
         "state": "finished",
-        "finished_at": datetime.now(tz=_CN_TZ).isoformat(),
+        "finished_at": finished_at.isoformat(),
         "exit_code": exit_code,
         "failed_stage": failed_stage,
-        "detail": detail,
-    })
+        # 与 crash 路径同一道消毒出口：捕获后**返回**的消息同样可携带代理
+        # 字节，原样送写入器会在 UnicodeEncodeError 上被吞掉（codex P2）。
+        "detail": _single_line_detail(detail),
+    }
+    _record_status(status_path, terminal)
+    # 台账行**就是**那条终态记录 + 它自己的 schema 版本。不另造一套字段:两套
+    # schema 就是两处要同步的地方。耗时也不存 —— 它是两个时间戳的差,存第三份
+    # 只是多一个会与推导值分叉的位置。
+    _append_ledger(
+        default_ledger_path(config.provider_dir),
+        {**terminal, "schema_version": LEDGER_SCHEMA_VERSION},
+    )
     return exit_code
 
 
