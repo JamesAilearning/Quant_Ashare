@@ -42,7 +42,20 @@ reread actually found: only when a matching `running` record was found and
 the evidence persisted may the page claim the artifact stays `running`,
 will remain labelled cancelled, and that the gate unlocked. A kill landing
 before the child wrote its record finds no orphan — the page SHALL then say
-exactly that and defer to the status artifact as-is.
+exactly that and defer to the status artifact as-is. Adoption SHALL be
+TIME-BOUND to the killed run: the record's `started_at` must fall inside
+the [session-launch, kill-completion] window — the single-flight lock
+releases with the process, so a scheduler run can start and write its own
+`running` record between the kill and the reread, and adopting it by
+provider+kind alone would label a live run as cancelled and unlock both
+launch gates.
+
+When the post-cancel swap-state inspection itself fails (volume gone,
+permissions, I/O error), the outcome SHALL report the state as UNKNOWN —
+a distinct third state, never silently healthy — and the page SHALL say it
+cannot vouch for the online data and instruct manual verification. Failed
+cancellations SHALL carry the marker-audit result exactly like successful
+ones; the missing-audit warning SHALL cover both.
 
 The live bundle is untouched by cancellation at any point OUTSIDE the
 swap's two-rename window: the pipeline builds into a sidecar and only an

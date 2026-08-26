@@ -54,6 +54,7 @@ from web.operator_ui.update_runner import (
     cancel_update,
     cancelled_run_matches,
     default_log_path,
+    evidence_binds_to_killed_run,
     gate_today,
     launch_daily_update,
     log_tail,
@@ -497,6 +498,10 @@ elif _launch_clicked:
         st.session_state[_LIVE_RUN_KEY] = {
             "process": _launch.process,
             "log_path": str(_launch.log_path) if _launch.log_path else "",
+            # 证据时间绑定的下界（codex 第五轮 P1）：被杀那次的
+            # started_at 必然 ≥ 本时刻——接替它的调度器运行则必然在
+            # 杀死之后起跑。
+            "launched_at": datetime.now(tz=_CN_TZ).isoformat(),
         }
     st.rerun()
 
@@ -564,8 +569,10 @@ if _live_proc is not None:
                     "error": _outcome.error,
                     "swap_interrupted": _outcome.swap_interrupted,
                     "markers_written": _outcome.markers_written,
+                    "swap_state_unknown": _outcome.swap_state_unknown,
                     "evidence_stored": False,
                 }
+                _killed_at = datetime.now(tz=_CN_TZ).isoformat()
                 if _outcome.kind in ("cancelled", "already_finished"):
                     # 只有确认终局才交出句柄——cancel_failed 时进程可能
                     # 还活着,句柄是唯一合法取消凭据,丢了就只剩任务管理
@@ -580,9 +587,18 @@ if _live_proc is not None:
                     # 孤儿记录照样锁页六小时（codex 第二轮 P1）。只有重读
                     # 确认是本 provider 的 running 记录才落证据。
                     _fresh_status = read_update_status(_status_path)
+                    # 时间绑定（codex 第五轮 P1）：单飞锁随进程消亡即释
+                    # 放，调度器可在「杀死之后、重读之前」起跑并写下自己
+                    # 的 running——按 provider+kind 收养会把活着的调度器
+                    # 运行标成已取消并解锁启动闸。只收养 started_at 落在
+                    # [launch, killed] 窗内的记录。
                     if (_fresh_status.kind == "running"
                             and record_matches_provider(
-                                _fresh_status, _provider_path)):
+                                _fresh_status, _provider_path)
+                            and evidence_binds_to_killed_run(
+                                _fresh_status.started_at,
+                                (_live_run or {}).get("launched_at"),
+                                _killed_at)):
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                         }
@@ -612,7 +628,8 @@ if isinstance(_last_cancel, dict):
             st.success(
                 "已取消（礼貌信号生效）：编排器自己写下了终态记录，状态"
                 "与台账如实可查。"
-                + ("" if _last_cancel.get("swap_interrupted")
+                + ("" if (_last_cancel.get("swap_interrupted")
+                          or _last_cancel.get("swap_state_unknown"))
                    else "在线数据未受影响。")
             )
         elif _last_cancel.get("evidence_stored"):
@@ -635,7 +652,13 @@ if isinstance(_last_cancel, dict):
                 "更正标注，页面按状态工件如实展示；单飞锁已自动释放，"
                 "下次更新照常。"
             )
-        if (_last_cancel.get("kind") == "cancelled"
+        if _last_cancel.get("swap_state_unknown"):
+            st.warning(
+                "⚠ 取消后**无法核实**数据目录状态（检查自身失败：卷不可"
+                "用/权限/IO 错）——本页不声称在线数据无恙；请人工确认 "
+                "provider 目录与 .bak/.new 的现状，必要时立即重跑更新。"
+            )
+        if (_last_cancel.get("kind") in ("cancelled", "cancel_failed")
                 and not _last_cancel.get("markers_written", True)):
             st.warning(
                 "⚠ 取消已执行，但**日志标记写入失败**（权限/磁盘满？）——"

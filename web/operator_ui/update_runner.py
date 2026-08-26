@@ -283,6 +283,10 @@ class UpdateCancel:
     #: 吞掉会让一次操作人动作不可审计（codex 第四轮 P2）:终止照常执行
     #: （主结局优先）,但缺失必须透出让页面响亮说。
     markers_written: bool = True
+    #: 切换窗状态**核实不了**（检查自身抛 OSError:卷不可用/权限/IO 错）。
+    #: 静默当健康会让 graceful 文案在未核实时声称「在线数据未受影响」
+    #: （codex 第五轮 P2）——unknown 是第三态,不是 False。
+    swap_state_unknown: bool = False
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -310,6 +314,34 @@ def _append_cancel_marker(log_path: Path | None, text: str) -> bool:
     except OSError:
         return False
     return True
+
+
+def evidence_binds_to_killed_run(
+    record_started_at: str | None,
+    launched_at: str | None,
+    killed_at: str | None,
+) -> bool:
+    """终止后重读到的 running 记录是否**属于被杀的那次**运行。
+
+    单飞锁随进程消亡即释放——调度器的自动运行可以在「杀死之后、重读之前」
+    起跑并写下自己的 running 记录:按 provider+kind 收养它,会把**活着的**
+    调度器运行标成已取消并解锁两个启动闸（codex 第五轮 P1）。时间绑定:
+    被杀那次的 started_at 必然落在「本会话 launch 时刻 ≤ started_at ≤
+    杀死完成时刻」内;接替者起跑在杀死之后,必然越界。三个戳同主机同钟
+    （UI 与编排器都取本机 now）,严格比较即可;任一解析不动=不绑定,
+    绝不靠猜收养。
+    """
+    if not (record_started_at and launched_at and killed_at):
+        return False
+    try:
+        record = datetime.fromisoformat(record_started_at)
+        launched = datetime.fromisoformat(launched_at)
+        killed = datetime.fromisoformat(killed_at)
+    except ValueError:
+        return False
+    if record.tzinfo is None or launched.tzinfo is None or killed.tzinfo is None:
+        return False
+    return launched <= record <= killed
 
 
 def cancelled_run_matches(
@@ -379,19 +411,26 @@ def cancel_update(
         try:
             process.kill()
         except OSError as exc:
-            _append_cancel_marker(
-                log_path, f"cancel FAILED: kill raised {exc!r}")
+            # 失败结局同样要审计——标记结果照聚合（codex 第五轮 P2:
+            # 两个 cancel_failed 返回此前落在聚合之外,不可写日志让失败
+            # 的取消静默无审计）。
+            markers_written = _append_cancel_marker(
+                log_path, f"cancel FAILED: kill raised {exc!r}"
+            ) and markers_written
             return UpdateCancel(
-                kind="cancel_failed", error=f"终止进程失败:{exc}")
+                kind="cancel_failed", error=f"终止进程失败:{exc}",
+                markers_written=markers_written)
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
-            _append_cancel_marker(
+            markers_written = _append_cancel_marker(
                 log_path,
-                "cancel FAILED: process survived kill within grace window")
+                "cancel FAILED: process survived kill within grace window"
+            ) and markers_written
             return UpdateCancel(
                 kind="cancel_failed",
-                error="进程在宽限窗内未退出;请用任务管理器核查后重试")
+                error="进程在宽限窗内未退出;请用任务管理器核查后重试",
+                markers_written=markers_written)
     markers_written = _append_cancel_marker(
         log_path,
         "cancel outcome: process exited "
@@ -406,12 +445,23 @@ def cancel_update(
     # （codex 第二轮 P2）。命名镜像 bundle_swap 的 `<provider>.bak`
     # （web/ 不 import 管线层;logic 测试钉两侧一致）。
     swap_interrupted = False
+    swap_state_unknown = False
     if provider_dir is not None:
-        with contextlib.suppress(OSError):
+        try:
             swap_interrupted = (
                 not provider_dir.exists()
                 and provider_dir.with_name(
                     provider_dir.name + ".bak").exists())
+        except OSError:
+            # 检查自身失败 ≠ 状态健康——unknown 是第三态,页面必须说
+            # 「核实不了,请人工确认」而不是照常声称数据无恙
+            # （codex 第五轮 P2）。
+            swap_state_unknown = True
+            markers_written = _append_cancel_marker(
+                log_path,
+                "cancel outcome: swap-state check FAILED (filesystem "
+                "error) — verify the provider dir and .bak/.new manually"
+            ) and markers_written
         if swap_interrupted:
             markers_written = _append_cancel_marker(
                 log_path,
@@ -420,7 +470,8 @@ def cancel_update(
                 "restores it") and markers_written
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
-        swap_interrupted=swap_interrupted, markers_written=markers_written)
+        swap_interrupted=swap_interrupted, markers_written=markers_written,
+        swap_state_unknown=swap_state_unknown)
 
 
 def default_log_path(provider_dir: Path) -> Path:

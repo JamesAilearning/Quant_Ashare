@@ -329,6 +329,82 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("更正标注", page, "无记录情形缺如实分支")
         self.assertIn("日志标记写入失败", page, "标记失败没有页面警告")
 
+    def test_evidence_binds_only_inside_the_kill_window(self) -> None:
+        # 单飞锁随进程消亡即释放——调度器可在「杀死后、重读前」起跑写下
+        # 自己的 running；按 provider+kind 收养会把活运行标成已取消并解
+        # 锁双闸（codex 第五轮 P1）。时间绑定：launch ≤ started ≤ killed。
+        from web.operator_ui.update_runner import evidence_binds_to_killed_run
+        launch = "2026-08-27T09:00:00+08:00"
+        killed = "2026-08-27T09:05:00+08:00"
+        self.assertTrue(evidence_binds_to_killed_run(
+            "2026-08-27T09:00:30+08:00", launch, killed))
+        for label, record in (
+            ("调度器接替（杀后起跑）", "2026-08-27T09:05:01+08:00"),
+            ("launch 之前的旧记录", "2026-08-27T08:59:59+08:00"),
+            ("解析不动", "not-a-stamp"),
+            ("缺时区", "2026-08-27T09:00:30"),
+            ("空", None),
+        ):
+            with self.subTest(label=label):
+                self.assertFalse(evidence_binds_to_killed_run(
+                    record, launch, killed))
+
+    def test_failed_cancels_also_report_audit_loss(self) -> None:
+        # 两个 cancel_failed 返回此前落在标记聚合之外——不可写日志让失败
+        # 的取消静默无审计（codex 第五轮 P2）。用 kill 即抛的存根走失败
+        # 路径 + 父为文件的不可写日志。
+        class _KillRaises:
+            pid = 999999
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                raise OSError("denied")
+            def wait(self, timeout=None):
+                raise AssertionError("不应走到 wait")
+        with tempfile.TemporaryDirectory() as t:
+            blocker = Path(t) / "blocker"
+            blocker.write_text("file", encoding="utf-8")
+            got = cancel_update(
+                _KillRaises(), blocker / "log.log",  # type: ignore[arg-type]
+                grace_seconds=0.5)
+        self.assertEqual("cancel_failed", got.kind)
+        self.assertFalse(got.markers_written, "失败结局的审计缺失被吞")
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('in ("cancelled", "cancel_failed")', page,
+                      "页面标记警告没覆盖失败结局")
+
+    def test_an_uncheckable_swap_state_is_unknown_not_healthy(self) -> None:
+        # 检查自身抛 OSError（卷不可用/权限）时不许当健康——unknown 是第
+        # 三态，graceful 文案不许在未核实时声称数据无恙（codex 第五轮
+        # P2）。
+        class _RaisingDir:
+            name = "prov"
+            def exists(self):
+                raise OSError("volume gone")
+            def with_name(self, name):
+                return self
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                got = cancel_update(
+                    proc, Path(t) / "log.log",
+                    provider_dir=_RaisingDir(),  # type: ignore[arg-type]
+                    grace_seconds=3)
+            self.assertEqual("cancelled", got.kind)
+            self.assertFalse(got.swap_interrupted)
+            self.assertTrue(got.swap_state_unknown,
+                            "检查失败被静默当成健康")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("swap_state_unknown", page)
+        self.assertIn("无法核实", page, "unknown 缺页面警告")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。
