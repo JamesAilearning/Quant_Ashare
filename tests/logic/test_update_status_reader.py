@@ -199,7 +199,10 @@ class ReadUpdateStatusTests(unittest.TestCase):
                 "provider_dir": _FINISHED_OK["provider_dir"],
                 "run_date": "2026-08-14",
                 "started_at": "2026-08-14T20:43:00+08:00"}
-        for bad in (True, "31337", 0, -4, 3.0):
+        # None 即显式 ``"pid": null``——键在场就得是正 int,经 .get() 与
+        # 缺键混同会把畸形记录放行成合法 legacy（codex 第二十一轮 P2:
+        # 硬取消后证据绑不上它,页面误称无匹配 running、锁启动六小时）。
+        for bad in (True, "31337", 0, -4, 3.0, None):
             with self.subTest(pid=bad):
                 with tempfile.TemporaryDirectory() as t:
                     p = Path(t) / STATUS_FILENAME

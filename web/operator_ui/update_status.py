@@ -272,16 +272,22 @@ def read_update_status(path: Path) -> UpdateRunStatus:
     # 但在场就必须是正 int:它是取消收养的身份判据,一个 ``true``/字符串
     # pid 流到比较处要么静默永不绑定、要么 ``True == 1`` 误绑定——在场
     # 即验,与本模块其余字段同款纪律。bool 先排(isinstance(True, int))。
-    pid_value = payload.get("pid")
-    if pid_value is not None and (
-        isinstance(pid_value, bool)
-        or not isinstance(pid_value, int)
-        or pid_value <= 0
-    ):
-        return UpdateRunStatus(
-            kind="corrupt", path=path,
-            error=f"pid 非法（got {pid_value!r}，期望正整数或缺省）",
-        )
+    # 「在场」按**键**判,不按值:显式 ``"pid": null`` 经 .get() 与旧记录
+    # 缺键无法区分,会被当合法 legacy 放行——而它是新契约下的畸形记录,
+    # 硬取消后证据绑不上它,页面误称无匹配 running、锁启动到六小时陈旧
+    # 线（codex 第二十一轮 P2）。
+    pid_value: int | None = None
+    if "pid" in payload:
+        pid_raw = payload["pid"]
+        if (isinstance(pid_raw, bool)
+                or not isinstance(pid_raw, int)
+                or pid_raw <= 0):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"pid 非法（got {pid_raw!r}，期望正整数;显式 null "
+                      f"不等于缺省）",
+            )
+        pid_value = pid_raw
     exit_code = payload.get("exit_code")
     if state == "finished" and (
         isinstance(exit_code, bool) or not isinstance(exit_code, int)

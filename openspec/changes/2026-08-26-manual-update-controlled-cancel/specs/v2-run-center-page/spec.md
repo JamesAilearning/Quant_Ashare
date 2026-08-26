@@ -61,7 +61,11 @@ IDENTITY-BOUND AND TIME-BOUND to the killed run — both, conjunctively:
   scheduler run as cancelled. A record without a pid (written by a
   pre-upgrade orchestrator) SHALL never be adopted — fail-closed; the
   reader SHALL treat a present-but-malformed pid as corruption, never
-  coerce it.
+  coerce it, with presence judged by the KEY, not the value: an explicit
+  `"pid": null` is a malformed record under the new contract, not a
+  legacy absence — rendering it as valid would leave a running record
+  that cancellation evidence can never bind to, blocking relaunches to
+  the staleness threshold after a hard cancel.
 * **Time window**: the record's `started_at` must fall inside the
   [session-launch, kill-completion] window — the residual defence against
   pid reuse (the OS can recycle the killed pid for a later writer; inside

@@ -315,6 +315,16 @@
       靠调用语义假设;歧义格由终态 oracle 裁决而非新增探测器。该族若再
       出意见,按 #463 式终轮划线呈用户裁决,不再逐洞精修
 
+## codex 第二十一轮（P2：显式 "pid": null 是损坏不是 legacy 缺省）
+
+- [x] P2 读侧「在场」要按**键**判不按值——`.get("pid")` 把显式
+      `"pid": null` 与旧记录缺键混同,畸形记录被放行成合法 legacy:硬取
+      消后证据绑不上它（pid=None fail-closed）,页面误称无匹配 running、
+      锁启动到六小时陈旧线。修=`"pid" in payload` 分支内验型,显式 null
+      落进 corrupt(错误文案注明「显式 null 不等于缺省」);缺键照旧
+      None=合法 legacy。回归=malformed 集合加 None(json 写出即
+      "pid": null);变异退回 .get 咬住(SUBFAILED pid=None)
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程
