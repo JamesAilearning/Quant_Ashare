@@ -31,7 +31,12 @@ SIGKILL after a grace window.
 Every cancel attempt on a live process SHALL leave dated `[run_center]`
 markers (request and outcome) in the shared log, following the launch
 marker convention; a no-op cancel (the process had already finished) SHALL
-leave no marker and change nothing. When a marker write fails (the log
+leave no marker and change nothing — UNLESS pending context from a
+previously issued kill stands: then the "already finished" death is
+kill-caused, and the attempt SHALL route through the full late settlement
+(outcome marker, swap diagnosis, evidence adoption) instead of the no-op
+path, which would discard the handle and the pending context and lose the
+entire epilogue. When a marker write fails (the log
 became unwritable after launch), the termination itself still proceeds —
 but the outcome SHALL report the missing audit trail and the page SHALL
 warn loudly rather than letting the operator action go unrecorded in
@@ -330,6 +335,17 @@ one period.
 - **WHEN** the retained handle exits during the page's polling
 - **THEN** the watcher triggers the settlement automatically and the page
   re-renders with the corrected state — no manual click is required
+
+#### Scenario: a retry racing the late death still settles
+
+- **GIVEN** a failed cancel whose kill was issued and whose pending context
+  stands, with the operator retrying while the process is exiting — the
+  death landing after the page's top settlement check but before the
+  retry's initial poll
+- **WHEN** the retry returns "already finished"
+- **THEN** the attempt routes through the full late settlement — outcome
+  marker, swap diagnosis, evidence adoption — instead of the no-op path
+  that would discard the handle and pending context unsettled
 
 #### Scenario: a dead pending handle does not trap the page in re-renders
 

@@ -677,6 +677,27 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 义务全在顶部块。
         self.assertIn("死亡发生在顶部退役/补结算块之后", page)
 
+    def test_a_retry_racing_the_death_still_settles(self) -> None:
+        # 竞态（codex 第十四轮 P2）：先前 cancel_failed 已发 kill、操作人
+        # 重试,进程恰在「顶部结算检查之后、cancel_update 初检之前」死掉
+        # ——cancel_update 返回 already_finished,按 no-op 丢弃句柄会把
+        # 迟到收尾（结局标记/swap 诊断/孤儿证据）整个跳过。钉:confirm
+        # 分支拦截 already_finished × 未决上下文,改走共享补结算函数;
+        # 共享函数恰好两个调用点（顶部块 + 拦截）,不许长出第三份实现。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertEqual(
+            2, page.count("_settle_late_pending(_live_run, _live_proc)"),
+            "共享补结算调用点不是恰好两处（顶部块 + already_finished 拦截）")
+        confirm = page.split("launched_at=(_live_run or {})")[1]
+        intercept = confirm.split("st.session_state[_LAST_CANCEL_KEY]")[0]
+        self.assertIn('_outcome.kind == "already_finished"', intercept,
+                      "拦截没在结局落盘之前")
+        self.assertIn('_live_run.get("cancel_pending_at")', intercept,
+                      "拦截没验未决上下文")
+        self.assertIn("_settle_late_pending(_live_run, _live_proc)",
+                      intercept, "拦截没走共享补结算")
+
     def test_the_watcher_notices_a_pending_late_death(self) -> None:
         # 硬杀后状态签名与日志进度都可能全程冻结——watcher 只比那两样,
         # 补结算块要等操作人手动交互才被重新执行,死进程的取消控件与孤儿
