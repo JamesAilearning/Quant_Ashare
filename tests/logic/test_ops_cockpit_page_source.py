@@ -873,6 +873,28 @@ class RepoAnchoredPathTests(unittest.TestCase):
             # …and an ordinary relative path still anchors normally
             self.assertIsNone(inc.unusable_path_reason("bundles/live"))
 
+    def test_a_lone_surrogate_path_is_refused_before_any_filesystem_call(
+            self) -> None:
+        # NUL 的姊妹形态（codex #468）：JSON 能表示孤立代理字符
+        # （"\\ud800"，损坏可达），POSIX 文件系统调用对它抛
+        # UnicodeEncodeError——各读取器的 OSError 兜底同样接不住。修在
+        # 边界本体：每个消费方（页顶门/日历尾/完整性/来源绑定）都在任何
+        # 文件系统调用之前拒绝，而不是只修收到报告的那一个。
+        import web.operator_ui.incumbent as inc
+        from web.operator_ui.pages._ops_cockpit_helpers import (
+            bundle_calendar_tail,
+            recommender_integrity_check,
+        )
+        surrogate = "D:/qlib" + chr(0xD800) + "/bundle"
+        reason = inc.unusable_path_reason(surrogate)
+        self.assertIsNotNone(reason)
+        self.assertIn(inc.WHY_SURROGATE, reason or "")
+        tail = bundle_calendar_tail(surrogate)    # must not raise
+        self.assertFalse(tail.known)
+        integrity = recommender_integrity_check(surrogate)
+        self.assertFalse(integrity.known)
+        self.assertIsNone(integrity.accepted)
+
     def test_a_nul_byte_path_is_refused_before_any_filesystem_call(self) -> None:
         # codex #431 r34 (P2): a fully-qualified path carrying an embedded
         # NUL passed the classifier, and `Path(...).read_bytes()` then raised

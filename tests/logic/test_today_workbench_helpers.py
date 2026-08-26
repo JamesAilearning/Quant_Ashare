@@ -696,6 +696,17 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                 else:
                     self.assertIn("未带 provider 身份", got.detail)
 
+    def test_incidental_whitespace_around_a_relative_spelling_binds(self) -> None:
+        # 出单器归一化第一步就是 strip（" data/prov " = incidental
+        # whitespace）；先锚后 strip 会拼出 `<repo>/ data/prov ` 另一条路径，
+        # 合法工件被误判外来（codex P1）。
+        from web.operator_ui.incumbent import anchored_to_repo
+        got = todays_buy_answer(
+            self._signal("rebalance", data_provider_uri=" data/prov "),
+            self._fresh(provider_uri=anchored_to_repo("data/prov")))
+        self.assertEqual("rebalance", got.state,
+                         "围空白的相对拼写被先锚后 strip 误判外来")
+
     def test_a_relative_artifact_provider_binds_regardless_of_cwd(self) -> None:
         # meta.provider_uri 可为相对拼写（生产配置语境=仓根）；Streamlit 从
         # 仓外启动时进程 CWD ≠ 仓根——按 CWD 归一会让**同一份** bundle 比

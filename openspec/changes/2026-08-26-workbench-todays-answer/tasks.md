@@ -139,6 +139,18 @@
       卡把它宣布成「下一再平衡日」是拿损坏工件报日程。再平衡日 next==
       as_of 合法不误伤（专用用例钉）；变异去时序验约 2 failed 咬住
 
+## 第十五轮（codex P1 先锚后 strip 误判外来 + P2 页级时序）
+
+- [x] 比对先 strip 再锚：出单器归一化第一步就是 strip（" data/prov " =
+      incidental whitespace）——先锚会拼出 `<repo>/ data/prov ` 另一条路
+      径，合法工件被误判外来
+- [x] 孤立代理检查**下沉进 unusable_path_reason 本体**（与 NUL 同一不变
+      式）：页面在合成之前就对当前 provider 跑健康/日历尾/完整性读取，
+      helper 内联检查救不了那些调用——修在共享边界后页顶门与各读取器的
+      既有门全部接住，helper 内联检查退役（修对层次）
+- [x] 边界本体镜像 NUL 用例（日历尾/完整性 must not raise）；变异两发
+      （去边界代理分支 3f / 去 strip 1f）全咬
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

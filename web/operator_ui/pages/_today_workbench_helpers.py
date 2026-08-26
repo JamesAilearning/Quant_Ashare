@@ -433,8 +433,11 @@ def _same_provider_spelling(artifact: str, current: str) -> bool:
     """
     from src.inference import daily_recommend as _rec  # noqa: PLC0415
     normalize = _rec._normalize_provider_uri  # type: ignore[attr-defined]
-    return bool(normalize(anchored_to_repo(artifact))
-                == normalize(anchored_to_repo(current)))
+    # 锚之前先 strip——出单器归一化的第一步就是 strip（其 docstring 管
+    # `" data/prov "` 叫 incidental whitespace）；不 strip 就锚会把它拼成
+    # `<repo>/ data/prov ` 这种另一条路径，合法工件被误判外来（codex P1）。
+    return bool(normalize(anchored_to_repo(artifact.strip()))
+                == normalize(anchored_to_repo(current.strip())))
 
 
 @dataclass(frozen=True)
@@ -568,18 +571,12 @@ def todays_buy_answer(
     # 文件系统调用）：内嵌 NUL 的拼写会让 realpath 抛 ValueError，整页
     # 变 traceback 而不是规格要求的拒答（codex P2）。两侧对称——工件侧
     # 来自不可信文件，当前侧同一崩溃向量同一门。
+    # 孤立代理字符不再此处内联检查——它已下沉进 unusable_path_reason 本体
+    # （与 NUL 同一不变式；codex 第十五轮 P2 指出页面在本合成**之前**就对
+    # 当前 provider 跑了健康/日历尾/完整性读取，内联检查救不了那些调用——
+    # 修在共享边界，页面顶部 provider_problem 与各读取器的既有门全部接住）。
     for side, spelling in (("工件", signal.data_provider_uri),
                            ("出单侧", current_provider)):
-        if any("\ud800" <= ch <= "\udfff" for ch in spelling):
-            # JSON 能表示孤立代理字符（`"\ud800"`，损坏可达），路径边界
-            # 放行它，但 POSIX 的 realpath 编码不了直接抛
-            # UnicodeEncodeError——归一化只接 OSError/ValueError，整页崩
-            # （codex P2，与 NUL 同类的「边界放行、下游炸」形态）。
-            return TodaysAnswer(
-                "unanswerable", "无法给出",
-                f"{side}的数据来源拼写含孤立代理字符——无法编码为文件系统"
-                f"路径；请核查工件。{_ANSWER_DISCLAIMER}",
-            )
         unusable = unusable_path_reason(spelling)
         if unusable is not None:
             return TodaysAnswer(
