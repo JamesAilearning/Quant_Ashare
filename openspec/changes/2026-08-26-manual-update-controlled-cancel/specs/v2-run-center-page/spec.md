@@ -43,17 +43,30 @@ the evidence persisted may the page claim the artifact stays `running`,
 will remain labelled cancelled, and that the gate unlocked. A kill landing
 before the child wrote its record finds no orphan — the page SHALL then say
 exactly that and defer to the status artifact as-is. Adoption SHALL be
-TIME-BOUND to the killed run: the record's `started_at` must fall inside
-the [session-launch, kill-completion] window — the single-flight lock
-releases with the process, so a scheduler run can start and write its own
-`running` record between the kill and the reread, and adopting it by
-provider+kind alone would label a live run as cancelled and unlock both
-launch gates. Both bounds SHALL be captured at their tight edges: the
-lower bound BEFORE the spawn call (the child can write its record before a
-post-spawn timestamp), and the upper bound AT the moment the cancellation
-boundary confirms the process dead — not after it returns, since the
-boundary still writes markers and inspects the filesystem afterwards and a
-replacement run can start inside that tail.
+IDENTITY-BOUND AND TIME-BOUND to the killed run — both, conjunctively:
+
+* **Identity**: the record's writer `pid` (stamped by the orchestrator
+  into every status record as `os.getpid()`; the launcher spawns the
+  orchestrator directly with no shell wrapper, so the held handle's
+  `Popen.pid` IS the writer) SHALL equal the killed handle's pid. Time
+  alone cannot carry this: a scheduler run can start after the session
+  launch and win the single-flight lock BEFORE the UI child does — its
+  `started_at` falls inside the time window while the killed UI child is
+  merely the exit-17 loser, and time-only adoption would label the live
+  scheduler run as cancelled. A record without a pid (written by a
+  pre-upgrade orchestrator) SHALL never be adopted — fail-closed; the
+  reader SHALL treat a present-but-malformed pid as corruption, never
+  coerce it.
+* **Time window**: the record's `started_at` must fall inside the
+  [session-launch, kill-completion] window — the residual defence against
+  pid reuse (the OS can recycle the killed pid for a later writer; inside
+  the window that pid was provably held by the session's child). Both
+  bounds SHALL be captured at their tight edges: the lower bound BEFORE
+  the spawn call (the child can write its record before a post-spawn
+  timestamp), and the upper bound AT the moment the cancellation boundary
+  confirms the process dead — not after it returns, since the boundary
+  still writes markers and inspects the filesystem afterwards and a
+  replacement run can start inside that tail.
 
 When the post-cancel swap-state inspection itself fails (volume gone,
 permissions, I/O error), the outcome SHALL report the state as UNKNOWN —
@@ -103,6 +116,23 @@ request, while any replacement starts after the real death) instead of
 treating the late death as an ordinary self-completion that leaves the
 orphaned record blocking launches.
 
+Late settlement SHALL owe the FULL cancel epilogue, not just the evidence:
+the same outcome marker (labelled as a late exit), the same strict
+swap-state inspection with its interrupted/unknown outcomes, and the same
+outcome presentation the immediate path uses — a late death landing inside
+the swap's two renames must surface the loud repair instruction, never be
+retired as a clean cancellation. The shared epilogue SHALL be one
+implementation, not a re-transcription that can drift.
+
+While a cancellation is pending, the page SHALL watch the retained handle
+itself and settle AUTOMATICALLY when it exits: after a hard kill the status
+signature and the log progress can both stay frozen, so a watcher comparing
+only those never fires and the settlement would wait for a manual
+interaction — leaving dead-process cancel controls and an orphaned
+`running` record standing indefinitely. Settling SHALL immediately re-render
+the page so the corrected state (not the pre-settlement banner) is what the
+operator sees.
+
 #### Scenario: an accidental click after the run already finished
 
 - **GIVEN** the operator cancels a session-launched run that has already
@@ -150,6 +180,33 @@ orphaned record blocking launches.
   alive
 - **WHEN** the page renders the failure
 - **THEN** the live handle is retained so the operator can retry
+
+#### Scenario: a lock-stealing scheduler run is not adopted as evidence
+
+- **GIVEN** a scheduler run started after the session launch and won the
+  single-flight lock before the UI child, whose kill then lands while the
+  scheduler's `running` record stands with an in-window `started_at`
+- **WHEN** the post-kill reread inspects that record
+- **THEN** adoption is refused — the record's writer pid differs from the
+  killed handle's pid — and the live scheduler run keeps rendering as
+  running with the launch gates closed
+
+#### Scenario: a late death inside the swap window is not retired cleanly
+
+- **GIVEN** a failed cancel whose kill completes late, with the death
+  landing between the swap's two renames
+- **WHEN** the pending settlement runs
+- **THEN** it performs the same strict swap-state inspection as an
+  immediate cancel, reports the swap hit loudly with the immediate re-run
+  instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: a pending cancellation settles without operator interaction
+
+- **GIVEN** a failed cancel left pending context while the status signature
+  and log progress stay frozen
+- **WHEN** the retained handle exits during the page's polling
+- **THEN** the watcher triggers the settlement automatically and the page
+  re-renders with the corrected state — no manual click is required
 
 #### Scenario: the scheduler's run is out of reach
 

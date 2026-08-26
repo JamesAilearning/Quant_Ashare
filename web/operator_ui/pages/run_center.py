@@ -60,6 +60,7 @@ from web.operator_ui.update_runner import (
     log_tail,
     log_window,
     range_problem,
+    settle_late_cancel,
 )
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
@@ -212,6 +213,14 @@ _session_live_proc = (
     _session_live.get("process") if isinstance(_session_live, dict) else None)
 _session_run_alive = (
     _session_live_proc is not None and _session_live_proc.poll() is None)
+# 未决取消的句柄（codex 第九轮 P2a）：cancel_failed 之后 kill 已发、进程
+# 还没死——它的迟到死亡不改状态签名也不推日志进度，watcher 只比那两样
+# 的话补结算块要等操作人手动交互才被重新执行。把句柄交给 watcher 盯。
+_pending_cancel_proc = (
+    _session_live_proc
+    if isinstance(_session_live, dict)
+    and _session_live.get("cancel_pending_at")
+    else None)
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
     _status, _provider_path
@@ -337,7 +346,10 @@ if _running_fresh:
 elif not _awaiting_launch:
     st.session_state.pop(_AWAIT_LAUNCH_KEY, None)
 
-_watching = _running_fresh or _awaiting_launch
+# 未决取消也要看着：等它死的期间状态签名/进度可能全程不动（硬杀后两者
+# 都冻结），没有 watcher 它的补结算永远等不来（codex 第九轮 P2a）。
+_watching = (
+    _running_fresh or _awaiting_launch or _pending_cancel_proc is not None)
 
 # 「我刚点的刷新到底生效了没」——状态没变时整页重绘长得一模一样,读取
 # 时刻是唯一能证明重读发生过的痕迹(#440 后续:操作人反馈按钮像坏的)。
@@ -377,6 +389,14 @@ if _watching:
             return
         if _read_progress() != _baseline_progress:
             # fetch 又推进了一格 —— 整页重绘,让上面那句进度跟上。
+            st.rerun(scope="app")
+            return
+        # 未决取消的迟到死亡（codex 第九轮 P2a）:硬杀后状态签名与日志
+        # 进度都可能不再变化——没有这一支,主脚本里的补结算块要等操作人
+        # 手动交互才会重新执行,死进程的取消控件与孤儿 running 会一直
+        # 挂着。句柄一死就把整页拉起来,让补结算当场跑。
+        if (_pending_cancel_proc is not None
+                and _pending_cancel_proc.poll() is not None):
             st.rerun(scope="app")
             return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
@@ -535,22 +555,56 @@ if _live_proc is not None and _live_proc.poll() is not None:
         if isinstance(_live_run, dict) else None)
     if _pending_at:
         # 迟到死亡补结算（codex 第八轮 P2）：cancel_failed 返回后进程才
-        # 真死——这是 kill 导致的死亡,不是自然完成。此刻补做证据落盘
-        # （时间上界=当时的请求时刻:被杀那次的 started_at 必早于请求,
-        # 接替者必晚于真实死亡>请求,不会误收养）。
+        # 真死——这是 kill 导致的死亡,不是自然完成。收尾义务与当场确认
+        # 死亡**完全同款**（codex 第九轮 P2b:此前这里只重读状态、存证
+        # 据,不做切换窗检查——迟到死亡同样可能恰好落在两段 rename 之
+        # 间,不查就把「canonical 缺位需立即修复」静默标成干净取消）,
+        # 走共享的补结算边界:结局标记 + 严格 swap 检查 + unknown 三态。
+        _late_lp = (
+            _live_run.get("log_path") if isinstance(_live_run, dict) else "")
+        _late_outcome = settle_late_cancel(
+            _live_proc, Path(_late_lp) if _late_lp else None,
+            provider_dir=_provider_path)
+        # 证据落盘（时间上界=当时的请求时刻:被杀那次的 started_at 必早
+        # 于请求,接替者必晚于真实死亡>请求;绑定另要求记录 pid == 被杀
+        # 句柄 pid——时间窗内起跑的夺锁调度器不是被杀的那个进程,身份
+        # 不同不收养,见 evidence_binds_to_killed_run 第九轮说明）。
         _late_status = read_update_status(_status_path)
-        if (_late_status.kind == "running"
-                and record_matches_provider(_late_status, _provider_path)
-                and evidence_binds_to_killed_run(
-                    _late_status.started_at,
-                    _live_run.get("launched_at")
-                    if isinstance(_live_run, dict) else None,
-                    _pending_at)):
+        _late_evidence = (
+            _late_status.kind == "running"
+            and record_matches_provider(_late_status, _provider_path)
+            and evidence_binds_to_killed_run(
+                _late_status.started_at,
+                _live_run.get("launched_at")
+                if isinstance(_live_run, dict) else None,
+                _pending_at,
+                record_pid=_late_status.pid,
+                killed_pid=_live_proc.pid))
+        if _late_evidence:
             st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                 "started_at": _late_status.started_at or "",
             }
-    # 进程已结束——句柄退役，成败由状态工件/台账（或上面补结算的证据）
-    # 自述。
+        # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
+        # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
+        # 落证据,操作人得到的答复必须与当场死亡一致。
+        st.session_state[_LAST_CANCEL_KEY] = {
+            "kind": _late_outcome.kind,
+            "graceful": _late_outcome.graceful,
+            "returncode": _late_outcome.returncode,
+            "error": _late_outcome.error,
+            "swap_interrupted": _late_outcome.swap_interrupted,
+            "markers_written": _late_outcome.markers_written,
+            "swap_state_unknown": _late_outcome.swap_state_unknown,
+            "evidence_stored": _late_evidence,
+        }
+        st.session_state.pop(_LIVE_RUN_KEY, None)
+        st.session_state.pop(_CANCEL_ARM_KEY, None)
+        # 当场重绘：本次脚本运行顶部的 running 横幅/闸门判断都算在补结算
+        # **之前**,不重绘会带着旧判断渲染到底,下一轮才更正。补结算幂等
+        # 出口:_LIVE_RUN_KEY 已 pop,重绘后不会再进本分支。
+        st.rerun()
+    # 进程已结束——句柄退役，成败由状态工件/台账自述（自然完成,无未决
+    # 取消;kill 导致的死亡在上面的补结算分支里已经 rerun 走人）。
     st.session_state.pop(_LIVE_RUN_KEY, None)
     st.session_state.pop(_CANCEL_ARM_KEY, None)
     _live_proc = None
@@ -625,18 +679,22 @@ if _live_proc is not None:
                     # 孤儿记录照样锁页六小时（codex 第二轮 P1）。只有重读
                     # 确认是本 provider 的 running 记录才落证据。
                     _fresh_status = read_update_status(_status_path)
-                    # 时间绑定（codex 第五轮 P1）：单飞锁随进程消亡即释
-                    # 放，调度器可在「杀死之后、重读之前」起跑并写下自己
-                    # 的 running——按 provider+kind 收养会把活着的调度器
-                    # 运行标成已取消并解锁启动闸。只收养 started_at 落在
-                    # [launch, killed] 窗内的记录。
+                    # 身份+时间绑定（codex 第五/九轮）：单飞锁随进程消亡
+                    # 即释放，调度器可在「杀死之后、重读之前」起跑并写下
+                    # 自己的 running——按 provider+kind 收养会把活着的调
+                    # 度器运行标成已取消并解锁启动闸。时间窗之外还必须
+                    # 记录 pid == 被杀句柄 pid：launch 之后、子进程拿锁之
+                    # 前起跑并夺锁的调度器,started_at 恰好落在窗内,光看
+                    # 时间照样误收养（第九轮 P2c）。
                     if (_fresh_status.kind == "running"
                             and record_matches_provider(
                                 _fresh_status, _provider_path)
                             and evidence_binds_to_killed_run(
                                 _fresh_status.started_at,
                                 (_live_run or {}).get("launched_at"),
-                                _killed_at)):
+                                _killed_at,
+                                record_pid=_fresh_status.pid,
+                                killed_pid=_live_proc.pid)):
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                         }

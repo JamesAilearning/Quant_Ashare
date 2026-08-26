@@ -332,12 +332,14 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
     def test_evidence_binds_only_inside_the_kill_window(self) -> None:
         # 单飞锁随进程消亡即释放——调度器可在「杀死后、重读前」起跑写下
         # 自己的 running；按 provider+kind 收养会把活运行标成已取消并解
-        # 锁双闸（codex 第五轮 P1）。时间绑定：launch ≤ started ≤ killed。
+        # 锁双闸（codex 第五轮 P1）。时间绑定：launch ≤ started ≤ killed；
+        # 身份绑定另测（见下条）——这里全程用同一 pid，隔离时间维度。
         from web.operator_ui.update_runner import evidence_binds_to_killed_run
         launch = "2026-08-27T09:00:00+08:00"
         killed = "2026-08-27T09:05:00+08:00"
         self.assertTrue(evidence_binds_to_killed_run(
-            "2026-08-27T09:00:30+08:00", launch, killed))
+            "2026-08-27T09:00:30+08:00", launch, killed,
+            record_pid=4242, killed_pid=4242))
         for label, record in (
             ("调度器接替（杀后起跑）", "2026-08-27T09:05:01+08:00"),
             ("launch 之前的旧记录", "2026-08-27T08:59:59+08:00"),
@@ -347,7 +349,32 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 self.assertFalse(evidence_binds_to_killed_run(
-                    record, launch, killed))
+                    record, launch, killed,
+                    record_pid=4242, killed_pid=4242))
+
+    def test_evidence_requires_the_killed_pid_identity(self) -> None:
+        # 光有时间窗不够（codex 第九轮 P2c）：调度器可在 launch 之后、UI
+        # 子进程拿锁**之前**起跑并夺锁——它的 started_at 恰好落在窗内，
+        # 被杀的 UI 子进程只是 exit-17 的输家；按时间收养会把**活着的**
+        # 调度器运行标成已取消。身份硬条件：记录里的写者 pid == 被杀句柄
+        # 的 pid（产出器落 os.getpid()，launch 直接 spawn 编排器无 shell
+        # 壳，两者同一进程）。旧记录无 pid → None → fail-closed 不绑定；
+        # bool 要挡（True == 1）。
+        from web.operator_ui.update_runner import evidence_binds_to_killed_run
+        launch = "2026-08-27T09:00:00+08:00"
+        killed = "2026-08-27T09:05:00+08:00"
+        in_window = "2026-08-27T09:00:30+08:00"
+        for label, record_pid, killed_pid in (
+            ("夺锁调度器（窗内但不同 pid）", 5000, 4242),
+            ("旧产出器记录（无 pid）", None, 4242),
+            ("句柄侧缺 pid", 4242, None),
+            ("bool 冒充 pid（True == 1）", True, 1),
+            ("双侧皆空", None, None),
+        ):
+            with self.subTest(label=label):
+                self.assertFalse(evidence_binds_to_killed_run(
+                    in_window, launch, killed,
+                    record_pid=record_pid, killed_pid=killed_pid))
 
     def test_failed_cancels_also_report_audit_loss(self) -> None:
         # 两个 cancel_failed 返回此前落在标记聚合之外——不可写日志让失败
@@ -462,10 +489,99 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('_live_run["cancel_pending_at"] = _cancel_requested_at',
                       page, "失败结局没留未决上下文")
         self.assertIn("_cancel_requested_at = datetime.now", page)
-        retire = page.split("句柄退役")[0]
-        self.assertIn("evidence_binds_to_killed_run(", retire.split(
-            "迟到死亡补结算")[-1], "退役块没做补结算绑定")
-        self.assertIn("_pending_at)", page, "补结算上界没用请求时刻")
+        # 锚取补结算块自己的首行注释（confirm 分支里「迟到死亡补结算的
+        # 时间上界」是另一处提及，不能用裸词切）。
+        settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
+        self.assertIn("evidence_binds_to_killed_run(", settle,
+                      "补结算块没做证据绑定")
+        # 锚串随第九轮更新（绑定调用多了 pid 身份参数），断言意图一字
+        # 未动：补结算的时间上界仍是请求时刻 _pending_at。
+        self.assertIn("_pending_at,", settle, "补结算上界没用请求时刻")
+
+    def test_a_late_settlement_owes_the_full_cancel_epilogue(self) -> None:
+        # 迟到死亡的收尾义务与当场确认死亡**完全同款**（codex 第九轮
+        # P2b）：此前补结算只重读状态、存证据——迟到死亡同样可能恰好落
+        # 在两段 rename 之间,不查就把「canonical 缺位需立即修复」静默标
+        # 成干净取消。钉：补结算走共享边界 settle_late_cancel、结局进
+        # _LAST_CANCEL_KEY（swap/unknown/标记三警告的消费处）、当场
+        # rerun 不带旧横幅渲染到底。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
+        self.assertIn("settle_late_cancel(", settle,
+                      "补结算没走共享收尾边界")
+        self.assertIn('"swap_interrupted": _late_outcome.swap_interrupted',
+                      settle, "补结算结局没带切换窗判定")
+        self.assertIn('"swap_state_unknown": _late_outcome.swap_state_unknown',
+                      settle, "补结算结局没带 unknown 三态")
+        self.assertIn('"evidence_stored": _late_evidence', settle)
+        self.assertIn("st.rerun()", settle, "补结算后没有当场重绘")
+
+    def test_settle_late_cancel_shares_the_death_epilogue(self) -> None:
+        # 行为侧：已死进程的补结算 = 结局标记 + 严格 swap 检查（与
+        # cancel_update 同一实现——分抄两份正是第九轮 P2b 抓到的分叉）。
+        from web.operator_ui.update_runner import settle_late_cancel
+        proc = _spawn("pass")
+        proc.wait(timeout=30)
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            missing = Path(t) / "provider_gone"
+            (Path(t) / "provider_gone.bak").mkdir()
+            got = settle_late_cancel(proc, log, provider_dir=missing)
+            self.assertEqual("cancelled", got.kind)
+            self.assertFalse(got.graceful, "迟到死亡不许谎称礼貌退出")
+            self.assertTrue(got.swap_interrupted,
+                            "迟到补结算漏了切换窗检查（第九轮 P2b 原样）")
+            text = log.read_text(encoding="utf-8")
+            self.assertIn("exited late", text, "迟到结局标记缺失")
+            self.assertIn("SWAP WINDOW", text)
+        # 完好目录不误报；活进程 fail-loud 拒绝（死亡是单调的,活进程到
+        # 这儿=调用方编程错误,不许静默装作结算过）。
+        proc2 = _spawn("pass")
+        proc2.wait(timeout=30)
+        with tempfile.TemporaryDirectory() as t:
+            intact = Path(t) / "prov"
+            intact.mkdir()
+            got = settle_late_cancel(
+                proc2, Path(t) / "log.log", provider_dir=intact)
+            self.assertEqual("cancelled", got.kind)
+            self.assertFalse(got.swap_interrupted)
+        live = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with self.assertRaises(ValueError):
+                settle_late_cancel(live, None)
+        finally:
+            if live.poll() is None:
+                live.kill()
+
+    def test_the_watcher_notices_a_pending_late_death(self) -> None:
+        # 硬杀后状态签名与日志进度都可能全程冻结——watcher 只比那两样,
+        # 补结算块要等操作人手动交互才被重新执行,死进程的取消控件与孤儿
+        # running 一直挂着（codex 第九轮 P2a）。钉：watching 纳入未决取消
+        # 句柄;片段内句柄一死就整页 rerun。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("_pending_cancel_proc is not None", page,
+                      "watching 条件没纳入未决取消句柄")
+        fragment_at = page.index("def _watch_update_completion()")
+        body = page[fragment_at:fragment_at + 2400]
+        self.assertIn("_pending_cancel_proc.poll() is not None", body,
+                      "片段没盯未决句柄的死亡")
+
+    def test_evidence_adoption_is_pid_bound_at_both_sites(self) -> None:
+        # 两处收养（当场 confirm 分支 + 迟到补结算）都必须把 pid 身份递
+        # 进绑定——漏一处,该处就退回纯时间窗,第九轮 P2c 的夺锁调度器
+        # 场景原样复活。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertEqual(
+            2, page.count("record_pid="),
+            "收养点的 pid 身份参数不是恰好两处（confirm + 补结算）")
+        self.assertIn("record_pid=_fresh_status.pid", page)
+        self.assertIn("record_pid=_late_status.pid", page)
+        self.assertEqual(2, page.count("killed_pid=_live_proc.pid"),
+                         "两处收养的句柄侧 pid 不齐")
 
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，

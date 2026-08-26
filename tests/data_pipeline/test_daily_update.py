@@ -524,6 +524,11 @@ class StatusArtifactTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_FETCH_HARD)
             self.assertEqual(seen.get("state"), "running")
             self.assertNotIn("exit_code", seen)
+            # 写者进程身份（#470 第九轮）：UI 受控取消收养孤儿 running
+            # 记录做证据的硬条件是「记录 pid == 被杀句柄 pid」——记录必须
+            # 落写者自己的 pid（编排器 in-process 跑在本测试进程里）。
+            import os as _os
+            self.assertEqual(seen.get("pid"), _os.getpid())
             # ...and the terminal record overwrote it with the failure.
             st = self._read(cfg)
             self.assertEqual(st["state"], "finished")

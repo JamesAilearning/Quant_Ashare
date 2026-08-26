@@ -117,6 +117,33 @@
       started_at 必早于请求,接替者必晚于真实死亡>请求,不误收养）;退役
       块凭它补结算证据后再退役
 
+## codex 第九轮（3×P2：收养上身份、补结算全款收尾、watcher 盯句柄）
+
+- [x] P2c 收养证据加**进程身份**硬条件——调度器可在 launch 之后、UI 子
+      进程拿锁之前起跑并夺锁,其 started_at 恰落窗内,被杀的 UI 子进程只
+      是 exit-17 输家,纯时间窗会把**活着的**调度器运行标成已取消。修在
+      不变式层杀整族：产出器把 os.getpid() 落进每条状态记录（launch 直
+      接 spawn 编排器无 shell 壳,Popen.pid 即写者）;读侧解析 pid（缺=
+      None 不算截断,在场必须正 int 否则 corrupt——true 会 True==1 误绑,
+      字符串会静默永不绑）;绑定 helper 要求 record_pid == killed_pid
+      （排 bool）,时间窗降为防 pid 复用的副防线;两处收养（confirm+补结
+      算）都递 pid。真值表 + 产出器 mid-run 断言 + 变异去 pid 检查/去产
+      出器落 pid 各自咬住
+- [x] P2b 迟到补结算欠**全款收尾**——此前只重读状态、存证据,不做切换窗
+      检查:迟到死亡同样可能落在两段 rename 之间,不查就把「canonical 缺
+      位需立即修复」静默标成干净取消。收尾抽成共享实现
+      `_confirmed_death_outcome`（结局标记+严格 swap 检查+unknown 三态）,
+      当场路径与新入口 `settle_late_cancel`（活进程 fail-loud 拒绝）共
+      用;补结算结局进 _LAST_CANCEL_KEY 走同一套渲染（三警告消费处）,
+      并当场 rerun 不带旧横幅渲染到底。行为用例（.bak 在→swap 命中+
+      "exited late" 标记）+ 变异断开 provider_dir 咬住
+- [x] P2a watcher 盯**未决取消句柄**——硬杀后状态签名与日志进度双冻结,
+      只比那两样的片段永不开火,补结算要等手动交互,死进程的取消控件与
+      孤儿 running 一直挂着。watching 纳入未决句柄;片段内句柄一死即整
+      页 rerun 让补结算当场跑。页面钉 + fragment 体内 needle
+- [x] 锚串两处随第九轮更新（_watching 表达式、补结算切片锚避开 confirm
+      分支的「迟到死亡补结算的时间上界」字样）,断言意图一字未动
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

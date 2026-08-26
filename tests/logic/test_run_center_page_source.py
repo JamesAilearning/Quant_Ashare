@@ -114,7 +114,12 @@ class PageSourceTests(unittest.TestCase):
         # so the watcher registers in the same interaction.
         self.assertIn("_AWAIT_LAUNCH_KEY", self.src)
         self.assertIn("_AWAIT_LAUNCH_WINDOW", self.src)
-        self.assertIn("_watching = _running_fresh or _awaiting_launch", self.src)
+        # 锚串随第九轮更新（watching 纳入未决取消句柄——硬杀后签名/进度
+        # 双冻结，等它死只能盯句柄），断言意图一字未动：原两个触发源仍在。
+        self.assertIn(
+            "_running_fresh or _awaiting_launch"
+            " or _pending_cancel_proc is not None",
+            self.src)
         self.assertIn("if _watching:", self.src)
         # The marker must be bounded, or a failed launch polls forever.
         # (r3 起判据抽成纯函数 await_window_expired,主脚本与片段共用同一

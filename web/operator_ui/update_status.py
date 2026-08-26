@@ -90,6 +90,10 @@ class UpdateRunStatus:
     failed_stage: str | None = None
     detail: str = ""
     error: str = ""
+    #: 写者进程的 pid（#470 第九轮:受控取消收养孤儿 running 记录做证据的
+    #: **进程身份**硬条件）。旧产出器写的记录没有这个键 → ``None``——收养
+    #: 侧对 None 一律不绑定（fail-closed:证不出身份就不声称）。
+    pid: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -264,6 +268,20 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             error=f"{state} 记录缺少非空字段：{', '.join(missing)}"
                   f"（截断的记录绝不按成功/运行中渲染）",
         )
+    # pid 是**可选**键（旧产出器的在盘记录没有它,缺 = None,不算截断）,
+    # 但在场就必须是正 int:它是取消收养的身份判据,一个 ``true``/字符串
+    # pid 流到比较处要么静默永不绑定、要么 ``True == 1`` 误绑定——在场
+    # 即验,与本模块其余字段同款纪律。bool 先排(isinstance(True, int))。
+    pid_value = payload.get("pid")
+    if pid_value is not None and (
+        isinstance(pid_value, bool)
+        or not isinstance(pid_value, int)
+        or pid_value <= 0
+    ):
+        return UpdateRunStatus(
+            kind="corrupt", path=path,
+            error=f"pid 非法（got {pid_value!r}，期望正整数或缺省）",
+        )
     exit_code = payload.get("exit_code")
     if state == "finished" and (
         isinstance(exit_code, bool) or not isinstance(exit_code, int)
@@ -325,4 +343,5 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             if payload.get("failed_stage") is not None else None
         ),
         detail=str(payload.get("detail") or ""),
+        pid=pid_value,
     )

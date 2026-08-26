@@ -977,6 +977,11 @@ def run_daily_update(
         "provider_dir": _norm(config.provider_dir),
         "run_date": run_date.isoformat(),
         "started_at": started_at.isoformat(),
+        # 写者进程自己的 pid——记录的**进程身份**（#470 第九轮）:UI 受控
+        # 取消收养孤儿 running 记录做证据时,硬条件是「记录 pid == 被杀
+        # 句柄的 pid」;时间窗只防 pid 复用。没有身份,一个恰好在窗内起跑
+        # 的调度器接替运行会被误收养成「已取消」——把活着的运行标成死的。
+        "pid": os.getpid(),
     }
     # 边界要在**任何阶段输出之前**落下 —— 它之后的每一行才属于本次运行。
     # 走 `_logger.info` 而不是直接写文件:日志流由调用方(调度器 .bat / UI 启动器)

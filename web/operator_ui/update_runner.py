@@ -325,17 +325,38 @@ def evidence_binds_to_killed_run(
     record_started_at: str | None,
     launched_at: str | None,
     killed_at: str | None,
+    *,
+    record_pid: int | None,
+    killed_pid: int | None,
 ) -> bool:
     """终止后重读到的 running 记录是否**属于被杀的那次**运行。
 
     单飞锁随进程消亡即释放——调度器的自动运行可以在「杀死之后、重读之前」
     起跑并写下自己的 running 记录:按 provider+kind 收养它,会把**活着的**
-    调度器运行标成已取消并解锁两个启动闸（codex 第五轮 P1）。时间绑定:
-    被杀那次的 started_at 必然落在「本会话 launch 时刻 ≤ started_at ≤
-    杀死完成时刻」内;接替者起跑在杀死之后,必然越界。三个戳同主机同钟
-    （UI 与编排器都取本机 now）,严格比较即可;任一解析不动=不绑定,
-    绝不靠猜收养。
+    调度器运行标成已取消并解锁两个启动闸（codex 第五轮 P1）。
+
+    判据是**进程身份 + 时间窗**的合取（codex 第九轮:光有时间窗不够——
+    调度器可以在 launch 之后、UI 子进程拿锁之前起跑并夺锁,它的
+    ``started_at`` 恰好落在窗内,被杀的 UI 子进程只是 exit-17 的输家;
+    按时间收养会把**活着的**调度器运行标成已取消）:
+
+    * 身份:记录里的写者 ``pid`` == 被杀句柄的 pid——产出器把
+      ``os.getpid()`` 落进每条记录,而本启动器直接 spawn 编排器
+      （无 shell 壳）,``Popen.pid`` 就是写者本身。旧记录没有 pid → None
+      → 不绑定（fail-closed:证不出身份就不声称）。
+    * 时间窗:``launch 时刻 ≤ started_at ≤ 杀死完成时刻``——身份之外
+      仍保留,防 pid 复用（被杀 pid 被系统回收给新进程再写记录;窗内
+      该 pid 一直被本会话子进程持有,复用者必然越界）。
+
+    三个戳同主机同钟（UI 与编排器都取本机 now）,严格比较即可;任一解析
+    不动=不绑定,绝不靠猜收养。pid 比较排除 bool（``True == 1``）。
     """
+    if not (
+        isinstance(record_pid, int) and not isinstance(record_pid, bool)
+        and isinstance(killed_pid, int) and not isinstance(killed_pid, bool)
+        and record_pid == killed_pid
+    ):
+        return False
     if not (record_started_at and launched_at and killed_at):
         return False
     try:
@@ -436,11 +457,63 @@ def cancel_update(
                 kind="cancel_failed",
                 error="进程在宽限窗内未退出;请用任务管理器核查后重试",
                 markers_written=markers_written)
+    return _confirmed_death_outcome(
+        process, log_path, provider_dir,
+        graceful=graceful, markers_written=markers_written, late=False)
+
+
+def settle_late_cancel(
+    process: subprocess.Popen[bytes],
+    log_path: Path | None,
+    *,
+    provider_dir: Path | None = None,
+) -> UpdateCancel:
+    """``cancel_failed`` 之后进程**迟到死亡**的补结算边界。
+
+    kill 已发、宽限窗内没等到,进程在 ``cancel_update`` 返回之后才真死——
+    这仍是取消导致的死亡,收尾义务与确认死亡路径**完全同款**（codex 第
+    九轮 P2:此前补结算只重读状态、存证据,不做切换窗检查——迟到死亡同样
+    可能恰好落在两段 rename 之间,不查就把「canonical 缺位需立即修复」
+    静默标成一次干净的取消）。共享同一个收尾实现,不重抄一份会分叉的。
+
+    只接受**已死**的进程:死亡是单调的（``poll()`` 非 None 后不会翻回）,
+    活进程到这儿是调用方编程错误,fail-loud 而非静默装作结算过。
+    """
+    if process.poll() is None:
+        raise ValueError(
+            "settle_late_cancel 只对已退出的进程补结算——活进程请走 "
+            "cancel_update")
+    return _confirmed_death_outcome(
+        process, log_path, provider_dir,
+        graceful=False, markers_written=True, late=True)
+
+
+def _confirmed_death_outcome(
+    process: subprocess.Popen[bytes],
+    log_path: Path | None,
+    provider_dir: Path | None,
+    *,
+    graceful: bool,
+    markers_written: bool,
+    late: bool,
+) -> UpdateCancel:
+    """确认死亡后的共同收尾:结局标记 + 切换窗检查 + 结果组装。
+
+    ``cancel_update``（当场确认）与 ``settle_late_cancel``（迟到死亡）
+    共用——两条路对「进程死了之后还欠什么」的义务一字不差,分抄两份
+    只会分叉（codex 第九轮 P2 正是补结算那份漏了切换窗检查）。
+
+    ``exited_at`` 语义按路径不同:当场路径 = 确认死亡的当刻（时间绑定
+    上界,晚采会把接替者框进窗——codex 第六轮 P1）;迟到路径 = 补结算
+    观测时刻,**晚于**真实死亡,绑定上界须由调用方用更紧的请求时刻
+    （``cancel_pending_at``）,不用这里的值。
+    """
     exited_at = datetime.now(tz=_CN_TZ).isoformat()
     markers_written = _append_cancel_marker(
         log_path,
         "cancel outcome: process exited "
-        f"(returncode={process.returncode}, graceful={graceful})"
+        + ("late (after the grace window) " if late else "")
+        + f"(returncode={process.returncode}, graceful={graceful})"
     ) and markers_written
     # 切换窗检测（codex #470 P1）:swap 是两段 rename——若取消恰好落在
     # 「live→.bak 之后、.new→live 之前」,canonical 目录此刻**不存在**,
