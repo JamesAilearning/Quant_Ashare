@@ -212,6 +212,82 @@ if _cancelled_this_run:
 _session_live = st.session_state.get(_LIVE_RUN_KEY)
 _session_live_proc = (
     _session_live.get("process") if isinstance(_session_live, dict) else None)
+# 退役/补结算必须在 watcher 片段注册**之前**（codex 第十三轮 P2）：片段
+# 在每次整页执行时也内联运行,死句柄支路的 st.rerun 会在走到它之后的任何
+# 代码之前中止本轮——补结算若在片段之后,下一轮又先撞片段,无限 rerun、
+# 补结算永不执行、句柄永不退役（await 支路不循环,正因它的解除条件在片段
+# 之前重算——同款结构,这里对齐）。
+_live_run = _session_live
+_live_proc = _session_live_proc
+if _live_proc is not None and _live_proc.poll() is not None:
+    _pending_at = (
+        _live_run.get("cancel_pending_at")
+        if isinstance(_live_run, dict) else None)
+    if _pending_at:
+        # 迟到死亡补结算（codex 第八轮 P2）：cancel_failed 返回后进程才
+        # 真死——这是 kill 导致的死亡,不是自然完成。收尾义务与当场确认
+        # 死亡**完全同款**（codex 第九轮 P2b）,走共享的补结算边界:结局
+        # 标记 + 严格 swap 检查 + unknown 三态。
+        _late_lp = (
+            _live_run.get("log_path") if isinstance(_live_run, dict) else "")
+        # 原失败尝试的标记状态从未决上下文带回（codex 第十轮 P2）：请求/
+        # 失败标记当时没落盘的话,审计链缺口不因迟到结局标记写成而消失。
+        # 缺键按 False 走（fail-closed:证不出审计完整就不声称）。
+        _late_markers = bool(
+            _live_run.get("cancel_pending_markers_written", False)
+            if isinstance(_live_run, dict) else False)
+        _late_outcome = settle_late_cancel(
+            _live_proc, Path(_late_lp) if _late_lp else None,
+            provider_dir=_provider_path,
+            markers_written=_late_markers,
+            launched_at=_live_run.get("launched_at")
+            if isinstance(_live_run, dict) else None)
+        # 证据落盘。身份=**生存期内观察到的精确戳候选**（codex 第十二轮
+        # P2:第八轮的请求时刻上界拒真孤儿、第十一轮的观测时刻上界收回
+        # 收 pid 的接替者——死亡观测可晚于真实死亡最长一个轮询周期,该
+        # 空窗内 OS 可把 pid 回收给接替的调度器运行,戳与 pid 双双落窗。
+        # 唯一两头都站得住的身份:趁进程可证活着时（confirm 当刻 + watcher
+        # 每拍）观察它自己写的记录戳,补结算只收养**精确相等**的那条;
+        # 没有候选=证不出身份,fail-closed 不收养,孤儿等陈旧线。）
+        _own_stamp = (
+            _live_run.get("cancel_pending_own_started_at")
+            if isinstance(_live_run, dict) else None)
+        _late_status = read_update_status(_status_path)
+        _late_evidence = (
+            _late_status.kind == "running"
+            and record_matches_provider(_late_status, _provider_path)
+            and _late_status.pid == _live_proc.pid
+            and cancelled_run_matches(_late_status.started_at, _own_stamp))
+        if _late_evidence:
+            st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                "started_at": _late_status.started_at or "",
+            }
+        # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
+        # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
+        # 落证据,操作人得到的答复必须与当场死亡一致。
+        st.session_state[_LAST_CANCEL_KEY] = {
+            "kind": _late_outcome.kind,
+            "graceful": _late_outcome.graceful,
+            "returncode": _late_outcome.returncode,
+            "error": _late_outcome.error,
+            "swap_interrupted": _late_outcome.swap_interrupted,
+            "markers_written": _late_outcome.markers_written,
+            "swap_state_unknown": _late_outcome.swap_state_unknown,
+            "terminal_recorded": _late_outcome.terminal_recorded,
+            "evidence_stored": _late_evidence,
+        }
+        st.session_state.pop(_LIVE_RUN_KEY, None)
+        st.session_state.pop(_CANCEL_ARM_KEY, None)
+        # 当场重绘：上方状态横幅/闸门判断都算在补结算**之前**,不重绘会
+        # 带着旧判断渲染到底。幂等出口:_LIVE_RUN_KEY 已 pop,重绘后不会
+        # 再进本分支,不会循环。
+        st.rerun()
+    # 进程已结束——句柄退役，成败由状态工件/台账自述（自然完成,无未决
+    # 取消;kill 导致的死亡在上面的补结算分支里已经 rerun 走人）。
+    st.session_state.pop(_LIVE_RUN_KEY, None)
+    st.session_state.pop(_CANCEL_ARM_KEY, None)
+    _session_live = None
+    _session_live_proc = None
 _session_run_alive = (
     _session_live_proc is not None and _session_live_proc.poll() is None)
 # 未决取消的句柄（codex 第九轮 P2a）：cancel_failed 之后 kill 已发、进程
@@ -560,74 +636,11 @@ _live_run = st.session_state.get(_LIVE_RUN_KEY)
 _live_proc = (
     _live_run.get("process") if isinstance(_live_run, dict) else None)
 if _live_proc is not None and _live_proc.poll() is not None:
-    _pending_at = (
-        _live_run.get("cancel_pending_at")
-        if isinstance(_live_run, dict) else None)
-    if _pending_at:
-        # 迟到死亡补结算（codex 第八轮 P2）：cancel_failed 返回后进程才
-        # 真死——这是 kill 导致的死亡,不是自然完成。收尾义务与当场确认
-        # 死亡**完全同款**（codex 第九轮 P2b:此前这里只重读状态、存证
-        # 据,不做切换窗检查——迟到死亡同样可能恰好落在两段 rename 之
-        # 间,不查就把「canonical 缺位需立即修复」静默标成干净取消）,
-        # 走共享的补结算边界:结局标记 + 严格 swap 检查 + unknown 三态。
-        _late_lp = (
-            _live_run.get("log_path") if isinstance(_live_run, dict) else "")
-        # 原失败尝试的标记状态从未决上下文带回（codex 第十轮 P2）：请求/
-        # 失败标记当时没落盘的话,审计链缺口不因迟到结局标记写成而消失。
-        # 缺键按 False 走（fail-closed:证不出审计完整就不声称）。
-        _late_markers = bool(
-            _live_run.get("cancel_pending_markers_written", False)
-            if isinstance(_live_run, dict) else False)
-        _late_outcome = settle_late_cancel(
-            _live_proc, Path(_late_lp) if _late_lp else None,
-            provider_dir=_provider_path,
-            markers_written=_late_markers,
-            launched_at=_live_run.get("launched_at")
-            if isinstance(_live_run, dict) else None)
-        # 证据落盘。身份=**生存期内观察到的精确戳候选**（codex 第十二轮
-        # P2:第八轮的请求时刻上界拒真孤儿、第十一轮的观测时刻上界收回
-        # 收 pid 的接替者——死亡观测可晚于真实死亡最长一个轮询周期,该
-        # 空窗内 OS 可把 pid 回收给接替的调度器运行,戳与 pid 双双落窗。
-        # 唯一两头都站得住的身份:趁进程可证活着时（confirm 当刻 + watcher
-        # 每拍）观察它自己写的记录戳,补结算只收养**精确相等**的那条;
-        # 没有候选=证不出身份,fail-closed 不收养,孤儿等陈旧线。）
-        _own_stamp = (
-            _live_run.get("cancel_pending_own_started_at")
-            if isinstance(_live_run, dict) else None)
-        _late_status = read_update_status(_status_path)
-        _late_evidence = (
-            _late_status.kind == "running"
-            and record_matches_provider(_late_status, _provider_path)
-            and _late_status.pid == _live_proc.pid
-            and cancelled_run_matches(_late_status.started_at, _own_stamp))
-        if _late_evidence:
-            st.session_state[_CANCELLED_EVIDENCE_KEY] = {
-                "started_at": _late_status.started_at or "",
-            }
-        # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
-        # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
-        # 落证据,操作人得到的答复必须与当场死亡一致。
-        st.session_state[_LAST_CANCEL_KEY] = {
-            "kind": _late_outcome.kind,
-            "graceful": _late_outcome.graceful,
-            "returncode": _late_outcome.returncode,
-            "error": _late_outcome.error,
-            "swap_interrupted": _late_outcome.swap_interrupted,
-            "markers_written": _late_outcome.markers_written,
-            "swap_state_unknown": _late_outcome.swap_state_unknown,
-            "terminal_recorded": _late_outcome.terminal_recorded,
-            "evidence_stored": _late_evidence,
-        }
-        st.session_state.pop(_LIVE_RUN_KEY, None)
-        st.session_state.pop(_CANCEL_ARM_KEY, None)
-        # 当场重绘：本次脚本运行顶部的 running 横幅/闸门判断都算在补结算
-        # **之前**,不重绘会带着旧判断渲染到底,下一轮才更正。补结算幂等
-        # 出口:_LIVE_RUN_KEY 已 pop,重绘后不会再进本分支。
-        st.rerun()
-    # 进程已结束——句柄退役，成败由状态工件/台账自述（自然完成,无未决
-    # 取消;kill 导致的死亡在上面的补结算分支里已经 rerun 走人）。
-    st.session_state.pop(_LIVE_RUN_KEY, None)
-    st.session_state.pop(_CANCEL_ARM_KEY, None)
+    # 死亡发生在顶部退役/补结算块之后（本轮脚本运行途中）——此处不再做
+    # 任何结算（codex 第十三轮 P2:退役/补结算已整体移到 watcher 片段注
+    # 册之前,否则片段的死句柄 rerun 会在走到这里之前中止每一轮脚本,
+    # 补结算永不执行）。本轮只收起取消控件;下一轮顶部块接手退役或补结
+    # 算,未决死亡由片段的轮询保证在 30 秒内拉起那一轮。
     _live_proc = None
 if _live_proc is not None:
     if not st.session_state.get(_CANCEL_ARM_KEY):

@@ -653,6 +653,30 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             if live.poll() is None:
                 live.kill()
 
+    def test_settlement_runs_before_the_watcher_registers(self) -> None:
+        # 执行顺序（codex 第十三轮 P2）：fragment 在每次整页执行时也内联
+        # 运行,死句柄支路的 st.rerun 会在走到它之后的任何代码之前中止本
+        # 轮——补结算若在片段之后,下一轮又先撞片段,无限 rerun、补结算
+        # 永不执行、句柄永不退役。钉源码序:退役/补结算块 < 片段注册 <
+        # 取消控件区;且补结算入口全页恰好一处（旧位置不得残留第二份）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        # 锚唯一性先钉死——若旧位置残留同名注释,index 找到的可能不是真
+        # 块,顺序断言会假绿。
+        self.assertEqual(1, page.count("迟到死亡补结算（codex"),
+                         "补结算块锚不唯一,顺序断言不可信")
+        settle_at = page.index("迟到死亡补结算（codex")
+        fragment_at = page.index("def _watch_update_completion()")
+        cancel_ui_at = page.index('key="run_center::cancel_request"')
+        self.assertLess(settle_at, fragment_at,
+                        "补结算块没在片段注册之前——死句柄 rerun 循环")
+        self.assertLess(fragment_at, cancel_ui_at)
+        self.assertEqual(1, page.count("settle_late_cancel("),
+                         "补结算入口不是恰好一处")
+        # 取消控件区对「本轮途中才死」的句柄只收控件、不做结算——结算
+        # 义务全在顶部块。
+        self.assertIn("死亡发生在顶部退役/补结算块之后", page)
+
     def test_the_watcher_notices_a_pending_late_death(self) -> None:
         # 硬杀后状态签名与日志进度都可能全程冻结——watcher 只比那两样,
         # 补结算块要等操作人手动交互才被重新执行,死进程的取消控件与孤儿

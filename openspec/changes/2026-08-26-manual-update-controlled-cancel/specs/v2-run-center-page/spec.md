@@ -184,6 +184,19 @@ interaction — leaving dead-process cancel controls and an orphaned
 the page so the corrected state (not the pre-settlement banner) is what the
 operator sees.
 
+The settlement SHALL execute BEFORE the watcher registers in the page's
+execution order: the watcher fragment also runs inline on every full page
+execution, and its dead-handle branch aborts the current execution with a
+re-render request — settlement placed after the fragment would never be
+reached, each fresh execution hitting the same dead-handle branch first in
+an endless re-render loop that neither settles the evidence nor retires
+the handle. With settlement ahead of the fragment, the dead pending handle
+is settled (and the pending state cleared) before the fragment can observe
+it, so the loop cannot form; a handle that dies mid-execution after the
+settlement block merely hides the cancel controls for that pass and is
+settled by the next execution, which the watcher's polling raises within
+one period.
+
 #### Scenario: an accidental click after the run already finished
 
 - **GIVEN** the operator cancels a session-launched run that has already
@@ -317,6 +330,16 @@ operator sees.
 - **WHEN** the retained handle exits during the page's polling
 - **THEN** the watcher triggers the settlement automatically and the page
   re-renders with the corrected state — no manual click is required
+
+#### Scenario: a dead pending handle does not trap the page in re-renders
+
+- **GIVEN** a pending handle that has exited, with the watcher fragment
+  running inline on every full page execution
+- **WHEN** the page executes
+- **THEN** the settlement block — placed before the fragment registers —
+  settles and clears the pending state first, the fragment never observes
+  a dead pending handle on a full pass, and exactly one corrective
+  re-render follows instead of an endless loop
 
 #### Scenario: the scheduler's run is out of reach
 
