@@ -1010,6 +1010,85 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 self.assertIn("cancel outcome: process exited",
                               log.read_text(encoding="utf-8"))
 
+    def test_a_quiet_kill_return_is_not_delivery_evidence(self) -> None:
+        # CPython Popen.kill()→send_signal() 内部先 poll,进程恰在预检与
+        # 它之间自然终结时**什么都不发、静默正常返回**（codex 第二十轮
+        # P2——第十九轮的存根假设抛错,与真实 Popen 不符）。复检裁决:
+        # 返回后已死+无信号在先 → 终态 oracle:本次运行自己的终态记录在
+        # =自然完成(already_finished);不在=按已发信号的确认死亡走。
+        import json
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+
+        import web.operator_ui.update_runner as _runner
+        from web.operator_ui.update_status import status_path_for_provider
+        import os as _os
+
+        class _DiesQuietly:
+            pid = 999993
+            returncode = 0
+            def __init__(self) -> None:
+                self._killed = False
+            def poll(self):
+                return 0 if self._killed else None
+            def kill(self):
+                # 真实 send_signal 行为:内部 poll 见已终结→不发不抛。
+                self._killed = True
+            def wait(self, timeout=None):
+                raise AssertionError("已死不应再等")
+
+        def _run(provider, launched):
+            proc = _DiesQuietly()
+            with tempfile.TemporaryDirectory() as t2:
+                log = Path(t2) / "log.log"
+                if sys.platform != "win32":
+                    def _gone(pid: int, sig: int) -> None:
+                        raise ProcessLookupError("group gone")
+                    with mock.patch.object(_runner.os, "killpg", _gone):
+                        got = cancel_update(
+                            proc, log,  # type: ignore[arg-type]
+                            provider_dir=provider, grace_seconds=0.3,
+                            launched_at=launched)
+                else:
+                    got = cancel_update(
+                        proc, log,  # type: ignore[arg-type]
+                        provider_dir=provider, grace_seconds=0.3,
+                        launched_at=launched)
+                return got, (log.read_text(encoding="utf-8")
+                             if log.exists() else "")
+
+        # 戳一律相对当前时刻构造（硬编码墙钟戳=定时炸弹,launch 闸用例
+        # 已爆过一次）:launch ≤ started ≤ finished ≤ exit(=cancel 内采样
+        # 的 now) 恒成立。
+        _now = datetime.now(tz=timezone(timedelta(hours=8)))
+        launched = (_now - timedelta(hours=2)).isoformat()
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            # 变体A:本次运行自己的终态记录在(pid+窗内)→ 自然完成。
+            status_path_for_provider(provider).write_text(json.dumps({
+                "schema_version": 1, "state": "finished",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": _now.date().isoformat(),
+                "started_at": (_now - timedelta(hours=1)).isoformat(),
+                "finished_at": (_now - timedelta(minutes=1)).isoformat(),
+                "exit_code": 0, "failed_stage": None, "detail": "complete",
+                "pid": _DiesQuietly.pid,
+            }), encoding="utf-8")
+            got, text = _run(provider, launched)
+            self.assertEqual("already_finished", got.kind,
+                             "静默返回被当成送达证据,自然完成被报成取消")
+            self.assertFalse(got.kill_issued)
+            self.assertIn("own terminal record", text)
+        with tempfile.TemporaryDirectory() as t:
+            # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            got, text = _run(provider, launched)
+            self.assertEqual("cancelled", got.kind,
+                             "无终录的歧义死亡没走确认死亡收尾")
+            self.assertIn("cancel outcome: process exited", text)
+
     def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:
         # 未决在场 + 重试的 kill() 自身抛且标记写失败（codex 第十六轮
         # P2）：kill_issued=False 的守卫会拦住未决上下文更新——存量

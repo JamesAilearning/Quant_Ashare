@@ -292,8 +292,10 @@ class UpdateCancel:
     #: 查文件系统,调度器可在那段里拿到已释放的锁并写下接替 running,晚
     #: 采的上界会把它也框进窗内（codex 第六轮 P1）。
     exited_at: str | None = None
-    #: 终止信号是否**实际发出**（任一 killpg/kill() 调用成功返回——内核
-    #: 受理投递即为证明,codex 第十七轮 P2）。cancel_failed 的两种失败对
+    #: 终止信号是否**实际发出**。证据分级（第十七/二十轮）:killpg 成功
+    #: 返回=内核受理投递,即为证明;Popen.kill() 正常返回**还不够**——它
+    #: 内部先 poll,进程已终结时什么都不发静默返回,须复检仍活才算真送
+    #: 达（复检已死走终态 oracle 裁决）。cancel_failed 的两种失败对
     #: 迟到死亡的语义相反（codex 第十轮 P2）:已发但宽限窗内没等到 → 之
     #: 后的死亡是取消导致的,可补结算;**所有**信号调用都抛了 → 进程没被
     #: 碰过,之后自然跑完就是自然完成,补结算成「已强制取消」是撒谎。
@@ -573,23 +575,55 @@ def cancel_update(
                     markers_written=markers_written,
                     kill_issued=signal_issued)
         else:
-            # kill() 成功返回同样是「信号已发出」——下面的分类闸靠它区分
-            # 真取消与自然完成（第十八轮 P2）。等死只在 kill 成功后有意
-            # 义（抛错+已死的路径 poll 已确认,无可等）。
-            signal_issued = True
-            try:
-                process.wait(timeout=grace_seconds)
-            except subprocess.TimeoutExpired:
+            # kill() **正常返回不是送达证据**（codex 第二十轮 P2）：
+            # CPython 的 Popen.kill()→send_signal() 内部先 poll,进程恰在
+            # 外层预检与它之间自然终结时,它什么都不发、静默返回（Windows
+            # 的 terminate() 对已退出进程同样吞 PermissionError 返回）。
+            # 复检裁决——kill() 返回后仍活=信号真发出去了（内部 poll 见
+            # 到的是活进程,os.kill 已执行）;已死=歧义微秒窗,用状态工件
+            # 当 oracle（复用第九/十一轮的 pid+时间窗判据）:本次运行自己
+            # 的终态记录在=自然完成;不在（且此前无组信号）则按已发信号
+            # 的确认死亡走——即便真相是无终录的自然猝死,孤儿收养的收尾
+            # 对它同样是正确处置,且那要求崩溃恰落在本微秒窗内。至此
+            # kill 调用的观察空间四分完备:{抛错,返回}×{仍活,已死} 各有
+            # 显式归类,不再有靠假设的格子。
+            if process.poll() is None:
+                signal_issued = True
+                try:
+                    process.wait(timeout=grace_seconds)
+                except subprocess.TimeoutExpired:
+                    markers_written = _append_cancel_marker(
+                        log_path,
+                        "cancel FAILED: process survived kill within "
+                        "grace window"
+                    ) and markers_written
+                    # kill 已发出（返回后复检仍活=真送达）,只是宽限窗内
+                    # 没等到死亡——之后的死亡是取消导致的,迟到补结算
+                    # 成立。
+                    return UpdateCancel(
+                        kind="cancel_failed",
+                        error="进程在宽限窗内未退出;请用任务管理器核查后"
+                              "重试",
+                        markers_written=markers_written, kill_issued=True)
+            elif not signal_issued and terminal_record_confirms_the_run(
+                    provider_dir, process.pid,
+                    launched_at=launched_at,
+                    exited_at=datetime.now(tz=_CN_TZ).isoformat()):
+                # 无任何信号在先 + 本次运行自己的终态记录在——它在微秒窗
+                # 内自然跑完了,kill() 什么都没发。
                 markers_written = _append_cancel_marker(
                     log_path,
-                    "cancel FAILED: process survived kill within grace window"
+                    "cancel outcome: process had already finished with its "
+                    "own terminal record before any signal was issued"
                 ) and markers_written
-                # kill 已发出（kill() 返回未抛）,只是宽限窗内没等到死亡
-                # ——之后的死亡是取消导致的,迟到补结算成立。
                 return UpdateCancel(
-                    kind="cancel_failed",
-                    error="进程在宽限窗内未退出;请用任务管理器核查后重试",
-                    markers_written=markers_written, kill_issued=True)
+                    kind="already_finished", returncode=process.returncode,
+                    markers_written=markers_written, kill_issued=False)
+            else:
+                # 已死 + （组信号在先,或无终录）——按已发信号的确认死亡
+                # 归类,走取消收尾（孤儿收养/如实无孤儿两条呈报都由状态
+                # 工件裁决,见页面收养链）。
+                signal_issued = True
     if not signal_issued:
         # 分类闸（codex 第十八轮 P2）：初检时还活着,但**没有任何**信号
         # 成功送达它就死了——POSIX 是「初检后自然完成 + SIGINT 抛错」的

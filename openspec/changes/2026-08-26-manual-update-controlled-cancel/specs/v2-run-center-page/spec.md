@@ -180,7 +180,21 @@ SHALL flow into the same classification (no signal issued → already
 finished; a signal issued → the confirmed-death cancellation epilogue) and
 SHALL NOT be reported as a cancellation failure — that would retain a dead
 handle and present a natural completion as a failed cancel. Only a raise
-with the process still alive is a genuine failure. The pending context SHALL also carry the failed
+with the process still alive is a genuine failure.
+
+A NORMAL RETURN from the single-process kill is likewise not conclusive
+delivery evidence: the underlying implementation polls first and silently
+sends nothing when the process is already terminal. The attempt SHALL
+re-check after the return — still alive proves the signal was sent (the
+internal poll saw a live process); found dead with no prior signal is the
+ambiguous micro-window, resolved by the terminal-record oracle (the same
+pid + launch-to-exit verification): the run's own terminal record present →
+already finished; absent → classified as a signalled confirmed death,
+whose epilogue (artifact reread, orphan adoption or the honest no-orphan
+presentation) treats even a recordless natural crash correctly. With this,
+the kill call's observation space is exhaustively partitioned —
+{raise, return} × {alive, dead} each has an explicit classification and
+none rests on an assumption about the call's semantics. The pending context SHALL also carry the failed
 attempt's marker-audit state, and late settlement SHALL aggregate it rather
 than reset to the optimistic default: when the request/failure markers never
 reached the log, a successfully written late outcome marker does not make
@@ -338,6 +352,16 @@ one period.
 - **THEN** verification fails on the time window — the old artifact's
   stamps predate this session's launch — and the page does not claim the
   orchestrator wrote a terminal record
+
+#### Scenario: a silent kill return does not fabricate delivery evidence
+
+- **GIVEN** a child that terminates naturally inside the pre-kill window,
+  whose kill call then returns normally without sending anything, and
+  whose own terminal record stands verified
+- **WHEN** the attempt re-checks and consults the terminal-record oracle
+- **THEN** the outcome is "already finished" — the natural completion is
+  not presented as a cancellation — and absent such a record the death is
+  classified as signalled and receives the cancellation epilogue
 
 #### Scenario: a kill raising against a corpse is not a failed cancel
 
