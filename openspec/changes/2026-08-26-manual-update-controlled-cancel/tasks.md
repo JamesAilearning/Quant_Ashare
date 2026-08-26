@@ -42,6 +42,20 @@
 - [x] P2 失败保句柄：cancel_failed 时进程可能还活着——句柄是唯一合法取
       消凭据,只有确认终局（cancelled/already_finished）才交出
 
+## codex 第二轮（2×P1 + 1×P2）
+
+- [x] P1 假解锁：页面解锁按钮而 launch 内部状态闸仍按 fresh running 拒绝
+      ——切换窗后被指引的「立即重跑」一直 already_running 到六小时线。
+      闸新增 cancelled_started_at 旁路,只放行**戳完全相等**那一条（单飞
+      锁仍是真仲裁）;页面把证据递进闸。变异去放行 1f 咬住
+- [x] P1 证据旧戳：子进程可能在页首读取之后才写 running 记录,页首快照
+      存证据=旧戳,下一轮精确匹配落空、证据被退役、孤儿照样锁页。改为
+      终止后**重读**状态工件、验 running+属主才落证据;页面钉四处
+- [x] P2 bootstrap 误诊：canonical 裸缺位不是切换窗签名——首次
+      bootstrap 本来就没有 live bundle。签名收紧为「canonical 缺 且
+      .bak 在」（镜像 bundle_swap 命名,web/ 不 import 管线层）;
+      bootstrap 缺位用例专防误诊。变异去签名 2f 咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

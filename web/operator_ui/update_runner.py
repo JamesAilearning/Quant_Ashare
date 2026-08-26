@@ -385,11 +385,18 @@ def cancel_update(
     # 切换窗检测（codex #470 P1）:swap 是两段 rename——若取消恰好落在
     # 「live→.bak 之后、.new→live 之前」,canonical 目录此刻**不存在**,
     # 要到下次更新的启动修复才复原（swap 基线契约:crash-atomicity + 事后
-    # 修复）。纯文件系统存在性检查,不 import 管线层（读侧边界纪律）。
+    # 修复）。判据是 crash 态**签名**而非裸存在性:canonical 缺 **且**
+    # `.bak` 在——首次 bootstrap 这类「本来就没有 live bundle」的运行,
+    # canonical 在取消后同样不存在,但没有 .bak,不许被误诊成切换窗命中
+    # （codex 第二轮 P2）。命名镜像 bundle_swap 的 `<provider>.bak`
+    # （web/ 不 import 管线层;logic 测试钉两侧一致）。
     swap_interrupted = False
     if provider_dir is not None:
         with contextlib.suppress(OSError):
-            swap_interrupted = not provider_dir.exists()
+            swap_interrupted = (
+                not provider_dir.exists()
+                and provider_dir.with_name(
+                    provider_dir.name + ".bak").exists())
         if swap_interrupted:
             _append_cancel_marker(
                 log_path,
@@ -456,7 +463,9 @@ def build_update_argv(
     return argv
 
 
-def _blocking_run_status(provider_dir: Path) -> str | None:
+def _blocking_run_status(
+    provider_dir: Path, *, cancelled_started_at: str | None = None,
+) -> str | None:
     """Why a launch should be refused based on the status artifact, or None.
 
     Only a record that (a) belongs to THIS provider, (b) says running and
@@ -464,6 +473,12 @@ def _blocking_run_status(provider_dir: Path) -> str | None:
     running record may be a crashed run, and a foreign record proves
     nothing about this provider. Those cases fall through to the
     single-flight lock, which is the real arbiter.
+
+    ``cancelled_started_at``:本会话硬杀留下的孤儿 running 记录的**精确**
+    状态戳（codex #470 第二轮 P1:页面解锁了按钮,这道闸却仍按 fresh
+    running 拒绝——尤其切换窗命中后被指引的「立即重跑」会一直
+    already_running 到六小时线）。只放行**戳完全相等**的那一条;任何新
+    运行写新戳,放行即刻失效。单飞锁仍是真仲裁——进程已死锁已释放。
     """
     status = read_update_status(status_path_for_provider(provider_dir))
     if status.kind != "running":
@@ -471,6 +486,8 @@ def _blocking_run_status(provider_dir: Path) -> str | None:
     if not record_matches_provider(status, provider_dir):
         return None
     if classify_running(status) != RUNNING_FRESH:
+        return None
+    if cancelled_run_matches(status.started_at, cancelled_started_at):
         return None
     return (
         f"状态工件显示一次更新正在进行(始于 {status.started_at})。"
@@ -488,6 +505,7 @@ def launch_daily_update(
     env: Mapping[str, str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    cancelled_started_at: str | None = None,
 ) -> UpdateLaunch:
     """Launch one detached update run mirroring the scheduler.
 
@@ -538,7 +556,8 @@ def launch_daily_update(
             ),
         )
     try:
-        blocking = _blocking_run_status(provider_dir)
+        blocking = _blocking_run_status(
+            provider_dir, cancelled_started_at=cancelled_started_at)
     except ValueError as exc:
         # status_path_for_provider refuses a filesystem-root provider —
         # that same path would also be an unusable --provider-dir.

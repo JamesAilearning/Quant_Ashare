@@ -150,13 +150,34 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             with tempfile.TemporaryDirectory() as t:
                 log = Path(t) / "log.log"
                 missing = Path(t) / "provider_gone"
+                # crash 态签名：canonical 缺 **且** .bak 在（rename1 已做、
+                # rename2 未做）——裸缺位不算（bootstrap 见下条用例）。
+                (Path(t) / "provider_gone.bak").mkdir()
                 got = cancel_update(
                     proc, log, provider_dir=missing, grace_seconds=3)
                 self.assertEqual("cancelled", got.kind)
                 self.assertTrue(got.swap_interrupted,
-                                "canonical 缺位没被判切换窗命中")
+                                "canonical 缺+.bak 在没被判切换窗命中")
                 self.assertIn("SWAP WINDOW",
                               log.read_text(encoding="utf-8"))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_bootstrap_absence_is_not_a_swap_hit(self) -> None:
+        # 首次 bootstrap 本来就没有 live bundle——取消后 canonical 不存在
+        # 但也没有 .bak：不许被误诊成切换窗命中（codex 第二轮 P2）。
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                got = cancel_update(
+                    proc, Path(t) / "log.log",
+                    provider_dir=Path(t) / "never_existed",
+                    grace_seconds=3)
+                self.assertEqual("cancelled", got.kind)
+                self.assertFalse(got.swap_interrupted,
+                                 "bootstrap 缺位被误诊成切换窗")
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -193,6 +214,53 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
              "状态被接替时证据退役"),
         ):
             self.assertIn(needle, page, f"页面缺 {why}")
+
+    def test_the_launch_gate_honours_the_cancelled_stamp(self) -> None:
+        # 页面解锁了按钮、launch 内部的状态闸却仍按 fresh running 拒绝 =
+        # 假解锁——切换窗命中后被指引的「立即重跑」会一直 already_running
+        # 到六小时线（codex 第二轮 P1）。闸只放行**戳完全相等**的那一条。
+        import json
+
+        from web.operator_ui.update_runner import _blocking_run_status
+        from web.operator_ui.update_status import status_path_for_provider
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            stamp = "2026-08-26T21:00:00+08:00"
+            import os as _os
+            record = {
+                "schema_version": 1,
+                "state": "running",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": "2026-08-26",
+                "started_at": stamp,
+            }
+            sp = status_path_for_provider(provider)
+            sp.write_text(json.dumps(record), encoding="utf-8")
+            # 无证据：fresh running 照常拦。
+            self.assertIsNotNone(_blocking_run_status(provider))
+            # 精确戳：放行（单飞锁仍是真仲裁）。
+            self.assertIsNone(_blocking_run_status(
+                provider, cancelled_started_at=stamp))
+            # 错戳：不放行——绝不覆盖别的运行。
+            self.assertIsNotNone(_blocking_run_status(
+                provider,
+                cancelled_started_at="2026-08-26T20:00:00+08:00"))
+
+    def test_the_evidence_stamp_is_reread_after_the_kill(self) -> None:
+        # 子进程可能在页首读取之后才写下它的 running 记录——拿页首快照
+        # 存证据会存到旧戳,下一轮精确匹配落空、证据被退役,孤儿照样锁页
+        # （codex 第二轮 P1）。钉页面在终止后重读并验属主。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("_fresh_status = read_update_status(_status_path)",
+                      page, "证据戳没有在终止后重读")
+        self.assertIn('_fresh_status.kind == "running"', page,
+                      "重读后没验 running 才落证据")
+        self.assertIn("_fresh_status, _provider_path", page,
+                      "重读后没验属主")
+        self.assertIn("cancelled_started_at=(", page,
+                      "launch 没把证据递进状态闸")
 
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，

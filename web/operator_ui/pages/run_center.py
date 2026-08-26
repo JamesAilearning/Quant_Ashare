@@ -456,6 +456,11 @@ if _launch_clicked:
         _provider_path, _tushare_dir, _update_registry,
         start_date=_start_input.strip() or None,
         end_date=_end_input.strip() or None,
+        # 已取消孤儿的精确戳——launch 内部的状态闸凭它放行**那一条**记录
+        # （codex 第二轮 P1:按钮解锁了、闸还挡着=假解锁）。
+        cancelled_started_at=(
+            (_cancel_evidence or {}).get("started_at")
+            if _cancelled_this_run else None),
     )
     # 结果暂存 + 整页 rerun:守望者的注册发生在本行**之上**,所以本次
     # 脚本运行里设的等待标记要等下一轮才生效。立刻 rerun 让它当场生效,
@@ -550,9 +555,18 @@ if _live_proc is not None:
                 if _outcome.kind == "cancelled" and not _outcome.graceful:
                     # 硬杀成功:running 记录不会再有终态——按状态戳存持久
                     # 证据,跨 rerun 更正呈现并解锁启动闸（codex P1）。
-                    st.session_state[_CANCELLED_EVIDENCE_KEY] = {
-                        "started_at": _status.started_at or "",
-                    }
+                    # 戳必须在进程终止后**重读**:子进程可能在页面顶部那次
+                    # 读取之后才写下它的 running 记录,拿页首快照会存下前
+                    # 一次运行的旧戳,下一轮精确匹配落空、证据被当场退役,
+                    # 孤儿记录照样锁页六小时（codex 第二轮 P1）。只有重读
+                    # 确认是本 provider 的 running 记录才落证据。
+                    _fresh_status = read_update_status(_status_path)
+                    if (_fresh_status.kind == "running"
+                            and record_matches_provider(
+                                _fresh_status, _provider_path)):
+                        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                            "started_at": _fresh_status.started_at or "",
+                        }
                 st.session_state.pop(_CANCEL_ARM_KEY, None)
                 st.rerun()
         with _c2:

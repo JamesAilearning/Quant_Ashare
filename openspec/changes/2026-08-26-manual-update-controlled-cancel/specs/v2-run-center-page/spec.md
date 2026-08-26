@@ -39,20 +39,34 @@ already-validated build is atomically swapped, so the serving data remains
 the last successful update regardless of when the process dies. The swap
 itself is crash-atomic by contract — a kill landing between its two renames
 leaves the canonical directory momentarily absent, restored by the next
-run's startup repair. The cancel SHALL therefore check the canonical
-directory after the process exits and, when it is missing, report the swap
-hit LOUDLY with the instruction to start another update immediately — it
-SHALL NOT claim the online data was unaffected in that state. Leftover
+run's startup repair. The cancel SHALL therefore check for the crash-state
+SIGNATURE after the process exits — canonical directory missing AND the
+`.bak` sibling present (rename one done, rename two pending) — and report
+the swap hit LOUDLY with the instruction to start another update
+immediately; it SHALL NOT claim the online data was unaffected in that
+state. Bare absence of the canonical directory is NOT the signature: a
+bootstrap run legitimately starts with no live bundle, and its cancellation
+SHALL NOT be misdiagnosed as an interrupted swap. Leftover
 partials are cleaned by the next run's startup repair; the single-flight
 lock is OS-held and releases with the process.
 
 After a forcible cancel the page SHALL keep presenting the orphaned
 `running` record as cancelled ACROSS reruns — the evidence is bound to that
 record's exact `started_at` stamp and retires the moment the status is
-superseded — and the launch gate SHALL unlock; correcting only the first
-post-cancel render would re-lock updates until the staleness threshold. A
-failed cancel SHALL retain the live handle: it is the only permitted
-cancellation credential, and discarding it would leave no retry path.
+superseded — and the launch gate SHALL unlock **all the way through the
+runner boundary**: the launch path's own fresh-`running` refusal SHALL admit
+exactly the record whose stamp equals the cancellation evidence (any new
+run writes a new stamp and the bypass expires; the single-flight lock stays
+the real arbiter). Unlocking only the page button while the runner still
+refuses would be a fake unlock — the instructed immediate re-run after a
+swap hit would bounce as already-running until the staleness threshold.
+The evidence stamp SHALL be read from the status artifact AFTER the process
+is confirmed dead, not from an earlier page snapshot: the child may write
+its `running` record after the page render that armed the cancel, and a
+stale stamp would make the exact-match evidence retire on the next rerun,
+leaving the orphan blocking again. A failed cancel SHALL retain the live
+handle: it is the only permitted cancellation credential, and discarding it
+would leave no retry path.
 
 #### Scenario: an accidental click after the run already finished
 
