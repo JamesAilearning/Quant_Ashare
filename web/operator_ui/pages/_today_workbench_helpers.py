@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -266,7 +267,14 @@ def summarise_daily_signal(
     if "next_rebalance_date" in payload:
         raw_next = payload["next_rebalance_date"]
         next_problem: str | None = None
-        if raw_next is not None:
+        if payload.get("rebalance_day") is True and raw_next != str(as_of_date):
+            # 跨字段不变式（无需日历复推，codex P2）：next_rebalance_date(d)
+            # 在 d 本身是再平衡日时**必然返回 d**——rebalance_day=true 配
+            # null 或别的日期是产出器产不出的节奏记录。
+            next_problem = (
+                f"再平衡日的 next 必为 as_of（{as_of_date}）——实际 "
+                f"{raw_next!r}，产出器产不出")
+        elif raw_next is not None:
             if not isinstance(raw_next, str):
                 next_problem = f"非 str/null（实际 {type(raw_next).__name__}）"
             else:
@@ -455,8 +463,12 @@ def _pick_row_violation(pick: dict[str, object]) -> str | None:
     if isinstance(rank, bool) or not isinstance(rank, int):
         return "rank 缺失或非整数"
     score = pick.get("predicted_score")
-    if isinstance(score, bool) or not isinstance(score, (int, float)):
-        return "predicted_score 缺失或非数值"
+    if (isinstance(score, bool) or not isinstance(score, (int, float))
+            or not math.isfinite(score)):
+        # NaN/inf 也拒：json.loads 接受裸 NaN，而 NaN 的比较恒 False 会
+        # 悄悄穿过降序检查；产出器打分后 dropna 再构造 picks，非有限分
+        # 产不出（codex P2）。
+        return "predicted_score 缺失或非有限数值"
     # 不止验类型，验**字面**：产出器只落已过可交易筛选的行（untradable 在
     # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
     # _build_picks）。False/非空 reason 的行产出器产不出；只验布尔会让

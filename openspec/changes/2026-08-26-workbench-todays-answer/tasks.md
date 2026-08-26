@@ -181,6 +181,16 @@
       守，不由头卡复算。记 backlog；若后续轮次仍再提=循环不收敛，转
       #463 式终轮划线
 
+## 第十九轮（2×P2；划界被 codex 接受，两条新意见均在界内）
+
+- [x] predicted_score 拒非有限值：json.loads 接受裸 NaN，NaN 比较恒 False
+      穿过降序检查——产出器打分后 dropna 再构造 picks（源码核证），非有
+      限分产不出。isfinite 入行验约，NaN/inf 用例
+- [x] 跨字段不变式（无需日历复推）：as_of 是再平衡日时
+      next_rebalance_date(as_of) 必然 == as_of——true 配 null/未来日产出
+      器产不出。fixture 同步（再平衡默认 next=as_of）
+- [x] 变异两发（去 isfinite 2f/去不变式 2f）全咬
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

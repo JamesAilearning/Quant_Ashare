@@ -48,7 +48,8 @@ def _ensemble_payload(
         "as_of_date": "2026-08-18",
         "entry_date": "2026-08-19",
         "rebalance_day": rebalance_day,
-        "next_rebalance_date": "2026-08-25",
+        # 再平衡日 next 必为 as_of（跨字段不变式）；HOLD 侧才是未来锚。
+        "next_rebalance_date": "2026-08-18" if rebalance_day else "2026-08-25",
         "meta": {"ensemble": {"manifest_sha256": manifest}},
         "picks": [],
     }
@@ -182,6 +183,10 @@ class DailySignalSummaryTests(unittest.TestCase):
             ("rank 布尔", {**_pick(1, "SH600000"), "rank": True}),
             ("score 字符串", {**_pick(1, "SH600000"),
                               "predicted_score": "0.1"}),
+            ("score NaN", {**_pick(1, "SH600000"),
+                           "predicted_score": float("nan")}),
+            ("score inf", {**_pick(1, "SH600000"),
+                           "predicted_score": float("inf")}),
             ("tradable 非布尔", {**_pick(1, "SH600000"),
                                  "tradable_flag": "yes"}),
             # 产出器只落可交易行（构造前过滤 + 构造器写死 True/""）——
@@ -363,6 +368,19 @@ class DailySignalSummaryTests(unittest.TestCase):
                 self.assertEqual("needs_verification", got.kind,
                                  "单腿节奏字段被当成了已核验")
                 self.assertIn("之一", got.detail)
+
+    def test_a_rebalance_day_with_mismatched_next_is_unverifiable(self) -> None:
+        # 跨字段不变式：as_of 本身是再平衡日时 next_rebalance_date(as_of)
+        # 必然等于 as_of——true 配 null/未来日是产出器产不出的（codex P2）。
+        for label, value in (("null", None), ("未来日", "2026-08-25")):
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                payload["next_rebalance_date"] = value
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual("needs_verification", got.kind,
+                                 "再平衡日的错配 next 被当成了已核验")
 
     def test_a_rebalance_day_next_equal_to_as_of_is_legal(self) -> None:
         # 再平衡日本身就是锚：next_rebalance_date(d) == d 合法，不受 HOLD
