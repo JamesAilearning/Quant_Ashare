@@ -82,7 +82,10 @@ class PageSourceTests(unittest.TestCase):
         # classification — a page that drops the guard would invite
         # double launches that only the single-flight lock then stops.
         self.assertIn("RUNNING_FRESH", self.src)
-        self.assertIn("disabled=_running_fresh", self.src)
+        # 锚串随受控取消更新（表达式增强为「新鲜 running 或会话在飞」，
+        # 断言意图一字未动：freshness 闸仍然在耗，且多了一道会话闸——
+        # 顶掉句柄=原运行失去取消凭据，见 test_update_cancel）。
+        self.assertIn("disabled=(_running_fresh or _session_run_alive", self.src)
 
     def test_recommend_is_gated_on_the_ensemble_incumbent(self) -> None:
         # Ensemble-only by spec: the legacy single-model path stays a

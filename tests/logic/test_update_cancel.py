@@ -262,6 +262,31 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("cancelled_started_at=(", page,
                       "launch 没把证据递进状态闸")
 
+    def test_a_live_session_run_blocks_a_second_launch(self) -> None:
+        # 子进程写 running 记录之前的窗口里按钮仍可点——第二次启动会用新
+        # 句柄顶掉第一个（第二个通常 exit 17 即退、句柄退役），原运行失去
+        # 唯一取消凭据（codex 第三轮 P2）。钉两道闸：按钮 disabled 纳入
+        # 会话在飞布尔 + 点击时兜底拒绝。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("_session_run_alive", page)
+        self.assertIn("disabled=(_running_fresh or _session_run_alive", page,
+                      "按钮闸没纳入会话在飞")
+        self.assertIn("if _launch_clicked and _session_run_alive:", page,
+                      "缺点击时兜底")
+        self.assertIn("先取消它或等它结束", page)
+
+    def test_a_graceful_cancel_does_not_overclaim_on_a_swap_hit(self) -> None:
+        # POSIX 礼貌信号同样可能落在切换窗内——graceful 成功文案不许无条件
+        # 说「在线数据未受影响」，与硬杀分支同样以 swap_interrupted 为条件
+        # （codex 第三轮 P2）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('if _last_cancel.get("swap_interrupted")', page)
+        graceful_block = page.split("礼貌信号生效")[1][:400]
+        self.assertIn("swap_interrupted", graceful_block,
+                      "graceful 文案没有以切换窗为条件")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。

@@ -201,6 +201,16 @@ if isinstance(_cancel_evidence, dict) and not _cancelled_this_run:
     st.session_state.pop(_CANCELLED_EVIDENCE_KEY, None)
 if _cancelled_this_run:
     _running_fresh = False
+# 会话内在飞的手动更新（codex #470 第三轮 P2）：子进程写下 running 记录
+# 之前有一段窗口（_AWAIT_LAUNCH_KEY 盖的那段），此时 _running_fresh 仍为
+# False、启动按钮仍可点——再点一次会用第二个句柄**顶掉**第一个：第二个
+# 子进程通常被单飞锁以 exit 17 拒绝、句柄随即退役，原来那次两小时的运行
+# 就此失去唯一合法取消凭据。凭句柄本身把闸：在飞即禁再启。
+_session_live = st.session_state.get(_LIVE_RUN_KEY)
+_session_live_proc = (
+    _session_live.get("process") if isinstance(_session_live, dict) else None)
+_session_run_alive = (
+    _session_live_proc is not None and _session_live_proc.poll() is None)
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
     _status, _provider_path
@@ -446,12 +456,19 @@ with _col_launch:
         type="primary",
         # 范围不合法就不让点:畸形日期要到两小时后才在 tushare 那头炸。
         # 日历闸预警**不**禁用按钮 —— no-op 无害,操作人可能就是要它。
-        disabled=_running_fresh or _range_error is not None,
+        disabled=(_running_fresh or _session_run_alive
+                  or _range_error is not None),
         use_container_width=True,
     )
 if _refresh_clicked:
     st.toast(f"已重读状态工件({_read_at:%H:%M:%S})")
-if _launch_clicked:
+if _launch_clicked and _session_run_alive:
+    # 竞态兜底（按钮 disabled 之外的第二道）：本会话已有在飞运行时拒绝
+    # 再启——顶掉句柄=原运行失去取消凭据。
+    st.error(
+        "本会话已有一次手动更新在飞——先取消它或等它结束，再启动新的。"
+    )
+elif _launch_clicked:
     _launch = launch_daily_update(
         _provider_path, _tushare_dir, _update_registry,
         start_date=_start_input.strip() or None,
@@ -590,7 +607,9 @@ if isinstance(_last_cancel, dict):
         if _last_cancel.get("graceful"):
             st.success(
                 "已取消（礼貌信号生效）：编排器自己写下了终态记录，状态"
-                "与台账如实可查；在线数据未受影响。"
+                "与台账如实可查。"
+                + ("" if _last_cancel.get("swap_interrupted")
+                   else "在线数据未受影响。")
             )
         else:
             st.success(
