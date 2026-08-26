@@ -203,6 +203,14 @@
       缺失/非法/被超出=需核查；N==topk 合法专用断言。fixture meta 补 topk
 - [x] 变异两发（去溢出折叠 1f/去 topk 界 1f）全咬
 
+## 第二十一轮（P2：产出器契约缺 delta）
+
+- [x] bundle_built_at 改的是 canonical v2 推荐工件 schema，但 change 只带
+      v2-today-workbench delta——归档后产出器基线不含该键，「合规产出器」
+      可省略 nonce 静默废掉原地重建防护。补 v2-daily-stock-recommendation
+      的 MODIFIED delta（meta 字段清单收编 bundle_built_at + 为什么 tag
+      不够 + null 语义两场景）
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
