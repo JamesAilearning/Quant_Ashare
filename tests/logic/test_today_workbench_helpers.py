@@ -530,6 +530,27 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         self.assertEqual("unanswerable", got.state)
         self.assertIn("provider 身份", got.detail)
 
+    def test_a_relative_artifact_provider_binds_regardless_of_cwd(self) -> None:
+        # meta.provider_uri 可为相对拼写（生产配置语境=仓根）；Streamlit 从
+        # 仓外启动时进程 CWD ≠ 仓根——按 CWD 归一会让**同一份** bundle 比
+        # 不相等，最显眼的卡片假拒一份有效指令（codex P1）。同锚
+        # （anchored_to_repo）后再走出单器归一化，比对与 CWD 无关。
+        import os as _os
+        import tempfile as _tf
+
+        from web.operator_ui.incumbent import anchored_to_repo
+        signal = self._signal("rebalance", data_provider_uri="data/prov")
+        fresh = self._fresh(provider_uri=anchored_to_repo("data/prov"))
+        old_cwd = _os.getcwd()
+        with _tf.TemporaryDirectory() as t:
+            try:
+                _os.chdir(t)   # 模拟仓外启动的进程 CWD
+                got = todays_buy_answer(signal, fresh)
+            finally:
+                _os.chdir(old_cwd)
+        self.assertEqual("rebalance", got.state,
+                         "相对拼写被按进程 CWD 归一——仓外启动时假拒")
+
     def test_a_missing_identity_tag_degrades_to_provider_binding(self) -> None:
         # 身份块是 stamp 的可选项（pre-PR-G+I 无块合法）——单侧缺 tag 时
         # 按 provider 绑定放行，不冒充比过，也不因此拒答。

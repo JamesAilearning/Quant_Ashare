@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from web.operator_ui.incumbent import IncumbentIdentity
+from web.operator_ui.incumbent import IncumbentIdentity, anchored_to_repo
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
@@ -304,10 +304,17 @@ def _same_provider_spelling(artifact: str, current: str) -> bool:
 
     不自造第二套归一化（expanduser/abspath/realpath/normcase 的组合差一个
     就是一类假阴/假阳）；出单器怎么认，本卡就怎么认。
+
+    归一化之前先**同锚**：`_normalize_provider_uri` 对相对拼写按进程 CWD
+    归一，而页面的当前 provider 早已 `anchored_to_repo`（仓根锚，UI 支持
+    从仓外启动的既有语境）——工件里的相对拼写来自生产配置、语境同为仓根。
+    不同锚的两个相对拼写会让**同一份** bundle 比不相等，最显眼的卡片假拒
+    一份有效指令（codex P1）。绝对拼写 anchored_to_repo 原样放行，不变。
     """
     from src.inference import daily_recommend as _rec  # noqa: PLC0415
     normalize = _rec._normalize_provider_uri  # type: ignore[attr-defined]
-    return bool(normalize(artifact) == normalize(current))
+    return bool(normalize(anchored_to_repo(artifact))
+                == normalize(anchored_to_repo(current)))
 
 
 @dataclass(frozen=True)
