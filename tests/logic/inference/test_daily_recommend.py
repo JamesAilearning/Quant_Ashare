@@ -988,20 +988,41 @@ class WriteOutputsTests(unittest.TestCase):
 
     def test_cadence_artifact_discloses_unknown_next_anchor(self) -> None:
         # Near the calendar tail next_rebalance_date may be honestly
-        # unknown: the key is present and null, never fabricated.
+        # unknown: the key is present and null, never fabricated. 该现象
+        # 只发生在 HOLD 日（再平衡日的 next 恒等于 as_of，永不为 None）
+        # ——原用例配 True+None 是 recommend() 不可达形态，读侧核验判损
+        # 坏、写侧却放行，仓与自己打架（codex #468 P2，已迁移）。
         result = DailyRecommendationResult(
             as_of_date="2025-07-01", entry_date="2025-07-02",
             picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
             scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
             run_meta=_dummy_run_meta(),
-            rebalance_day=True, next_rebalance_date=None,
+            rebalance_day=False, next_rebalance_date=None,
         )
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_outputs(result, tmp)
             payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
-        self.assertIs(payload["rebalance_day"], True)
+        self.assertIs(payload["rebalance_day"], False)
         self.assertIn("next_rebalance_date", payload)
         self.assertIsNone(payload["next_rebalance_date"])
+
+    def test_a_true_marker_with_mismatched_next_is_refused_at_write(
+            self) -> None:
+        # 写侧执法：True+None / True+别的日期是 recommend() 产不出的组合
+        # ——序列化边界拒绝，写侧与读侧核验讲同一个契约（codex #468 P2）。
+        from src.inference.daily_recommend import DailyRecommendationError
+        for bad_next in (None, "2025-07-07"):
+            with self.subTest(next=bad_next):
+                result = DailyRecommendationResult(
+                    as_of_date="2025-07-01", entry_date="2025-07-02",
+                    picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
+                    scored_frame=pd.DataFrame(columns=_BUY_LIST_COLUMNS),
+                    run_meta=_dummy_run_meta(),
+                    rebalance_day=True, next_rebalance_date=bad_next,
+                )
+                with tempfile.TemporaryDirectory() as tmp:
+                    with self.assertRaises(DailyRecommendationError):
+                        write_outputs(result, tmp)
 
     def test_empty_buy_list_csv_still_has_header(self) -> None:
         # Empty picks (e.g. --topk 0 or all masked) must still write a CSV

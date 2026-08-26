@@ -1371,6 +1371,18 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     # byte-identical to the pre-cadence contract, and readers treat the
     # absent field as daily semantics (backward compatible).
     if result.rebalance_day is not None:
+        # 节奏跨字段不变式在序列化边界执法（codex #468 P2）：canonical
+        # next_rebalance_date(as_of) 在 as_of 本身是再平衡日时**必然返回
+        # as_of**（其 docstring 明言"as_of itself when it IS one"）——
+        # recommend() 产不出 True+None/True+别的日期；直接调用方绕过时在
+        # 此拒绝，否则写侧发出的工件会被读侧（工作台核验）判损坏，仓自己
+        # 与自己打架。None 锚（日历尾外）是 HOLD 日现象，False 侧照写。
+        if (result.rebalance_day is True
+                and result.next_rebalance_date != result.as_of_date):
+            raise DailyRecommendationError(
+                "cadence invariant violated: rebalance_day=True requires "
+                f"next_rebalance_date == as_of_date; got "
+                f"{result.next_rebalance_date!r} vs {result.as_of_date!r}")
         payload["rebalance_day"] = result.rebalance_day
         payload["next_rebalance_date"] = result.next_rebalance_date
     json_path.write_text(
