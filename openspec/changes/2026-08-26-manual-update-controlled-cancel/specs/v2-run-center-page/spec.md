@@ -170,7 +170,17 @@ marker, and with the marker-loss warning covering this outcome — and SHALL
 NOT receive the cancellation-specific graceful claim, swap diagnosis, or
 orphan adoption; its terminal state is the run's own status artifact and
 ledger. The graceful classification SHALL therefore be possible only after
-the polite signal was actually issued. The pending context SHALL also carry the failed
+the polite signal was actually issued.
+
+When the kill call itself raises, the attempt SHALL RE-CHECK the process
+before classifying the raise: the child can exit in the interval between
+the liveness check and the kill, making the raise a handle-already-terminal
+artifact rather than a failure. A raise with the process confirmed dead
+SHALL flow into the same classification (no signal issued → already
+finished; a signal issued → the confirmed-death cancellation epilogue) and
+SHALL NOT be reported as a cancellation failure — that would retain a dead
+handle and present a natural completion as a failed cancel. Only a raise
+with the process still alive is a genuine failure. The pending context SHALL also carry the failed
 attempt's marker-audit state, and late settlement SHALL aggregate it rather
 than reset to the optimistic default: when the request/failure markers never
 reached the log, a successfully written late outcome marker does not make
@@ -328,6 +338,16 @@ one period.
 - **THEN** verification fails on the time window — the old artifact's
   stamps predate this session's launch — and the page does not claim the
   orchestrator wrote a terminal record
+
+#### Scenario: a kill raising against a corpse is not a failed cancel
+
+- **GIVEN** a child that exits in the interval between the pre-kill
+  liveness check and the kill call, whose kill then raises against the
+  terminal handle
+- **WHEN** the attempt re-checks and confirms the death
+- **THEN** the raise is classified like any confirmed death — already
+  finished when no signal was issued, the cancellation epilogue when one
+  was — and no cancellation failure retaining a dead handle is reported
 
 #### Scenario: an unsignalled death is reported as finished, not cancelled
 

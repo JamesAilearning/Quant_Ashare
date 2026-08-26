@@ -954,6 +954,62 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             self.assertIn("before any signal was issued", text,
                           "自然竞态缺结局标记收口")
 
+    def test_a_kill_raising_on_a_corpse_is_reclassified(self) -> None:
+        # poll 到 kill 之间的窄竞态（codex 第十九轮 P2）：进程恰在预检后
+        # 退出,kill() 对已终结句柄抛 OSError——立即返回 cancel_failed 会
+        # 留死句柄、把自然完成报成取消失败,还绕过分类闸。复检已死后:
+        # 无信号=自然完成(already_finished);有信号=取消导致的确认死亡
+        # (cancelled)。
+        from unittest import mock
+
+        import web.operator_ui.update_runner as _runner
+        class _DiesUnderKill:
+            pid = 999994
+            returncode = 1
+            def __init__(self) -> None:
+                self._killed = False
+            def poll(self):
+                return 1 if self._killed else None
+            def kill(self):
+                self._killed = True
+                raise OSError("process terminated during kill")
+            def wait(self, timeout=None):
+                raise AssertionError("kill 抛错+已死不应再等")
+        # 无信号送达（Windows 原生;POSIX mock killpg 全抛）→ 自然完成。
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            if sys.platform != "win32":
+                def _gone(pid: int, sig: int) -> None:
+                    raise ProcessLookupError("group gone")
+                with mock.patch.object(_runner.os, "killpg", _gone):
+                    got = cancel_update(
+                        _DiesUnderKill(), log,  # type: ignore[arg-type]
+                        grace_seconds=0.3)
+            else:
+                got = cancel_update(
+                    _DiesUnderKill(), log,  # type: ignore[arg-type]
+                    grace_seconds=0.3)
+            self.assertEqual("already_finished", got.kind,
+                             "kill 抛错+已死+无信号被报成了取消失败")
+            self.assertFalse(got.kill_issued)
+            text = log.read_text(encoding="utf-8")
+            self.assertIn("before any signal was issued", text)
+            self.assertNotIn("cancel FAILED: kill raised", text,
+                             "对尸体抛错不是失败,不该落 FAILED 标记")
+        # POSIX：组信号已成功发出 → 死亡是取消导致的,确认死亡收尾。
+        if sys.platform != "win32":
+            with tempfile.TemporaryDirectory() as t:
+                log = Path(t) / "log.log"
+                with mock.patch.object(_runner.os, "killpg",
+                                       lambda pid, sig: None):
+                    got = cancel_update(
+                        _DiesUnderKill(), log,  # type: ignore[arg-type]
+                        grace_seconds=0.3)
+                self.assertEqual("cancelled", got.kind,
+                                 "组信号已发+kill 撞尸体没按确认死亡收尾")
+                self.assertIn("cancel outcome: process exited",
+                              log.read_text(encoding="utf-8"))
+
     def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:
         # 未决在场 + 重试的 kill() 自身抛且标记写失败（codex 第十六轮
         # P2）：kill_issued=False 的守卫会拦住未决上下文更新——存量

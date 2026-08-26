@@ -550,36 +550,46 @@ def cancel_update(
         try:
             process.kill()
         except OSError as exc:
-            # 失败结局同样要审计——标记结果照聚合（codex 第五轮 P2:
-            # 两个 cancel_failed 返回此前落在聚合之外,不可写日志让失败
-            # 的取消静默无审计）。
-            markers_written = _append_cancel_marker(
-                log_path, f"cancel FAILED: kill raised {exc!r}"
-            ) and markers_written
-            # kill() 自身抛了——但 POSIX 组信号若已成功发出,死亡仍可能
-            # 是取消导致的（kill() 恰与 SIGKILL 生效的退出竞态抛错正是
-            # 常见形态）;Windows 无前置信号,此处即「没碰过进程」,之后
-            # 自然跑完就是自然完成,不许补结算成已强制取消（第十/十七轮）。
-            return UpdateCancel(
-                kind="cancel_failed", error=f"终止进程失败:{exc}",
-                markers_written=markers_written, kill_issued=signal_issued)
+            # kill() 抛错的两种真相要**复检**分开（codex 第十九轮 P2）：
+            # 进程恰在上面那次 poll 与 kill() 之间退出时,抛错只是句柄已
+            # 终结——死亡已确认,立即返回 cancel_failed 会留下死句柄、把
+            # 自然完成报成取消失败,还绕过下面的分类闸。复检仍活才是真
+            # 失败;已死则落到分类闸（无信号=自然完成,有信号=取消导致
+            # 的确认死亡）。
+            if process.poll() is None:
+                # 失败结局同样要审计——标记结果照聚合（codex 第五轮 P2:
+                # 两个 cancel_failed 返回此前落在聚合之外,不可写日志让
+                # 失败的取消静默无审计）。
+                markers_written = _append_cancel_marker(
+                    log_path, f"cancel FAILED: kill raised {exc!r}"
+                ) and markers_written
+                # kill() 自身抛了——但 POSIX 组信号若已成功发出,死亡仍
+                # 可能是取消导致的（kill() 恰与 SIGKILL 生效的退出竞态
+                # 抛错正是常见形态）;Windows 无前置信号,此处即「没碰过
+                # 进程」,之后自然跑完就是自然完成,不许补结算成已强制
+                # 取消（第十/十七轮）。
+                return UpdateCancel(
+                    kind="cancel_failed", error=f"终止进程失败:{exc}",
+                    markers_written=markers_written,
+                    kill_issued=signal_issued)
         else:
             # kill() 成功返回同样是「信号已发出」——下面的分类闸靠它区分
-            # 真取消与自然完成（第十八轮 P2）。
+            # 真取消与自然完成（第十八轮 P2）。等死只在 kill 成功后有意
+            # 义（抛错+已死的路径 poll 已确认,无可等）。
             signal_issued = True
-        try:
-            process.wait(timeout=grace_seconds)
-        except subprocess.TimeoutExpired:
-            markers_written = _append_cancel_marker(
-                log_path,
-                "cancel FAILED: process survived kill within grace window"
-            ) and markers_written
-            # kill 已发出（kill() 返回未抛）,只是宽限窗内没等到死亡——
-            # 之后的死亡是取消导致的,迟到补结算成立。
-            return UpdateCancel(
-                kind="cancel_failed",
-                error="进程在宽限窗内未退出;请用任务管理器核查后重试",
-                markers_written=markers_written, kill_issued=True)
+            try:
+                process.wait(timeout=grace_seconds)
+            except subprocess.TimeoutExpired:
+                markers_written = _append_cancel_marker(
+                    log_path,
+                    "cancel FAILED: process survived kill within grace window"
+                ) and markers_written
+                # kill 已发出（kill() 返回未抛）,只是宽限窗内没等到死亡
+                # ——之后的死亡是取消导致的,迟到补结算成立。
+                return UpdateCancel(
+                    kind="cancel_failed",
+                    error="进程在宽限窗内未退出;请用任务管理器核查后重试",
+                    markers_written=markers_written, kill_issued=True)
     if not signal_issued:
         # 分类闸（codex 第十八轮 P2）：初检时还活着,但**没有任何**信号
         # 成功送达它就死了——POSIX 是「初检后自然完成 + SIGINT 抛错」的

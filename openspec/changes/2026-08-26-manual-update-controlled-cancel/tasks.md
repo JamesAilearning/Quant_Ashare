@@ -286,6 +286,18 @@
       （poll 序列存根 + POSIX mock killpg 抛）+ 变异去闸咬住;r7 警告
       锚串随扩展更新,断言意图不变
 
+## codex 第十九轮（P2：kill 撞尸体要复检再分类）
+
+- [x] P2 poll 到 kill 之间的窄竞态——进程恰在预检后退出,kill() 对已终
+      结句柄抛 OSError:立即返回 cancel_failed 会留死句柄、把自然完成报
+      成取消失败,还绕过第十八轮的分类闸。修=except 分支**复检** poll:
+      仍活=真失败照旧（FAILED 标记+cancel_failed）;已死=落到分类闸
+      （无信号→already_finished,有信号→确认死亡收尾）,等死挪进 kill
+      成功的 else（抛错+已死无可等）。双平台确定性用例
+      （_DiesUnderKill:kill 置旗再抛,poll 依旗翻转;POSIX 两变体=killpg
+      全抛→自然完成、killpg 成功→cancelled）+ 断言不落 FAILED 标记 +
+      变异去复检咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程
