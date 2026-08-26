@@ -191,6 +191,18 @@
       器产不出。fixture 同步（再平衡默认 next=as_of）
 - [x] 变异两发（去 isfinite 2f/去不变式 2f）全咬
 
+## 第二十轮（2×P2：isfinite 自身溢出崩页 + topk 界）
+
+- [x] 我第十九轮加的 isfinite 对 JSON 任意精度大整数（10**1000）抛
+      OverflowError——检查自己成了崩溃源；且真实崩点更早在共享
+      picks_table_rows 的 float()（详情页同样暴露）。修在共享边界：溢出
+      折成契约内 ValueError（两个消费方统一走「候选列表不合法」），行验
+      约的 isfinite 加 try 作带
+
+- [x] topk 界（canonical 契约 N ≤ topk；产出器 meta 无条件写 topk）：
+      缺失/非法/被超出=需核查；N==topk 合法专用断言。fixture meta 补 topk
+- [x] 变异两发（去溢出折叠 1f/去 topk 界 1f）全咬
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

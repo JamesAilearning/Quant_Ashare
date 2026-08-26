@@ -50,7 +50,7 @@ def _ensemble_payload(
         "rebalance_day": rebalance_day,
         # 再平衡日 next 必为 as_of（跨字段不变式）；HOLD 侧才是未来锚。
         "next_rebalance_date": "2026-08-18" if rebalance_day else "2026-08-25",
-        "meta": {"ensemble": {"manifest_sha256": manifest}},
+        "meta": {"ensemble": {"manifest_sha256": manifest}, "topk": 50},
         "picks": [],
     }
 
@@ -187,6 +187,10 @@ class DailySignalSummaryTests(unittest.TestCase):
                            "predicted_score": float("nan")}),
             ("score inf", {**_pick(1, "SH600000"),
                            "predicted_score": float("inf")}),
+            # JSON 任意精度大整数让 isfinite 抛 OverflowError——检查自己
+            # 不许崩页（codex P2）。
+            ("score 巨整数", {**_pick(1, "SH600000"),
+                              "predicted_score": 10**1000}),
             ("tradable 非布尔", {**_pick(1, "SH600000"),
                                  "tradable_flag": "yes"}),
             # 产出器只落可交易行（构造前过滤 + 构造器写死 True/""）——
@@ -348,6 +352,28 @@ class DailySignalSummaryTests(unittest.TestCase):
                 artifact_date = str(payload["as_of_date"])
                 got = summarise_daily_signal(
                     artifact_date, payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual(expect, got.kind, f"{label} 判错")
+
+    def test_topk_bound_is_enforced(self) -> None:
+        # canonical 契约 N ≤ topk；产出器 meta 无条件写 topk——缺失/非法/
+        # 被超出都是产出器产不出的形态（codex P2）。
+        base_rows = [_pick(1, "SH600000"), _pick(2, "SZ000001")]
+        for label, mutate, expect in (
+            ("缺 topk", lambda m: m.pop("topk"), "needs_verification"),
+            ("topk 布尔", lambda m: m.update(topk=True), "needs_verification"),
+            ("topk 字符串", lambda m: m.update(topk="50"), "needs_verification"),
+            ("N>topk", lambda m: m.update(topk=1), "needs_verification"),
+            ("N==topk 合法", lambda m: m.update(topk=2), "rebalance"),
+        ):
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                payload["picks"] = [dict(r) for r in base_rows]
+                meta = dict(payload["meta"])  # type: ignore[arg-type]
+                mutate(meta)
+                payload["meta"] = meta
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
                     incumbent=self.incumbent, current_model_sha=None)
                 self.assertEqual(expect, got.kind, f"{label} 判错")
 

@@ -219,6 +219,29 @@ def summarise_daily_signal(
     # SHALL be contiguous 1..N，按 predicted_score 降序稳定排序）——
     # [2] 或 [1,1] 这类断秩/乱序清单产出器产不出，基数照数会拿损坏工件
     # 驱动头卡（codex P2）。
+    # topk 界（canonical 契约 N ≤ topk；产出器在 meta 无条件写 topk）：
+    # 缺失/非法/被超出都是产出器产不出的形态——超长清单照数会把损坏工件
+    # 的基数端上头卡（codex P2）。
+    meta_for_topk = payload.get("meta")
+    raw_topk = (meta_for_topk.get("topk")
+                if isinstance(meta_for_topk, dict) else None)
+    if (isinstance(raw_topk, bool) or not isinstance(raw_topk, int)
+            or raw_topk < 0):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.topk 缺失或非法（实际 {raw_topk!r}）——产出器无条件"
+            "写非负 int；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    if len(payload["picks"]) > raw_topk:
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选 {len(payload['picks'])} 条超出 meta.topk"
+            f"（{raw_topk}）——canonical 契约 N ≤ topk，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     ranks = [pick["rank"] for pick in payload["picks"]]
     if ranks != list(range(1, len(ranks) + 1)):
         return DailySignalSummary(
@@ -463,11 +486,17 @@ def _pick_row_violation(pick: dict[str, object]) -> str | None:
     if isinstance(rank, bool) or not isinstance(rank, int):
         return "rank 缺失或非整数"
     score = pick.get("predicted_score")
-    if (isinstance(score, bool) or not isinstance(score, (int, float))
-            or not math.isfinite(score)):
-        # NaN/inf 也拒：json.loads 接受裸 NaN，而 NaN 的比较恒 False 会
-        # 悄悄穿过降序检查；产出器打分后 dropna 再构造 picks，非有限分
-        # 产不出（codex P2）。
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return "predicted_score 缺失或非有限数值"
+    # NaN/inf 也拒：json.loads 接受裸 NaN，而 NaN 的比较恒 False 会悄悄
+    # 穿过降序检查；产出器打分后 dropna 再构造 picks，非有限分产不出
+    # （codex P2）。isfinite 对 JSON 任意精度大整数（10**1000）抛
+    # OverflowError——检查自己不许成为崩溃源（codex 续指），同判非有限。
+    try:
+        finite = math.isfinite(score)
+    except OverflowError:
+        finite = False
+    if not finite:
         return "predicted_score 缺失或非有限数值"
     # 不止验类型，验**字面**：产出器只落已过可交易筛选的行（untradable 在
     # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
