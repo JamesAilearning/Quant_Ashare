@@ -33,7 +33,13 @@ match the current provider under the recommender's own normalization, and
 when both the artifact's `meta.bundle_tag` and the current integrity stamp's
 identity tag exist they MUST match. A missing artifact `provider_uri`, an
 unidentifiable current side, or either mismatch SHALL refuse the answer with
-both spellings named — an artifact from another or a superseded bundle can
+both spellings named; a spelling the existing path boundary rejects (an
+embedded NUL, a not-fully-qualified form) SHALL refuse with that boundary's
+reason before any normalization runs, never crash the page; relative
+spellings SHALL be anchored to the repository root on both sides before the
+canonical normalization, since the artifact's production context is the
+repository root while the process may be launched elsewhere. An artifact
+from another or a superseded bundle can
 match the current tail by date coincidence while every health check on the
 page describes different data. A missing identity tag on either side is a
 legitimate stamp state (identity blocks are optional): the card SHALL fall
@@ -43,7 +49,11 @@ pretend the tags were compared.
 An empty target list on a rebalance day is a legitimate producer state
 (`--topk 0`, or every candidate masked): the card SHALL NOT call it an
 instruction — it SHALL say there is nothing to buy and why that can be
-legitimate. A rebalance answer SHALL state the number of candidates.
+legitimate. A rebalance answer SHALL state the number of candidates, and
+that cardinality SHALL count only rows meeting the producer's per-pick
+contract (all six fields, typed — an object naming no buyable security
+must not raise the count); an off-contract row SHALL make the artifact
+unverifiable rather than count as a candidate.
 
 Every state SHALL carry the disclaimer that the sentence is not an order and
 grants no trading permission.
@@ -95,6 +105,22 @@ grants no trading permission.
   integrity stamp's identity tag
 - **WHEN** the card renders
 - **THEN** it refuses to answer and names both spellings
+
+#### Scenario: a provider spelling the path boundary rejects
+
+- **GIVEN** an artifact or current provider spelling with an embedded NUL or
+  another form the path boundary refuses
+- **WHEN** the card renders
+- **THEN** it refuses to answer with the boundary's reason and the page does
+  not crash
+
+#### Scenario: a pick row off the producer contract
+
+- **GIVEN** a provenance-matching rebalance artifact whose picks contain an
+  object missing or mistyping any of the producer's six per-pick fields
+- **WHEN** the card renders
+- **THEN** the artifact is treated as unverifiable with the row violation
+  named, and the row is never counted as a candidate
 
 #### Scenario: an identity tag missing on one side
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from web.operator_ui.incumbent import IncumbentIdentity, anchored_to_repo
+from web.operator_ui.incumbent import (
+    IncumbentIdentity,
+    anchored_to_repo,
+    unusable_path_reason,
+)
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
@@ -175,6 +179,21 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 行级契约：产出器 RecommendationPick（frozen dataclass）六键六型**恒写**
+    # ——`picks: [{}]` 这类行数不出任何可买标的，却会把基数抬成 1、让最显
+    # 眼的卡说「有再平衡指令 · 1 只候选」（codex P2）。详情页的 display 层
+    # 刻意 pass-through（工单 §1.4）不动；驱动指令句的**基数**在此验约，
+    # 违约=需核查，不做静默缩数。
+    for index, pick in enumerate(payload["picks"]):
+        problem = _pick_row_violation(pick)
+        if problem is not None:
+            return DailySignalSummary(
+                "needs_verification",
+                f"工件候选第 {index + 1} 行违约：{problem}（产出器恒写六键，"
+                "缺任一即非产出器产物）。",
+                as_of_date=as_of_date,
+                entry_date=entry_date,
+            )
 
     cadence = hold_state(payload)
     if cadence.malformed is not None:
@@ -294,6 +313,32 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
             "仓库无机器可读的重训到期锚）",
         ),
     ]
+
+
+def _pick_row_violation(pick: dict[str, object]) -> str | None:
+    """一行候选违约在哪——None = 合约内。
+
+    钉的是产出器 `RecommendationPick`（frozen dataclass）的**全部**六键与
+    类型（穷尽式，不挑其中几个——挑选就是下一个漏洞的形状）：rank int /
+    stock_code 非空 str / stock_name str / predicted_score 数值 /
+    tradable_flag bool / unavailable_reason str。
+    """
+    code = pick.get("stock_code")
+    if not (isinstance(code, str) and code.strip()):
+        return "stock_code 缺失或为空"
+    if not isinstance(pick.get("stock_name"), str):
+        return "stock_name 缺失或非字符串"
+    rank = pick.get("rank")
+    if isinstance(rank, bool) or not isinstance(rank, int):
+        return "rank 缺失或非整数"
+    score = pick.get("predicted_score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return "predicted_score 缺失或非数值"
+    if not isinstance(pick.get("tradable_flag"), bool):
+        return "tradable_flag 缺失或非布尔"
+    if not isinstance(pick.get("unavailable_reason"), str):
+        return "unavailable_reason 缺失或非字符串"
+    return None
 
 
 _ANSWER_DISCLAIMER = "本句只汇总既有工件与出单侧判据，不是订单，也不授予交易许可。"
@@ -434,6 +479,18 @@ def todays_buy_answer(
             "出单侧裁决未带 provider 身份，无法绑定工件的数据来源。"
             f"{_ANSWER_DISCLAIMER}",
         )
+    # 归一化之前先过既有的拼写边界（unusable_path_reason，NUL 先于任何
+    # 文件系统调用）：内嵌 NUL 的拼写会让 realpath 抛 ValueError，整页
+    # 变 traceback 而不是规格要求的拒答（codex P2）。两侧对称——工件侧
+    # 来自不可信文件，当前侧同一崩溃向量同一门。
+    for side, spelling in (("工件", signal.data_provider_uri),
+                           ("出单侧", freshness.provider_uri)):
+        unusable = unusable_path_reason(spelling)
+        if unusable is not None:
+            return TodaysAnswer(
+                "unanswerable", "无法给出",
+                f"{side}的数据来源拼写不可用：{unusable}{_ANSWER_DISCLAIMER}",
+            )
     if not _same_provider_spelling(
             signal.data_provider_uri, freshness.provider_uri):
         return TodaysAnswer(

@@ -20,6 +20,18 @@ from web.operator_ui.pages._today_workbench_helpers import (
 _ROOT = Path(__file__).resolve().parents[2]
 
 
+def _pick(rank: int, code: str) -> dict[str, object]:
+    """产出器 RecommendationPick 形态的一行合法候选（六键六型恒写）。"""
+    return {
+        "rank": rank,
+        "stock_code": code,
+        "stock_name": f"股票{rank}",
+        "predicted_score": 0.1 * rank,
+        "tradable_flag": True,
+        "unavailable_reason": "",
+    }
+
+
 def _ensemble_payload(
     *, rebalance_day: bool = True, manifest: str = "manifest"
 ) -> dict[str, object]:
@@ -145,12 +157,42 @@ class DailySignalSummaryTests(unittest.TestCase):
             incumbent=self.incumbent, current_model_sha=None)
         self.assertEqual(0, empty.pick_count)
         payload = _ensemble_payload()
-        payload["picks"] = [{}, {}]
+        payload["picks"] = [_pick(1, "SH600000"), _pick(2, "SZ000001")]
         two = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
         self.assertEqual("rebalance", two.kind)
         self.assertEqual(2, two.pick_count)
+
+    def test_a_pick_row_off_contract_never_counts_as_a_candidate(self) -> None:
+        # `picks: [{}]` 数不出任何可买标的，却会把基数抬成 1、让最显眼的
+        # 卡说「有指令 · 1 只候选」（codex P2）。产出器 RecommendationPick
+        # 六键恒写——违约=需核查，不做静默缩数。逐键各试一个坏形态。
+        cases: tuple[tuple[str, dict], ...] = (
+            ("空对象", {}),
+            ("空 stock_code", {**_pick(1, "SH600000"), "stock_code": " "}),
+            ("rank 布尔", {**_pick(1, "SH600000"), "rank": True}),
+            ("score 字符串", {**_pick(1, "SH600000"),
+                              "predicted_score": "0.1"}),
+            ("tradable 非布尔", {**_pick(1, "SH600000"),
+                                 "tradable_flag": "yes"}),
+            ("缺 unavailable_reason",
+             {k: v for k, v in _pick(1, "SH600000").items()
+              if k != "unavailable_reason"}),
+            ("缺 stock_name",
+             {k: v for k, v in _pick(1, "SH600000").items()
+              if k != "stock_name"}),
+        )
+        for label, bad in cases:
+            with self.subTest(label=label):
+                payload = _ensemble_payload()
+                payload["picks"] = [bad]
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual("needs_verification", got.kind,
+                                 "违约行被当成了一只候选")
+                self.assertIn("违约", got.detail)
 
     def test_the_verified_summary_retains_the_data_provenance(self) -> None:
         # 产出器写下的 meta.provider_uri / meta.bundle_tag 必须随核验结果
@@ -529,6 +571,22 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
             self._signal("rebalance"), self._fresh(provider_uri=None))
         self.assertEqual("unanswerable", got.state)
         self.assertIn("provider 身份", got.detail)
+
+    def test_a_nul_in_a_provider_spelling_refuses_not_crashes(self) -> None:
+        # 内嵌 NUL 的拼写会让归一化的 realpath 抛 ValueError——整页变
+        # traceback 而不是规格要求的拒答（codex P2）。既有 unusable_path_
+        # reason 边界（NUL 先于任何文件系统调用）在比对前对称把门。
+        for side, overrides in (
+            ("工件侧", {"signal": {"data_provider_uri": "D:/da\x00ta/prov"}}),
+            ("出单侧", {"fresh": {"provider_uri": "D:/da\x00ta/prov"}}),
+        ):
+            with self.subTest(side=side):
+                got = todays_buy_answer(
+                    self._signal("rebalance",
+                                 **overrides.get("signal", {})),
+                    self._fresh(**overrides.get("fresh", {})))
+                self.assertEqual("unanswerable", got.state)
+                self.assertIn("拼写不可用", got.detail)
 
     def test_a_relative_artifact_provider_binds_regardless_of_cwd(self) -> None:
         # meta.provider_uri 可为相对拼写（生产配置语境=仓根）；Streamlit 从

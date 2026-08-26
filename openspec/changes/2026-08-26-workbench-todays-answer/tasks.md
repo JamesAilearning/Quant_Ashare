@@ -55,6 +55,22 @@
 - [x] 新守卫 6 条（异 provider/异 tag/缺 meta 来源/当前侧不可辨/单侧缺
       tag 放行×2/来源随核验留存）+ 披露循环加流程态
 
+## 第五轮（codex P1 相对拼写异锚）
+
+- [x] provider 比对先同锚仓根（anchored_to_repo，绝对拼写契约原样放行）
+      再走出单器归一化——仓外启动时相对拼写按进程 CWD 归一会假拒同一份
+      bundle；chdir 仓外的回归 + 变异去同锚咬住
+
+## 第六轮（codex 2×P2：NUL 崩页 + 违约行计数）
+
+- [x] 比对前两侧对称过既有 unusable_path_reason 边界（NUL 先于任何文件
+      系统调用）——内嵌 NUL 让 realpath 抛 ValueError 整页 traceback，
+      规格要求的是拒答
+- [x] 基数只数合约内的行：产出器 RecommendationPick 六键六型穷尽钉
+      （_pick_row_violation），`picks: [{}]` 不再抬成「1 只候选」；违约=
+      需核查不做静默缩数；display 层 pass-through（工单 §1.4）不动
+- [x] 变异两发（去 NUL 门 2f / 去行验约 7f）全咬；逐键坏形态七用例
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
