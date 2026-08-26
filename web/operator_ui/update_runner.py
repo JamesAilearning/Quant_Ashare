@@ -22,9 +22,12 @@ Boundaries (openspec 2026-08-16-ui-run-center):
 from __future__ import annotations
 
 import contextlib
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -236,6 +239,131 @@ class UpdateLaunch:
     pid: int | None = None
     log_path: Path | None = None
     error: str = ""
+    #: 活句柄——受控取消的**唯一**通道（2026-08-26-manual-update-
+    #: controlled-cancel）。取消绑定 Popen 对象而非 pid：pid 会被系统回收
+    #: 复用，按 pid 杀可能命中无关进程；句柄只活在本 UI 会话的内存里，
+    #: UI 重启后旧运行不可取消（如实降级，不是缺陷）。frozen dataclass
+    #: 携带可变句柄仅作传递，不参与相等性比较。
+    process: subprocess.Popen[bytes] | None = None
+
+
+@dataclass(frozen=True)
+class UpdateCancel:
+    """Outcome of one controlled-cancel attempt. ``kind`` drives the page:
+
+    * ``already_finished`` — the process had already exited before the
+      cancel ran (误点后其实已跑完/已失败). Nothing was killed; the status
+      artifact / ledger carry whatever the run itself wrote.
+    * ``cancelled`` — the process is confirmed gone. ``graceful`` says
+      whether it exited on the polite signal (POSIX SIGINT → the
+      orchestrator's BaseException path writes a terminal record) or had
+      to be terminated (Windows; the status artifact then stays
+      ``running`` — see the honesty note below).
+    * ``cancel_failed`` — the process survived every attempt within the
+      grace window; ``error`` says what was tried.
+
+    诚实说明（Windows）:硬杀不给子进程写终态的机会,状态工件停在
+    ``running``——本函数**绝不**替编排器伪造终态(写者纪律:状态工件只有
+    编排器写)。页面凭本会话的句柄证据(``poll()`` 已退出)如实呈现:
+    在线 bundle 未受影响(只有校验通过的构建才会原子切换)、单飞锁已随
+    进程消亡自动释放、遗留 ``.new`` 由下次运行的 Stage-0 启动修复清理。
+    """
+
+    kind: str
+    graceful: bool = False
+    returncode: int | None = None
+    error: str = ""
+
+
+#: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
+#: BaseException 终录路径（记录后再死）——给它写两个 JSON 的时间。
+_CANCEL_GRACE_SECONDS = 10.0
+
+
+def _append_cancel_marker(log_path: Path | None, text: str) -> None:
+    """取消动作的带日期日志标记——复用 launch 的标记惯例，失败不致命。"""
+    if log_path is None:
+        return
+    line = (
+        f"[run_center] {datetime.now(tz=_CN_TZ).isoformat(timespec='seconds')}"
+        f" {text}\n"
+    )
+    with contextlib.suppress(OSError):
+        with open(log_path, "ab") as fh:
+            fh.write(line.encode("utf-8"))
+            fh.flush()
+
+
+def cancel_update(
+    process: subprocess.Popen[bytes],
+    log_path: Path | None,
+    *,
+    grace_seconds: float = _CANCEL_GRACE_SECONDS,
+) -> UpdateCancel:
+    """受控取消一次**本会话启动的**手动更新。
+
+    只接受活的 ``Popen`` 句柄——绝不按 pid 杀（pid 会被系统回收复用，
+    按数字杀可能命中无关进程）；调度器的自动运行不是本 UI 的子进程、
+    没有句柄，天然不在射程内。
+
+    数据安全前提（这是"取消"敢存在的原因）:管线是 build-then-atomic-swap
+    ——六阶段全程写 ``<provider>.new`` 旁路，只有校验通过后的最后一步才
+    原子切换上线。切换前任意时点杀进程,在线 bundle 一字节不动,仍是最后
+    一次成功更新的数据（无论自动还是手动）。
+
+    平台差异是**实测**出来的,不是猜的:
+
+    * POSIX:子进程 ``start_new_session=True`` 是会话组长——``killpg``
+      SIGINT → KeyboardInterrupt → 编排器 BaseException 终录路径（状态
+      工件+台账落终态,然后再死）。宽限窗内未退再 SIGKILL。
+    * Windows:``CREATE_NO_WINDOW`` 的子进程有自己的隐形控制台,
+      ``CTRL_BREAK_EVENT`` 从 UI 进程**送达不了**（GenerateConsoleCtrl-
+      Event 要求同控制台;本仓实测:信号发送成功返回、子进程纹丝不动）;
+      即使送达,Python 把 CTRL_BREAK 映射为 SIGBREAK 直接终止、不产生
+      KeyboardInterrupt。所以 Windows 路径**如实是硬杀**（七个阶段全部
+      in-process 跑在编排器单进程里——`_default_runners` 逐个
+      `_load_script_main`——杀单进程即完备,无孤儿阶段）。
+    """
+    if process.poll() is not None:
+        return UpdateCancel(
+            kind="already_finished", returncode=process.returncode)
+    _append_cancel_marker(log_path, "cancel requested: manual daily_update")
+    graceful = False
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGINT)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                graceful = True
+                break
+            time.sleep(0.2)
+        if not graceful:
+            with contextlib.suppress(OSError):
+                os.killpg(process.pid, signal.SIGKILL)
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError as exc:
+            _append_cancel_marker(
+                log_path, f"cancel FAILED: kill raised {exc!r}")
+            return UpdateCancel(
+                kind="cancel_failed", error=f"终止进程失败:{exc}")
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            _append_cancel_marker(
+                log_path,
+                "cancel FAILED: process survived kill within grace window")
+            return UpdateCancel(
+                kind="cancel_failed",
+                error="进程在宽限窗内未退出;请用任务管理器核查后重试")
+    _append_cancel_marker(
+        log_path,
+        "cancel outcome: process exited "
+        f"(returncode={process.returncode}, graceful={graceful})")
+    return UpdateCancel(
+        kind="cancelled", graceful=graceful, returncode=process.returncode)
 
 
 def default_log_path(provider_dir: Path) -> Path:
@@ -454,7 +582,8 @@ def launch_daily_update(
         # The child holds its own duplicated handle; ours must not leak
         # into the (long-lived) UI process.
         log_fh.close()
-    return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path)
+    return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path,
+                        process=proc)
 
 
 #: 可能不是 UTF-8 的那些行所用的旧编码。**别把它当纯历史包袱**:本模块经

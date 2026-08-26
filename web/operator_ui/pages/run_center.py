@@ -51,6 +51,7 @@ from web.operator_ui.update_runner import (
     START_DATE,
     build_update_argv,
     calendar_gate_warning,
+    cancel_update,
     default_log_path,
     gate_today,
     launch_daily_update,
@@ -88,6 +89,13 @@ _CN_TZ = timezone(timedelta(hours=8))
 _AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
 _AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW
 _LAST_LAUNCH_KEY = "run_center::last_launch"
+#: 本会话在飞的手动更新——**活进程句柄**在内存里（update_runner 的
+#: launch 结果携带；本页零 spawn，守卫在档），受控取消的唯一通道（绝不
+#: 按 pid 杀：pid 会被回收复用）。UI 重启即失去句柄，旧运行不可取消——
+#: 如实降级。调度器的自动运行不是本 UI 子进程，天然不在射程。
+_LIVE_RUN_KEY = "run_center::live_manual_run"
+_CANCEL_ARM_KEY = "run_center::cancel_armed"
+_LAST_CANCEL_KEY = "run_center::last_cancel"
 
 # Streamlit's SessionStateProxy exposes the mapping operations used below, but
 # its stubs do not inherit MutableMapping.  Keep the cast at the UI boundary;
@@ -435,6 +443,12 @@ if _launch_clicked:
         st.session_state[_AWAIT_LAUNCH_KEY] = datetime.now(
             tz=_CN_TZ
         ).isoformat()
+        # 活句柄入会话——受控取消的唯一凭据（frozen dataclass 里的
+        # process 字段；见 update_runner.UpdateLaunch）。
+        st.session_state[_LIVE_RUN_KEY] = {
+            "process": _launch.process,
+            "log_path": str(_launch.log_path) if _launch.log_path else "",
+        }
     st.rerun()
 
 _last_launch = st.session_state.pop(_LAST_LAUNCH_KEY, None)
@@ -448,6 +462,91 @@ if isinstance(_last_launch, dict):
     else:
         st.error(
             f"未启动({_last_launch.get('kind')}):{_last_launch.get('error')}"
+        )
+
+# --- 受控取消（2026-08-26-manual-update-controlled-cancel） ---
+# 只对**本会话启动且仍在飞**的手动更新可见；两步确认。数据安全前提：管线
+# 是 build-then-atomic-swap——切换前任意时点终止，在线 bundle 一字节不动，
+# 仍是最后一次成功更新的数据（无论自动还是手动）。
+_live_run = st.session_state.get(_LIVE_RUN_KEY)
+_live_proc = (
+    _live_run.get("process") if isinstance(_live_run, dict) else None)
+if _live_proc is not None and _live_proc.poll() is not None:
+    # 进程已自行结束——句柄退役，成败由上方状态工件与台账自述。
+    st.session_state.pop(_LIVE_RUN_KEY, None)
+    st.session_state.pop(_CANCEL_ARM_KEY, None)
+    _live_proc = None
+if _live_proc is not None:
+    if not st.session_state.get(_CANCEL_ARM_KEY):
+        if st.button(
+            "⛔ 取消本会话启动的手动更新",
+            key="run_center::cancel_request",
+            use_container_width=True,
+        ):
+            st.session_state[_CANCEL_ARM_KEY] = True
+            st.rerun()
+    else:
+        st.error(
+            "确认取消这次手动更新？**在线数据不受影响**——管线只有校验"
+            "通过后才原子切换，取消发生在切换前，数据仍是最后一次成功"
+            "更新的那份。Windows 下为强制终止：状态工件会停在 running"
+            "（本页据句柄证据如实标注，不伪造终态）；单飞锁随进程消亡"
+            "自动释放；遗留半成品由下次运行的启动修复清理。"
+        )
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if st.button(
+                "确认取消",
+                key="run_center::cancel_confirm",
+                type="primary",
+                use_container_width=True,
+            ):
+                _lp = (_live_run or {}).get("log_path") or ""
+                _outcome = cancel_update(
+                    _live_proc, Path(_lp) if _lp else None)
+                st.session_state[_LAST_CANCEL_KEY] = {
+                    "kind": _outcome.kind,
+                    "graceful": _outcome.graceful,
+                    "returncode": _outcome.returncode,
+                    "error": _outcome.error,
+                }
+                st.session_state.pop(_LIVE_RUN_KEY, None)
+                st.session_state.pop(_CANCEL_ARM_KEY, None)
+                st.rerun()
+        with _c2:
+            if st.button(
+                "保留运行",
+                key="run_center::cancel_abort",
+                use_container_width=True,
+            ):
+                st.session_state.pop(_CANCEL_ARM_KEY, None)
+                st.rerun()
+
+_last_cancel = st.session_state.pop(_LAST_CANCEL_KEY, None)
+if isinstance(_last_cancel, dict):
+    if _last_cancel.get("kind") == "already_finished":
+        st.info(
+            "取消未执行：该运行在取消前已自行结束"
+            f"（returncode={_last_cancel.get('returncode')}）——成败以上方"
+            "状态与台账为准。"
+        )
+    elif _last_cancel.get("kind") == "cancelled":
+        if _last_cancel.get("graceful"):
+            st.success(
+                "已取消（礼貌信号生效）：编排器自己写下了终态记录，状态"
+                "与台账如实可查；在线数据未受影响。"
+            )
+        else:
+            st.success(
+                "已取消（强制终止，returncode="
+                f"{_last_cancel.get('returncode')}）。在线数据未受影响。"
+                "**状态工件仍标 running**——被强杀的进程没有机会写终态，"
+                "这是句柄证据下的如实呈现，不是仍在运行；单飞锁已自动"
+                "释放，下次更新照常。"
+            )
+    else:
+        st.error(
+            f"取消失败：{_last_cancel.get('error')}"
         )
 
 with st.expander("日志尾部(只读)"):
