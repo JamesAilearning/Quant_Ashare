@@ -31,7 +31,15 @@ Before comparing any dates, the card SHALL bind the artifact to the current
 bundle by the producer-written data provenance: `meta.provider_uri` MUST
 match the current provider under the recommender's own normalization, and
 when both the artifact's `meta.bundle_tag` and the current integrity stamp's
-identity tag exist they MUST match. A missing artifact `provider_uri`, an
+identity tag exist they MUST match. The identity tag alone is NOT exact
+bundle binding — it hashes only the calendar, so an in-place rebuild that
+changes instruments or bins while leaving the calendar byte-identical passes
+it. The producer SHALL therefore persist the stamp's `built_at` (the rebuild
+nonce, refreshed by every build) as `meta.bundle_built_at`, and when both
+sides carry it they MUST match; a mismatch SHALL refuse with both timestamps
+named. Absence on either side (a pre-nonce artifact, or no stamp) is
+legitimate: the card SHALL fall back to the provider/tag binding without
+refusing or pretending the nonce was compared. A missing artifact `provider_uri`, an
 unidentifiable current side, or either mismatch SHALL refuse the answer with
 both spellings named; a spelling the existing path boundary rejects (an
 embedded NUL, a not-fully-qualified form) SHALL refuse with that boundary's
@@ -105,6 +113,15 @@ grants no trading permission.
   integrity stamp's identity tag
 - **WHEN** the card renders
 - **THEN** it refuses to answer and names both spellings
+
+#### Scenario: an in-place rebuild with an identical calendar
+
+- **GIVEN** a verified artifact whose provider and identity tag both match
+  while its `meta.bundle_built_at` differs from the current stamp's
+  `built_at`
+- **WHEN** the card renders
+- **THEN** it refuses to answer, names both timestamps, and says the bundle
+  was rebuilt in place
 
 #### Scenario: a provider spelling the path boundary rejects
 

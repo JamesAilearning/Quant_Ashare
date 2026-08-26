@@ -744,6 +744,7 @@ def _assemble_run_meta(
     *,
     model_pkl_sha256: str | None,
     bundle_tag: str | None,
+    bundle_built_at: str | None = None,
     generated_at: str | None = None,
     ensemble: Mapping[str, Any] | None = None,
     model_universe: str | None = None,
@@ -770,6 +771,11 @@ def _assemble_run_meta(
         "fit_end_for_inference": config.fit_end,
         "provider_uri": config.provider_uri,
         "bundle_tag": bundle_tag,
+        # 重建 nonce：stamp 的 built_at 每次重建都刷新，而 bundle_tag 只含
+        # 日历尾 + day.txt 哈希——纯 bin/宇宙的原地重建它看不见（其 docstring
+        # 明言 NOT a full-bin integrity guarantee）。读侧靠它分辨「同日历的
+        # 原地重建」（codex #468 P1）。无 stamp 时 None，绝不伪造。
+        "bundle_built_at": bundle_built_at,
         "instruments": config.instruments,
         "topk": config.topk,
     }
@@ -926,6 +932,7 @@ def recommend(
         if integrity is not None and integrity.identity is not None
         else None
     )
+    bundle_built_at = integrity.built_at if integrity is not None else None
     if ensemble_members is not None:
         from src.inference.ensemble_serving import (
             BLEND,
@@ -941,6 +948,7 @@ def recommend(
             config,
             model_pkl_sha256=None,
             bundle_tag=bundle_tag,
+            bundle_built_at=bundle_built_at,
             ensemble={
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "manifest_path": str(config.ensemble_manifest_path),
@@ -962,6 +970,7 @@ def recommend(
             config,
             model_pkl_sha256=model_pkl_sha256,
             bundle_tag=bundle_tag,
+            bundle_built_at=bundle_built_at,
             model_universe=model_universe,
         )
 

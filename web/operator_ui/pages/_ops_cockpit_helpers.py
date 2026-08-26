@@ -488,6 +488,11 @@ class BundleFreshness:
     #: meta 的 ``bundle_tag`` 与它比对，才知道信号出自**这份** bundle
     #: （codex #468 P1）。None = stamp 无身份块（pre-PR-G+I 合法态）。
     identity_tag: str | None = None
+    #: 当前 stamp 的 ``built_at``——**重建 nonce**：tag 只含日历尾+day.txt
+    #: 哈希（其 docstring 明言非 full-bin 保证），同日历的原地重建（宇宙/
+    #: bin 变了）它看不见；built_at 每次重建都刷新（codex #468 二轮 P1）。
+    #: None = 未读到 stamp。
+    built_at: str | None = None
 
     @property
     def age_ok(self) -> bool:
@@ -782,6 +787,7 @@ def bundle_freshness(
     integrity_accepted: bool | None = None,
     integrity_reason: str = "",
     identity_tag: str | None = None,
+    built_at: str | None = None,
 ) -> BundleFreshness:
     limit = serving_bundle_max_age_days() if max_age_days is None else max_age_days
     # Default to the recommender's clock rather than the caller's: every call
@@ -793,7 +799,8 @@ def bundle_freshness(
             message=message or "bundle 尾部日期不可读",
             health_status=health_status, health_warnings=health_warnings,
             integrity_accepted=integrity_accepted,
-            integrity_reason=integrity_reason, identity_tag=identity_tag)
+            integrity_reason=integrity_reason, identity_tag=identity_tag,
+            built_at=built_at)
     try:
         tail = date.fromisoformat(str(tail_date))
     except ValueError:
@@ -803,7 +810,8 @@ def bundle_freshness(
             message=f"bundle 尾部日期不是合法日期:{tail_date!r}",
             health_status=health_status, health_warnings=health_warnings,
             integrity_accepted=integrity_accepted,
-            integrity_reason=integrity_reason, identity_tag=identity_tag)
+            integrity_reason=integrity_reason, identity_tag=identity_tag,
+            built_at=built_at)
     behind = (today - tail).days
     return BundleFreshness(
         known=True, tail_date=tail.isoformat(), days_behind=behind,
@@ -812,7 +820,8 @@ def bundle_freshness(
         message=message, health_status=health_status,
         health_warnings=health_warnings,
         integrity_accepted=integrity_accepted,
-        integrity_reason=integrity_reason, identity_tag=identity_tag)
+        integrity_reason=integrity_reason, identity_tag=identity_tag,
+        built_at=built_at)
 
 
 @dataclass(frozen=True)

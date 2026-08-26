@@ -82,6 +82,16 @@
 - [x] 变异两发全咬（无缓存 -B 复验；顺带抓到并记档变异 harness 的 pyc
       秒级 mtime 假绿坑）
 
+## 第八轮（codex P1：tag 非精确绑定——同日历原地重建看不见）
+
+- [x] 产出器把 stamp 的 built_at（每次重建都刷新的 nonce）落进
+      meta.bundle_built_at（stamp 已在手，零新 I/O；无 stamp 记 null）
+- [x] 读侧全链：BundleIntegrityCheck.built_at → BundleFreshness.built_at →
+      summarise 留存（str|null 同型验约）→ 合成比对（双侧在场才比，
+      mismatch 点名两时刻拒答；单侧缺席=合法态按 provider/tag 放行）
+- [x] 变异（去 nonce 比对，-B 无缓存）1 failed 咬住；产出器侧源码钉
+      （nonce 真从 stamp 来、真落 meta）
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

@@ -282,6 +282,7 @@ _freshness = bundle_freshness(
     # 当前 bundle 的身份 tag——合成句拿它与工件 meta.bundle_tag 绑定
     # （codex #468 P1：不绑定，另一个 bundle 的工件按日期巧合也能上卡）。
     identity_tag=_integrity.identity_tag,
+    built_at=_integrity.built_at,
 )
 update_status: UpdateRunStatus | None = None
 update_matches_provider: bool | None = None

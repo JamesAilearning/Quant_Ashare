@@ -83,6 +83,11 @@ class DailySignalSummary:
     #: 仅在工件通过全部核验后原样留存；核验交给消费方。
     data_provider_uri: str | None = None
     data_bundle_tag: str | None = None
+    #: 产出器写下的 bundle 重建 nonce（meta.bundle_built_at = stamp 的
+    #: built_at）。tag 只含日历尾+day.txt 哈希——同日历的原地重建它看不
+    #: 见；built_at 每次重建都刷新（codex #468 二轮 P1）。老工件无此键，
+    #: None 是合法态。
+    data_bundle_built_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,9 +234,21 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    data_built_at = (
+        meta_block.get("bundle_built_at")
+        if isinstance(meta_block, dict) else None)
+    if data_built_at is not None and not isinstance(data_built_at, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.bundle_built_at 非 str/null（实际 "
+            f"{type(data_built_at).__name__}）——产出器只写这两种，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     provenance: dict[str, str | None] = {
         "data_provider_uri": data_provider,
         "data_bundle_tag": data_tag,
+        "data_bundle_built_at": data_built_at,
     }
     if cadence.is_hold:
         return DailySignalSummary(
@@ -529,6 +546,20 @@ def todays_buy_answer(
             f"工件出自另一份 bundle（工件身份戳 {signal.data_bundle_tag} vs "
             f"当前 {freshness.identity_tag}）——bundle 已重建或被替换；请"
             f"重跑出单。{_ANSWER_DISCLAIMER}",
+        )
+    # tag 只含日历尾+day.txt 哈希（其 docstring 明言非 full-bin 保证）——
+    # 宇宙/bin 变了而日历没变的**原地重建**它看不见；built_at 是每次重建
+    # 都刷新的 nonce（codex #468 二轮 P1）。两侧都有才可比：老工件无此键、
+    # 无 stamp 无 built_at，都是合法缺席，按已比对的 provider/tag 绑定放
+    # 行，不冒充比过。
+    if (signal.data_bundle_built_at is not None
+            and freshness.built_at is not None
+            and signal.data_bundle_built_at != freshness.built_at):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"bundle 已原地重建（工件建于 {signal.data_bundle_built_at}，"
+            f"当前 stamp 建于 {freshness.built_at}）——身份 tag 对得上只说明"
+            f"日历没变，数据内容可能已换；请重跑出单。{_ANSWER_DISCLAIMER}",
         )
     # 已核验的三类工件都带严格 ISO entry_date（summarise_daily_signal 的
     # 边界保证）；日历尾同为规范 YYYY-MM-DD——ISO 字符串可直接比序。

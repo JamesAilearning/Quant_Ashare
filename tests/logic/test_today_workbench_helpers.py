@@ -208,12 +208,23 @@ class DailySignalSummaryTests(unittest.TestCase):
         meta = dict(payload["meta"])  # type: ignore[arg-type]
         meta["provider_uri"] = "D:/data/prov"
         meta["bundle_tag"] = "tag-1"
+        meta["bundle_built_at"] = "2026-08-25T21:00:00+08:00"
         payload["meta"] = meta
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
         self.assertEqual("D:/data/prov", got.data_provider_uri)
         self.assertEqual("tag-1", got.data_bundle_tag)
+        self.assertEqual("2026-08-25T21:00:00+08:00", got.data_bundle_built_at)
+        # 产出器侧源码钉：nonce 真从 stamp 的 built_at 来、真落进 meta——
+        # 读侧比对的前提是写侧真的在写（防两侧各自为政）。
+        producer = (
+            _ROOT / "src" / "inference" / "daily_recommend.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"bundle_built_at": bundle_built_at', producer)
+        self.assertIn(
+            "bundle_built_at = integrity.built_at if integrity is not None",
+            producer)
         # 缺失时如实 None（老工件形态）——不冒充有来源。
         bare = summarise_daily_signal(
             "2026-08-18", _ensemble_payload(),
@@ -225,7 +236,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         # 在场但类型违约 ≠ 缺席：把 `123` 静默降成 None 会借道「合法缺身份
         # 块」绕开 bundle 比对（codex P2）。产出器只写 str / str|null。
         for field, value in (("provider_uri", 123), ("bundle_tag", 123),
-                             ("bundle_tag", True)):
+                             ("bundle_tag", True), ("bundle_built_at", 123)):
             with self.subTest(field=field, value=value):
                 payload = _ensemble_payload()
                 meta = dict(payload["meta"])  # type: ignore[arg-type]
@@ -416,7 +427,7 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
             known=True, tail_date="2026-08-26", days_behind=0,
             max_age_days=14, headroom_days=14, refuses_today=False,
             integrity_accepted=True, provider_uri="D:/data/prov",
-            identity_tag="tag-1")
+            identity_tag="tag-1", built_at="2026-08-25T21:00:00+08:00")
         base.update(overrides)
         return BundleFreshness(**base)  # type: ignore[arg-type]
 
@@ -425,7 +436,8 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         base: dict[str, object] = dict(
             kind=kind, detail="x", as_of_date="2026-08-25",
             entry_date="2026-08-26", pick_count=5,
-            data_provider_uri="D:/data/prov", data_bundle_tag="tag-1")
+            data_provider_uri="D:/data/prov", data_bundle_tag="tag-1",
+            data_bundle_built_at="2026-08-25T21:00:00+08:00")
         base.update(overrides)
         return DailySignalSummary(**base)  # type: ignore[arg-type]
 
@@ -631,6 +643,33 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                 _os.chdir(old_cwd)
         self.assertEqual("rebalance", got.state,
                          "相对拼写被按进程 CWD 归一——仓外启动时假拒")
+
+    def test_an_in_place_rebuild_is_refused_by_the_built_at_nonce(self) -> None:
+        # tag 只含日历尾+day.txt 哈希——宇宙/bin 变了而日历没变的原地重建
+        # 它看不见（BundleIdentity docstring 明言非 full-bin 保证）；
+        # built_at 每次重建都刷新（codex 二轮 P1）。provider 与 tag 都对得
+        # 上、nonce 不同 → 拒答并点名两个时刻。
+        got = todays_buy_answer(
+            self._signal("rebalance",
+                         data_bundle_built_at="2026-08-24T21:00:00+08:00"),
+            self._fresh())
+        self.assertEqual("unanswerable", got.state)
+        self.assertIn("原地重建", got.detail)
+        self.assertIn("2026-08-24T21:00:00+08:00", got.detail)
+        self.assertIn("2026-08-25T21:00:00+08:00", got.detail)
+
+    def test_a_missing_built_at_degrades_honestly(self) -> None:
+        # 老工件无 bundle_built_at 键 / 无 stamp 无 built_at——合法缺席，
+        # 按已比对的 provider/tag 绑定放行，不因此拒答。
+        for overrides in ({"signal": {"data_bundle_built_at": None}},
+                          {"fresh": {"built_at": None}}):
+            with self.subTest(缺侧="工件" if "signal" in overrides else "当前"):
+                got = todays_buy_answer(
+                    self._signal("rebalance",
+                                 **overrides.get("signal", {})),
+                    self._fresh(**overrides.get("fresh", {})))
+                self.assertEqual("rebalance", got.state,
+                                 "合法缺席被当成了拒答理由")
 
     def test_a_missing_identity_tag_degrades_to_provider_binding(self) -> None:
         # 身份块是 stamp 的可选项（pre-PR-G+I 无块合法）——单侧缺 tag 时
