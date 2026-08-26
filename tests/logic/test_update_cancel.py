@@ -590,11 +590,20 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         finally:
             if proc.poll() is None:
                 proc.kill()
-        # 页面接线：confirm 当刻 + watcher 片段两处都在生存期内刷新候选。
+        # 页面接线：取消前 + confirm 失败后 + watcher 片段,三处都在生存
+        # 期内取候选（第十七轮 P2:取消调用可耗满宽限窗,kill 恰在返回后
+        # 生效——只有确认后那一次会撞死进程,须有取消前观察兜底）。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertEqual(2, page.count("observe_own_running_record("),
-                         "候选刷新不是恰好两处（confirm + watcher）")
+        self.assertEqual(3, page.count("observe_own_running_record("),
+                         "候选观察不是恰好三处（取消前/confirm 失败后/"
+                         "watcher）")
+        _before_at = page.index("_own_before = observe_own_running_record(")
+        _cancel_at = page.index("_outcome = cancel_update(")
+        self.assertLess(_before_at, _cancel_at,
+                        "取消前观察没在取消调用之前")
+        self.assertIn("or _own_before", page,
+                      "失败分支没用取消前观察兜底")
 
     def test_a_late_settlement_owes_the_full_cancel_epilogue(self) -> None:
         # 迟到死亡的收尾义务与当场确认死亡**完全同款**（codex 第九轮
@@ -854,6 +863,46 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn('prior_markers_written=(_live_run or {}).get(', page,
                       "重试没带上一次的标记状态")
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX killpg 路径")
+    def test_a_successful_group_kill_counts_as_issued(self) -> None:
+        # POSIX 竞态（codex 第十七轮 P2）：killpg(SIGKILL) 成功返回、子进
+        # 程尚未收割,后备 process.kill() 恰与退出竞态抛 OSError——组信号
+        # 的成功返回是「已发出」的证明（内核已受理投递）,硬编码 False 会
+        # 让先前 SIGKILL 导致的迟到死亡被当自然完成,整套迟到收尾跳过。
+        from unittest import mock
+
+        import web.operator_ui.update_runner as _runner
+        class _KillRacesExit:
+            pid = 999996
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                raise OSError("No such process")
+            def wait(self, timeout=None):
+                raise AssertionError("不应走到 wait")
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            with mock.patch.object(_runner.os, "killpg",
+                                   lambda pid, sig: None):
+                got = cancel_update(
+                    _KillRacesExit(), log,  # type: ignore[arg-type]
+                    grace_seconds=0.3)
+            self.assertEqual("cancel_failed", got.kind)
+            self.assertTrue(got.kill_issued,
+                            "组信号成功发出却被记成没发——迟到死亡将被"
+                            "当自然完成")
+            # 对照：所有信号调用都抛 → 才算没发出去。
+            def _raise(pid: int, sig: int) -> None:
+                raise OSError("EPERM")
+            with mock.patch.object(_runner.os, "killpg", _raise):
+                got2 = cancel_update(
+                    _KillRacesExit(), log,  # type: ignore[arg-type]
+                    grace_seconds=0.3)
+            self.assertEqual("cancel_failed", got2.kind)
+            self.assertFalse(got2.kill_issued,
+                             "全部信号调用都抛了还声称已发出")
 
     def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:
         # 未决在场 + 重试的 kill() 自身抛且标记写失败（codex 第十六轮

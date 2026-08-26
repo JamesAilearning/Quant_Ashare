@@ -292,12 +292,13 @@ class UpdateCancel:
     #: 查文件系统,调度器可在那段里拿到已释放的锁并写下接替 running,晚
     #: 采的上界会把它也框进窗内（codex 第六轮 P1）。
     exited_at: str | None = None
-    #: kill 是否**实际发出**（kill() 调用返回未抛）。cancel_failed 的两种
-    #: 失败对迟到死亡的语义相反（codex 第十轮 P2）:kill 已发但宽限窗内没
-    #: 等到 → 之后的死亡是取消导致的,可补结算;kill 调用自身抛了 → 进程
-    #: 没被碰过,之后自然跑完就是自然完成,补结算成「已强制取消」是撒谎。
-    #: POSIX 前置的 killpg 走 suppress(OSError),送达与否**证不出来**——
-    #: fail-closed 记 False（宁可孤儿等陈旧线,不把自然完成标成被杀）。
+    #: 终止信号是否**实际发出**（任一 killpg/kill() 调用成功返回——内核
+    #: 受理投递即为证明,codex 第十七轮 P2）。cancel_failed 的两种失败对
+    #: 迟到死亡的语义相反（codex 第十轮 P2）:已发但宽限窗内没等到 → 之
+    #: 后的死亡是取消导致的,可补结算;**所有**信号调用都抛了 → 进程没被
+    #: 碰过,之后自然跑完就是自然完成,补结算成「已强制取消」是撒谎。
+    #: 后备 kill() 恰与已发 SIGKILL 生效的退出竞态抛 OSError 时,组信号
+    #: 的成功返回仍算已发——不许把那次死亡当自然完成。
     kill_issued: bool = False
     #: graceful 退出后,状态工件里**核实到**本次运行的终态记录（finished
     #: 且写者 pid == 被杀句柄 pid）。SIGINT 可以落在编排器还在 import/解析
@@ -519,9 +520,19 @@ def cancel_update(
         log_path, "cancel requested: manual daily_update"
     ) and (prior_markers_written is not False)
     graceful = False
+    # POSIX 组信号的**成功返回**就是「已发出」的证明——内核已受理投递
+    # （codex 第十七轮 P2:此前 suppress 后一律当证不出,后备 process.kill()
+    # 恰与退出竞态抛 OSError 时硬编码 kill_issued=False——先前 SIGKILL 导
+    # 致的迟到死亡被当自然完成,整套迟到收尾被跳过）。只有**所有**信号调
+    # 用都抛了,才算没发出去。
+    signal_issued = False
     if sys.platform != "win32":
-        with contextlib.suppress(OSError):
+        try:
             os.killpg(process.pid, signal.SIGINT)
+        except OSError:
+            pass
+        else:
+            signal_issued = True
         deadline = time.monotonic() + grace_seconds
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -529,8 +540,12 @@ def cancel_update(
                 break
             time.sleep(0.2)
         if not graceful:
-            with contextlib.suppress(OSError):
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            else:
+                signal_issued = True
     if process.poll() is None:
         try:
             process.kill()
@@ -541,12 +556,13 @@ def cancel_update(
             markers_written = _append_cancel_marker(
                 log_path, f"cancel FAILED: kill raised {exc!r}"
             ) and markers_written
-            # kill 调用自身抛了——进程没被本函数碰到（POSIX 前置 killpg
-            # 送达与否证不出来,fail-closed）:之后它自然跑完就是自然完成,
-            # 不许被补结算成「已强制取消」（codex 第十轮 P2）。
+            # kill() 自身抛了——但 POSIX 组信号若已成功发出,死亡仍可能
+            # 是取消导致的（kill() 恰与 SIGKILL 生效的退出竞态抛错正是
+            # 常见形态）;Windows 无前置信号,此处即「没碰过进程」,之后
+            # 自然跑完就是自然完成,不许补结算成已强制取消（第十/十七轮）。
             return UpdateCancel(
                 kind="cancel_failed", error=f"终止进程失败:{exc}",
-                markers_written=markers_written, kill_issued=False)
+                markers_written=markers_written, kill_issued=signal_issued)
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:

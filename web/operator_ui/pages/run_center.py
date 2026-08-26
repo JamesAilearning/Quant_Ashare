@@ -680,6 +680,14 @@ if _live_proc is not None:
                 use_container_width=True,
             ):
                 _lp = (_live_run or {}).get("log_path") or ""
+                # 生存期候选的**取消前**观察（codex 第十七轮 P2）：取消
+                # 调用可耗满宽限窗,kill 恰在它返回之后生效——确认后的那
+                # 次观察会撞上死进程返回 None,已写出 running 的真孤儿因
+                # 无候选被拒收养、锁页六小时。此刻进程还没被碰,观察必然
+                # 落在生存期内;记录戳在写出后不变,前后观察若都成功必然
+                # 同值。
+                _own_before = observe_own_running_record(
+                    _live_proc, _provider_path)
                 # 请求时刻——迟到死亡补结算的**触发标记 + 审计戳**
                 # （codex 第八轮 P2 引入）。不再当绑定上界用：子进程可在
                 # 请求之后才写出自己的 running 记录,请求时刻上界会把真孤
@@ -747,11 +755,13 @@ if _live_proc is not None:
                     # 了,审计链仍缺头两条——补结算不得从乐观缺省重来。
                     _live_run["cancel_pending_markers_written"] = (
                         _outcome.markers_written)
-                    # 趁进程此刻可能还活着,立即观察一次它自己写的记录
-                    # 戳（codex 第十二轮 P2:迟到收养的身份候选只能在
-                    # 生存期内取——此后 watcher 每 30 秒续刷）。
+                    # 趁进程此刻可能还活着,再观察一次它自己写的记录戳
+                    # （codex 第十二轮 P2:候选只能在生存期内取——此后
+                    # watcher 每 30 秒续刷）;进程已在取消调用尾声死掉时
+                    # 用取消前那次观察兜底（第十七轮 P2:两次观察若都成
+                    # 功必然同戳,后观察只为覆盖「请求后才写出记录」）。
                     _own_now = observe_own_running_record(
-                        _live_proc, _provider_path)
+                        _live_proc, _provider_path) or _own_before
                     if _own_now:
                         _live_run["cancel_pending_own_started_at"] = _own_now
                 elif (_outcome.kind == "cancel_failed"

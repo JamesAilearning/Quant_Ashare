@@ -255,6 +255,24 @@
       （prior True + 本次标记失败 → 聚合 False）+ 页面切片三钉（验未决
       在场/写回聚合值/不新立未决身份）
 
+## codex 第十七轮（2×P2：组信号成功=已发、候选取消前先观察）
+
+- [x] P2 POSIX killpg 成功返回是「已发出」的证明（内核受理投递）——此
+      前 suppress 后一律当证不出,后备 process.kill() 恰与已发 SIGKILL
+      生效的退出竞态抛 OSError 时硬编码 kill_issued=False:首次取消不留
+      未决,先前 SIGKILL 导致的迟到死亡被当自然完成,整套迟到收尾跳过。
+      修=suppress 改 try/else 记 signal_issued（SIGINT/SIGKILL 任一成功
+      即 True）,OSError 返回路径带 signal_issued;只有**所有**信号调用
+      都抛才算没发。POSIX-only 用例（mock killpg 成功+kill 抛→True;
+      全抛→False）——本机 win32 skip,裁判是 CI ubuntu 腿
+- [x] P2 生存期候选在**取消调用之前**先观察一次——取消调用可耗满宽限
+      窗,kill 恰在返回后生效,确认后的唯一观察撞死进程返回 None:已写
+      出 running 的真孤儿无候选被拒收养、锁页六小时。修=confirm 分支
+      在请求时刻之前 `_own_before` 预观察（此刻进程没被碰,必然在生存
+      期内;记录戳写出后不变,前后观察若都成功必然同值）,失败分支
+      `_own_now or _own_before` 兜底。候选观察点 2→3 处（取消前/失败
+      后/watcher）,计数钉+源码序钉+兜底钉
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

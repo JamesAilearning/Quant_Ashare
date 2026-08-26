@@ -123,8 +123,11 @@ LIFETIME-OBSERVED exact stamp: while the pending process is still provably
 alive (alive-poll → status read → alive-poll — the pid is continuously
 held between the two polls, so it cannot have been recycled), the page
 records the `started_at` of the run's OWN `running` record (matching
-provider and pid) as the adoption candidate, refreshed at the failed
-attempt itself and on every watcher tick; settlement adopts only a record
+provider and pid) as the adoption candidate — captured immediately BEFORE
+the cancellation call (the call can consume the whole grace window and the
+kill can land right after it returns, so a confirmation-time observation
+alone races the death and can find only a corpse), refreshed after the
+failed attempt and on every watcher tick; settlement adopts only a record
 whose stamp EQUALS that candidate and whose pid equals the killed
 handle's. Neither a request-time bound nor a death-observation bound is
 admissible: the request moment rejects a genuine record the child writes
@@ -146,13 +149,15 @@ Pending context SHALL be recorded only when a kill was ACTUALLY ISSUED (the
 kill call returned without raising): the two failure modes of a cancel are
 semantically opposite for a later death — after an issued-but-unconfirmed
 kill the late death is cancellation-caused and settles as cancelled, while
-after a kill call that itself raised the process was never touched and its
-later natural completion SHALL retire as an ordinary self-completion, never
-be settled (and marked, and swap-diagnosed) as a forcible cancel that did
-not happen. The POSIX pre-signals are sent with errors suppressed, so their
-delivery is unprovable — that path SHALL count as not-issued (fail-closed:
-an orphan waiting out the staleness threshold beats labelling a natural
-completion as killed). The pending context SHALL also carry the failed
+after an attempt in which EVERY signal call raised, the process was never
+touched and its later natural completion SHALL retire as an ordinary
+self-completion, never be settled (and marked, and swap-diagnosed) as a
+forcible cancel that did not happen. A POSIX process-group signal call
+that RETURNS SUCCESS is proof of issuance — the kernel accepted delivery —
+and SHALL count as issued even when the fallback single-process kill then
+races the exit it caused and raises: hardcoding that path as not-issued
+would retire a death caused by the successfully delivered group SIGKILL
+as natural and skip the entire late epilogue. The pending context SHALL also carry the failed
 attempt's marker-audit state, and late settlement SHALL aggregate it rather
 than reset to the optimistic default: when the request/failure markers never
 reached the log, a successfully written late outcome marker does not make
@@ -310,6 +315,25 @@ one period.
 - **THEN** verification fails on the time window — the old artifact's
   stamps predate this session's launch — and the page does not claim the
   orchestrator wrote a terminal record
+
+#### Scenario: a group kill racing the fallback still counts as issued
+
+- **GIVEN** a POSIX cancel whose group SIGKILL returned success, with the
+  fallback single-process kill racing the exit it caused and raising
+- **WHEN** the attempt returns as failed and the process dies late
+- **THEN** the attempt counts the kill as issued, pending context is
+  recorded, and the late death settles with the full epilogue instead of
+  retiring as a natural completion
+
+#### Scenario: a candidate observed before the cancel survives the race
+
+- **GIVEN** a run whose `running` record stands, with a timed-out kill
+  finishing in the interval after the cancel call returns but before the
+  page's post-attempt observation
+- **WHEN** the pending settlement later binds the evidence
+- **THEN** the pre-cancel lifetime observation supplies the candidate, the
+  genuine orphan is adopted, and relaunches are not blocked to the
+  staleness threshold
 
 #### Scenario: a failed kill call does not turn a natural finish into a cancel
 
