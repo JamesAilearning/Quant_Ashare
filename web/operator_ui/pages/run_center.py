@@ -692,7 +692,12 @@ if _live_proc is not None:
                     # graceful 终态核实的时间窗下界（codex 第十一轮
                     # P2：纯 pid 会把复用同 pid 的陈年 finished 工件核
                     # 实成本次终态）。
-                    launched_at=(_live_run or {}).get("launched_at"))
+                    launched_at=(_live_run or {}).get("launched_at"),
+                    # 上一次失败尝试的标记状态,跨重试聚合（codex 第十五
+                    # 轮 P2）:先前的审计缺口不因本次重试写成而消失,存量
+                    # False 也不被本次 True 覆盖——聚合在取消边界单点做。
+                    prior_markers_written=(_live_run or {}).get(
+                        "cancel_pending_markers_written"))
                 if (_outcome.kind == "already_finished"
                         and isinstance(_live_run, dict)
                         and _live_run.get("cancel_pending_at")):

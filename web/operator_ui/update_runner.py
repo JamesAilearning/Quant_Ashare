@@ -480,8 +480,15 @@ def cancel_update(
     provider_dir: Path | None = None,
     grace_seconds: float = _CANCEL_GRACE_SECONDS,
     launched_at: str | None = None,
+    prior_markers_written: bool | None = None,
 ) -> UpdateCancel:
     """受控取消一次**本会话启动的**手动更新。
+
+    ``prior_markers_written``:**上一次**失败尝试的标记落盘结果（未决上
+    下文携带;None=没有上一次）。跨重试聚合（codex 第十五轮 P2）:首次
+    kill 超时且标记写失败,日志随后恢复可写、重试成功终止——只报本次的
+    True 会把先前那次活取消的审计缺口静默洗掉;同理再次超时也不得用本次
+    True 覆盖存量 False。聚合在本边界单点做,所有返回路径自动携带。
 
     只接受活的 ``Popen`` 句柄——绝不按 pid 杀（pid 会被系统回收复用，
     按数字杀可能命中无关进程）；调度器的自动运行不是本 UI 的子进程、
@@ -509,7 +516,8 @@ def cancel_update(
         return UpdateCancel(
             kind="already_finished", returncode=process.returncode)
     markers_written = _append_cancel_marker(
-        log_path, "cancel requested: manual daily_update")
+        log_path, "cancel requested: manual daily_update"
+    ) and (prior_markers_written is not False)
     graceful = False
     if sys.platform != "win32":
         with contextlib.suppress(OSError):

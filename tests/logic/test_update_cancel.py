@@ -797,6 +797,64 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("markers_written=_late_markers", page,
                       "种子没递进补结算边界")
 
+    def test_audit_failures_survive_cancellation_retries(self) -> None:
+        # 跨重试聚合（codex 第十五轮 P2）：首次 kill 超时且标记写失败,
+        # 日志恢复可写、重试成功终止——只报本次 True 会把先前那次活取消
+        # 的审计缺口静默洗掉;再次超时也不得用本次 True 覆盖存量 False。
+        # 聚合在取消边界单点做,警告消费的是**完整审计链**的状态。
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                log = Path(t) / "log.log"
+                got = cancel_update(proc, log, grace_seconds=3,
+                                    prior_markers_written=False)
+                self.assertEqual("cancelled", got.kind)
+                self.assertIn("cancel outcome",
+                              log.read_text(encoding="utf-8"),
+                              "本次标记确实写成了——聚合前提")
+                self.assertFalse(got.markers_written,
+                                 "先前的审计缺口被本次重试洗掉了")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        # 无先前缺口（None/True）不误伤本次结果。
+        for prior in (None, True):
+            proc2 = _spawn(_SLEEPER)
+            try:
+                time.sleep(0.5)
+                with tempfile.TemporaryDirectory() as t:
+                    got = cancel_update(
+                        proc2, Path(t) / "log.log", grace_seconds=3,
+                        prior_markers_written=prior)
+                    self.assertTrue(got.markers_written,
+                                    f"prior={prior} 误伤了本次聚合")
+            finally:
+                if proc2.poll() is None:
+                    proc2.kill()
+        # 再次超时同样不得洗白存量 False。
+        class _Survivor:
+            pid = 999998
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                pass
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+        with tempfile.TemporaryDirectory() as t:
+            got = cancel_update(
+                _Survivor(), Path(t) / "log.log",  # type: ignore[arg-type]
+                grace_seconds=0.5, prior_markers_written=False)
+            self.assertEqual("cancel_failed", got.kind)
+            self.assertFalse(got.markers_written,
+                             "再超时把存量 False 覆盖成 True 了")
+        # 页面接线：confirm 分支把未决上下文里的标记状态递进取消边界。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('prior_markers_written=(_live_run or {}).get(', page,
+                      "重试没带上一次的标记状态")
+
     def test_a_graceful_claim_needs_a_verified_terminal_record(self) -> None:
         # 「编排器自己写下了终态记录」不许从**及时退出**推断（codex 第十
         # 轮 P2）：SIGINT 可落在 import/解析配置/拿锁阶段,终录路径尚未

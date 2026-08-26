@@ -157,7 +157,12 @@ attempt's marker-audit state, and late settlement SHALL aggregate it rather
 than reset to the optimistic default: when the request/failure markers never
 reached the log, a successfully written late outcome marker does not make
 the audit trail complete, and the settled result SHALL keep reporting the
-gap.
+gap. The same aggregation SHALL apply to every RETRY of the cancel while
+pending context stands: a retry that terminates the process with its own
+markers written still reports the audit trail as incomplete when the
+earlier live attempt's markers were lost, and a repeated timeout never
+overwrites a stored marker failure with the newer attempt's success — the
+warning speaks for the WHOLE audit chain, not the latest attempt.
 
 A graceful outcome's claim that the orchestrator wrote its own terminal
 record SHALL be VERIFIED, never inferred from timely process death: the
@@ -308,6 +313,16 @@ one period.
 - **THEN** no late settlement runs — no cancel outcome, no late-exit
   marker, no swap diagnosis — and the run's own status artifact speaks
   for its completion
+
+#### Scenario: a retry's success does not erase the first attempt's audit gap
+
+- **GIVEN** a first cancel whose kill timed out with its markers unwritten,
+  followed by the log becoming writable again
+- **WHEN** a retry terminates the process with its own markers written —
+  or times out again with markers written
+- **THEN** the outcome still reports the audit trail as incomplete and the
+  page still warns — the earlier live attempt remains unaudited regardless
+  of the newer attempt's marker success
 
 #### Scenario: a late settlement does not erase a lost audit trail
 
