@@ -14,7 +14,7 @@
 - [x] **提速**:那条 38.8 分钟的用例改后耗时
 - [x] `tests/logic/factor_mining/` 全量 + governance + mypy/ruff
 - [x] `openspec validate --strict`
-- [ ] codex CLEAN + CI 绿 → STOP 等 merge
+- [x] codex CLEAN + CI 绿 → STOP 等 merge（#452 已合并进 main）
 
 ## 实测数字（原样）
 
