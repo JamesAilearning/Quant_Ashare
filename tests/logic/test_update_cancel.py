@@ -405,6 +405,39 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("swap_state_unknown", page)
         self.assertIn("无法核实", page, "unknown 缺页面警告")
 
+    def test_the_exit_bound_comes_from_the_cancel_boundary(self) -> None:
+        # 上界必须在**确认死亡当刻**采样并由取消边界返回——死亡确认后
+        # cancel_update 还要写标记/查文件系统,调度器可在那段拿到已释放的
+        # 锁写接替 running,页面晚采会把它框进窗（codex 第六轮 P1）。
+        from datetime import datetime
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                before = datetime.now().astimezone()
+                got = cancel_update(
+                    proc, Path(t) / "log.log", grace_seconds=3)
+                after = datetime.now().astimezone()
+            self.assertEqual("cancelled", got.kind)
+            self.assertIsNotNone(got.exited_at, "取消边界没返回死亡时刻")
+            stamp = datetime.fromisoformat(got.exited_at or "")
+            self.assertTrue(before <= stamp <= after,
+                            "exited_at 不在取消执行区间内")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        # 页面接线：上界用取消边界返回值；下界在 spawn 之前采样（源码序
+        # 钉：前采行必须先于 launch 调用出现）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("_killed_at = _outcome.exited_at", page,
+                      "上界没改用取消边界的死亡时刻")
+        pre = page.index("_pre_launch_at = datetime.now")
+        launch = page.index("_launch = launch_daily_update(")
+        self.assertLess(pre, launch, "下界没有在 spawn 之前采样")
+        self.assertIn('"launched_at": _pre_launch_at', page,
+                      "会话下界没用前采时刻")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。

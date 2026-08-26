@@ -48,7 +48,12 @@ the [session-launch, kill-completion] window — the single-flight lock
 releases with the process, so a scheduler run can start and write its own
 `running` record between the kill and the reread, and adopting it by
 provider+kind alone would label a live run as cancelled and unlock both
-launch gates.
+launch gates. Both bounds SHALL be captured at their tight edges: the
+lower bound BEFORE the spawn call (the child can write its record before a
+post-spawn timestamp), and the upper bound AT the moment the cancellation
+boundary confirms the process dead — not after it returns, since the
+boundary still writes markers and inspects the filesystem afterwards and a
+replacement run can start inside that tail.
 
 When the post-cancel swap-state inspection itself fails (volume gone,
 permissions, I/O error), the outcome SHALL report the state as UNKNOWN —

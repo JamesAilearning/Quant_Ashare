@@ -287,6 +287,11 @@ class UpdateCancel:
     #: 静默当健康会让 graceful 文案在未核实时声称「在线数据未受影响」
     #: （codex 第五轮 P2）——unknown 是第三态,不是 False。
     swap_state_unknown: bool = False
+    #: 进程**确认死亡的当刻**（ISO,+08:00）。证据时间绑定的上界必须取在
+    #: 这里而不是 cancel_update 返回之后——确认死亡后本函数还要写标记、
+    #: 查文件系统,调度器可在那段里拿到已释放的锁并写下接替 running,晚
+    #: 采的上界会把它也框进窗内（codex 第六轮 P1）。
+    exited_at: str | None = None
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -431,6 +436,7 @@ def cancel_update(
                 kind="cancel_failed",
                 error="进程在宽限窗内未退出;请用任务管理器核查后重试",
                 markers_written=markers_written)
+    exited_at = datetime.now(tz=_CN_TZ).isoformat()
     markers_written = _append_cancel_marker(
         log_path,
         "cancel outcome: process exited "
@@ -471,7 +477,7 @@ def cancel_update(
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
         swap_interrupted=swap_interrupted, markers_written=markers_written,
-        swap_state_unknown=swap_state_unknown)
+        swap_state_unknown=swap_state_unknown, exited_at=exited_at)
 
 
 def default_log_path(provider_dir: Path) -> Path:

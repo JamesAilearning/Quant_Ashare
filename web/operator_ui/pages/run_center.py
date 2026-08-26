@@ -470,6 +470,11 @@ if _launch_clicked and _session_run_alive:
         "本会话已有一次手动更新在飞——先取消它或等它结束，再启动新的。"
     )
 elif _launch_clicked:
+    # 证据时间绑定的**下界**必须在派生调用之前采样：子进程可能在派生
+    # 返回后、我们记时之前就写下 running 记录——晚采的下界会把真被杀的
+    # 运行判成「launch 之前的旧记录」拒绑，孤儿照样锁页六小时
+    # （codex 第六轮 P1；本页零派生，动作全在 audited runner 里）。
+    _pre_launch_at = datetime.now(tz=_CN_TZ).isoformat()
     _launch = launch_daily_update(
         _provider_path, _tushare_dir, _update_registry,
         start_date=_start_input.strip() or None,
@@ -498,10 +503,9 @@ elif _launch_clicked:
         st.session_state[_LIVE_RUN_KEY] = {
             "process": _launch.process,
             "log_path": str(_launch.log_path) if _launch.log_path else "",
-            # 证据时间绑定的下界（codex 第五轮 P1）：被杀那次的
-            # started_at 必然 ≥ 本时刻——接替它的调度器运行则必然在
-            # 杀死之后起跑。
-            "launched_at": datetime.now(tz=_CN_TZ).isoformat(),
+            # 证据时间绑定的下界（codex 第五/六轮 P1）：**spawn 之前**
+            # 采样——子进程写 running 永远晚于它。
+            "launched_at": _pre_launch_at,
         }
     st.rerun()
 
@@ -572,7 +576,10 @@ if _live_proc is not None:
                     "swap_state_unknown": _outcome.swap_state_unknown,
                     "evidence_stored": False,
                 }
-                _killed_at = datetime.now(tz=_CN_TZ).isoformat()
+                # 上界由取消边界在**确认死亡当刻**返回（codex 第六轮
+                # P1）：cancel_update 死亡确认后还要写标记/查文件系统，
+                # 页面此刻再采时间会把那段里起跑的调度器接替也框进窗。
+                _killed_at = _outcome.exited_at
                 if _outcome.kind in ("cancelled", "already_finished"):
                     # 只有确认终局才交出句柄——cancel_failed 时进程可能
                     # 还活着,句柄是唯一合法取消凭据,丢了就只剩任务管理
