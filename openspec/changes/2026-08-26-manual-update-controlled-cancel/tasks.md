@@ -144,6 +144,32 @@
 - [x] 锚串两处随第九轮更新（_watching 表达式、补结算切片锚避开 confirm
       分支的「迟到死亡补结算的时间上界」字样）,断言意图一字未动
 
+## codex 第十轮（3×P2：kill 已发才可补结算、审计缺口不许洗白、graceful 声称要核实）
+
+- [x] P2 kill 未发的失败不许迟到补结算——kill() 抛了=进程没被碰过,之后
+      自然跑完就是自然完成,补结算成「已强制取消」+落迟到标记+做 swap 诊
+      断全是撒谎。UpdateCancel 增 `kill_issued`（OSError 路径 False,超时
+      路径 True;POSIX 前置 killpg 走 suppress 送达证不出来,fail-closed
+      记 False——宁可孤儿等陈旧线不把自然完成标成被杀）;页面未决上下文
+      只在 kill_issued 时留。真值双存根 + 变异翻 False→True 咬住
+- [x] P2 迟到补结算不得洗白原失败的审计缺口——请求/失败标记当时没落盘,
+      日志恢复可写后迟到结局标记写成,审计链仍缺头两条。未决上下文携带
+      `cancel_pending_markers_written`,settle_late_cancel 收种子聚合而非
+      重置（缺键 fail-closed=False:证不出完整就不声称）。行为用例（种子
+      False+迟到标记写成→仍 False）+ 变异硬编码 True 咬住
+- [x] P2 graceful 的「编排器自己写下了终态记录」要**核实**不要从及时退
+      出推断——SIGINT 可落在 import/解析配置/拿锁阶段,终录路径尚未就位,
+      进程照样宽限窗内退出而工件缺失/陈旧/仍 running。新 helper
+      `terminal_record_confirms_the_run`（finished 且写者 pid == 被杀句
+      柄 pid,复用第九轮身份判据;None/无 pid/running/损坏全 False）;
+      UpdateCancel 增 `terminal_recorded`（硬杀恒 False）;页面核实版才
+      说终态已写（文案注明已核实）,未核实的 graceful 与硬杀同走孤儿收养
+      （收养条件从 `not graceful` 改为 `not terminal_recorded`——SIGINT
+      落在 running 写后/终录前同样留孤儿）,措辞如实区分。真值表 + POSIX
+      腿负断言 + 变异去 pid 合取咬住
+- [x] 锚串一处随第十轮更新（graceful 文案切片锚避开 _mode 字符串的裸词
+      首现）,断言意图一字未动
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

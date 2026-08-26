@@ -292,6 +292,19 @@ class UpdateCancel:
     #: 查文件系统,调度器可在那段里拿到已释放的锁并写下接替 running,晚
     #: 采的上界会把它也框进窗内（codex 第六轮 P1）。
     exited_at: str | None = None
+    #: kill 是否**实际发出**（kill() 调用返回未抛）。cancel_failed 的两种
+    #: 失败对迟到死亡的语义相反（codex 第十轮 P2）:kill 已发但宽限窗内没
+    #: 等到 → 之后的死亡是取消导致的,可补结算;kill 调用自身抛了 → 进程
+    #: 没被碰过,之后自然跑完就是自然完成,补结算成「已强制取消」是撒谎。
+    #: POSIX 前置的 killpg 走 suppress(OSError),送达与否**证不出来**——
+    #: fail-closed 记 False（宁可孤儿等陈旧线,不把自然完成标成被杀）。
+    kill_issued: bool = False
+    #: graceful 退出后,状态工件里**核实到**本次运行的终态记录（finished
+    #: 且写者 pid == 被杀句柄 pid）。SIGINT 可以落在编排器还在 import/解析
+    #: 配置/拿锁的阶段——终录路径尚未就位,及时退出证明不了终态写了
+    #: （codex 第十轮 P2）;页面只有在这里为 True 时才许声称「编排器自己
+    #: 写下了终态记录」。硬杀恒 False。
+    terminal_recorded: bool = False
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -370,6 +383,28 @@ def evidence_binds_to_killed_run(
     return launched <= record <= killed
 
 
+def terminal_record_confirms_the_run(
+    provider_dir: Path | None, pid: int,
+) -> bool:
+    """状态工件里是否有**本次运行自己写下的**终态记录。
+
+    graceful 的「编排器自己写下了终态记录」不许从**及时退出**推断
+    （codex 第十轮 P2）:SIGINT 可以落在编排器还在 import/解析配置/拿单飞
+    锁的阶段——终录路径尚未就位,进程照样在宽限窗内体面退出,而工件此刻
+    要么缺失、要么还是**上一次**运行的记录。核实=finished 且写者 pid ==
+    被杀句柄 pid（复用第九轮的进程身份判据）;旧记录无 pid / 记录还是
+    running / 工件缺失或损坏,一律 False——证不出来就不声称。
+    """
+    if provider_dir is None:
+        return False
+    try:
+        status = read_update_status(status_path_for_provider(provider_dir))
+    except ValueError:
+        # 文件系统根这类推导不出状态路径的 provider——证不出来。
+        return False
+    return status.kind == "finished" and status.pid == pid
+
+
 def cancelled_run_matches(
     status_started_at: str | None, evidence_started_at: str | None,
 ) -> bool:
@@ -443,9 +478,12 @@ def cancel_update(
             markers_written = _append_cancel_marker(
                 log_path, f"cancel FAILED: kill raised {exc!r}"
             ) and markers_written
+            # kill 调用自身抛了——进程没被本函数碰到（POSIX 前置 killpg
+            # 送达与否证不出来,fail-closed）:之后它自然跑完就是自然完成,
+            # 不许被补结算成「已强制取消」（codex 第十轮 P2）。
             return UpdateCancel(
                 kind="cancel_failed", error=f"终止进程失败:{exc}",
-                markers_written=markers_written)
+                markers_written=markers_written, kill_issued=False)
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
@@ -453,10 +491,12 @@ def cancel_update(
                 log_path,
                 "cancel FAILED: process survived kill within grace window"
             ) and markers_written
+            # kill 已发出（kill() 返回未抛）,只是宽限窗内没等到死亡——
+            # 之后的死亡是取消导致的,迟到补结算成立。
             return UpdateCancel(
                 kind="cancel_failed",
                 error="进程在宽限窗内未退出;请用任务管理器核查后重试",
-                markers_written=markers_written)
+                markers_written=markers_written, kill_issued=True)
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
         graceful=graceful, markers_written=markers_written, late=False)
@@ -467,6 +507,7 @@ def settle_late_cancel(
     log_path: Path | None,
     *,
     provider_dir: Path | None = None,
+    markers_written: bool = True,
 ) -> UpdateCancel:
     """``cancel_failed`` 之后进程**迟到死亡**的补结算边界。
 
@@ -478,6 +519,11 @@ def settle_late_cancel(
 
     只接受**已死**的进程:死亡是单调的（``poll()`` 非 None 后不会翻回）,
     活进程到这儿是调用方编程错误,fail-loud 而非静默装作结算过。
+
+    ``markers_written``:**原失败尝试**的标记落盘结果（codex 第十轮 P2）。
+    请求/失败标记当时没写进去,日志之后恢复可写、迟到结局标记写成了——
+    审计链**仍然**缺了头两条,从乐观缺省重来会把这次结算谎报成审计完整。
+    调用方从未决上下文里把它带回来,这里聚合而非重置。
     """
     if process.poll() is None:
         raise ValueError(
@@ -485,7 +531,7 @@ def settle_late_cancel(
             "cancel_update")
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
-        graceful=False, markers_written=True, late=True)
+        graceful=False, markers_written=markers_written, late=True)
 
 
 def _confirmed_death_outcome(
@@ -557,10 +603,16 @@ def _confirmed_death_outcome(
                 "cancel landed inside the SWAP WINDOW: canonical provider "
                 "dir is missing; run the update again — startup repair "
                 "restores it") and markers_written
+    # graceful 的终态声称要**核实**不要推断（codex 第十轮 P2）:进程死了,
+    # 它的记录不会再变,此刻读是安全的。硬杀恒 False（不读——被强杀的进程
+    # 写没写终态由页面的重读收养链自己回答）。
+    terminal_recorded = graceful and terminal_record_confirms_the_run(
+        provider_dir, process.pid)
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
         swap_interrupted=swap_interrupted, markers_written=markers_written,
-        swap_state_unknown=swap_state_unknown, exited_at=exited_at)
+        swap_state_unknown=swap_state_unknown, exited_at=exited_at,
+        kill_issued=True, terminal_recorded=terminal_recorded)
 
 
 def default_log_path(provider_dir: Path) -> Path:

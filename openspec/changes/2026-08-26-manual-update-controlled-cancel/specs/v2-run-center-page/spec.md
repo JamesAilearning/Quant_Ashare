@@ -124,6 +124,39 @@ the swap's two renames must surface the loud repair instruction, never be
 retired as a clean cancellation. The shared epilogue SHALL be one
 implementation, not a re-transcription that can drift.
 
+Pending context SHALL be recorded only when a kill was ACTUALLY ISSUED (the
+kill call returned without raising): the two failure modes of a cancel are
+semantically opposite for a later death — after an issued-but-unconfirmed
+kill the late death is cancellation-caused and settles as cancelled, while
+after a kill call that itself raised the process was never touched and its
+later natural completion SHALL retire as an ordinary self-completion, never
+be settled (and marked, and swap-diagnosed) as a forcible cancel that did
+not happen. The POSIX pre-signals are sent with errors suppressed, so their
+delivery is unprovable — that path SHALL count as not-issued (fail-closed:
+an orphan waiting out the staleness threshold beats labelling a natural
+completion as killed). The pending context SHALL also carry the failed
+attempt's marker-audit state, and late settlement SHALL aggregate it rather
+than reset to the optimistic default: when the request/failure markers never
+reached the log, a successfully written late outcome marker does not make
+the audit trail complete, and the settled result SHALL keep reporting the
+gap.
+
+A graceful outcome's claim that the orchestrator wrote its own terminal
+record SHALL be VERIFIED, never inferred from timely process death: the
+polite signal can land while the orchestrator is still importing modules,
+parsing configuration, or acquiring the single-flight lock — before its
+terminal-record path is armed — and the process still exits within the
+grace window while the artifact stays missing, stale, or still `running`.
+Verification SHALL require the status artifact to show a `finished` record
+whose writer pid equals the killed handle's pid (the same process identity
+the adoption uses); anything else — a running record, a pid-less record, a
+missing or corrupt artifact, an unverifiable provider — SHALL read as
+not-confirmed. A graceful exit WITHOUT a confirmed terminal record SHALL
+flow through the same orphan-adoption presentation as a forcible kill
+(worded honestly as a polite exit whose terminal record was not confirmed),
+because such an exit can leave the same orphaned `running` record a hard
+kill leaves.
+
 While a cancellation is pending, the page SHALL watch the retained handle
 itself and settle AUTOMATICALLY when it exits: after a hard kill the status
 signature and the log progress can both stay frozen, so a watcher comparing
@@ -199,6 +232,35 @@ operator sees.
 - **THEN** it performs the same strict swap-state inspection as an
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: a failed kill call does not turn a natural finish into a cancel
+
+- **GIVEN** a cancel attempt whose kill call itself raised, leaving the
+  process untouched
+- **WHEN** that process later finishes naturally and the page retires the
+  handle
+- **THEN** no late settlement runs — no cancel outcome, no late-exit
+  marker, no swap diagnosis — and the run's own status artifact speaks
+  for its completion
+
+#### Scenario: a late settlement does not erase a lost audit trail
+
+- **GIVEN** a failed cancel whose request/failure markers could not be
+  written, followed by the log becoming writable again
+- **WHEN** the late settlement writes its outcome marker successfully
+- **THEN** the settled result still reports the audit trail as incomplete
+  and the page still warns about the missing markers
+
+#### Scenario: a graceful exit without a terminal record is not overclaimed
+
+- **GIVEN** a POSIX cancel whose SIGINT lands before the orchestrator's
+  terminal-record path is armed, with the process exiting inside the grace
+  window
+- **WHEN** the page presents the outcome
+- **THEN** it does not claim the orchestrator wrote a terminal record —
+  the claim requires a verified `finished` record whose writer pid matches
+  the killed handle — and any orphaned `running` record the run left is
+  adopted and corrected exactly like a forcible cancel's
 
 #### Scenario: a pending cancellation settles without operator interaction
 

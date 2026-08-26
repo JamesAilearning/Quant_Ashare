@@ -562,9 +562,16 @@ if _live_proc is not None and _live_proc.poll() is not None:
         # 走共享的补结算边界:结局标记 + 严格 swap 检查 + unknown 三态。
         _late_lp = (
             _live_run.get("log_path") if isinstance(_live_run, dict) else "")
+        # 原失败尝试的标记状态从未决上下文带回（codex 第十轮 P2）：请求/
+        # 失败标记当时没落盘的话,审计链缺口不因迟到结局标记写成而消失。
+        # 缺键按 False 走（fail-closed:证不出审计完整就不声称）。
+        _late_markers = bool(
+            _live_run.get("cancel_pending_markers_written", False)
+            if isinstance(_live_run, dict) else False)
         _late_outcome = settle_late_cancel(
             _live_proc, Path(_late_lp) if _late_lp else None,
-            provider_dir=_provider_path)
+            provider_dir=_provider_path,
+            markers_written=_late_markers)
         # 证据落盘（时间上界=当时的请求时刻:被杀那次的 started_at 必早
         # 于请求,接替者必晚于真实死亡>请求;绑定另要求记录 pid == 被杀
         # 句柄 pid——时间窗内起跑的夺锁调度器不是被杀的那个进程,身份
@@ -595,6 +602,7 @@ if _live_proc is not None and _live_proc.poll() is not None:
             "swap_interrupted": _late_outcome.swap_interrupted,
             "markers_written": _late_outcome.markers_written,
             "swap_state_unknown": _late_outcome.swap_state_unknown,
+            "terminal_recorded": _late_outcome.terminal_recorded,
             "evidence_stored": _late_evidence,
         }
         st.session_state.pop(_LIVE_RUN_KEY, None)
@@ -652,6 +660,7 @@ if _live_proc is not None:
                     "swap_interrupted": _outcome.swap_interrupted,
                     "markers_written": _outcome.markers_written,
                     "swap_state_unknown": _outcome.swap_state_unknown,
+                    "terminal_recorded": _outcome.terminal_recorded,
                     "evidence_stored": False,
                 }
                 # 上界由取消边界在**确认死亡当刻**返回（codex 第六轮
@@ -664,15 +673,29 @@ if _live_proc is not None:
                     # 器（codex #470 P2）。
                     st.session_state.pop(_LIVE_RUN_KEY, None)
                 elif (_outcome.kind == "cancel_failed"
+                        and _outcome.kill_issued
                         and isinstance(_live_run, dict)):
                     # 取消未决上下文（codex 第八轮 P2）：kill 已发、宽限
                     # 窗内没等到——进程可能在返回之后才迟到死亡。退役块
                     # 凭这个标记补结算证据,否则迟到死亡被当自然完成、孤
                     # 儿 running 无证据锁页六小时。
+                    # 只在 kill **实际发出**时才留（codex 第十轮 P2）：
+                    # kill 调用自身抛了=进程没被碰过,之后自然跑完就是
+                    # 自然完成,补结算成「已强制取消」是撒谎——那种失败
+                    # 走普通退役,状态工件自述。
                     _live_run["cancel_pending_at"] = _cancel_requested_at
-                if _outcome.kind == "cancelled" and not _outcome.graceful:
-                    # 硬杀成功:running 记录不会再有终态——按状态戳存持久
-                    # 证据,跨 rerun 更正呈现并解锁启动闸（codex P1）。
+                    # 原失败尝试的标记落盘结果一并携带（codex 第十轮
+                    # P2）：请求/失败标记当时没写进去,迟到结局标记写成
+                    # 了,审计链仍缺头两条——补结算不得从乐观缺省重来。
+                    _live_run["cancel_pending_markers_written"] = (
+                        _outcome.markers_written)
+                if (_outcome.kind == "cancelled"
+                        and not _outcome.terminal_recorded):
+                    # 进程死了且**没有核实到**它写下终态——硬杀必然如此;
+                    # graceful 也可能如此（SIGINT 落在终录路径就位之前,
+                    # 若它已写 running 就同样留下孤儿——codex 第十轮
+                    # P2）。两者同走孤儿收养:按状态戳存持久证据,跨
+                    # rerun 更正呈现并解锁启动闸（codex P1）。
                     # 戳必须在进程终止后**重读**:子进程可能在页面顶部那次
                     # 读取之后才写下它的 running 记录,拿页首快照会存下前
                     # 一次运行的旧戳,下一轮精确匹配落空、证据被当场退役,
@@ -720,29 +743,38 @@ if isinstance(_last_cancel, dict):
             "状态与台账为准。"
         )
     elif _last_cancel.get("kind") == "cancelled":
-        if _last_cancel.get("graceful"):
+        # 「编排器自己写下了终态记录」只许在**核实到**时说（finished 且
+        # 写者 pid 属本次运行——codex 第十轮 P2）：SIGINT 可落在编排器
+        # 还在 import/解析配置/拿锁的阶段,终录路径尚未就位,及时退出证明
+        # 不了终态写了。没核实到的 graceful 与硬杀同走孤儿收养呈报,措辞
+        # 如实区分。
+        _mode = ("礼貌信号生效、但未核实到编排器写下终态记录"
+                 if _last_cancel.get("graceful") else "强制终止")
+        if (_last_cancel.get("graceful")
+                and _last_cancel.get("terminal_recorded")):
             st.success(
-                "已取消（礼貌信号生效）：编排器自己写下了终态记录，状态"
-                "与台账如实可查。"
+                "已取消（礼貌信号生效）：编排器自己写下了终态记录（已核"
+                "实：finished 且写者 pid 属本次运行），状态与台账如实"
+                "可查。"
                 + ("" if (_last_cancel.get("swap_interrupted")
                           or _last_cancel.get("swap_state_unknown"))
                    else "在线数据未受影响。")
             )
         elif _last_cancel.get("evidence_stored"):
             st.success(
-                "已取消（强制终止，returncode="
+                f"已取消（{_mode}，returncode="
                 f"{_last_cancel.get('returncode')}）。"
-                "**状态工件仍标 running**——被强杀的进程没有机会写终态，"
+                "**状态工件仍标 running**——该进程没有写下终态记录，"
                 "本页将持续按「已取消」如实标注（跨刷新有效），启动按钮"
                 "已解锁；单飞锁已自动释放，下次更新照常。"
             )
         else:
-            # 进程在写下自己的 running 记录之前就被终止（或记录已是前次
-            # 终态）——没有孤儿要更正，也没有证据可存；上面那套「将持续
+            # 进程在写下自己的 running 记录之前就被终止（或记录已是别次
+            # 运行的）——没有孤儿要更正，也没有证据可存；上面那套「将持续
             # 标注/已解锁」的话在这种情形下会与下一次 rerun 矛盾
             # （codex 第四轮 P2）。按状态工件如实展示即可。
             st.success(
-                "已取消（强制终止，returncode="
+                f"已取消（{_mode}，returncode="
                 f"{_last_cancel.get('returncode')}）。状态工件此刻没有该"
                 "运行的 running 记录（进程在写下记录前即被终止）——无需"
                 "更正标注，页面按状态工件如实展示；单飞锁已自动释放，"

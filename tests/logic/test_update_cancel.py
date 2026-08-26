@@ -119,6 +119,10 @@ class CancelOutcomesAreHonest(unittest.TestCase):
                 self.assertEqual("sigint",
                                  marker.read_text(encoding="utf-8"),
                                  "子进程没收到 KeyboardInterrupt")
+                # 及时退出 ≠ 终态已写（codex 第十轮 P2）：这个小子进程
+                # 根本不写状态工件——核实不到就必须是 False。
+                self.assertFalse(got.terminal_recorded,
+                                 "没有终态记录却声称核实到了")
             finally:
                 if proc.poll() is None:
                     proc.kill()
@@ -283,7 +287,9 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
         self.assertIn('if _last_cancel.get("swap_interrupted")', page)
-        graceful_block = page.split("礼貌信号生效")[1][:400]
+        # 锚串随第十轮更新（graceful 前多了 _mode 字符串,裸词首现挪了
+        # 位）：切在核实版成功文案上,断言意图一字未动。
+        graceful_block = page.split("已取消（礼貌信号生效）")[1][:400]
         self.assertIn("swap_interrupted", graceful_block,
                       "graceful 文案没有以切换窗为条件")
 
@@ -582,6 +588,127 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("record_pid=_late_status.pid", page)
         self.assertEqual(2, page.count("killed_pid=_live_proc.pid"),
                          "两处收养的句柄侧 pid 不齐")
+
+    def test_late_settlement_needs_an_actually_issued_kill(self) -> None:
+        # cancel_failed 的两种失败对迟到死亡语义相反（codex 第十轮 P2）：
+        # kill() 抛了=进程没被碰过,之后自然跑完就是自然完成,补结算成
+        # 「已强制取消」是撒谎;kill 已发只是宽限窗没等到=之后的死亡是取
+        # 消导致的。真值：OSError 路径 kill_issued=False,超时路径=True。
+        class _KillRaises:
+            pid = 999999
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                raise OSError("denied")
+            def wait(self, timeout=None):
+                raise AssertionError("不应走到 wait")
+        class _Survivor:
+            pid = 999998
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                pass  # kill 发出成功
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            raised = cancel_update(
+                _KillRaises(), log,  # type: ignore[arg-type]
+                grace_seconds=0.5)
+            self.assertEqual("cancel_failed", raised.kind)
+            self.assertFalse(raised.kill_issued,
+                             "kill 没发出去却声称已发")
+            survived = cancel_update(
+                _Survivor(), log,  # type: ignore[arg-type]
+                grace_seconds=0.5)
+            self.assertEqual("cancel_failed", survived.kind)
+            self.assertTrue(survived.kill_issued,
+                            "kill 已发的超时失败没标 kill_issued")
+        # 页面接线：未决上下文只在 kill_issued 时留。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("and _outcome.kill_issued", page,
+                      "未决上下文没有以 kill 已发为条件")
+
+    def test_late_settlement_carries_the_audit_failure_state(self) -> None:
+        # 原失败尝试的请求/失败标记没落盘,日志之后恢复可写、迟到结局标
+        # 记写成了——审计链仍缺头两条,从乐观缺省重来会谎报审计完整
+        # （codex 第十轮 P2）。种子聚合而非重置。
+        from web.operator_ui.update_runner import settle_late_cancel
+        proc = _spawn("pass")
+        proc.wait(timeout=30)
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            got = settle_late_cancel(proc, log, markers_written=False)
+            self.assertEqual("cancelled", got.kind)
+            self.assertIn("exited late", log.read_text(encoding="utf-8"),
+                          "迟到结局标记应照常写")
+            self.assertFalse(got.markers_written,
+                             "原失败的审计缺口被乐观缺省洗掉了")
+        # 页面接线：种子从未决上下文带回,缺键 fail-closed。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('"cancel_pending_markers_written"] = (', page,
+                      "失败时没存标记状态")
+        self.assertIn('get("cancel_pending_markers_written", False)', page,
+                      "补结算没带回标记种子（或缺键不是 fail-closed）")
+        self.assertIn("markers_written=_late_markers", page,
+                      "种子没递进补结算边界")
+
+    def test_a_graceful_claim_needs_a_verified_terminal_record(self) -> None:
+        # 「编排器自己写下了终态记录」不许从**及时退出**推断（codex 第十
+        # 轮 P2）：SIGINT 可落在 import/解析配置/拿锁阶段,终录路径尚未
+        # 就位。核实=finished 且写者 pid == 被杀句柄 pid。
+        import json
+
+        from web.operator_ui.update_runner import (
+            terminal_record_confirms_the_run,
+        )
+        from web.operator_ui.update_status import status_path_for_provider
+        import os as _os
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            base = {
+                "schema_version": 1, "state": "finished",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": "2026-08-27",
+                "started_at": "2026-08-27T09:00:00+08:00",
+                "finished_at": "2026-08-27T09:01:00+08:00",
+                "exit_code": 1, "failed_stage": "exception",
+                "detail": "KeyboardInterrupt",
+            }
+            sp = status_path_for_provider(provider)
+            # 工件缺失：证不出来。
+            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+            # finished 且 pid 属本次运行：核实成立。
+            sp.write_text(json.dumps({**base, "pid": 77}), encoding="utf-8")
+            self.assertTrue(terminal_record_confirms_the_run(provider, 77))
+            # pid 不同（上一次运行的终态）/旧记录无 pid/还是 running：全拒。
+            sp.write_text(json.dumps({**base, "pid": 78}), encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+            sp.write_text(json.dumps(base), encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+            running = {k: v for k, v in base.items()
+                       if k not in ("finished_at", "exit_code",
+                                    "failed_stage", "detail")}
+            sp.write_text(json.dumps({**running, "state": "running",
+                                      "pid": 77}), encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(provider, 77))
+        self.assertFalse(terminal_record_confirms_the_run(None, 77))
+        # 页面接线：核实版声称以 terminal_recorded 为条件;未核实的
+        # graceful 与硬杀同走孤儿收养（收养条件不再看 graceful）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('and _last_cancel.get("terminal_recorded")', page,
+                      "graceful 声称没有以核实为条件")
+        self.assertIn("not _outcome.terminal_recorded", page,
+                      "孤儿收养条件没改为「未核实终态」")
+        self.assertNotIn("and not _outcome.graceful:", page,
+                         "收养仍按 graceful 分流——graceful 无终态的孤儿"
+                         "会漏收养")
 
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
