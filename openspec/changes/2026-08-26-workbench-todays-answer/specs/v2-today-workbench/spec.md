@@ -42,8 +42,11 @@ legitimate: the card SHALL fall back to the provider/tag binding without
 refusing or pretending the nonce was compared. A missing artifact `provider_uri`, an
 unidentifiable current side, or either mismatch SHALL refuse the answer with
 both spellings named; a spelling the existing path boundary rejects (an
-embedded NUL, a not-fully-qualified form) SHALL refuse with that boundary's
-reason before any normalization runs, never crash the page; relative
+embedded NUL, a not-fully-qualified form), a blank/whitespace-only spelling
+(producer-impossible; normalization would resolve it to the process CWD), or
+one carrying a lone surrogate (JSON-representable; POSIX realpath cannot
+encode it) SHALL refuse with the reason before any normalization runs, never
+crash the page; relative
 spellings SHALL be anchored to the repository root on both sides before the
 canonical normalization, since the artifact's production context is the
 repository root while the process may be launched elsewhere. An artifact
@@ -53,6 +56,12 @@ page describes different data. A missing identity tag on either side is a
 legitimate stamp state (identity blocks are optional): the card SHALL fall
 back to provider binding alone, and SHALL NOT refuse for that reason or
 pretend the tags were compared.
+
+A verified artifact WITHOUT the cadence marker is the legacy cadence-one
+shape — the canonical contract reads the absent field as an executable daily
+list, never as HOLD and never as malformed — and the card SHALL apply the
+same cardinality logic to it as to a marked rebalance day; refusing it would
+silence the headline card for that entire deployment mode.
 
 An empty target list on a rebalance day is a legitimate producer state
 (`--topk 0`, or every candidate masked): the card SHALL NOT call it an

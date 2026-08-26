@@ -708,10 +708,36 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                 self.assertEqual("rebalance", got.state,
                                  "单侧无身份块不该拒答——provider 已绑定")
 
-    def test_an_unmarked_daily_artifact_cannot_be_synthesized(self) -> None:
+    def test_a_cadence_one_daily_artifact_is_an_executable_list(self) -> None:
+        # 缺 rebalance_day = cadence-1 的 legacy daily 工件——契约明文
+        # （hold_state：ABSENT=legacy、is_hold=False）每日皆为可执行清单，
+        # 详情页同样按可执行渲染。此前把它拒答（「无节奏标记」）会让整个
+        # cadence-1 部署形态的头卡永远哑火（codex P1）。
         got = todays_buy_answer(self._signal("daily"), self._fresh())
-        self.assertEqual("unanswerable", got.state)
-        self.assertIn("节奏标记", got.detail)
+        self.assertEqual("rebalance", got.state,
+                         "cadence-1 工件被拒答——头卡对该部署形态哑火")
+        self.assertIn("5 只候选", got.detail)
+        empty = todays_buy_answer(
+            self._signal("daily", pick_count=0), self._fresh())
+        self.assertEqual("watch", empty.state)
+        self.assertIn("清单为空", empty.value)
+
+    def test_a_lone_surrogate_spelling_refuses_not_crashes(self) -> None:
+        # JSON 能表示孤立代理字符（"\ud800"，损坏可达）；路径边界放行它，
+        # 而 POSIX 的 realpath 编码不了直接抛 UnicodeEncodeError——归一化
+        # 只接 OSError/ValueError，整页崩（codex P2，NUL 同类）。
+        for side, overrides in (
+            ("工件侧", {"signal": {
+                "data_provider_uri": "D:/da" + chr(0xD800) + "ta/prov"}}),
+            ("出单侧", {"fresh": {
+                "provider_uri": "D:/da" + chr(0xD800) + "ta/prov"}}),
+        ):
+            with self.subTest(side=side):
+                got = todays_buy_answer(
+                    self._signal("rebalance", **overrides.get("signal", {})),
+                    self._fresh(**overrides.get("fresh", {})))
+                self.assertEqual("unanswerable", got.state)
+                self.assertIn("代理字符", got.detail)
 
     def test_every_state_carries_the_not_an_order_disclaimer(self) -> None:
         answers = [

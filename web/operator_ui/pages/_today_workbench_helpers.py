@@ -534,6 +534,16 @@ def todays_buy_answer(
     # 来自不可信文件，当前侧同一崩溃向量同一门。
     for side, spelling in (("工件", signal.data_provider_uri),
                            ("出单侧", current_provider)):
+        if any("\ud800" <= ch <= "\udfff" for ch in spelling):
+            # JSON 能表示孤立代理字符（`"\ud800"`，损坏可达），路径边界
+            # 放行它，但 POSIX 的 realpath 编码不了直接抛
+            # UnicodeEncodeError——归一化只接 OSError/ValueError，整页崩
+            # （codex P2，与 NUL 同类的「边界放行、下游炸」形态）。
+            return TodaysAnswer(
+                "unanswerable", "无法给出",
+                f"{side}的数据来源拼写含孤立代理字符——无法编码为文件系统"
+                f"路径；请核查工件。{_ANSWER_DISCLAIMER}",
+            )
         unusable = unusable_path_reason(spelling)
         if unusable is not None:
             return TodaysAnswer(
@@ -598,29 +608,27 @@ def todays_buy_answer(
             f"{closed}：HOLD，无需动作；下一再平衡日："
             f"{signal.next_rebalance_date or '未记录'}。{_ANSWER_DISCLAIMER}",
         )
-    if signal.kind == "rebalance":
-        # 空清单是**合法产出**（`--topk 0` 或全部候选被掩蔽）——零个买入
-        # 对象时说「有指令」是最显眼卡片上的错话（codex #468 P1）。
-        if signal.pick_count is None:
-            return TodaysAnswer(
-                "unanswerable", "无法给出",
-                "再平衡工件的候选数未随核验结果传递，无法确认有无买入对象。"
-                f"{_ANSWER_DISCLAIMER}",
-            )
-        if signal.pick_count == 0:
-            return TodaysAnswer(
-                "watch", "不动 · 再平衡清单为空",
-                f"{closed}：再平衡日但目标清单为空（--topk 0 或全部候选被"
-                f"掩蔽都是合法产出）——没有买入对象；详情页可核对原因。"
-                f"{_ANSWER_DISCLAIMER}",
-            )
+    # 此处 kind ∈ {"rebalance", "daily"}（上方已闸）。"daily" = 缺
+    # rebalance_day 的 cadence-1 工件——契约明文（hold_state：ABSENT =
+    # legacy daily、is_hold=False）每日皆为可执行清单，详情页同样按可执行
+    # 渲染；把它拒答会让整个 cadence-1 部署形态的头卡永远哑火（codex P1）。
+    # 与再平衡日同一套基数逻辑。
+    # 空清单是**合法产出**（`--topk 0` 或全部候选被掩蔽）——零个买入
+    # 对象时说「有指令」是最显眼卡片上的错话（codex #468 P1）。
+    if signal.pick_count is None:
         return TodaysAnswer(
-            "rebalance", "有再平衡指令（待人工核对）",
-            f"{closed}：共 {signal.pick_count} 只候选——去日度决策页逐项"
-            f"人工核对后，按你的执行惯例决定是否与如何收敛。{_ANSWER_DISCLAIMER}",
+            "unanswerable", "无法给出",
+            "工件的候选数未随核验结果传递，无法确认有无买入对象。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if signal.pick_count == 0:
+        return TodaysAnswer(
+            "watch", "不动 · 目标清单为空",
+            f"{closed}：目标清单为空（--topk 0 或全部候选被掩蔽都是合法"
+            f"产出）——没有买入对象；详情页可核对原因。{_ANSWER_DISCLAIMER}",
         )
     return TodaysAnswer(
-        "unanswerable", "无法给出",
-        "工件是日频形态但不带 HOLD/再平衡节奏标记，本页合成不了三态；"
-        f"请在详情页人工判读。{_ANSWER_DISCLAIMER}",
+        "rebalance", "有再平衡指令（待人工核对）",
+        f"{closed}：共 {signal.pick_count} 只候选——去日度决策页逐项"
+        f"人工核对后，按你的执行惯例决定是否与如何收敛。{_ANSWER_DISCLAIMER}",
     )

@@ -100,6 +100,15 @@
       断言过弱（空白被 mismatch 兜住也算 unanswerable——正是 CWD==provider
       时会放行的形状），钉到具体原因后 2 failed 咬住
 
+## 第十轮（codex P1 cadence-1 哑火 + P2 孤立代理崩页）
+
+- [x] "daily"（缺 rebalance_day 的 cadence-1 legacy 形态）不再拒答——契约
+      明文 ABSENT=每日可执行清单（hold_state），详情页同款；并入再平衡
+      基数逻辑，整个部署形态的头卡不再哑火
+- [x] 孤立代理字符拼写（JSON 可表示，POSIX realpath 编码不了）在比对前
+      与 NUL 同门拒答；变异去门 2 failed（Windows 走措辞断言/POSIX 走
+      崩溃，双向咬）
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
