@@ -378,6 +378,20 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 显式 null nonce ≠ 缺键 legacy（codex P2）：tag 非空证明 stamp 存在
+    # ⇒ built_at 当时必然可得——键在场却写 null、tag 又非空，是产出器产不
+    # 出的组合；当 legacy 放行会在同日历原地重建后跳过 nonce 比对。
+    if (isinstance(meta_block, dict)
+            and "bundle_built_at" in meta_block
+            and meta_block["bundle_built_at"] is None
+            and isinstance(data_tag, str)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件带非空 bundle_tag（stamp 存在）却显式写 bundle_built_at "
+            "null——stamp 的 built_at 当时必然可得，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     provenance: dict[str, str | None] = {
         "data_provider_uri": data_provider,
         "data_bundle_tag": data_tag,

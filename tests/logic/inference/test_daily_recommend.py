@@ -1079,12 +1079,20 @@ class WriteOutputsTests(unittest.TestCase):
             with self.assertRaises(DailyRecommendationError):
                 write_outputs(
                     _result(_dummy_run_meta(bundle_built_at=123)), tmp)
+        # null nonce 只在无 stamp 时合法——tag 非空证明 stamp 存在，
+        # 配 null 会被 tag×null 组合执法拒绝（第二十五轮）。
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(DailyRecommendationError):
+                write_outputs(
+                    _result(_dummy_run_meta(bundle_built_at=None)), tmp)
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_outputs(
-                _result(_dummy_run_meta(bundle_built_at=None)), tmp)
+                _result(_dummy_run_meta(bundle_built_at=None,
+                                        bundle_tag=None)), tmp)
             payload = json.loads(
                 Path(paths["json"]).read_text(encoding="utf-8"))
         self.assertIsNone(payload["meta"]["bundle_built_at"])
+        self.assertIsNone(payload["meta"]["bundle_tag"])
 
     def test_null_bundle_tag_survives_serialization(self) -> None:
         # An unstamped bundle records bundle_tag null — never a fabricated

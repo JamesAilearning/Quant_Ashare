@@ -1328,6 +1328,24 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         raise DailyRecommendationError(
             f"run_meta['bundle_built_at'] must be str or None, "
             f"got {type(_built).__name__}")
+    # tag 证明 stamp 存在 ⇒ built_at 必然可得（BundleIntegrity.built_at
+    # 是 stamp 必填字段）——tag 非空却配显式 null nonce 是产出器产不出的
+    # 组合（codex #468 P2）。
+    if isinstance(result.run_meta.get("bundle_tag"), str) and _built is None:
+        raise DailyRecommendationError(
+            "run_meta carries a bundle_tag (an integrity stamp existed) but "
+            "bundle_built_at is null — the stamp's built_at was available; "
+            "assemble meta via _assemble_run_meta")
+    # 节奏跨字段不变式也在**任何文件 I/O 之前**执法（codex #468 二轮 P2：
+    # 原先放在 payload 装配处，CSV 已落盘才抛——失败运行留下新 CSV 配旧/
+    # 缺 JSON 的半成品输出）。canonical next_rebalance_date(as_of) 在再平
+    # 衡日恒返 as_of，recommend() 产不出 True+None/True+异日。
+    if (result.rebalance_day is True
+            and result.next_rebalance_date != result.as_of_date):
+        raise DailyRecommendationError(
+            "cadence invariant violated: rebalance_day=True requires "
+            f"next_rebalance_date == as_of_date; got "
+            f"{result.next_rebalance_date!r} vs {result.as_of_date!r}")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = result.as_of_date
@@ -1371,18 +1389,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     # byte-identical to the pre-cadence contract, and readers treat the
     # absent field as daily semantics (backward compatible).
     if result.rebalance_day is not None:
-        # 节奏跨字段不变式在序列化边界执法（codex #468 P2）：canonical
-        # next_rebalance_date(as_of) 在 as_of 本身是再平衡日时**必然返回
-        # as_of**（其 docstring 明言"as_of itself when it IS one"）——
-        # recommend() 产不出 True+None/True+别的日期；直接调用方绕过时在
-        # 此拒绝，否则写侧发出的工件会被读侧（工作台核验）判损坏，仓自己
-        # 与自己打架。None 锚（日历尾外）是 HOLD 日现象，False 侧照写。
-        if (result.rebalance_day is True
-                and result.next_rebalance_date != result.as_of_date):
-            raise DailyRecommendationError(
-                "cadence invariant violated: rebalance_day=True requires "
-                f"next_rebalance_date == as_of_date; got "
-                f"{result.next_rebalance_date!r} vs {result.as_of_date!r}")
+        # 节奏不变式已在函数顶部（任何文件 I/O 之前）执法——见上。
         payload["rebalance_day"] = result.rebalance_day
         payload["next_rebalance_date"] = result.next_rebalance_date
     json_path.write_text(

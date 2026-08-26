@@ -355,6 +355,30 @@ class DailySignalSummaryTests(unittest.TestCase):
                     incumbent=self.incumbent, current_model_sha=None)
                 self.assertEqual(expect, got.kind, f"{label} 判错")
 
+    def test_an_explicit_null_nonce_with_a_tag_is_unverifiable(self) -> None:
+        # tag 非空证明 stamp 存在 ⇒ built_at 当时必然可得——键在场却写
+        # null 是产出器产不出的组合；当 legacy 放行会在同日历原地重建后
+        # 跳过 nonce 比对（codex P2）。缺键 legacy（连键都没有）照旧放行。
+        payload = _ensemble_payload()
+        meta = dict(payload["meta"])  # type: ignore[arg-type]
+        meta["bundle_tag"] = "2026-08-25@sha256:feed"
+        meta["bundle_built_at"] = None
+        payload["meta"] = meta
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("needs_verification", got.kind,
+                         "tag×显式 null 被当成了 legacy")
+        # legacy：键不在场 + tag 在场 = 前 nonce 时代合法工件。
+        payload = _ensemble_payload()
+        meta = dict(payload["meta"])  # type: ignore[arg-type]
+        meta["bundle_tag"] = "2026-08-25@sha256:feed"
+        payload["meta"] = meta
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("rebalance", got.kind, "legacy 缺键被误伤")
+
     def test_both_identity_modes_are_unverifiable(self) -> None:
         # canonical 契约：身份形态 XOR——同时携带 model_pkl_sha256 与
         # ensemble 块的工件 malformed；按 ensemble 归类会忽略冲突单模身份，
