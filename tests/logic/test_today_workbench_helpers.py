@@ -346,6 +346,24 @@ class DailySignalSummaryTests(unittest.TestCase):
                     incumbent=self.incumbent, current_model_sha=None)
                 self.assertEqual(expect, got.kind, f"{label} 判错")
 
+    def test_a_lone_cadence_field_is_unverifiable(self) -> None:
+        # write_outputs 在同一守卫块同写 rebalance_day + next_rebalance_date
+        # ——只带其一产出器产不出；缺 next 键时 hold_state 静默补 None，头
+        # 卡会把损坏工件报成「HOLD·未记录」（codex P2）。显式 null 合法。
+        for label, mutate in (
+            ("缺 next 键", lambda pl: pl.pop("next_rebalance_date")),
+            ("缺 rebalance_day 键", lambda pl: pl.pop("rebalance_day")),
+        ):
+            with self.subTest(label=label):
+                payload = _ensemble_payload(rebalance_day=False)
+                mutate(payload)
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual("needs_verification", got.kind,
+                                 "单腿节奏字段被当成了已核验")
+                self.assertIn("之一", got.detail)
+
     def test_a_rebalance_day_next_equal_to_as_of_is_legal(self) -> None:
         # 再平衡日本身就是锚：next_rebalance_date(d) == d 合法，不受 HOLD
         # 侧「必须在未来」的限制。

@@ -249,6 +249,20 @@ def summarise_daily_signal(
     # 近合法 None）——hold_state 刻意宽容（非 str 静默成 None、非 ISO 原样
     # 保留），把 `123`/"tomorrow" 这类产出器产不出的值放到头卡上宣布
     # 「HOLD 无需动作」是拿损坏工件下结论。缺键 = cadence-1 合法形态。
+    # 节奏双字段 both-or-neither（write_outputs 在同一个守卫块里同写两键；
+    # codex P2）：只带其一是产出器产不出的形态——缺 next 键时 hold_state
+    # 会静默补 None，头卡把损坏工件当已核验 HOLD 报「未记录」。显式 null
+    # （日历尾外无锚）与缺键是两回事。
+    if ("rebalance_day" in payload) != ("next_rebalance_date" in payload):
+        present = ("rebalance_day" if "rebalance_day" in payload
+                   else "next_rebalance_date")
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件只带节奏双字段之一（{present}）——产出器在同一守卫块同写"
+            "两键，产不出这种形态；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     if "next_rebalance_date" in payload:
         raw_next = payload["next_rebalance_date"]
         next_problem: str | None = None
