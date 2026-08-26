@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,12 @@ from web.operator_ui.pages._today_workbench_helpers import (
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+# provider fixture 按宿主构造：`D:/data/prov` 是 Windows 专属拼写，Ubuntu
+# CI 腿上 unusable_path_reason 判它外来、快乐路径全体在门口 unanswerable
+# （codex P1；本机绿≠CI绿的在档教训现场版）。
+_PROV = os.path.join(os.path.abspath(os.sep), "data", "prov")
+_PROV_OTHER = os.path.join(os.path.abspath(os.sep), "data", "other")
 
 
 def _pick(rank: int, code: str) -> dict[str, object]:
@@ -426,7 +433,7 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         base: dict[str, object] = dict(
             known=True, tail_date="2026-08-26", days_behind=0,
             max_age_days=14, headroom_days=14, refuses_today=False,
-            integrity_accepted=True, provider_uri="D:/data/prov",
+            integrity_accepted=True, provider_uri=_PROV,
             identity_tag="tag-1", built_at="2026-08-25T21:00:00+08:00")
         base.update(overrides)
         return BundleFreshness(**base)  # type: ignore[arg-type]
@@ -436,7 +443,7 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         base: dict[str, object] = dict(
             kind=kind, detail="x", as_of_date="2026-08-25",
             entry_date="2026-08-26", pick_count=5,
-            data_provider_uri="D:/data/prov", data_bundle_tag="tag-1",
+            data_provider_uri=_PROV, data_bundle_tag="tag-1",
             data_bundle_built_at="2026-08-25T21:00:00+08:00")
         base.update(overrides)
         return DailySignalSummary(**base)  # type: ignore[arg-type]
@@ -580,11 +587,11 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         # 数据来源绑定（codex P1）：provider 切换后，旧 provider 的工件按
         # 日期巧合也能对上尾——而全页健康检查说的都是当前数据。
         got = todays_buy_answer(
-            self._signal("rebalance", data_provider_uri="D:/data/other"),
+            self._signal("rebalance", data_provider_uri=_PROV_OTHER),
             self._fresh())
         self.assertEqual("unanswerable", got.state)
-        self.assertIn("D:/data/other", got.detail, "工件侧 provider 没点名")
-        self.assertIn("D:/data/prov", got.detail, "当前侧 provider 没点名")
+        self.assertIn(_PROV_OTHER, got.detail, "工件侧 provider 没点名")
+        self.assertIn(_PROV, got.detail, "当前侧 provider 没点名")
 
     def test_an_artifact_from_a_rebuilt_bundle_is_refused(self) -> None:
         # 同 provider、bundle 原地重建（身份戳换了）——不是这份数据的信号。

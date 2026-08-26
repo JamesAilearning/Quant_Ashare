@@ -109,6 +109,13 @@
       与 NUL 同门拒答；变异去门 2 failed（Windows 走措辞断言/POSIX 走
       崩溃，双向咬）
 
+## 第十一轮（codex P1：fixture 拼写平台绑定）
+
+- [x] 测试 fixture 的 `D:/data/prov` 是 Windows 专属拼写——Ubuntu CI 腿上
+      被路径边界判外来，快乐路径全体在门口 unanswerable、Linux 矩阵红。
+      改按宿主构造（os.path.join(abspath(os.sep), ...)），两平台皆合法
+      完全限定；留存测试的字面拼写保留（只验 pass-through 不过边界）
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。
