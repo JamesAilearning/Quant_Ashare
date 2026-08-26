@@ -157,7 +157,20 @@ that RETURNS SUCCESS is proof of issuance — the kernel accepted delivery —
 and SHALL count as issued even when the fallback single-process kill then
 races the exit it caused and raises: hardcoding that path as not-issued
 would retire a death caused by the successfully delivered group SIGKILL
-as natural and skip the entire late epilogue. The pending context SHALL also carry the failed
+as natural and skip the entire late epilogue.
+
+The converse SHALL hold symmetrically: an exit observed when NO signal was
+successfully issued is a natural completion, never a cancellation. A child
+that was alive at the initial check but finishes on its own while every
+signal call raises (on POSIX, a natural exit racing the polite signal —
+the grace-window death would otherwise classify as graceful; on Windows,
+a death inside the check-to-kill window) SHALL be reported as already
+finished — with an outcome marker closing the already-written request
+marker, and with the marker-loss warning covering this outcome — and SHALL
+NOT receive the cancellation-specific graceful claim, swap diagnosis, or
+orphan adoption; its terminal state is the run's own status artifact and
+ledger. The graceful classification SHALL therefore be possible only after
+the polite signal was actually issued. The pending context SHALL also carry the failed
 attempt's marker-audit state, and late settlement SHALL aggregate it rather
 than reset to the optimistic default: when the request/failure markers never
 reached the log, a successfully written late outcome marker does not make
@@ -315,6 +328,15 @@ one period.
 - **THEN** verification fails on the time window — the old artifact's
   stamps predate this session's launch — and the page does not claim the
   orchestrator wrote a terminal record
+
+#### Scenario: an unsignalled death is reported as finished, not cancelled
+
+- **GIVEN** a cancel whose child was alive at the initial check but
+  finished naturally while every signal call raised
+- **WHEN** the attempt observes the death
+- **THEN** the outcome is "already finished" — no graceful claim, no swap
+  diagnosis, no orphan adoption — with an outcome marker closing the
+  request marker, and the run's own status artifact speaks for its end
 
 #### Scenario: a group kill racing the fallback still counts as issued
 

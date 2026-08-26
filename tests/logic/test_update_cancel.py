@@ -412,11 +412,15 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
         nl = chr(10)
+        # 锚串随第十八轮扩展（自然竞态收场的 already_finished 也写标记,
+        # 其缺失同样要警）,断言意图不变：警告在共同作用域。
         self.assertIn(
             nl + '    if (_last_cancel.get("kind") in '
-            '("cancelled", "cancel_failed")', page,
+            '("cancelled", "cancel_failed",', page,
             "标记警告没在共同作用域（困在 cancelled 分支里时 "
             "cancel_failed 永远渲染不到——codex 第七轮 P2）")
+        self.assertIn('"already_finished")', page,
+                      "标记警告没覆盖自然竞态收场（第十八轮）")
 
     def test_an_uncheckable_swap_state_is_unknown_not_healthy(self) -> None:
         # 检查自身抛 OSError（卷不可用/权限）时不许当健康——unknown 是第
@@ -903,6 +907,52 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             self.assertEqual("cancel_failed", got2.kind)
             self.assertFalse(got2.kill_issued,
                              "全部信号调用都抛了还声称已发出")
+
+    def test_an_unsignalled_death_is_not_reported_as_cancelled(self) -> None:
+        # 分类闸（codex 第十八轮 P2）：初检时还活着,但没有任何信号成功
+        # 送达它就死了——POSIX 是「初检后自然完成 + SIGINT 抛错」竞态
+        # （宽限窗里的死亡会被误判 graceful）,Windows 是「初检到 kill()
+        # 之间死亡」的毫秒窗。报成 cancelled 会套上取消专属的 swap/审计
+        # 收尾与 graceful 文案——它是自然完成,按 already_finished 收场,
+        # 留结局标记收口这次尝试。
+        from unittest import mock
+
+        import web.operator_ui.update_runner as _runner
+        class _DiesUnderfoot:
+            pid = 999995
+            returncode = 0
+            def __init__(self) -> None:
+                self._polls = 0
+            def poll(self):
+                self._polls += 1
+                return None if self._polls == 1 else 0
+            def kill(self):
+                raise AssertionError("不该对已死进程调用 kill")
+            def wait(self, timeout=None):
+                raise AssertionError("不应走到 wait")
+        with tempfile.TemporaryDirectory() as t:
+            log = Path(t) / "log.log"
+            proc = _DiesUnderfoot()
+            if sys.platform != "win32":
+                def _gone(pid: int, sig: int) -> None:
+                    raise ProcessLookupError("group gone")
+                with mock.patch.object(_runner.os, "killpg", _gone):
+                    got = cancel_update(
+                        proc, log,  # type: ignore[arg-type]
+                        grace_seconds=0.3)
+            else:
+                got = cancel_update(
+                    proc, log,  # type: ignore[arg-type]
+                    grace_seconds=0.3)
+            self.assertEqual("already_finished", got.kind,
+                             "无信号送达的死亡被报成了取消")
+            self.assertFalse(got.kill_issued)
+            self.assertFalse(got.graceful, "自然完成被判 graceful")
+            text = log.read_text(encoding="utf-8")
+            self.assertIn("cancel requested", text,
+                          "初检活着,请求标记应已落")
+            self.assertIn("before any signal was issued", text,
+                          "自然竞态缺结局标记收口")
 
     def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:
         # 未决在场 + 重试的 kill() 自身抛且标记写失败（codex 第十六轮

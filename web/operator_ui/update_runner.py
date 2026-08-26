@@ -563,6 +563,10 @@ def cancel_update(
             return UpdateCancel(
                 kind="cancel_failed", error=f"终止进程失败:{exc}",
                 markers_written=markers_written, kill_issued=signal_issued)
+        else:
+            # kill() 成功返回同样是「信号已发出」——下面的分类闸靠它区分
+            # 真取消与自然完成（第十八轮 P2）。
+            signal_issued = True
         try:
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
@@ -576,6 +580,22 @@ def cancel_update(
                 kind="cancel_failed",
                 error="进程在宽限窗内未退出;请用任务管理器核查后重试",
                 markers_written=markers_written, kill_issued=True)
+    if not signal_issued:
+        # 分类闸（codex 第十八轮 P2）：初检时还活着,但**没有任何**信号
+        # 成功送达它就死了——POSIX 是「初检后自然完成 + SIGINT 抛错」的
+        # 竞态（此时宽限窗里见到的死亡会被误判 graceful）,Windows 是
+        # 「初检到 kill() 之间死亡」的毫秒窗。这不是取消,是自然完成:
+        # 报成 cancelled 会给它套上取消专属的 swap/审计收尾、graceful
+        # 文案,而它的终态该由运行自己的状态工件与台账自述。请求标记已
+        # 落,补一条结局标记把这次尝试如实收口。
+        markers_written = _append_cancel_marker(
+            log_path,
+            "cancel outcome: process exited before any signal was issued "
+            "(natural completion; nothing was cancelled)"
+        ) and markers_written
+        return UpdateCancel(
+            kind="already_finished", returncode=process.returncode,
+            markers_written=markers_written, kill_issued=False)
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
         graceful=graceful, markers_written=markers_written, late=False,

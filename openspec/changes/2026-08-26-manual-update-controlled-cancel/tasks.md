@@ -273,6 +273,19 @@
       `_own_now or _own_before` 兜底。候选观察点 2→3 处（取消前/失败
       后/watcher）,计数钉+源码序钉+兜底钉
 
+## codex 第十八轮（P2：无信号送达的死亡不得报成已取消）
+
+- [x] P2 POSIX「初检后自然完成 + SIGINT 抛错」竞态——异常路径照进宽限
+      窗,下一次 poll 把自然死亡判成 graceful,套上取消专属的 swap/审计
+      收尾与 graceful 文案。修=统一**分类闸**:kill() 成功返回也计入
+      signal_issued;确认死亡前 `not signal_issued` 一律按自然完成
+      （already_finished + 结局标记收口已落的请求标记,kill_issued=
+      False）——两平台同一竞态窗（Windows=初检到 kill() 的毫秒窗）一
+      起封;graceful 从此蕴含 SIGINT 已发。页面标记缺失警告扩到
+      already_finished（自然竞态收场也写标记）。双平台确定性用例
+      （poll 序列存根 + POSIX mock killpg 抛）+ 变异去闸咬住;r7 警告
+      锚串随扩展更新,断言意图不变
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

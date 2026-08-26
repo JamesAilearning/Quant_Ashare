@@ -880,7 +880,8 @@ if isinstance(_last_cancel, dict):
             "用/权限/IO 错）——本页不声称在线数据无恙；请人工确认 "
             "provider 目录与 .bak/.new 的现状，必要时立即重跑更新。"
         )
-    if (_last_cancel.get("kind") in ("cancelled", "cancel_failed")
+    if (_last_cancel.get("kind") in ("cancelled", "cancel_failed",
+                                     "already_finished")
             and not _last_cancel.get("markers_written", True)):
         st.warning(
             "⚠ 取消动作的**日志标记写入失败**（权限/磁盘满？）——这次"
