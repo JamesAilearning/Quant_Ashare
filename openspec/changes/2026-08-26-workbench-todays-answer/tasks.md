@@ -211,6 +211,12 @@
       的 MODIFIED delta（meta 字段清单收编 bundle_built_at + 为什么 tag
       不够 + null 语义两场景）
 
+## 第二十二轮（P2：双身份形态放行）
+
+- [x] 身份形态 XOR 验约（canonical 契约明文：同带 model_pkl_sha256 与
+      ensemble 块 = malformed）——artifact_meta_status 按 ensemble 归类
+      会忽略冲突单模身份，manifest 对得上就当已核验。变异 1f 咬住
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

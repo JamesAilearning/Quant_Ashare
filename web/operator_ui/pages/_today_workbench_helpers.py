@@ -165,6 +165,20 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 身份形态 XOR（canonical 契约明文：同时携带 model_pkl_sha256 与
+    # ensemble 块的工件是 malformed）——artifact_meta_status 按 ensemble
+    # 形态归类会忽略冲突的单模身份，manifest 对得上就当已核验（codex P2）。
+    meta_shape = payload.get("meta")
+    if (isinstance(meta_shape, dict)
+            and "model_pkl_sha256" in meta_shape
+            and isinstance(meta_shape.get("ensemble"), dict)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件同时携带两种身份形态（model_pkl_sha256 + ensemble 块）——"
+            "canonical 契约明文 XOR，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     verdict = provenance_verdict(incumbent, meta_status)
     if verdict not in _TRUSTED_PROVENANCE:
         return DailySignalSummary(

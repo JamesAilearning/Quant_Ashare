@@ -355,6 +355,21 @@ class DailySignalSummaryTests(unittest.TestCase):
                     incumbent=self.incumbent, current_model_sha=None)
                 self.assertEqual(expect, got.kind, f"{label} 判错")
 
+    def test_both_identity_modes_are_unverifiable(self) -> None:
+        # canonical 契约：身份形态 XOR——同时携带 model_pkl_sha256 与
+        # ensemble 块的工件 malformed；按 ensemble 归类会忽略冲突单模身份，
+        # manifest 对得上就被当已核验（codex P2）。
+        payload = _ensemble_payload()
+        meta = dict(payload["meta"])  # type: ignore[arg-type]
+        meta["model_pkl_sha256"] = "ab" * 32
+        payload["meta"] = meta
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("needs_verification", got.kind,
+                         "双身份形态被当成了已核验")
+        self.assertIn("XOR", got.detail)
+
     def test_topk_bound_is_enforced(self) -> None:
         # canonical 契约 N ≤ topk；产出器 meta 无条件写 topk——缺失/非法/
         # 被超出都是产出器产不出的形态（codex P2）。
