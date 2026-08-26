@@ -278,6 +278,11 @@ class UpdateCancel:
     #: 修复）。True 时页面必须**响亮**指引立即重跑更新,不许再说「在线数据
     #: 不受影响」（codex #470 P1）。
     swap_interrupted: bool = False
+    #: 取消的日志标记是否全部落盘。规格要求每次对活进程的取消都留下
+    #: 请求+结局双标记——日志在启动后变得不可写（权限/磁盘满）时,静默
+    #: 吞掉会让一次操作人动作不可审计（codex 第四轮 P2）:终止照常执行
+    #: （主结局优先）,但缺失必须透出让页面响亮说。
+    markers_written: bool = True
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -285,18 +290,26 @@ class UpdateCancel:
 _CANCEL_GRACE_SECONDS = 10.0
 
 
-def _append_cancel_marker(log_path: Path | None, text: str) -> None:
-    """取消动作的带日期日志标记——复用 launch 的标记惯例，失败不致命。"""
+def _append_cancel_marker(log_path: Path | None, text: str) -> bool:
+    """取消动作的带日期日志标记——复用 launch 的标记惯例。
+
+    失败不打断取消本身（终止进程是主结局），但**必须回报**：静默吞掉会让
+    一次操作人动作不可审计（codex 第四轮 P2）。返回是否落盘成功；
+    ``log_path is None`` 视为「无处可写」= False，调用方自行决定是否在意。
+    """
     if log_path is None:
-        return
+        return False
     line = (
         f"[run_center] {datetime.now(tz=_CN_TZ).isoformat(timespec='seconds')}"
         f" {text}\n"
     )
-    with contextlib.suppress(OSError):
+    try:
         with open(log_path, "ab") as fh:
             fh.write(line.encode("utf-8"))
             fh.flush()
+    except OSError:
+        return False
+    return True
 
 
 def cancelled_run_matches(
@@ -347,7 +360,8 @@ def cancel_update(
     if process.poll() is not None:
         return UpdateCancel(
             kind="already_finished", returncode=process.returncode)
-    _append_cancel_marker(log_path, "cancel requested: manual daily_update")
+    markers_written = _append_cancel_marker(
+        log_path, "cancel requested: manual daily_update")
     graceful = False
     if sys.platform != "win32":
         with contextlib.suppress(OSError):
@@ -378,10 +392,11 @@ def cancel_update(
             return UpdateCancel(
                 kind="cancel_failed",
                 error="进程在宽限窗内未退出;请用任务管理器核查后重试")
-    _append_cancel_marker(
+    markers_written = _append_cancel_marker(
         log_path,
         "cancel outcome: process exited "
-        f"(returncode={process.returncode}, graceful={graceful})")
+        f"(returncode={process.returncode}, graceful={graceful})"
+    ) and markers_written
     # 切换窗检测（codex #470 P1）:swap 是两段 rename——若取消恰好落在
     # 「live→.bak 之后、.new→live 之前」,canonical 目录此刻**不存在**,
     # 要到下次更新的启动修复才复原（swap 基线契约:crash-atomicity + 事后
@@ -398,14 +413,14 @@ def cancel_update(
                 and provider_dir.with_name(
                     provider_dir.name + ".bak").exists())
         if swap_interrupted:
-            _append_cancel_marker(
+            markers_written = _append_cancel_marker(
                 log_path,
                 "cancel landed inside the SWAP WINDOW: canonical provider "
                 "dir is missing; run the update again — startup repair "
-                "restores it")
+                "restores it") and markers_written
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
-        swap_interrupted=swap_interrupted)
+        swap_interrupted=swap_interrupted, markers_written=markers_written)
 
 
 def default_log_path(provider_dir: Path) -> Path:

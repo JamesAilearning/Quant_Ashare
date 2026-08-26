@@ -563,6 +563,8 @@ if _live_proc is not None:
                     "returncode": _outcome.returncode,
                     "error": _outcome.error,
                     "swap_interrupted": _outcome.swap_interrupted,
+                    "markers_written": _outcome.markers_written,
+                    "evidence_stored": False,
                 }
                 if _outcome.kind in ("cancelled", "already_finished"):
                     # 只有确认终局才交出句柄——cancel_failed 时进程可能
@@ -584,6 +586,8 @@ if _live_proc is not None:
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                         }
+                        _lc = st.session_state[_LAST_CANCEL_KEY]
+                        _lc["evidence_stored"] = True
                 st.session_state.pop(_CANCEL_ARM_KEY, None)
                 st.rerun()
         with _c2:
@@ -611,13 +615,32 @@ if isinstance(_last_cancel, dict):
                 + ("" if _last_cancel.get("swap_interrupted")
                    else "在线数据未受影响。")
             )
-        else:
+        elif _last_cancel.get("evidence_stored"):
             st.success(
                 "已取消（强制终止，returncode="
                 f"{_last_cancel.get('returncode')}）。"
                 "**状态工件仍标 running**——被强杀的进程没有机会写终态，"
                 "本页将持续按「已取消」如实标注（跨刷新有效），启动按钮"
                 "已解锁；单飞锁已自动释放，下次更新照常。"
+            )
+        else:
+            # 进程在写下自己的 running 记录之前就被终止（或记录已是前次
+            # 终态）——没有孤儿要更正，也没有证据可存；上面那套「将持续
+            # 标注/已解锁」的话在这种情形下会与下一次 rerun 矛盾
+            # （codex 第四轮 P2）。按状态工件如实展示即可。
+            st.success(
+                "已取消（强制终止，returncode="
+                f"{_last_cancel.get('returncode')}）。状态工件此刻没有该"
+                "运行的 running 记录（进程在写下记录前即被终止）——无需"
+                "更正标注，页面按状态工件如实展示；单飞锁已自动释放，"
+                "下次更新照常。"
+            )
+        if (_last_cancel.get("kind") == "cancelled"
+                and not _last_cancel.get("markers_written", True)):
+            st.warning(
+                "⚠ 取消已执行，但**日志标记写入失败**（权限/磁盘满？）——"
+                "这次操作在共享日志里没有审计线索；请检查 "
+                "`logs/daily_update.log` 的可写性。"
             )
         if _last_cancel.get("swap_interrupted"):
             st.error(

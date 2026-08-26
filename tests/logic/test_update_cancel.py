@@ -287,6 +287,48 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("swap_interrupted", graceful_block,
                       "graceful 文案没有以切换窗为条件")
 
+    def test_marker_write_failure_is_reported_not_swallowed(self) -> None:
+        # 日志在启动后变得不可写（权限/磁盘满）时，取消照常执行但审计线
+        # 索缺失必须透出（codex 第四轮 P2）——静默吞掉=操作不可审计。
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                blocker = Path(t) / "blocker"
+                blocker.write_text("file", encoding="utf-8")
+                unwritable = blocker / "log.log"   # 父是文件——open 必败
+                got = cancel_update(proc, unwritable, grace_seconds=3)
+                self.assertEqual("cancelled", got.kind, "取消本身不该失败")
+                self.assertFalse(got.markers_written,
+                                 "标记写失败被静默吞掉")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        # 可写时旗标为 True（防旗标恒 False 的假阳）。
+        proc = _spawn(_SLEEPER)
+        try:
+            time.sleep(0.5)
+            with tempfile.TemporaryDirectory() as t:
+                got = cancel_update(
+                    proc, Path(t) / "log.log", grace_seconds=3)
+                self.assertTrue(got.markers_written)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_the_hard_cancel_message_follows_the_reread(self) -> None:
+        # 硬杀消息只有在重读真的找到并存下匹配 running 记录时才许声称
+        # 「将持续标注/已解锁」——launch 到状态落盘的窗口里杀掉的进程根
+        # 本没写记录，无孤儿可更正（codex 第四轮 P2）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('"evidence_stored": False,', page)
+        self.assertIn('_lc["evidence_stored"] = True', page)
+        self.assertIn('elif _last_cancel.get("evidence_stored"):', page,
+                      "持续标注的声称没有以证据落盘为条件")
+        self.assertIn("更正标注", page, "无记录情形缺如实分支")
+        self.assertIn("日志标记写入失败", page, "标记失败没有页面警告")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。

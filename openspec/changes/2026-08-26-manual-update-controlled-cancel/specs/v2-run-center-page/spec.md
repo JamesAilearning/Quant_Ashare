@@ -31,7 +31,18 @@ SIGKILL after a grace window.
 Every cancel attempt on a live process SHALL leave dated `[run_center]`
 markers (request and outcome) in the shared log, following the launch
 marker convention; a no-op cancel (the process had already finished) SHALL
-leave no marker and change nothing.
+leave no marker and change nothing. When a marker write fails (the log
+became unwritable after launch), the termination itself still proceeds —
+but the outcome SHALL report the missing audit trail and the page SHALL
+warn loudly rather than letting the operator action go unrecorded in
+silence.
+
+The forcible-cancel presentation SHALL be conditioned on what the post-kill
+reread actually found: only when a matching `running` record was found and
+the evidence persisted may the page claim the artifact stays `running`,
+will remain labelled cancelled, and that the gate unlocked. A kill landing
+before the child wrote its record finds no orphan — the page SHALL then say
+exactly that and defer to the status artifact as-is.
 
 The live bundle is untouched by cancellation at any point OUTSIDE the
 swap's two-rename window: the pipeline builds into a sidecar and only an
