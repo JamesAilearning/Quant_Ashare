@@ -421,7 +421,18 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 f"(类型 {type(pick).__name__})——文件可能损坏。"
             )
         score = pick.get("predicted_score")
-        score_val = float(score) if isinstance(score, (int, float)) else None
+        try:
+            score_val = (
+                float(score) if isinstance(score, (int, float)) else None)
+        except OverflowError as exc:
+            # JSON 的任意精度大整数（10**1000）让 float() 溢出——逃出去会
+            # 崩掉每个消费方（工作台合成 + 日度决策详情页，codex #468）。
+            # 数值超出 float 域的分是产出器产不出的（打分本就是 float）：
+            # 按本函数既有契约折成 ValueError，读侧统一走「候选列表不合法」。
+            raise ValueError(
+                "工件形状违约:predicted_score 数值超出 float 表示域"
+                "——文件可能损坏。"
+            ) from exc
         rows.append({
             "rank": pick.get("rank"),
             "代码": pick.get("stock_code"),

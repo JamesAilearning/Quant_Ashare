@@ -744,6 +744,7 @@ def _assemble_run_meta(
     *,
     model_pkl_sha256: str | None,
     bundle_tag: str | None,
+    bundle_built_at: str | None = None,
     generated_at: str | None = None,
     ensemble: Mapping[str, Any] | None = None,
     model_universe: str | None = None,
@@ -770,6 +771,11 @@ def _assemble_run_meta(
         "fit_end_for_inference": config.fit_end,
         "provider_uri": config.provider_uri,
         "bundle_tag": bundle_tag,
+        # 重建 nonce：stamp 的 built_at 每次重建都刷新，而 bundle_tag 只含
+        # 日历尾 + day.txt 哈希——纯 bin/宇宙的原地重建它看不见（其 docstring
+        # 明言 NOT a full-bin integrity guarantee）。读侧靠它分辨「同日历的
+        # 原地重建」（codex #468 P1）。无 stamp 时 None，绝不伪造。
+        "bundle_built_at": bundle_built_at,
         "instruments": config.instruments,
         "topk": config.topk,
     }
@@ -926,6 +932,7 @@ def recommend(
         if integrity is not None and integrity.identity is not None
         else None
     )
+    bundle_built_at = integrity.built_at if integrity is not None else None
     if ensemble_members is not None:
         from src.inference.ensemble_serving import (
             BLEND,
@@ -941,6 +948,7 @@ def recommend(
             config,
             model_pkl_sha256=None,
             bundle_tag=bundle_tag,
+            bundle_built_at=bundle_built_at,
             ensemble={
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "manifest_path": str(config.ensemble_manifest_path),
@@ -962,6 +970,7 @@ def recommend(
             config,
             model_pkl_sha256=model_pkl_sha256,
             bundle_tag=bundle_tag,
+            bundle_built_at=bundle_built_at,
             model_universe=model_universe,
         )
 
@@ -1304,6 +1313,39 @@ _BUY_LIST_COLUMNS = [
 def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, str]:
     """Write buy-list csv + json and the full scored audit csv. Returns
     the written paths."""
+    # 序列化边界执法（codex #468 P1）：契约把 meta.bundle_built_at 定为
+    # 必备键（str = stamp 的 built_at 镜像 / null = 无 stamp，绝不伪造）
+    # ——_assemble_run_meta 恒写它，但 run_meta 在此是逐字复制：绕过装配
+    # 器的调用方若漏键，读侧会把缺席当「前 nonce 时代的合法老工件」，原地
+    # 重建防护被静默废掉。契约在哪执行就在哪把门。
+    if "bundle_built_at" not in result.run_meta:
+        raise DailyRecommendationError(
+            "run_meta missing required key 'bundle_built_at' "
+            "(schema v2 contract: the rebuild nonce, str or null; "
+            "assemble meta via _assemble_run_meta)")
+    _built = result.run_meta["bundle_built_at"]
+    if _built is not None and not isinstance(_built, str):
+        raise DailyRecommendationError(
+            f"run_meta['bundle_built_at'] must be str or None, "
+            f"got {type(_built).__name__}")
+    # tag 证明 stamp 存在 ⇒ built_at 必然可得（BundleIntegrity.built_at
+    # 是 stamp 必填字段）——tag 非空却配显式 null nonce 是产出器产不出的
+    # 组合（codex #468 P2）。
+    if isinstance(result.run_meta.get("bundle_tag"), str) and _built is None:
+        raise DailyRecommendationError(
+            "run_meta carries a bundle_tag (an integrity stamp existed) but "
+            "bundle_built_at is null — the stamp's built_at was available; "
+            "assemble meta via _assemble_run_meta")
+    # 节奏跨字段不变式也在**任何文件 I/O 之前**执法（codex #468 二轮 P2：
+    # 原先放在 payload 装配处，CSV 已落盘才抛——失败运行留下新 CSV 配旧/
+    # 缺 JSON 的半成品输出）。canonical next_rebalance_date(as_of) 在再平
+    # 衡日恒返 as_of，recommend() 产不出 True+None/True+异日。
+    if (result.rebalance_day is True
+            and result.next_rebalance_date != result.as_of_date):
+        raise DailyRecommendationError(
+            "cadence invariant violated: rebalance_day=True requires "
+            f"next_rebalance_date == as_of_date; got "
+            f"{result.next_rebalance_date!r} vs {result.as_of_date!r}")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = result.as_of_date
@@ -1347,6 +1389,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     # byte-identical to the pre-cadence contract, and readers treat the
     # absent field as daily semantics (backward compatible).
     if result.rebalance_day is not None:
+        # 节奏不变式已在函数顶部（任何文件 I/O 之前）执法——见上。
         payload["rebalance_day"] = result.rebalance_day
         payload["next_rebalance_date"] = result.next_rebalance_date
     json_path.write_text(

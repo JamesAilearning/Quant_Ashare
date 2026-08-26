@@ -58,6 +58,7 @@ from web.operator_ui.pages._today_workbench_helpers import (
     model_age_rows,
     summarise_daily_signal,
     summarise_operations,
+    todays_buy_answer,
 )
 from web.operator_ui.update_ledger import (
     consecutive_failures,
@@ -299,6 +300,11 @@ st.caption(
     "请在详情页核对来源、HOLD 与 entry_date。"
 )
 
+# 「今天要不要买」合成句的**插槽**：视觉上排第一，但它消费的裁决（出单侧
+# 新鲜度 + 已核验的日度信号）在下方才算出来——用容器占位、算完回填，避免
+# 为了渲染顺序打乱既有的计算顺序。
+_answer_slot = st.container()
+
 provider = anchored_to_repo(resolve_default_provider_uri())
 provider_problem = ""
 if not provider.strip():
@@ -333,6 +339,10 @@ _freshness = bundle_freshness(
     health_warnings=health.warnings if health is not None else (),
     integrity_accepted=_integrity.accepted,
     integrity_reason=_integrity.reason,
+    # 当前 bundle 的身份 tag——合成句拿它与工件 meta.bundle_tag 绑定
+    # （codex #468 P1：不绑定，另一个 bundle 的工件按日期巧合也能上卡）。
+    identity_tag=_integrity.identity_tag,
+    built_at=_integrity.built_at,
 )
 update_status: UpdateRunStatus | None = None
 update_matches_provider: bool | None = None
@@ -447,6 +457,23 @@ with signal_col:
             current_model_sha=None,
         )
     _render_signal_summary(signal)
+
+# 回填顶部的合成句（UI 已批序列④，P0）：三态 + 如实边缘，判定全部来自
+# 上面已算好的裁决——helper 零自造（见 todays_buy_answer docstring）。
+_ANSWER_COLORS: dict[str, _CardColor] = {
+    "rebalance": "warning",    # 有指令 ≠ 已授权：仍须人工核对，不给绿灯色
+    "watch": "default",
+    "no_instruction": "warning",
+    "unanswerable": "negative",
+}
+with _answer_slot:
+    _answer = todays_buy_answer(signal, _freshness)
+    _render_card(
+        "今天要不要买",
+        _answer.value,
+        _answer.detail,
+        color=_ANSWER_COLORS[_answer.state],
+    )
 
 st.subheader("运行状态")
 all_jobs: tuple[JobSummary, ...] = ()

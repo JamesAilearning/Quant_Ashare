@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 
-from web.operator_ui.incumbent import IncumbentIdentity
+from web.operator_ui.incumbent import (
+    IncumbentIdentity,
+    anchored_to_repo,
+    unusable_path_reason,
+)
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._daily_decision_helpers import (
     SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
@@ -17,7 +23,10 @@ from web.operator_ui.pages._daily_decision_helpers import (
     picks_table_rows,
     provenance_verdict,
 )
-from web.operator_ui.pages._ops_cockpit_helpers import RetrainWindow
+from web.operator_ui.pages._ops_cockpit_helpers import (
+    BundleFreshness,
+    RetrainWindow,
+)
 from web.operator_ui.update_status import NO_REASON_MARK, UpdateRunStatus
 
 _TRUSTED_PROVENANCE = frozenset({
@@ -66,6 +75,21 @@ class DailySignalSummary:
     as_of_date: str | None = None
     entry_date: str | None = None
     next_rebalance_date: str | None = None
+    #: 已核验候选清单的条数。空清单是**合法产出**（`--topk 0` 或全部候选
+    #: 被掩蔽），丢掉基数会让「再平衡日」被下游当成「必有买入对象」
+    #: （codex #468 P1）。仅在工件通过全部核验后有值。
+    pick_count: int | None = None
+    #: 产出器写下的数据来源（meta.provider_uri / meta.bundle_tag）。此前
+    #: 核验只绑模型身份、把数据来源丢了——provider 切换或 bundle 原地重建
+    #: 后，别的 bundle 的工件按日期巧合也能冒充「最新」（codex #468 P1）。
+    #: 仅在工件通过全部核验后原样留存；核验交给消费方。
+    data_provider_uri: str | None = None
+    data_bundle_tag: str | None = None
+    #: 产出器写下的 bundle 重建 nonce（meta.bundle_built_at = stamp 的
+    #: built_at）。tag 只含日历尾+day.txt 哈希——同日历的原地重建它看不
+    #: 见；built_at 每次重建都刷新（codex #468 二轮 P1）。老工件无此键，
+    #: None 是合法态。
+    data_bundle_built_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +165,20 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 身份形态 XOR（canonical 契约明文：同时携带 model_pkl_sha256 与
+    # ensemble 块的工件是 malformed）——artifact_meta_status 按 ensemble
+    # 形态归类会忽略冲突的单模身份，manifest 对得上就当已核验（codex P2）。
+    meta_shape = payload.get("meta")
+    if (isinstance(meta_shape, dict)
+            and "model_pkl_sha256" in meta_shape
+            and isinstance(meta_shape.get("ensemble"), dict)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件同时携带两种身份形态（model_pkl_sha256 + ensemble 块）——"
+            "canonical 契约明文 XOR，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     verdict = provenance_verdict(incumbent, meta_status)
     if verdict not in _TRUSTED_PROVENANCE:
         return DailySignalSummary(
@@ -154,11 +192,85 @@ def summarise_daily_signal(
         # The detailed page treats a missing/non-list picks value, or a
         # non-object member, as a corrupt producer artifact. The workbench
         # must use that same boundary before presenting this file as current.
-        picks_table_rows(payload)
+        pick_count = len(picks_table_rows(payload))
     except ValueError as exc:
         return DailySignalSummary(
             "needs_verification",
             f"工件候选列表不合法：{exc}",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    # 行级契约：产出器 RecommendationPick（frozen dataclass）六键六型**恒写**
+    # ——`picks: [{}]` 这类行数不出任何可买标的，却会把基数抬成 1、让最显
+    # 眼的卡说「有再平衡指令 · 1 只候选」（codex P2）。详情页的 display 层
+    # 刻意 pass-through（工单 §1.4）不动；驱动指令句的**基数**在此验约，
+    # 违约=需核查，不做静默缩数。
+    for index, pick in enumerate(payload["picks"]):
+        problem = _pick_row_violation(pick)
+        if problem is not None:
+            return DailySignalSummary(
+                "needs_verification",
+                f"工件候选第 {index + 1} 行违约：{problem}（产出器恒写六键，"
+                "缺任一即非产出器产物）。",
+                as_of_date=as_of_date,
+                entry_date=entry_date,
+            )
+    # 清单级验约：同一 stock_code 出现两次是产出器产不出的形态——上游
+    # _scores_to_inst_map 的 unique-instruments 守卫在构造 picks 之前就
+    # fail-loud（其 docstring 明言）。逐行验约看不见跨行重复，基数会把
+    # 「两行一只标的」报成「2 只候选」（codex P2）。
+    codes = [str(pick["stock_code"]) for pick in payload["picks"]]
+    if len(codes) != len(set(codes)):
+        duplicated = sorted({c for c in codes if codes.count(c) > 1})
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选包含重复代码 {duplicated}——产出器上游对重复标的 "
+            "fail-loud，产不出这种清单；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    # 序与秩验约（canonical 契约 v2-daily-stock-recommendation：Ranks
+    # SHALL be contiguous 1..N，按 predicted_score 降序稳定排序）——
+    # [2] 或 [1,1] 这类断秩/乱序清单产出器产不出，基数照数会拿损坏工件
+    # 驱动头卡（codex P2）。
+    # topk 界（canonical 契约 N ≤ topk；产出器在 meta 无条件写 topk）：
+    # 缺失/非法/被超出都是产出器产不出的形态——超长清单照数会把损坏工件
+    # 的基数端上头卡（codex P2）。
+    meta_for_topk = payload.get("meta")
+    raw_topk = (meta_for_topk.get("topk")
+                if isinstance(meta_for_topk, dict) else None)
+    if (isinstance(raw_topk, bool) or not isinstance(raw_topk, int)
+            or raw_topk < 0):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.topk 缺失或非法（实际 {raw_topk!r}）——产出器无条件"
+            "写非负 int；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    if len(payload["picks"]) > raw_topk:
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选 {len(payload['picks'])} 条超出 meta.topk"
+            f"（{raw_topk}）——canonical 契约 N ≤ topk，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    ranks = [pick["rank"] for pick in payload["picks"]]
+    if ranks != list(range(1, len(ranks) + 1)):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件候选 rank 序列 {ranks} 不是连续 1..N——canonical 契约"
+            "明文 contiguous，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    scores = [pick["predicted_score"] for pick in payload["picks"]]
+    if any(scores[i] < scores[i + 1] for i in range(len(scores) - 1)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件候选 predicted_score 非降序——canonical 契约按分降序稳定"
+            "排序，产出器产不出；需核查。",
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
@@ -171,6 +283,120 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
         )
+    # 节奏日期验约（codex P2）：产出器只写严格 ISO 日期或 null（日历尾附
+    # 近合法 None）——hold_state 刻意宽容（非 str 静默成 None、非 ISO 原样
+    # 保留），把 `123`/"tomorrow" 这类产出器产不出的值放到头卡上宣布
+    # 「HOLD 无需动作」是拿损坏工件下结论。缺键 = cadence-1 合法形态。
+    # 节奏双字段 both-or-neither（write_outputs 在同一个守卫块里同写两键；
+    # codex P2）：只带其一是产出器产不出的形态——缺 next 键时 hold_state
+    # 会静默补 None，头卡把损坏工件当已核验 HOLD 报「未记录」。显式 null
+    # （日历尾外无锚）与缺键是两回事。
+    if ("rebalance_day" in payload) != ("next_rebalance_date" in payload):
+        present = ("rebalance_day" if "rebalance_day" in payload
+                   else "next_rebalance_date")
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件只带节奏双字段之一（{present}）——产出器在同一守卫块同写"
+            "两键，产不出这种形态；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    if "next_rebalance_date" in payload:
+        raw_next = payload["next_rebalance_date"]
+        next_problem: str | None = None
+        if payload.get("rebalance_day") is True and raw_next != str(as_of_date):
+            # 跨字段不变式（无需日历复推，codex P2）：next_rebalance_date(d)
+            # 在 d 本身是再平衡日时**必然返回 d**——rebalance_day=true 配
+            # null 或别的日期是产出器产不出的节奏记录。
+            next_problem = (
+                f"再平衡日的 next 必为 as_of（{as_of_date}）——实际 "
+                f"{raw_next!r}，产出器产不出")
+        elif raw_next is not None:
+            if not isinstance(raw_next, str):
+                next_problem = f"非 str/null（实际 {type(raw_next).__name__}）"
+            else:
+                try:
+                    strict = date.fromisoformat(raw_next).isoformat() == raw_next
+                except ValueError:
+                    strict = False
+                if not strict:
+                    next_problem = f"不是严格 ISO 日期（实际 {raw_next!r}）"
+                elif (payload.get("rebalance_day") is False
+                        and (raw_next < str(entry_date)
+                             or date.fromisoformat(raw_next).weekday() >= 5)):
+                    # 产出器契约：next_rebalance_date(d) = 首个再平衡日
+                    # >= d，HOLD 日的 as_of 本身不是再平衡日 → 严格大于。
+                    # 过去/当日值是产出器产不出的——头卡把它宣布成「下一
+                    # 再平衡日」是拿损坏工件报日程（codex P2）。再平衡日
+                    # 工件的 next == as_of 合法，不在此限。
+                    next_problem = (
+                        f"不可能的取值（{raw_next}）：HOLD 日的下一再平衡"
+                        f"日是交易日且最早为 entry（{entry_date}）——早于"
+                        " entry 或落在周末的值产出器产不出")
+        if next_problem is not None:
+            return DailySignalSummary(
+                "needs_verification",
+                f"工件 next_rebalance_date {next_problem}——产出器只写严格 "
+                "ISO 或 null，需核查。",
+                as_of_date=as_of_date,
+                entry_date=entry_date,
+            )
+    # 数据来源原样留存（meta 在上方已通过形态核验，必为 dict）。产出器
+    # 无条件写 provider_uri；bundle_tag 在 bundle 无身份块时合法为 None。
+    meta_block = payload.get("meta")
+    data_provider = (
+        meta_block.get("provider_uri") if isinstance(meta_block, dict) else None)
+    data_tag = (
+        meta_block.get("bundle_tag") if isinstance(meta_block, dict) else None)
+    # 在场但类型违约 ≠ 缺席：产出器只写 str（provider_uri）/ str|null
+    # （bundle_tag）。把 `123` 这类值静默降成 None 会借道「合法缺身份块」
+    # 绕开 bundle 比对（codex P2）——类型违约 = 工件需核查，不降级。
+    if data_provider is not None and not isinstance(data_provider, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.provider_uri 非字符串（实际 "
+            f"{type(data_provider).__name__}）——产出器只写 str，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    if data_tag is not None and not isinstance(data_tag, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.bundle_tag 非 str/null（实际 "
+            f"{type(data_tag).__name__}）——产出器只写这两种，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    data_built_at = (
+        meta_block.get("bundle_built_at")
+        if isinstance(meta_block, dict) else None)
+    if data_built_at is not None and not isinstance(data_built_at, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.bundle_built_at 非 str/null（实际 "
+            f"{type(data_built_at).__name__}）——产出器只写这两种，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    # 显式 null nonce ≠ 缺键 legacy（codex P2）：tag 非空证明 stamp 存在
+    # ⇒ built_at 当时必然可得——键在场却写 null、tag 又非空，是产出器产不
+    # 出的组合；当 legacy 放行会在同日历原地重建后跳过 nonce 比对。
+    if (isinstance(meta_block, dict)
+            and "bundle_built_at" in meta_block
+            and meta_block["bundle_built_at"] is None
+            and isinstance(data_tag, str)):
+        return DailySignalSummary(
+            "needs_verification",
+            "工件带非空 bundle_tag（stamp 存在）却显式写 bundle_built_at "
+            "null——stamp 的 built_at 当时必然可得，产出器产不出；需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    provenance: dict[str, str | None] = {
+        "data_provider_uri": data_provider,
+        "data_bundle_tag": data_tag,
+        "data_bundle_built_at": data_built_at,
+    }
     if cadence.is_hold:
         return DailySignalSummary(
             "hold",
@@ -178,6 +404,8 @@ def summarise_daily_signal(
             as_of_date=as_of_date,
             entry_date=entry_date,
             next_rebalance_date=cadence.next_rebalance_date,
+            pick_count=pick_count,
+            **provenance,
         )
     if "rebalance_day" in payload:
         return DailySignalSummary(
@@ -185,12 +413,16 @@ def summarise_daily_signal(
             "再平衡日信号，仍须在详情页完成人工核对。",
             as_of_date=as_of_date,
             entry_date=entry_date,
+            pick_count=pick_count,
+            **provenance,
         )
     return DailySignalSummary(
         "daily",
         "日频工件，仍须在详情页完成人工核对。",
         as_of_date=as_of_date,
         entry_date=entry_date,
+        pick_count=pick_count,
+        **provenance,
     )
 
 
@@ -222,8 +454,11 @@ __all__ = [
     "DailySignalSummary",
     "OperationalSummary",
     "SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION",
+    "TodaysAnswer",
+    "model_age_rows",
     "summarise_daily_signal",
     "summarise_operations",
+    "todays_buy_answer",
 ]
 
 def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
@@ -260,3 +495,294 @@ def model_age_rows(window: RetrainWindow) -> list[tuple[str, str]]:
             "仓库无机器可读的重训到期锚）",
         ),
     ]
+
+
+def _pick_row_violation(pick: dict[str, object]) -> str | None:
+    """一行候选违约在哪——None = 合约内。
+
+    钉的是产出器 `RecommendationPick`（frozen dataclass）的**全部**六键与
+    类型（穷尽式，不挑其中几个——挑选就是下一个漏洞的形状）：rank int /
+    stock_code 非空 str / stock_name str / predicted_score 数值 /
+    tradable_flag bool / unavailable_reason str。
+    """
+    code = pick.get("stock_code")
+    if not (isinstance(code, str) and code.strip()):
+        return "stock_code 缺失或为空"
+    if not isinstance(pick.get("stock_name"), str):
+        return "stock_name 缺失或非字符串"
+    rank = pick.get("rank")
+    if isinstance(rank, bool) or not isinstance(rank, int):
+        return "rank 缺失或非整数"
+    score = pick.get("predicted_score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return "predicted_score 缺失或非有限数值"
+    # NaN/inf 也拒：json.loads 接受裸 NaN，而 NaN 的比较恒 False 会悄悄
+    # 穿过降序检查；产出器打分后 dropna 再构造 picks，非有限分产不出
+    # （codex P2）。isfinite 对 JSON 任意精度大整数（10**1000）抛
+    # OverflowError——检查自己不许成为崩溃源（codex 续指），同判非有限。
+    try:
+        finite = math.isfinite(score)
+    except OverflowError:
+        finite = False
+    if not finite:
+        return "predicted_score 缺失或非有限数值"
+    # 不止验类型，验**字面**：产出器只落已过可交易筛选的行（untradable 在
+    # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
+    # _build_picks）。False/非空 reason 的行产出器产不出；只验布尔会让
+    # 「工件自己标注不可交易」的行照样计入候选数（codex P2）。
+    if pick.get("tradable_flag") is not True:
+        return "tradable_flag 缺失或非 True（产出器只落可交易行）"
+    if pick.get("unavailable_reason") != "":
+        return "unavailable_reason 非空串（产出器对入选行恒写空串）"
+    return None
+
+
+_ANSWER_DISCLAIMER = "本句只汇总既有工件与出单侧判据，不是订单，也不授予交易许可。"
+
+
+def _same_provider_spelling(artifact: str, current: str) -> bool:
+    """两个 provider 拼写是否指同一份 bundle——用出单器自己的归一化。
+
+    不自造第二套归一化（expanduser/abspath/realpath/normcase 的组合差一个
+    就是一类假阴/假阳）；出单器怎么认，本卡就怎么认。
+
+    归一化之前先**同锚**：`_normalize_provider_uri` 对相对拼写按进程 CWD
+    归一，而页面的当前 provider 早已 `anchored_to_repo`（仓根锚，UI 支持
+    从仓外启动的既有语境）——工件里的相对拼写来自生产配置、语境同为仓根。
+    不同锚的两个相对拼写会让**同一份** bundle 比不相等，最显眼的卡片假拒
+    一份有效指令（codex P1）。绝对拼写 anchored_to_repo 原样放行，不变。
+    """
+    from src.inference import daily_recommend as _rec  # noqa: PLC0415
+    normalize = _rec._normalize_provider_uri  # type: ignore[attr-defined]
+    # 锚之前先 strip——出单器归一化的第一步就是 strip（其 docstring 管
+    # `" data/prov "` 叫 incidental whitespace）；不 strip 就锚会把它拼成
+    # `<repo>/ data/prov ` 这种另一条路径，合法工件被误判外来（codex P1）。
+    return bool(normalize(anchored_to_repo(artifact.strip()))
+                == normalize(anchored_to_repo(current.strip())))
+
+
+@dataclass(frozen=True)
+class TodaysAnswer:
+    """One synthesized sentence answering「今天要不要买」.
+
+    * ``rebalance``      — 数据所及的最新指令是再平衡且清单非空（截至已收盘
+                           会话；执行时点归操作人的执行惯例，仍须人工核对）。
+    * ``watch``          — 最新指令为 HOLD 或再平衡清单为空：无需动作。
+    * ``no_instruction`` — 流程态：尚无工件，或数据已走到最新指令之后
+                           （出单没跟上）；带日期如实点名。
+    * ``unanswerable``   — 异常态：出单侧判据拒绝（陈旧/完整性/健康份额）、
+                           裁决不可达，或工件本身需要核查。
+    """
+
+    state: str
+    value: str
+    detail: str
+
+
+def todays_buy_answer(
+    signal: DailySignalSummary,
+    freshness: BundleFreshness,
+) -> TodaysAnswer:
+    """合成「今天要不要买」——用户每天真正要问的那一句（UI 已批序列④）。
+
+    **零新判定、零时钟**：数据包前置用出单侧自己的 `usable` 判据全额消费
+    ——年龄、完整性，加上健康摘要「只扣分不加分」的份额（漏任何一份都会
+    与同页的健康卡自相矛盾；#461 首版另写一份三个决策全错的教训在档）；
+    节奏（HOLD / 再平衡）用 `summarise_daily_signal` 已核验过来源的分类，
+    含候选**基数**（空清单是合法产出，不是买入指令）。
+
+    「指令新不新」不比挂钟：`entry_date` 按基线契约是**已收盘会话**
+    （v2-daily-decision-page：可交易性筛选需要该会话的真实 K 线，产出器
+    永远出不了未收盘会话的清单——它**不是**「明早买入」指令，真实订单
+    如何向清单收敛是操作人的执行惯例，观察期记录的正是该偏差）。所以
+    「最新」的判据是 `entry_date == 出单侧日历尾`：出单器就是从那份
+    bundle 跑的，尾巴对上 = 数据所及的最新指令；数据走到了指令前面 =
+    出单没跟上（流程态）；指令声称的会话晚于数据尾 = 两侧有一侧在说谎
+    （异常态）。codex #468 P1：把 entry 等同「今天买」会怂恿对已收盘
+    价格下单——本函数不给任何执行时点，只说清「最新指令是什么」。
+
+    「不回答」分两种，绝不混用：``no_instruction`` 是流程态（带两个日期
+    如实点名），``unanswerable`` 是异常态（判据拒绝或工件需核查，带原因）。
+    """
+    if not getattr(freshness, "known", False):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧新鲜度裁决不可达：{freshness.message or '原因未记录'}。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if freshness.refuses_today:
+        behind = (
+            f"数据尾落后 {freshness.days_behind} 天，超出出单上限 "
+            f"{freshness.max_age_days} 天"
+            if freshness.days_behind is not None
+            else "数据陈旧超出出单上限")
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧今天会拒：{behind}。先修数据再谈信号。{_ANSWER_DISCLAIMER}",
+        )
+    if freshness.integrity_accepted is not True:
+        reason = (
+            freshness.integrity_reason or "完整性未评估"
+            if freshness.integrity_accepted is None
+            else freshness.integrity_reason or "原因未记录")
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧完整性闸未放行：{reason}。{_ANSWER_DISCLAIMER}",
+        )
+    if not freshness.usable:
+        # 年龄与完整性两道闸都过了，`usable` 仍可为假——健康摘要的份额
+        # （instruments 缺失这类前置）。健康只能扣分不能加分（其角色如此
+        # documented），漏掉它会让本卡说「有指令」而健康卡同时报问题——
+        # 同页自相矛盾（codex #468 P1）。
+        leftovers = "；".join(part for part in (
+            f"健康状态 {freshness.health_status}"
+            if freshness.health_status != "ok" else "",
+            *freshness.health_warnings,
+        ) if part)
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"数据包健康前置未全过：{leftovers or freshness.message or '原因未记录'}。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    tail = freshness.tail_date
+    if not tail:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"出单侧裁决在场但未带日历尾，无法比对指令新旧。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind == "missing":
+        return TodaysAnswer(
+            "no_instruction", "没有可执行的指令",
+            f"尚无日度信号工件；请先在运行中心生成。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind not in ("hold", "rebalance", "daily"):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"最新工件需要核查：{signal.detail}{_ANSWER_DISCLAIMER}",
+        )
+    # 数据来源绑定（codex #468 P1）：entry 与日历尾的比对只在「工件出自
+    # **这份** bundle」时才有意义——provider 切换或 bundle 原地重建后，
+    # 别的 bundle 的工件按日期巧合也能对上尾，而全页健康检查说的都是另一
+    # 份数据。provider 必绑（产出器无条件写 meta.provider_uri）；身份 tag
+    # 两侧都有才可比（身份块是 stamp 的可选项，pre-PR-G+I 无块是合法态
+    # ——那时仅按 provider 绑定，不假装比过）。
+    if signal.data_provider_uri is None:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "工件缺数据来源（meta.provider_uri，v2 产出器无条件写入）——"
+            f"无法确认信号出自当前数据；请核查工件。{_ANSWER_DISCLAIMER}",
+        )
+    if signal.data_provider_uri.strip() == "":
+        # 空/全空白拼写是产出器产不出的（config.provider_uri 有非空守卫），
+        # 而路径边界刻意放行空串——归一化会把它解析成**进程 CWD**：Streamlit
+        # 恰好从 bundle 目录启动时，损坏工件就绑定成功（codex P2）。
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "工件的数据来源为空/全空白——产出器产不出这种拼写；请核查工件。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    current_provider = freshness.provider_uri
+    if current_provider is None or not current_provider.strip():
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "出单侧裁决未带 provider 身份，无法绑定工件的数据来源。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    # 归一化之前先过既有的拼写边界（unusable_path_reason，NUL 先于任何
+    # 文件系统调用）：内嵌 NUL 的拼写会让 realpath 抛 ValueError，整页
+    # 变 traceback 而不是规格要求的拒答（codex P2）。两侧对称——工件侧
+    # 来自不可信文件，当前侧同一崩溃向量同一门。
+    # 孤立代理字符不再此处内联检查——它已下沉进 unusable_path_reason 本体
+    # （与 NUL 同一不变式；codex 第十五轮 P2 指出页面在本合成**之前**就对
+    # 当前 provider 跑了健康/日历尾/完整性读取，内联检查救不了那些调用——
+    # 修在共享边界，页面顶部 provider_problem 与各读取器的既有门全部接住）。
+    for side, spelling in (("工件", signal.data_provider_uri),
+                           ("出单侧", current_provider)):
+        unusable = unusable_path_reason(spelling)
+        if unusable is not None:
+            return TodaysAnswer(
+                "unanswerable", "无法给出",
+                f"{side}的数据来源拼写不可用：{unusable}{_ANSWER_DISCLAIMER}",
+            )
+    if not _same_provider_spelling(
+            signal.data_provider_uri, current_provider):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"工件出自另一个 provider（工件 {signal.data_provider_uri} vs "
+            f"当前 {freshness.provider_uri}）——它不是这份数据的信号；本页"
+            f"其余检查说的都是当前数据。{_ANSWER_DISCLAIMER}",
+        )
+    if (signal.data_bundle_tag is not None
+            and freshness.identity_tag is not None
+            and signal.data_bundle_tag != freshness.identity_tag):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"工件出自另一份 bundle（工件身份戳 {signal.data_bundle_tag} vs "
+            f"当前 {freshness.identity_tag}）——bundle 已重建或被替换；请"
+            f"重跑出单。{_ANSWER_DISCLAIMER}",
+        )
+    # tag 只含日历尾+day.txt 哈希（其 docstring 明言非 full-bin 保证）——
+    # 宇宙/bin 变了而日历没变的**原地重建**它看不见；built_at 是每次重建
+    # 都刷新的 nonce（codex #468 二轮 P1）。两侧都有才可比：老工件无此键、
+    # 无 stamp 无 built_at，都是合法缺席，按已比对的 provider/tag 绑定放
+    # 行，不冒充比过。
+    if (signal.data_bundle_built_at is not None
+            and freshness.built_at is not None
+            and signal.data_bundle_built_at != freshness.built_at):
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"bundle 已原地重建（工件建于 {signal.data_bundle_built_at}，"
+            f"当前 stamp 建于 {freshness.built_at}）——身份 tag 对得上只说明"
+            f"日历没变，数据内容可能已换；请重跑出单。{_ANSWER_DISCLAIMER}",
+        )
+    # 已核验的三类工件都带严格 ISO entry_date（summarise_daily_signal 的
+    # 边界保证）；日历尾同为规范 YYYY-MM-DD——ISO 字符串可直接比序。
+    entry = str(signal.entry_date)
+    # 已收盘披露跟着工件内容走到**每一个**把它当指令呈现的态（基线契约 +
+    # 本 change 规格；codex P2：流程态也点名了 entry，披露不能只在现行态）。
+    closed = (
+        f"截至 {entry} 收盘（**已收盘会话**，不是「明早买入」指令；真实"
+        "订单如何向清单收敛是你的执行惯例，观察期记录的正是该偏差）")
+    if entry < tail:
+        return TodaysAnswer(
+            "no_instruction", "最新指令未跟上数据",
+            f"数据已到 {tail}，最新指令仍是{closed}的那份——之后的出单"
+            f"还没跑；请在运行中心生成。{_ANSWER_DISCLAIMER}",
+        )
+    if entry > tail:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            f"工件声称的会话（{entry}）晚于出单侧数据尾（{tail}）——产出器"
+            f"出不了未收盘会话的清单，两侧必有一侧在说谎；请核查工件来源。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if signal.kind == "hold":
+        return TodaysAnswer(
+            "watch", "不动 · 最新指令为 HOLD",
+            f"{closed}：HOLD，无需动作；下一再平衡日："
+            f"{signal.next_rebalance_date or '未记录'}。{_ANSWER_DISCLAIMER}",
+        )
+    # 此处 kind ∈ {"rebalance", "daily"}（上方已闸）。"daily" = 缺
+    # rebalance_day 的 cadence-1 工件——契约明文（hold_state：ABSENT =
+    # legacy daily、is_hold=False）每日皆为可执行清单，详情页同样按可执行
+    # 渲染；把它拒答会让整个 cadence-1 部署形态的头卡永远哑火（codex P1）。
+    # 与再平衡日同一套基数逻辑。
+    # 空清单是**合法产出**（`--topk 0` 或全部候选被掩蔽）——零个买入
+    # 对象时说「有指令」是最显眼卡片上的错话（codex #468 P1）。
+    if signal.pick_count is None:
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "工件的候选数未随核验结果传递，无法确认有无买入对象。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    if signal.pick_count == 0:
+        return TodaysAnswer(
+            "watch", "不动 · 目标清单为空",
+            f"{closed}：目标清单为空（--topk 0 或全部候选被掩蔽都是合法"
+            f"产出）——没有买入对象；详情页可核对原因。{_ANSWER_DISCLAIMER}",
+        )
+    return TodaysAnswer(
+        "rebalance", "有再平衡指令（待人工核对）",
+        f"{closed}：共 {signal.pick_count} 只候选——去日度决策页逐项"
+        f"人工核对后，按你的执行惯例决定是否与如何收敛。{_ANSWER_DISCLAIMER}",
+    )

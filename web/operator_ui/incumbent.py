@@ -61,6 +61,9 @@ WHY_DRIVE_RELATIVE = (
 WHY_NUL_BYTE = (
     "该路径含 NUL 字节,不可能命名任何文件——文件系统调用会直接抛 "
     "`ValueError`,把整页打成 traceback")
+WHY_SURROGATE = (
+    "该路径含孤立代理字符,无法编码为文件系统路径——POSIX 上文件系统调用"
+    "会直接抛 `UnicodeEncodeError`,把整页打成 traceback")
 WHY_UNRESOLVED_TILDE = (
     "该路径以 `~` 开头且本机解析不出对应的家目录(如 `~unknown/…`)")
 _UNUSABLE_TAIL = (
@@ -93,6 +96,15 @@ def unusable_path_reason(path: str) -> str | None:
         # boundary does not catch — the whole page became a traceback
         # (codex #431 r34). Nothing downstream can use such a value either.
         return WHY_NUL_BYTE + _UNUSABLE_TAIL
+    if any("\ud800" <= ch <= "\udfff" for ch in path):
+        # Same ONE-invariant as NUL, sibling failure shape: JSON can
+        # represent a lone surrogate ("\ud800", corruption-reachable), and
+        # POSIX filesystem calls raise UnicodeEncodeError on it — which the
+        # readers' OSError boundaries do not catch either (codex #468).
+        # Checked here so EVERY consumer of this boundary (page-top gate,
+        # calendar tail, integrity check, provenance binding) refuses it
+        # before any filesystem call, not just the one that got the report.
+        return WHY_SURROGATE + _UNUSABLE_TAIL
     if not path.strip():
         return None                       # blank: the r21 boundary owns it
     expanded = os.path.expanduser(path)
