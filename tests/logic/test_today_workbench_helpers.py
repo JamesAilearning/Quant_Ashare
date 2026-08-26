@@ -623,6 +623,31 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                 self.assertEqual("unanswerable", got.state)
                 self.assertIn("拼写不可用", got.detail)
 
+    def test_a_blank_provider_spelling_refuses_on_both_sides(self) -> None:
+        # 空/全空白是产出器产不出的拼写，而路径边界刻意放行空串——归一化
+        # 会解析成进程 CWD：Streamlit 恰从 bundle 目录启动时损坏工件就
+        # 绑定成功（codex P2）。两侧各自拒答。
+        for side, overrides in (
+            ("工件空串", {"signal": {"data_provider_uri": ""}}),
+            ("工件全空白", {"signal": {"data_provider_uri": "   "}}),
+            ("出单侧全空白", {"fresh": {"provider_uri": "   "}}),
+        ):
+            with self.subTest(side=side):
+                got = todays_buy_answer(
+                    self._signal("rebalance", **overrides.get("signal", {})),
+                    self._fresh(**overrides.get("fresh", {})))
+                self.assertEqual("unanswerable", got.state,
+                                 "空白拼写被归一化成 CWD 绑定了")
+                # 钉到**具体原因**：空白必须被空白门拒，而不是碰巧被
+                # 「另一个 provider」的 mismatch 兜住（那条在 CWD 恰好
+                # 等于 provider 目录时会放行——正是本洞的形状）。
+                self.assertNotIn("另一个 provider", got.detail,
+                                 "空白走了 mismatch 兜底而非专门的门")
+                if side.startswith("工件"):
+                    self.assertIn("产出器产不出", got.detail)
+                else:
+                    self.assertIn("未带 provider 身份", got.detail)
+
     def test_a_relative_artifact_provider_binds_regardless_of_cwd(self) -> None:
         # meta.provider_uri 可为相对拼写（生产配置语境=仓根）；Streamlit 从
         # 仓外启动时进程 CWD ≠ 仓根——按 CWD 归一会让**同一份** bundle 比

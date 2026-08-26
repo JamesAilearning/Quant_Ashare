@@ -92,6 +92,14 @@
 - [x] 变异（去 nonce 比对，-B 无缓存）1 failed 咬住；产出器侧源码钉
       （nonce 真从 stamp 来、真落 meta）
 
+## 第九轮（codex P2：空白拼写借道 CWD）
+
+- [x] 空/全空白 meta.provider_uri（产出器产不出：config 有非空守卫；路径
+      边界刻意放行空串）会被归一化解析成进程 CWD——Streamlit 恰从 bundle
+      目录启动时损坏工件假绑定。比对前两侧各设空白门；变异首跑没咬暴露
+      断言过弱（空白被 mismatch 兜住也算 unanswerable——正是 CWD==provider
+      时会放行的形状），钉到具体原因后 2 failed 咬住
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

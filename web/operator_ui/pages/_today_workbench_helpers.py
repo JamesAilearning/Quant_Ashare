@@ -512,7 +512,17 @@ def todays_buy_answer(
             "工件缺数据来源（meta.provider_uri，v2 产出器无条件写入）——"
             f"无法确认信号出自当前数据；请核查工件。{_ANSWER_DISCLAIMER}",
         )
-    if not freshness.provider_uri:
+    if signal.data_provider_uri.strip() == "":
+        # 空/全空白拼写是产出器产不出的（config.provider_uri 有非空守卫），
+        # 而路径边界刻意放行空串——归一化会把它解析成**进程 CWD**：Streamlit
+        # 恰好从 bundle 目录启动时，损坏工件就绑定成功（codex P2）。
+        return TodaysAnswer(
+            "unanswerable", "无法给出",
+            "工件的数据来源为空/全空白——产出器产不出这种拼写；请核查工件。"
+            f"{_ANSWER_DISCLAIMER}",
+        )
+    current_provider = freshness.provider_uri
+    if current_provider is None or not current_provider.strip():
         return TodaysAnswer(
             "unanswerable", "无法给出",
             "出单侧裁决未带 provider 身份，无法绑定工件的数据来源。"
@@ -523,7 +533,7 @@ def todays_buy_answer(
     # 变 traceback 而不是规格要求的拒答（codex P2）。两侧对称——工件侧
     # 来自不可信文件，当前侧同一崩溃向量同一门。
     for side, spelling in (("工件", signal.data_provider_uri),
-                           ("出单侧", freshness.provider_uri)):
+                           ("出单侧", current_provider)):
         unusable = unusable_path_reason(spelling)
         if unusable is not None:
             return TodaysAnswer(
@@ -531,7 +541,7 @@ def todays_buy_answer(
                 f"{side}的数据来源拼写不可用：{unusable}{_ANSWER_DISCLAIMER}",
             )
     if not _same_provider_spelling(
-            signal.data_provider_uri, freshness.provider_uri):
+            signal.data_provider_uri, current_provider):
         return TodaysAnswer(
             "unanswerable", "无法给出",
             f"工件出自另一个 provider（工件 {signal.data_provider_uri} vs "
