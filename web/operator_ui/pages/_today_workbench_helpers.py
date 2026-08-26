@@ -226,6 +226,16 @@ def summarise_daily_signal(
                     strict = False
                 if not strict:
                     next_problem = f"不是严格 ISO 日期（实际 {raw_next!r}）"
+                elif (payload.get("rebalance_day") is False
+                        and raw_next <= str(as_of_date)):
+                    # 产出器契约：next_rebalance_date(d) = 首个再平衡日
+                    # >= d，HOLD 日的 as_of 本身不是再平衡日 → 严格大于。
+                    # 过去/当日值是产出器产不出的——头卡把它宣布成「下一
+                    # 再平衡日」是拿损坏工件报日程（codex P2）。再平衡日
+                    # 工件的 next == as_of 合法，不在此限。
+                    next_problem = (
+                        f"不晚于 as_of_date（{raw_next} <= {as_of_date}）"
+                        "——HOLD 日的下一再平衡日必须在未来")
         if next_problem is not None:
             return DailySignalSummary(
                 "needs_verification",

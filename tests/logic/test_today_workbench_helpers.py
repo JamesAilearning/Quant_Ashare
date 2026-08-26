@@ -264,6 +264,10 @@ class DailySignalSummaryTests(unittest.TestCase):
             ("int", 123, "needs_verification"),
             ("非 ISO", "tomorrow", "needs_verification"),
             ("宽 ISO", "2026-8-25", "needs_verification"),
+            # 产出器契约 next >= d 且 HOLD 日 as_of 非再平衡日 → 严格大于；
+            # 过去/当日值产出器产不出（codex P2）。
+            ("过去日期", "2026-08-01", "needs_verification"),
+            ("等于 as_of", "2026-08-18", "needs_verification"),
             ("null 合法", None, "hold"),
         ):
             with self.subTest(label=label):
@@ -276,6 +280,17 @@ class DailySignalSummaryTests(unittest.TestCase):
                                  "损坏节奏日期被当成了已核验 HOLD")
                 if expect == "needs_verification":
                     self.assertIn("next_rebalance_date", got.detail)
+
+    def test_a_rebalance_day_next_equal_to_as_of_is_legal(self) -> None:
+        # 再平衡日本身就是锚：next_rebalance_date(d) == d 合法，不受 HOLD
+        # 侧「必须在未来」的限制。
+        payload = _ensemble_payload()
+        payload["next_rebalance_date"] = "2026-08-18"
+        got = summarise_daily_signal(
+            "2026-08-18", payload,
+            incumbent=self.incumbent, current_model_sha=None)
+        self.assertEqual("rebalance", got.kind,
+                         "再平衡日的 next==as_of 被误伤")
 
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
