@@ -71,6 +71,17 @@
       需核查不做静默缩数；display 层 pass-through（工单 §1.4）不动
 - [x] 变异两发（去 NUL 门 2f / 去行验约 7f）全咬；逐键坏形态七用例
 
+## 第七轮（codex 2×P2：类型降级借道 + 字面钉可交易）
+
+- [x] meta.provider_uri / bundle_tag「在场但类型违约」＝需核查，不再静默
+      降成 None 借道「合法缺身份块」绕开 bundle 比对（产出器只写
+      str / str|null）
+- [x] 行验约从验型升为验**字面**：产出器只落已过筛的行（构造器写死
+      tradable_flag=True / unavailable_reason=""）——工件自标不可交易的
+      行不再计入候选数
+- [x] 变异两发全咬（无缓存 -B 复验；顺带抓到并记档变异 harness 的 pyc
+      秒级 mtime 假绿坑）
+
 ## 流程说明
 
 实现与规格同 PR，遵循 #467 的先例（codex 判 UI 新契约必须有配套 change）。

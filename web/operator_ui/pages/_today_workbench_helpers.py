@@ -210,10 +210,28 @@ def summarise_daily_signal(
         meta_block.get("provider_uri") if isinstance(meta_block, dict) else None)
     data_tag = (
         meta_block.get("bundle_tag") if isinstance(meta_block, dict) else None)
+    # 在场但类型违约 ≠ 缺席：产出器只写 str（provider_uri）/ str|null
+    # （bundle_tag）。把 `123` 这类值静默降成 None 会借道「合法缺身份块」
+    # 绕开 bundle 比对（codex P2）——类型违约 = 工件需核查，不降级。
+    if data_provider is not None and not isinstance(data_provider, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.provider_uri 非字符串（实际 "
+            f"{type(data_provider).__name__}）——产出器只写 str，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
+    if data_tag is not None and not isinstance(data_tag, str):
+        return DailySignalSummary(
+            "needs_verification",
+            f"工件 meta.bundle_tag 非 str/null（实际 "
+            f"{type(data_tag).__name__}）——产出器只写这两种，需核查。",
+            as_of_date=as_of_date,
+            entry_date=entry_date,
+        )
     provenance: dict[str, str | None] = {
-        "data_provider_uri": (
-            data_provider if isinstance(data_provider, str) else None),
-        "data_bundle_tag": data_tag if isinstance(data_tag, str) else None,
+        "data_provider_uri": data_provider,
+        "data_bundle_tag": data_tag,
     }
     if cadence.is_hold:
         return DailySignalSummary(
@@ -334,10 +352,14 @@ def _pick_row_violation(pick: dict[str, object]) -> str | None:
     score = pick.get("predicted_score")
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         return "predicted_score 缺失或非数值"
-    if not isinstance(pick.get("tradable_flag"), bool):
-        return "tradable_flag 缺失或非布尔"
-    if not isinstance(pick.get("unavailable_reason"), str):
-        return "unavailable_reason 缺失或非字符串"
+    # 不止验类型，验**字面**：产出器只落已过可交易筛选的行（untradable 在
+    # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
+    # _build_picks）。False/非空 reason 的行产出器产不出；只验布尔会让
+    # 「工件自己标注不可交易」的行照样计入候选数（codex P2）。
+    if pick.get("tradable_flag") is not True:
+        return "tradable_flag 缺失或非 True（产出器只落可交易行）"
+    if pick.get("unavailable_reason") != "":
+        return "unavailable_reason 非空串（产出器对入选行恒写空串）"
     return None
 
 

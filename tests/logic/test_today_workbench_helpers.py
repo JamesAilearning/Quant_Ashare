@@ -176,6 +176,12 @@ class DailySignalSummaryTests(unittest.TestCase):
                               "predicted_score": "0.1"}),
             ("tradable 非布尔", {**_pick(1, "SH600000"),
                                  "tradable_flag": "yes"}),
+            # 产出器只落可交易行（构造前过滤 + 构造器写死 True/""）——
+            # 工件自己标注不可交易的行不许计入候选数（codex P2）。
+            ("tradable False", {**_pick(1, "SH600000"),
+                                "tradable_flag": False}),
+            ("reason 非空", {**_pick(1, "SH600000"),
+                             "unavailable_reason": "suspension"}),
             ("缺 unavailable_reason",
              {k: v for k, v in _pick(1, "SH600000").items()
               if k != "unavailable_reason"}),
@@ -214,6 +220,23 @@ class DailySignalSummaryTests(unittest.TestCase):
             incumbent=self.incumbent, current_model_sha=None)
         self.assertIsNone(bare.data_provider_uri)
         self.assertIsNone(bare.data_bundle_tag)
+
+    def test_a_mistyped_provenance_is_unverifiable_not_absent(self) -> None:
+        # 在场但类型违约 ≠ 缺席：把 `123` 静默降成 None 会借道「合法缺身份
+        # 块」绕开 bundle 比对（codex P2）。产出器只写 str / str|null。
+        for field, value in (("provider_uri", 123), ("bundle_tag", 123),
+                             ("bundle_tag", True)):
+            with self.subTest(field=field, value=value):
+                payload = _ensemble_payload()
+                meta = dict(payload["meta"])  # type: ignore[arg-type]
+                meta[field] = value
+                payload["meta"] = meta
+                got = summarise_daily_signal(
+                    "2026-08-18", payload,
+                    incumbent=self.incumbent, current_model_sha=None)
+                self.assertEqual("needs_verification", got.kind,
+                                 "类型违约被降级成了缺席")
+                self.assertIn(field, got.detail)
 
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
         cases: tuple[tuple[str, object], ...] = (
