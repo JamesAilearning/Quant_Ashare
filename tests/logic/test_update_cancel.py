@@ -1259,8 +1259,63 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn('"launch_nonce": _launch.launch_nonce', page,
                       "会话没存 launch nonce")
-        self.assertEqual(2, page.count("record_bears_launch_nonce("),
-                         "两处收养（confirm+补结算）没都上 nonce 主判据")
+        # 三处:confirm 收养 + 补结算收养 + 页首覆盖判定（第二十五轮把
+        # 覆盖判定也升为 nonce 优先）。
+        self.assertEqual(3, page.count("record_bears_launch_nonce("),
+                         "收养/覆盖的 nonce 主判据不是恰好三处")
+
+    def test_nonce_evidence_survives_an_inconclusive_settlement_read(
+            self) -> None:
+        # 恢复路径回归（codex 第二十五轮 P2）：补结算/confirm 的死后读取
+        # 撞上 corrupt/missing 时,未决上下文（含 nonce）被退役而证据还没
+        # 落——孤儿恢复可读后被当活运行锁页六小时。被杀运行的 nonce 先验
+        # 已知,证据落盘不依赖那次读取:两处都在不确凿读取时落 nonce-only
+        # 证据;覆盖判定/启动闸凭 nonce 放行。
+        import json
+        import os as _os
+
+        from web.operator_ui.update_runner import _blocking_run_status
+        from web.operator_ui.update_status import status_path_for_provider
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn(
+            'elif _kill_nonce and _late_status.kind in '
+            '("missing", "corrupt")',
+            page, "补结算不确凿读取没落 nonce 证据")
+        self.assertIn('elif _kn and _fresh_status.kind in (', page,
+                      "confirm 不确凿重读没落 nonce 证据")
+        # 两处确凿收养的证据字典也带 nonce（覆盖判定凭它认领）。
+        self.assertIn('"launch_nonce": _kill_nonce or ""', page,
+                      "补结算确凿证据没带 nonce")
+        self.assertIn('"launch_nonce": _kn or ""', page,
+                      "confirm 确凿证据没带 nonce")
+        # 启动闸 nonce 放行:带同 nonce 的 running 记录=被杀孤儿,放行;
+        # 别人的 nonce 不放行。
+        nonce = "ab" * 16
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            from datetime import datetime, timedelta, timezone
+            _now = datetime.now(tz=timezone(timedelta(hours=8)))
+            record = {
+                "schema_version": 1, "state": "running",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": _now.date().isoformat(),
+                "started_at": _now.isoformat(),
+                "launch_nonce": nonce,
+            }
+            status_path_for_provider(provider).write_text(
+                json.dumps(record), encoding="utf-8")
+            self.assertIsNotNone(_blocking_run_status(provider),
+                                 "无证据 fresh running 应照常拦")
+            self.assertIsNone(
+                _blocking_run_status(
+                    provider, cancelled_launch_nonce=nonce),
+                "nonce 证据没放行被杀孤儿")
+            self.assertIsNotNone(
+                _blocking_run_status(
+                    provider, cancelled_launch_nonce="cd" * 16),
+                "别人的 nonce 被放行")
 
     def test_evidence_survives_inconclusive_status_reads(self) -> None:
         # corrupt/missing 是**读取失败**不是接替证明（codex 第二十三轮
@@ -1269,16 +1324,22 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # running（新运行顶替）或 finished 终态（孤儿被改写）。
         from web.operator_ui.update_runner import evidence_retires
         ev = "2026-08-27T09:00:00+08:00"
-        self.assertTrue(evidence_retires("finished", None, ev),
+        nonce = "ab" * 16
+        self.assertTrue(evidence_retires("finished", None, None, ev, nonce),
                         "终态接替没退役")
         self.assertTrue(evidence_retires(
-            "running", "2026-08-27T10:00:00+08:00", ev),
-            "新戳 running 接替没退役")
-        self.assertFalse(evidence_retires("running", ev, ev),
-                         "证据仍覆盖当前记录却被退役")
+            "running", "2026-08-27T10:00:00+08:00", "cd" * 16, ev, nonce),
+            "两种身份都对不上的 running 接替没退役")
+        self.assertFalse(evidence_retires("running", ev, None, ev, nonce),
+                         "戳仍覆盖当前记录却被退役")
+        # nonce 覆盖优先（第二十五轮）:nonce-only 证据（戳空）撞上带同
+        # nonce 的孤儿——戳对不上也不许退役。
+        self.assertFalse(evidence_retires(
+            "running", "2026-08-27T10:00:00+08:00", nonce, "", nonce),
+            "带本次 nonce 的孤儿被误判成接替者退役")
         for kind in ("missing", "corrupt"):
             with self.subTest(kind=kind):
-                self.assertFalse(evidence_retires(kind, "", ev),
+                self.assertFalse(evidence_retires(kind, "", None, ev, nonce),
                                  f"{kind} 读取失败被当接替证明")
         # 页面接线：退役判定走该 helper。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"

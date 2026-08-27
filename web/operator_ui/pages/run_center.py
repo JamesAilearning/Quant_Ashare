@@ -195,15 +195,21 @@ _running_fresh = (
 # 六小时陈旧线。证据按状态戳精确相等绑定到**被取消的那一次**;戳变了
 # （新运行/终态）即退役。
 _cancel_evidence = st.session_state.get(_CANCELLED_EVIDENCE_KEY)
+# 覆盖判定双身份（第二十五轮 P2）：nonce 优先——补结算的死后读取不确凿
+# 时证据只带 nonce 不带戳,带本次 launch nonce 的 running 记录就是被杀
+# 孤儿本人;戳匹配保留给 legacy（无 nonce）证据。
 _cancelled_this_run = (
     isinstance(_cancel_evidence, dict)
     and _status.kind == "running"
-    and cancelled_run_matches(
-        _status.started_at, _cancel_evidence.get("started_at"))
+    and (record_bears_launch_nonce(
+            _status.launch_nonce, _cancel_evidence.get("launch_nonce"))
+         or cancelled_run_matches(
+             _status.started_at, _cancel_evidence.get("started_at")))
 )
 if isinstance(_cancel_evidence, dict) and evidence_retires(
-        _status.kind, _status.started_at,
-        _cancel_evidence.get("started_at")):
+        _status.kind, _status.started_at, _status.launch_nonce,
+        _cancel_evidence.get("started_at"),
+        _cancel_evidence.get("launch_nonce")):
     # 只有**确凿**接替（戳不同的 running / finished 终态）才退役——
     # corrupt/missing 是读取失败不是接替证明,瞬时卷/权限失效借它把证据
     # 永久清掉,访问恢复后同一条孤儿 running 复现会被当活运行锁页六小时
@@ -266,20 +272,32 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
     # 死亡之前」尾窗里的;观察式候选在数学上封不住尾窗）。legacy 记录
     # （无 nonce 的旧产出器在飞运行）保留 pid+精确候选链;带**别人**
     # nonce 的记录直接拒。
+    _kill_nonce = (
+        _live_run.get("launch_nonce")
+        if isinstance(_live_run, dict) else None)
     _late_evidence = (
         _late_status.kind == "running"
         and record_matches_provider(_late_status, _provider_path)
         and _late_status.pid == _live_proc.pid
         and (record_bears_launch_nonce(
-                _late_status.launch_nonce,
-                _live_run.get("launch_nonce")
-                if isinstance(_live_run, dict) else None)
+                _late_status.launch_nonce, _kill_nonce)
              or (_late_status.launch_nonce is None
                  and cancelled_run_matches(
                      _late_status.started_at, _own_stamp))))
     if _late_evidence:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": _late_status.started_at or "",
+            "launch_nonce": _kill_nonce or "",
+        }
+    elif _kill_nonce and _late_status.kind in ("missing", "corrupt"):
+        # 读取不确凿 ≠ 无孤儿（codex 第二十五轮 P2:此前这里连未决上下
+        # 文带 nonce 一起丢,证据却还没落——卷瞬时失效恢复后孤儿复现,
+        # 锁页六小时）。被杀运行的身份是**先验已知**的（我们自己的
+        # launch nonce）,证据落盘不必依赖这次读取:nonce 证据先落,孤儿
+        # 何时可读何时被盖住;无孤儿时证据惰性无害。
+        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+            "started_at": "",
+            "launch_nonce": _kill_nonce,
         }
     # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
     # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
@@ -618,6 +636,11 @@ elif _launch_clicked:
         cancelled_started_at=(
             (_cancel_evidence or {}).get("started_at")
             if _cancelled_this_run else None),
+        # nonce 放行同步递进（第二十五轮 P2）：nonce-only 证据的孤儿若只
+        # 放行戳,会重演「按钮解锁、闸仍拒」的假解锁（第二轮同款）。
+        cancelled_launch_nonce=(
+            (_cancel_evidence or {}).get("launch_nonce")
+            if _cancelled_this_run else None),
     )
     # 结果暂存 + 整页 rerun:守望者的注册发生在本行**之上**,所以本次
     # 脚本运行里设的等待标记要等下一轮才生效。立刻 rerun 让它当场生效,
@@ -826,12 +849,12 @@ if _live_proc is not None:
                     # nonce 主判据在此同款生效（第二十四轮）：带本次
                     # launch nonce 的记录必然是被杀子进程自己写的,无需
                     # 时间窗;legacy 记录（无 nonce）保留 pid+时间窗链。
+                    _kn = (_live_run or {}).get("launch_nonce")
                     if (_fresh_status.kind == "running"
                             and record_matches_provider(
                                 _fresh_status, _provider_path)
                             and (record_bears_launch_nonce(
-                                    _fresh_status.launch_nonce,
-                                    (_live_run or {}).get("launch_nonce"))
+                                    _fresh_status.launch_nonce, _kn)
                                  or (_fresh_status.launch_nonce is None
                                      and evidence_binds_to_killed_run(
                                          _fresh_status.started_at,
@@ -841,9 +864,21 @@ if _live_proc is not None:
                                          killed_pid=_live_proc.pid)))):
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
+                            "launch_nonce": _kn or "",
                         }
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["evidence_stored"] = True
+                    elif _kn and _fresh_status.kind in (
+                            "missing", "corrupt"):
+                        # 重读不确凿 ≠ 无孤儿（第二十五轮 P2,与补结算
+                        # 同款）：被杀运行的 nonce 先验已知,证据先落——
+                        # 孤儿何时可读何时被盖住;无孤儿时惰性无害。
+                        # evidence_stored 保持 False:措辞只对确凿读取
+                        # 说话。
+                        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                            "started_at": "",
+                            "launch_nonce": _kn,
+                        }
                 st.session_state.pop(_CANCEL_ARM_KEY, None)
                 st.rerun()
         with _c2:

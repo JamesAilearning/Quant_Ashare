@@ -500,21 +500,32 @@ def record_bears_launch_nonce(
 def evidence_retires(
     status_kind: str,
     status_started_at: str | None,
+    status_launch_nonce: str | None,
     evidence_started_at: str | None,
+    evidence_launch_nonce: str | None,
 ) -> bool:
     """取消证据是否应当退役——只认**确凿**接替（codex 第二十三轮 P2）。
 
-    确凿接替只有两种:一条**戳不同**的合法 running 记录（新运行顶替了
-    孤儿）,或一条 finished 终态记录（孤儿被终态改写）。missing/corrupt
-    是**读取失败**,不是接替证明——卷/权限瞬时失效时借它把证据永久清掉,
-    访问恢复后同一条孤儿 running 复现,会被当活运行锁启动到六小时陈旧线。
-    读不出来就保留证据:它只在匹配的 running 记录出现时才生效,留着无害。
+    确凿接替只有两种:一条**两种身份都对不上**（戳不同且 nonce 不同）的
+    合法 running 记录（新运行顶替了孤儿）,或一条 finished 终态记录（孤儿
+    被终态改写）。missing/corrupt 是**读取失败**,不是接替证明——卷/权限
+    瞬时失效时借它把证据永久清掉,访问恢复后同一条孤儿 running 复现,会
+    被当活运行锁启动到六小时陈旧线。读不出来就保留证据:它只在匹配的
+    running 记录出现时才生效,留着无害。
+
+    nonce 覆盖优先于戳（codex 第二十五轮 P2）:补结算的死后读取不确凿时
+    证据只带 nonce 不带戳——带着**本次 launch nonce** 的 running 记录是
+    被杀孤儿本人,绝不因戳对不上被误判成接替者而退役。
     """
     if status_kind == "finished":
         return True
     if status_kind == "running":
-        return not cancelled_run_matches(
-            status_started_at, evidence_started_at)
+        covered = (
+            record_bears_launch_nonce(
+                status_launch_nonce, evidence_launch_nonce)
+            or cancelled_run_matches(
+                status_started_at, evidence_started_at))
+        return not covered
     return False
 
 
@@ -896,7 +907,10 @@ def build_update_argv(
 
 
 def _blocking_run_status(
-    provider_dir: Path, *, cancelled_started_at: str | None = None,
+    provider_dir: Path,
+    *,
+    cancelled_started_at: str | None = None,
+    cancelled_launch_nonce: str | None = None,
 ) -> str | None:
     """Why a launch should be refused based on the status artifact, or None.
 
@@ -921,6 +935,12 @@ def _blocking_run_status(
         return None
     if cancelled_run_matches(status.started_at, cancelled_started_at):
         return None
+    # nonce 放行（codex 第二十五轮 P2）:补结算读取不确凿时证据只带
+    # nonce 不带戳——带本次 launch nonce 的 running 记录就是被杀孤儿,
+    # 只放行戳会造成「页面按钮解锁、闸仍拒绝」的假解锁（第二轮同款）。
+    if record_bears_launch_nonce(
+            status.launch_nonce, cancelled_launch_nonce):
+        return None
     return (
         f"状态工件显示一次更新正在进行(始于 {status.started_at})。"
         "并发运行会被 daily_update 的单飞锁以 exit 17 拒绝;"
@@ -938,6 +958,7 @@ def launch_daily_update(
     start_date: str | None = None,
     end_date: str | None = None,
     cancelled_started_at: str | None = None,
+    cancelled_launch_nonce: str | None = None,
 ) -> UpdateLaunch:
     """Launch one detached update run mirroring the scheduler.
 
@@ -989,7 +1010,8 @@ def launch_daily_update(
         )
     try:
         blocking = _blocking_run_status(
-            provider_dir, cancelled_started_at=cancelled_started_at)
+            provider_dir, cancelled_started_at=cancelled_started_at,
+            cancelled_launch_nonce=cancelled_launch_nonce)
     except ValueError as exc:
         # status_path_for_provider refuses a filesystem-root provider —
         # that same path would also be an unusable --provider-dir.

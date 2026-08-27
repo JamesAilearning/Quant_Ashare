@@ -170,6 +170,20 @@ received the recycled pid inside that gap. Absent a lifetime-observed
 candidate, settlement SHALL NOT adopt (fail-closed: an orphan waiting out
 the staleness threshold beats labelling a live replacement as cancelled).
 
+The nonce-bound adoption proof SHALL survive an INCONCLUSIVE post-death
+read: the killed run's nonce is known a priori — it is this session's own
+launch identity — so persisting the evidence does not depend on that read
+succeeding. When the settlement or immediate-cancel reread returns missing
+or corrupt, the page SHALL persist nonce-only evidence (empty stamp)
+before retiring the handle context; the orphan is then covered by nonce
+the moment it becomes readable again, instead of blocking relaunches to
+the staleness threshold. Evidence coverage and the launch gate's release
+SHALL both honour the nonce identity alongside the exact stamp — releasing
+by stamp alone would recreate the fake-unlock the gate bypass exists to
+prevent. The conclusive-read wording (evidence found and persisted) SHALL
+remain conditioned on a conclusive read; nonce-only evidence stays silent
+until a matching record appears, and is inert when none ever does.
+
 Late settlement SHALL owe the FULL cancel epilogue, not just the evidence:
 the same outcome marker (labelled as a late exit), the same strict
 swap-state inspection with its interrupted/unknown outcomes, and the same
@@ -366,6 +380,16 @@ one period.
 - **THEN** it performs the same strict swap-state inspection as an
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: an unreadable artifact at settlement does not orphan the proof
+
+- **GIVEN** a settled (or immediately confirmed) kill whose post-death
+  status read returns corrupt because the volume is briefly unavailable
+- **WHEN** the artifact becomes readable again and the orphaned `running`
+  record reappears
+- **THEN** the nonce-only evidence persisted before retirement covers it —
+  the record renders as cancelled and the launch gate releases by nonce —
+  instead of presenting it as live for six hours
 
 #### Scenario: a record written after every observation is still claimed
 

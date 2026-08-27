@@ -371,6 +371,21 @@
       观察式候选降为 legacy 回退。该族再出意见按 #463 式终轮划线呈用户
       裁决,不再逐洞精修
 
+## codex 第二十五轮（P2：nonce 证据不依赖死后读取,不确凿读取先落证据）
+
+- [x] P2 r23 的姊妹缺陷——补结算/confirm 的死后读取撞 corrupt/missing
+      时,未决上下文（含 nonce）被退役而证据还没落:孤儿恢复可读后被当
+      活运行锁页六小时。nonce 使修法变优雅:被杀运行的身份**先验已知**
+      （本会话自己的 launch nonce）,证据落盘不依赖那次读取——两处在不
+      确凿读取时落 nonce-only 证据（戳空）;覆盖判定（页首）与启动闸
+      （_blocking_run_status/launch_daily_update 新 kwarg
+      cancelled_launch_nonce）同步收 nonce 放行,防 nonce-only 证据重演
+      「按钮解锁、闸仍拒」假解锁（第二轮同款）;evidence_retires 升为双
+      身份（nonce 覆盖优先,带本次 nonce 的孤儿绝不因戳空被误判接替者
+      退役）。确凿读取的措辞条件不动（evidence_stored 只对确凿说话）。
+      真值扩展 + 闸 nonce 放行三支 + 页面钉;变异首跑逃逸（elif False
+      仍含子串）→ 锚收紧带 elif 前缀后咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程
