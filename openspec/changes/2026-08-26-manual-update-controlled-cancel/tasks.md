@@ -335,6 +335,22 @@
       曾落盘、已按纪律退役、以当前状态为准）。守卫:条件版分支存在 +
       改口分支存在 + elif 链先窄后宽源码序钉
 
+## codex 第二十三轮（2×P2：读失败不退证据、边界内补候选观察）
+
+- [x] P2 corrupt/missing 是读取失败不是接替证明——瞬时卷/权限失效让
+      _cancelled_this_run 为假,顶部逻辑借它把证据永久清掉;访问恢复后
+      同一条孤儿 running 复现,被当活运行锁页六小时。修=退役判定抽纯
+      helper `evidence_retires`:只认确凿接替（戳不同的 running / finished
+      终态）,missing/corrupt 保留证据（它只在匹配 running 出现时生效,
+      留着无害）。真值五支 + 变异（missing/corrupt 也退役）咬住
+- [x] P2 「记录写在取消前观察之后、进程死在边界返回与事后观察之间」的
+      双落空——两端候选观察都取不到,真孤儿被拒收养。修=cancel_failed
+      的两条活进程路径（TimeoutExpired 证明活着/kill 抛后复检仍活）在
+      **边界内**补一次 observe_own_running_record,随 UpdateCancel 新字段
+      own_running_stamp 带回;页面候选链改三级兜底（事后观察→边界捕获→
+      取消前观察,多次成功必同戳）。行为用例（Survivor+在场记录→捕获;
+      无 provider→None）+ 页面链钉 + 变异（去边界观察）咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

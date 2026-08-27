@@ -308,6 +308,12 @@ class UpdateCancel:
     #: （codex 第十轮 P2）;页面只有在这里为 True 时才许声称「编排器自己
     #: 写下了终态记录」。硬杀恒 False。
     terminal_recorded: bool = False
+    #: cancel_failed 时,在**边界内、进程确证还活着**的时刻观察到的它自己
+    #: 的 running 记录戳（codex 第二十三轮 P2:子进程可在页面取消前观察
+    #: 之后才写出记录、又在本函数返回与页面事后观察之间死掉——两端观察
+    #: 双双落空,真孤儿无候选被拒收养。宽限窗超时/复检仍活的失败路径是
+    #: 最后一个可证生存期窗口,在这里补一次观察）。None=没观察到。
+    own_running_stamp: str | None = None
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -462,6 +468,27 @@ def observe_own_running_record(
     return None
 
 
+def evidence_retires(
+    status_kind: str,
+    status_started_at: str | None,
+    evidence_started_at: str | None,
+) -> bool:
+    """取消证据是否应当退役——只认**确凿**接替（codex 第二十三轮 P2）。
+
+    确凿接替只有两种:一条**戳不同**的合法 running 记录（新运行顶替了
+    孤儿）,或一条 finished 终态记录（孤儿被终态改写）。missing/corrupt
+    是**读取失败**,不是接替证明——卷/权限瞬时失效时借它把证据永久清掉,
+    访问恢复后同一条孤儿 running 复现,会被当活运行锁启动到六小时陈旧线。
+    读不出来就保留证据:它只在匹配的 running 记录出现时才生效,留着无害。
+    """
+    if status_kind == "finished":
+        return True
+    if status_kind == "running":
+        return not cancelled_run_matches(
+            status_started_at, evidence_started_at)
+    return False
+
+
 def cancelled_run_matches(
     status_started_at: str | None, evidence_started_at: str | None,
 ) -> bool:
@@ -573,7 +600,12 @@ def cancel_update(
                 return UpdateCancel(
                     kind="cancel_failed", error=f"终止进程失败:{exc}",
                     markers_written=markers_written,
-                    kill_issued=signal_issued)
+                    kill_issued=signal_issued,
+                    # 进程确证还活着——趁生存期在边界内补一次候选观察
+                    # （第二十三轮 P2）。
+                    own_running_stamp=(
+                        observe_own_running_record(process, provider_dir)
+                        if provider_dir is not None else None))
         else:
             # kill() **正常返回不是送达证据**（codex 第二十轮 P2）：
             # CPython 的 Popen.kill()→send_signal() 内部先 poll,进程恰在
@@ -599,12 +631,19 @@ def cancel_update(
                     ) and markers_written
                     # kill 已发出（返回后复检仍活=真送达）,只是宽限窗内
                     # 没等到死亡——之后的死亡是取消导致的,迟到补结算
-                    # 成立。
+                    # 成立。TimeoutExpired 本身证明进程此刻还活着——这
+                    # 是补结算候选的最后一个可证生存期窗口,在边界内观察
+                    # 一次（第二十三轮 P2:记录可写在页面取消前观察之后,
+                    # 而进程又死在本函数返回与页面事后观察之间——两端
+                    # 双双落空时真孤儿无候选被拒收养）。
                     return UpdateCancel(
                         kind="cancel_failed",
                         error="进程在宽限窗内未退出;请用任务管理器核查后"
                               "重试",
-                        markers_written=markers_written, kill_issued=True)
+                        markers_written=markers_written, kill_issued=True,
+                        own_running_stamp=(
+                            observe_own_running_record(process, provider_dir)
+                            if provider_dir is not None else None))
             elif not signal_issued and terminal_record_confirms_the_run(
                     provider_dir, process.pid,
                     launched_at=launched_at,

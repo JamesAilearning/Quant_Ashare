@@ -112,7 +112,13 @@ lock is OS-held and releases with the process.
 After a forcible cancel the page SHALL keep presenting the orphaned
 `running` record as cancelled ACROSS reruns — the evidence is bound to that
 record's exact `started_at` stamp and retires the moment the status is
-superseded — and the launch gate SHALL unlock **all the way through the
+CONCLUSIVELY superseded: a valid `running` record with a DIFFERENT stamp,
+or a `finished` terminal record. An inconclusive read — a missing or
+corrupt artifact from a transient volume or permission failure — SHALL NOT
+retire the evidence: discarding it on a read failure lets the same orphan
+reappear as live once access recovers and block relaunches to the
+staleness threshold, while retained evidence is inert until a matching
+`running` record shows again — and the launch gate SHALL unlock **all the way through the
 runner boundary**: the launch path's own fresh-`running` refusal SHALL admit
 exactly the record whose stamp equals the cancellation evidence (any new
 run writes a new stamp and the bypass expires; the single-flight lock stays
@@ -138,8 +144,13 @@ records the `started_at` of the run's OWN `running` record (matching
 provider and pid) as the adoption candidate — captured immediately BEFORE
 the cancellation call (the call can consume the whole grace window and the
 kill can land right after it returns, so a confirmation-time observation
-alone races the death and can find only a corpse), refreshed after the
-failed attempt and on every watcher tick; settlement adopts only a record
+alone races the death and can find only a corpse), captured INSIDE the
+failed cancellation boundary at the moment the process is provably alive
+(the timed-out wait and the alive re-check after a raising kill both prove
+liveness — the record can be written after the pre-call observation while
+the process dies before the post-call one, leaving both ends empty),
+refreshed after the failed attempt and on every watcher tick; settlement
+adopts only a record
 whose stamp EQUALS that candidate and whose pid equals the killed
 handle's. Neither a request-time bound nor a death-observation bound is
 admissible: the request moment rejects a genuine record the child writes

@@ -1216,6 +1216,77 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('launched_at=_live_run.get("launched_at")', page,
                       "补结算没拿到时间窗下界")
 
+    def test_evidence_survives_inconclusive_status_reads(self) -> None:
+        # corrupt/missing 是**读取失败**不是接替证明（codex 第二十三轮
+        # P2）：瞬时卷/权限失效借它把证据永久清掉,访问恢复后同一条孤儿
+        # running 复现,被当活运行锁页六小时。退役只认确凿接替:戳不同的
+        # running（新运行顶替）或 finished 终态（孤儿被改写）。
+        from web.operator_ui.update_runner import evidence_retires
+        ev = "2026-08-27T09:00:00+08:00"
+        self.assertTrue(evidence_retires("finished", None, ev),
+                        "终态接替没退役")
+        self.assertTrue(evidence_retires(
+            "running", "2026-08-27T10:00:00+08:00", ev),
+            "新戳 running 接替没退役")
+        self.assertFalse(evidence_retires("running", ev, ev),
+                         "证据仍覆盖当前记录却被退役")
+        for kind in ("missing", "corrupt"):
+            with self.subTest(kind=kind):
+                self.assertFalse(evidence_retires(kind, "", ev),
+                                 f"{kind} 读取失败被当接替证明")
+        # 页面接线：退役判定走该 helper。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("evidence_retires(", page,
+                      "页面退役没走确凿接替判定")
+
+    def test_the_boundary_captures_a_candidate_while_provably_alive(
+            self) -> None:
+        # 记录写在页面取消前观察之后、进程又死在 cancel_update 返回与页
+        # 面事后观察之间——两端观察双双落空（codex 第二十三轮 P2）。
+        # 边界内的 TimeoutExpired/复检仍活是最后一个可证生存期窗口,在
+        # 那里补一次观察并随 UpdateCancel 带回。
+        import json
+        import os as _os
+
+        from web.operator_ui.update_status import status_path_for_provider
+
+        class _Survivor:
+            pid = 999998
+            returncode = None
+            def poll(self):
+                return None
+            def kill(self):
+                pass
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            stamp = "2026-08-27T09:00:00+08:00"
+            status_path_for_provider(provider).write_text(json.dumps({
+                "schema_version": 1, "state": "running",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": "2026-08-27", "started_at": stamp,
+                "pid": _Survivor.pid,
+            }), encoding="utf-8")
+            got = cancel_update(
+                _Survivor(), Path(t) / "log.log",  # type: ignore[arg-type]
+                provider_dir=provider, grace_seconds=0.5)
+            self.assertEqual("cancel_failed", got.kind)
+            self.assertEqual(stamp, got.own_running_stamp,
+                             "超时失败路径没在边界内捕获候选")
+            # 无 provider 时不观察（None）。
+            got2 = cancel_update(
+                _Survivor(), Path(t) / "log.log",  # type: ignore[arg-type]
+                grace_seconds=0.5)
+            self.assertIsNone(got2.own_running_stamp)
+        # 页面接线：三级兜底链含边界捕获。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("or _outcome.own_running_stamp", page,
+                      "候选兜底链缺边界捕获")
+
     def test_the_unlocked_claim_is_conditioned_on_live_evidence(self) -> None:
         # 证据落盘后、rerun 渲染前,调度器接替写下新 running——顶部逻辑
         # 退役证据、恢复 _running_fresh,而历史 evidence_stored=True 不代

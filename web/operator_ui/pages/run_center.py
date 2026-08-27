@@ -55,6 +55,7 @@ from web.operator_ui.update_runner import (
     cancelled_run_matches,
     default_log_path,
     evidence_binds_to_killed_run,
+    evidence_retires,
     gate_today,
     launch_daily_update,
     log_tail,
@@ -199,8 +200,14 @@ _cancelled_this_run = (
     and cancelled_run_matches(
         _status.started_at, _cancel_evidence.get("started_at"))
 )
-if isinstance(_cancel_evidence, dict) and not _cancelled_this_run:
-    # 状态已被接替——证据退役,绝不覆盖别人的运行。
+if isinstance(_cancel_evidence, dict) and evidence_retires(
+        _status.kind, _status.started_at,
+        _cancel_evidence.get("started_at")):
+    # 只有**确凿**接替（戳不同的 running / finished 终态）才退役——
+    # corrupt/missing 是读取失败不是接替证明,瞬时卷/权限失效借它把证据
+    # 永久清掉,访问恢复后同一条孤儿 running 复现会被当活运行锁页六小时
+    # （codex 第二十三轮 P2）。绝不覆盖别人的运行;读不出来就留着,证据
+    # 只在匹配 running 出现时生效,保留无害。
     st.session_state.pop(_CANCELLED_EVIDENCE_KEY, None)
 if _cancelled_this_run:
     _running_fresh = False
@@ -757,11 +764,16 @@ if _live_proc is not None:
                         _outcome.markers_written)
                     # 趁进程此刻可能还活着,再观察一次它自己写的记录戳
                     # （codex 第十二轮 P2:候选只能在生存期内取——此后
-                    # watcher 每 30 秒续刷）;进程已在取消调用尾声死掉时
-                    # 用取消前那次观察兜底（第十七轮 P2:两次观察若都成
-                    # 功必然同戳,后观察只为覆盖「请求后才写出记录」）。
-                    _own_now = observe_own_running_record(
-                        _live_proc, _provider_path) or _own_before
+                    # watcher 每 30 秒续刷）。三级兜底:事后观察 → 取消
+                    # 边界内的观察（第二十三轮 P2:记录写在取消前观察之
+                    # 后、进程又死在边界返回与此处之间时,两端双双落空,
+                    # 只有边界内 TimeoutExpired/复检仍活那一刻能看到）→
+                    # 取消前观察（第十七轮 P2）。多次观察若都成功必然
+                    # 同戳（记录戳写出后不变）。
+                    _own_now = (
+                        observe_own_running_record(_live_proc, _provider_path)
+                        or _outcome.own_running_stamp
+                        or _own_before)
                     if _own_now:
                         _live_run["cancel_pending_own_started_at"] = _own_now
                 elif (_outcome.kind == "cancel_failed"
