@@ -1461,6 +1461,14 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                       page, "tak 复验没走共享 oracle")
         self.assertIn('int(_tid.get("pid") or -1)', page,
                       "tak 复验缺 pid 身份")
+        # legacy 渲染帧补精确戳（第四十轮 P2:补结算路径的 exited_at 是
+        # 宽观测界,oracle legacy 分支 pid+窗在冻结/回拨时钟下可被回收
+        # pid 的接替落窗——渲染帧对随行 started_at 同款精确相等,r39 结
+        # 算帧钉的延伸）。
+        self.assertIn('if _tid_current and not _tid.get("launch_nonce"):',
+                      page, "legacy 渲染帧复验没收紧")
+        self.assertIn('_status.started_at == _tid.get("started_at")', page,
+                      "legacy 渲染帧复验缺精确戳")
         self.assertIn('"pid": _live_proc.pid', page,
                       "terminal_identity 没随行 pid")
         self.assertIn("已被随后的记录接替", page,

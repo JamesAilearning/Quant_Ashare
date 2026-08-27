@@ -1122,6 +1122,15 @@ if isinstance(_last_cancel, dict):
                 launched_at=_tid.get("launched_at") or None,
                 exited_at=_tid.get("exited_at") or None,
                 launch_nonce=_tid.get("launch_nonce") or None)
+            if _tid_current and not _tid.get("launch_nonce"):
+                # legacy 渲染帧复验补精确戳（第四十轮 P2）：oracle 的
+                # legacy 分支只有 pid+窗,而补结算路径的 exited_at 是宽
+                # 观测界——快照与 rerun 之间回收 pid 的接替在冻结/回拨
+                # 时钟下仍可落窗。r39 已在结算帧钉了生存期戳,渲染帧对
+                # 随行的同一 started_at 同款精确相等（对 confirm 路径的
+                # 紧界无害,严格更强）。
+                _tid_current = (
+                    _status.started_at == _tid.get("started_at"))
             if _tid_current:
                 st.success(
                     f"强制终止已执行（returncode="

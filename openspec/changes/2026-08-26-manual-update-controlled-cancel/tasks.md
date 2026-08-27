@@ -558,6 +558,15 @@
       证）,无候选 fail-closed;nonce 会话不受影响（oracle nonce 分支
       不看窗）。settle 切片双钉（收紧条件/候选归属）
 
+## codex 第四十轮（P2：legacy 渲染帧复验补精确戳——r39 的渲染帧延伸）
+
+- [x] P2 r39 只在结算帧钉了 legacy 精确戳,渲染帧 _tid_current 对
+      legacy 仍只有 oracle 的 pid+窗——补结算路径随行的 exited_at 是宽
+      观测界,快照与 rerun 之间回收 pid 的接替在冻结/回拨时钟下仍可落
+      窗过检。修=渲染帧对随行的 terminal_identity.started_at 同款精确
+      相等（仅 legacy 收紧;对 confirm 路径的紧界无害,严格更强;nonce
+      会话由 nonce 一票裁决不受影响）。页面双钉（收紧条件/精确戳）
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程
