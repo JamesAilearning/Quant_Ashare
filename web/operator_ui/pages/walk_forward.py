@@ -32,8 +32,7 @@ from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.compare_basket_widget import (
-    render_add_to_basket_button,
-    render_basket_panel,
+    render_compare_basket_controls,
 )
 from web.operator_ui.components import (
     render_empty_state,
@@ -49,13 +48,9 @@ from web.operator_ui.job_io import (
     canonical_dir_key,
     fold_catalog_by_dir,
     load_all_jobs,
-    load_all_jobs_read_only,
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
-from web.operator_ui.pages._research_run_comparison_helpers import (
-    selectable_catalog,
-)
 
 # Pure helpers + constants moved to ``_walk_forward_helpers`` in UI review
 # P1-1. Re-exported here so legacy tests that do
@@ -605,16 +600,7 @@ _wf_selected_run_id = str(run_options.get(str(selected), "") or "")
 if _wf_selected_run_id:
     _wf_basket_col, _ = st.columns([1, 3])
     with _wf_basket_col:
-        _all_catalog_rows = load_all_jobs_read_only()
-        _compare_catalog = selectable_catalog(_all_catalog_rows)
-        render_add_to_basket_button(
-            _wf_selected_run_id,
-            selectable_ids=[row.run_id for row in _compare_catalog.rows],
-            run_id_alias=_compare_catalog.run_id_alias,
-            all_rows=_all_catalog_rows,
-            key_prefix="wf",
-        )
-    render_basket_panel(key_prefix="wf")
+        render_compare_basket_controls(_wf_selected_run_id, key_prefix="wf")
 
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"

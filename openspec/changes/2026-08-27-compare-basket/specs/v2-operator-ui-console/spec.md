@@ -57,6 +57,23 @@ Where a run is addressable only under a different ID, the entry point SHALL
 disclose that ID before adding it, so the run named at the entry point and the
 run shown at the destination are never silently different.
 
+Addressability SHALL be re-established against the CURRENT catalog before the
+handoff is offered, not only when a run is added. The selection outlives the
+moment it was made, and in the meantime a newer run can take over the same
+artifact directory, or two stored runs can come to resolve to one owner — which
+the destination refuses as a duplicate. A member that can no longer be handed
+off SHALL be reported with its reason and SHALL block the handoff, rather than
+being silently dropped: dropping it decides on the operator's behalf that the
+run is no longer wanted, when they may be asking where it went.
+
+#### Scenario: a member superseded after it was added blocks the handoff
+
+- **GIVEN** an accumulated run whose artifact directory has since been taken
+  over by a newer run
+- **WHEN** the selection is rendered
+- **THEN** that member is named with its reason and no comparison link is
+  offered, rather than a link that the comparison page would refuse
+
 #### Scenario: a superseded run is refused where the operator is standing
 
 - **GIVEN** a run whose artifact directory is now owned by a newer run

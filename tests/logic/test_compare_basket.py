@@ -23,6 +23,7 @@ from web.operator_ui.compare_basket import (
     basket_query_value,
     basket_readiness,
     remove_from_basket,
+    revalidate_basket,
 )
 
 
@@ -163,6 +164,72 @@ class BasketTests(unittest.TestCase):
         self.assertIn("空", basket_readiness(()))
         self.assertIn(str(MIN_COMPARE_SIZE), basket_readiness(("a",)))
         self.assertEqual(basket_readiness(("a", "b")), "")
+
+
+class RevalidationTests(unittest.TestCase):
+    """加入时校验过 ≠ 送出时还成立。
+
+    篮子是会话级的，而在此期间同一产物目录可能被一次更新的运行接管。照原样
+    拼进 URL，对比页会把它判成未知并 ``st.stop()``——一模一样的拒绝页，只是
+    晚了一步发生，而这正是本模块声称要防的事。
+    """
+
+    def test_a_member_superseded_after_it_was_added_is_caught(self) -> None:
+        checked = revalidate_basket(
+            ("run-a", "old-run"),
+            selectable_ids=["run-a", "new-run"],
+            run_id_alias={},
+            all_rows=[_Row("run-a"), _Row("old-run"), _Row("new-run")],
+        )
+
+        self.assertEqual(checked.live, ("run-a",))
+        self.assertEqual([d.run_id for d in checked.stale], ["old-run"])
+        self.assertEqual(checked.stale[0].verdict, ADMIT_SUPERSEDED)
+
+    def test_two_members_that_now_resolve_to_one_owner_are_caught(self) -> None:
+        # 对比页有重复检查,重复会让整页停下。这在加入时看不出来:那时它们
+        # 确实是两个不同的可选运行。
+        checked = revalidate_basket(
+            ("ui-9", "cli-1"),
+            selectable_ids=["ui-9"],
+            run_id_alias={"cli-1": "ui-9"},
+            all_rows=[_Row("ui-9"), _Row("cli-1")],
+        )
+
+        self.assertEqual(checked.live, ("ui-9",))
+        self.assertEqual(checked.collapsed, ("cli-1",))
+
+    def test_revalidation_resolves_aliases_for_the_link(self) -> None:
+        checked = revalidate_basket(
+            ("cli-1", "run-b"),
+            selectable_ids=["ui-9", "run-b"],
+            run_id_alias={"cli-1": "ui-9"},
+        )
+
+        self.assertEqual(checked.live, ("ui-9", "run-b"))
+        self.assertEqual(checked.stale, ())
+
+    def test_an_intact_basket_passes_through_in_order(self) -> None:
+        checked = revalidate_basket(
+            ("run-b", "run-a"),
+            selectable_ids=["run-a", "run-b"],
+            run_id_alias={},
+        )
+
+        self.assertEqual(checked.live, ("run-b", "run-a"))
+        self.assertEqual(checked.stale, ())
+        self.assertEqual(checked.collapsed, ())
+
+    def test_a_stale_member_is_not_silently_dropped_from_the_report(
+        self,
+    ) -> None:
+        # 自动踢出等于替操作人决定「这个不要了」,而他可能正想知道它去哪了。
+        checked = revalidate_basket(
+            ("ghost",), selectable_ids=[], run_id_alias={}, all_rows=[])
+
+        self.assertEqual(checked.live, ())
+        self.assertEqual(len(checked.stale), 1)
+        self.assertTrue(checked.stale[0].reason)
 
 
 if __name__ == "__main__":

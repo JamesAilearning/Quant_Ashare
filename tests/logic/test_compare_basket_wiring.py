@@ -10,7 +10,11 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest import mock
 
 from web.operator_ui._param_guard import sanitize
 from web.operator_ui.compare_basket import (
@@ -25,8 +29,16 @@ _COMPARISON_PAGE = Path("web/operator_ui/pages/research_run_comparison.py")
 _COMPARISON_HELPERS = Path(
     "web/operator_ui/pages/_research_run_comparison_helpers.py")
 _JOBS_PAGE = Path("web/operator_ui/pages/jobs.py")
+_RESULTS_PAGE = Path("web/operator_ui/pages/results.py")
 _RESULTS_RENDER = Path("web/operator_ui/pages/_results_render.py")
 _WALK_FORWARD_PAGE = Path("web/operator_ui/pages/walk_forward.py")
+
+
+@dataclass(frozen=True)
+class _Row:
+    run_id: str
+    type: str = "pipeline"
+    run_dir: str = "output/runs/x"
 
 
 class BasketMatchesItsDownstreamConstraintsTests(unittest.TestCase):
@@ -86,36 +98,84 @@ class BasketMatchesItsDownstreamConstraintsTests(unittest.TestCase):
 
 
 class SourcePageWiringTests(unittest.TestCase):
-    """三个来源页都要接，且都要把**全量**目录行传下去。
+    """三个来源页都要接，且都走**同一个**入口。
 
-    只传 ``catalog.rows``（当前所有者）的话，「被同目录的更新运行接管」会
-    退化成「目录里根本没有这条」——分因就没了，操作人只剩一句「不可用」。
+    目录加载与参数传递集中在 ``render_compare_basket_controls`` 里：让每页
+    自己拼，等于把「传全量目录行还是只传当前所有者」这个坑挖三遍——其中两遍
+    已经在评审里被抓到过一次。
     """
 
-    def _assert_full_catalog_is_passed(self, path: Path) -> None:
-        source = path.read_text(encoding="utf-8")
-        self.assertIn(
-            "_all_catalog_rows = load_all_jobs_read_only()\n", source)
-        self.assertIn(
-            "_compare_catalog = selectable_catalog(_all_catalog_rows)\n",
-            source,
-        )
-        self.assertIn("            all_rows=_all_catalog_rows,\n", source)
-        # 可选 id 与别名都取自 catalog 本身,不许在页面里重推目录归属。
-        self.assertIn(
-            "selectable_ids=[row.run_id for row in _compare_catalog.rows],",
-            source,
-        )
-        self.assertIn(
-            "run_id_alias=_compare_catalog.run_id_alias,", source)
+    def test_the_shared_entry_point_forwards_the_full_catalog(self) -> None:
+        """**真跑**共享入口，看它把什么转发下去。
+
+        源码串证明不了「转发的是哪个值」——变异只要在 catalog 之后补一行
+        ``all_rows = catalog.rows``，每一条串守卫都照样命中，而语义已经反转
+        （实测逃逸）。只传当前所有者的话，「被同目录的更新运行接管」会退化成
+        「目录里根本没有这条」，分因就没了，操作人只剩一句「不可用」。
+        """
+        import web.operator_ui.compare_basket_widget as widget
+
+        owner = _Row("owner-1")
+        superseded = _Row("old-1")
+        catalog = SimpleNamespace(
+            rows=(owner,), run_id_alias={"cli-1": "owner-1"})
+        seen: dict[str, Any] = {}
+
+        def _fake_load() -> list[object]:
+            return [owner, superseded]
+
+        def _capture(*args: Any, **kwargs: Any) -> None:
+            seen.setdefault(kwargs.get("key_prefix", "?"), []).append(kwargs)
+
+        with mock.patch.object(widget, "load_all_jobs_read_only", _fake_load), \
+                mock.patch.object(
+                    widget, "selectable_catalog", lambda rows: catalog), \
+                mock.patch.object(
+                    widget, "render_add_to_basket_button", _capture), \
+                mock.patch.object(widget, "render_basket_panel", _capture):
+            widget.render_compare_basket_controls("owner-1", key_prefix="t")
+
+        forwarded = seen["t"]
+        self.assertEqual(len(forwarded), 2, "按钮与面板都要收到目录")
+        for call in forwarded:
+            self.assertEqual(
+                list(call["all_rows"]), [owner, superseded],
+                "转发的必须是**全量**目录行，不是 catalog.rows",
+            )
+            self.assertEqual(list(call["selectable_ids"]), ["owner-1"])
+            self.assertEqual(call["run_id_alias"], catalog.run_id_alias)
+
+    def test_the_shared_entry_point_reads_the_catalog_once(self) -> None:
+        # 每页自己读一次是这个坑被挖三遍的原因;读两次也说明有人又把加载
+        # 复制了一份。
+        import web.operator_ui.compare_basket_widget as widget
+
+        calls = []
+
+        def _fake_load() -> list[object]:
+            calls.append(1)
+            return []
+
+        with mock.patch.object(widget, "load_all_jobs_read_only", _fake_load), \
+                mock.patch.object(
+                    widget, "selectable_catalog",
+                    lambda rows: SimpleNamespace(rows=(), run_id_alias={})), \
+                mock.patch.object(
+                    widget, "render_add_to_basket_button", lambda *a, **k: None), \
+                mock.patch.object(
+                    widget, "render_basket_panel", lambda *a, **k: None):
+            widget.render_compare_basket_controls("x", key_prefix="t")
+
+        self.assertEqual(len(calls), 1)
 
     def test_jobs_page_offers_the_basket(self) -> None:
         source = _JOBS_PAGE.read_text(encoding="utf-8")
 
-        self.assertIn("render_add_to_basket_button(\n", source)
-        self.assertIn('key_prefix="jobs",', source)
-        self.assertIn('render_basket_panel(key_prefix="jobs")', source)
-        self._assert_full_catalog_is_passed(_JOBS_PAGE)
+        self.assertIn(
+            "            render_compare_basket_controls(\n"
+            '                selected.run_id, key_prefix="jobs")\n',
+            source,
+        )
         # 动作栏多了一列。旧的 2/3 列布局会把新按钮挤到别的动作上面。
         self.assertIn(
             "act_open, act_copy, act_compare, act_stop = st.columns(4)",
@@ -124,22 +184,35 @@ class SourcePageWiringTests(unittest.TestCase):
         self.assertIn(
             "act_open, act_copy, act_compare = st.columns(3)", source)
 
-    def test_results_page_offers_the_basket(self) -> None:
-        source = _RESULTS_RENDER.read_text(encoding="utf-8")
+    def test_results_page_offers_the_basket_in_both_modes(self) -> None:
+        # 挂在 `_render_header_actions` 里只有 pipeline 分支会调,本页接受
+        # 并展示的 walk_forward 运行就既没有加入按钮、也看不到已有的篮子。
+        # 判据要放在**所有**入口都必经的位置(codex P2 on #472)。
+        source = _RESULTS_PAGE.read_text(encoding="utf-8")
 
-        self.assertIn("render_add_to_basket_button(\n", source)
-        self.assertIn('key_prefix="results",', source)
-        self.assertIn('render_basket_panel(key_prefix="results")', source)
-        self._assert_full_catalog_is_passed(_RESULTS_RENDER)
-        self.assertIn("action_cols = st.columns([1, 1, 1, 1, 1])", source)
+        self.assertIn(
+            "    render_compare_basket_controls("
+            'selected_job_id, key_prefix="results")\n',
+            source,
+        )
+        # 必须在模式分支**之前**。分支之后放两份就又回到「两条路径各写一
+        # 遍」,而那正是这条意见的来源。
+        control_at = source.index("render_compare_basket_controls(")
+        branch_at = source.index('    if mode == "pipeline" or pipeline_report:')
+        self.assertLess(control_at, branch_at)
+        self.assertEqual(source.count("render_compare_basket_controls("), 1)
+        # 旧位置(pipeline 专属的动作栏)不许留残余。
+        render_source = _RESULTS_RENDER.read_text(encoding="utf-8")
+        self.assertNotIn("compare_basket", render_source)
 
     def test_walk_forward_page_offers_the_basket(self) -> None:
         source = _WALK_FORWARD_PAGE.read_text(encoding="utf-8")
 
-        self.assertIn("render_add_to_basket_button(\n", source)
-        self.assertIn('key_prefix="wf",', source)
-        self.assertIn('render_basket_panel(key_prefix="wf")', source)
-        self._assert_full_catalog_is_passed(_WALK_FORWARD_PAGE)
+        self.assertIn(
+            "        render_compare_basket_controls("
+            '_wf_selected_run_id, key_prefix="wf")\n',
+            source,
+        )
         # 本页的「当前运行」是目录键映射出来的 id,不是 selectbox 的返回值。
         self.assertIn(
             '_wf_selected_run_id = str(run_options.get(str(selected), "")'
@@ -223,17 +296,56 @@ class WidgetJudgesBeforeTheClickTests(unittest.TestCase):
             self.source,
         )
 
-    def test_the_link_carries_the_basket_as_run_ids(self) -> None:
+    def test_the_link_carries_only_revalidated_members(self) -> None:
+        # 加入时校验过 ≠ 送出时还成立:篮子是会话级的,而在此期间目录归属
+        # 可能变。照原样拼进 URL,对比页会 st.stop() ——一模一样的拒绝页,
+        # 只是晚了一步发生(codex P1 on #472)。
         self.assertIn(
             '                query_params={"run_ids": '
-            "basket_query_value(basket)},\n",
+            "basket_query_value(checked.live)},\n",
             self.source,
         )
-        # 篮子不足 2 个时**不给**链接:给了就是把人送进对比页的「请选择
-        # 2-5 个」提示,而那句话在这里就该说完。
+        # 生篮子**绝不**直接进 URL。
+        self.assertNotIn("basket_query_value(basket)", self.source)
+        # 篮子不足 2 个时不给链接:给了就是把人送进对比页的「请选择 2-5
+        # 个」提示,而那句话在这里就该说完。判据也走复核后的成员。
         self.assertIn(
-            "        gap = basket_readiness(basket)\n"
-            "        if gap:\n",
+            "        gap = basket_readiness(checked.live)\n",
+            self.source,
+        )
+
+    def test_revalidation_happens_before_any_link_is_rendered(self) -> None:
+        # 用 AST 问「复核在不在 page_link 之前」,不按文本行号猜:两处都在
+        # 同一个函数体里,顺序颠倒后源码串照样命中。
+        function = self._function("render_basket_panel")
+        revalidate_line = next(
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "revalidate_basket"
+        )
+        link_line = next(
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "page_link"
+        )
+        self.assertLess(revalidate_line, link_line)
+
+    def test_stale_members_block_the_link_instead_of_being_dropped(
+        self,
+    ) -> None:
+        # 自动踢出等于替操作人决定「这个不要了」,而他可能正想知道它去哪了。
+        self.assertIn(
+            "        if checked.stale or checked.collapsed:\n", self.source)
+        self.assertIn("        if checked.stale:\n", self.source)
+        self.assertIn("        if checked.collapsed:\n", self.source)
+        # 每个失效成员都要说出**自己**的原因,不是一句「有几个不能用」。
+        self.assertIn(
+            '                st.caption(f"· `{_stale.run_id}`：'
+            '{_stale.reason}")\n',
             self.source,
         )
 

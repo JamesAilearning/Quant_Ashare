@@ -23,16 +23,8 @@ import streamlit as st
 
 from web.operator_ui.artifact_reader import ArtifactReadIssue
 from web.operator_ui.chart_reader import discover_charts
-from web.operator_ui.compare_basket_widget import (
-    render_add_to_basket_button,
-    render_basket_panel,
-)
 from web.operator_ui.components import render_error_state
 from web.operator_ui.formatting import fmt_metric, format_date_absolute
-from web.operator_ui.job_io import load_all_jobs_read_only
-from web.operator_ui.pages._research_run_comparison_helpers import (
-    selectable_catalog,
-)
 from web.operator_ui.pages._results_helpers import (
     LOG_NAMES,
     MISSING,
@@ -278,7 +270,7 @@ def _render_header_actions(
     metrics: Mapping[str, Any],
     metadata: Mapping[str, Any],
 ) -> None:
-    action_cols = st.columns([1, 1, 1, 1, 1])
+    action_cols = st.columns([1, 1, 1, 1])
     with action_cols[0]:
         if st.button("用此配置重跑", disabled=not config_bytes):
             st.session_state["prefill_config_yaml"] = config_bytes.decode("utf-8", errors="replace")
@@ -342,19 +334,6 @@ def _render_header_actions(
         )
         if bundle_too_large_message:
             st.caption(bundle_too_large_message)
-    with action_cols[4]:
-        # 准入在按下之前判好——对比页的可选目录每个产物目录只留一个当前所
-        # 有者,把被接管的 id 送过去会让整页停在 st.error + st.stop()。
-        _all_catalog_rows = load_all_jobs_read_only()
-        _compare_catalog = selectable_catalog(_all_catalog_rows)
-        render_add_to_basket_button(
-            str(job.get("job_id") or ""),
-            selectable_ids=[row.run_id for row in _compare_catalog.rows],
-            run_id_alias=_compare_catalog.run_id_alias,
-            all_rows=_all_catalog_rows,
-            key_prefix="results",
-        )
-    render_basket_panel(key_prefix="results")
 
     # The "键盘快捷键" expander used to live here, listing 6 shortcuts
     # (?, j/k, r, e, 1-5, /) immediately followed by "Streamlit 没有暴露

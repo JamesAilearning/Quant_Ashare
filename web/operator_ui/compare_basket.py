@@ -156,10 +156,67 @@ def remove_from_basket(
 def basket_query_value(basket: Sequence[str]) -> str:
     """篮子的 URL 值。空篮子给空串（对比页把空串当作「没有请求」）。
 
-    只做拼接:去重与上界由 ``add_to_basket`` 保证,在这里再筛一次等于把
-    同一条规则写两份,两份会分叉。
+    只做拼接:去重与上界由 ``add_to_basket`` 与 ``revalidate_basket`` 保证,
+    在这里再筛一次等于把同一条规则写两份,两份会分叉。
     """
     return ",".join(basket)
+
+
+@dataclass(frozen=True)
+class BasketRevalidation:
+    """篮子相对**当前**目录的复核结果。"""
+
+    #: 可以送出去的成员,按当前目录解析后、保序去重。
+    live: tuple[str, ...]
+    #: 送不出去的成员及其原因。留在篮子里等操作人移除——静默丢弃等于替他
+    #: 决定「这个不要了」,而他可能正想知道它去哪了。
+    stale: tuple[BasketAdmission, ...]
+    #: 加入时是两个不同的运行,如今解析到同一个所有者。对比页会因重复而
+    #: 整页停下,所以这里就要说出来。
+    collapsed: tuple[str, ...]
+
+
+def revalidate_basket(
+    basket: Sequence[str],
+    *,
+    selectable_ids: Iterable[str],
+    run_id_alias: Mapping[str, str],
+    all_rows: Iterable[object] = (),
+) -> BasketRevalidation:
+    """把篮子重新对**当前**目录核一遍。
+
+    加入时校验过不等于送出时还成立:篮子是会话级的,而在此期间同一产物目录
+    可能被一次更新的运行接管——那个成员就不再是目录的当前所有者。照原样拼
+    进 URL,对比页会把它判成未知并 ``st.stop()``:一模一样的拒绝页,只是晚了
+    一步发生。本 change 声称要防的正是这件事,所以链接**渲染之前**必须再核
+    一次,而不是只在加入时核。
+
+    两个成员后来解析到同一个所有者也一样致命(对比页有重复检查)。这在加入
+    时看不出来:那时它们确实是两个不同的可选运行。
+    """
+
+    seen: set[str] = set()
+    live: list[str] = []
+    stale: list[BasketAdmission] = []
+    collapsed: list[str] = []
+    for run_id in basket:
+        admission = admit_to_basket(
+            run_id,
+            selectable_ids=selectable_ids,
+            run_id_alias=run_id_alias,
+            all_rows=all_rows,
+        )
+        if not admission.admissible:
+            stale.append(admission)
+            continue
+        resolved = admission.resolved_run_id
+        if resolved in seen:
+            collapsed.append(run_id)
+            continue
+        seen.add(resolved)
+        live.append(resolved)
+    return BasketRevalidation(
+        live=tuple(live), stale=tuple(stale), collapsed=tuple(collapsed))
 
 
 def basket_readiness(basket: Sequence[str]) -> str:

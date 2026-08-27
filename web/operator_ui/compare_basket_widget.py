@@ -23,10 +23,42 @@ from web.operator_ui.compare_basket import (
     basket_query_value,
     basket_readiness,
     remove_from_basket,
+    revalidate_basket,
+)
+from web.operator_ui.job_io import load_all_jobs_read_only
+from web.operator_ui.pages._research_run_comparison_helpers import (
+    selectable_catalog,
 )
 
 #: 对比页在 ``st.page_link`` 里的相对路径（app.py 用同一个文件名注册）。
 COMPARISON_PAGE = "pages/research_run_comparison.py"
+
+
+def render_compare_basket_controls(run_id: str, *, key_prefix: str) -> None:
+    """来源页的**唯一**入口：加入按钮 + 篮子面板，目录只读一次。
+
+    目录在这里读、也只在这里读。让每个来源页自己读，等于把「传全量目录行
+    还是只传当前所有者」这个坑挖三遍——其中两遍已经在评审里被抓到过一次。
+    传全量行是必需的：只传当前所有者的话，「被同目录的更新运行接管」会退化
+    成「目录里根本没有这条」，分因就没了，操作人只剩一句「不可用」。
+    """
+
+    all_rows = load_all_jobs_read_only()
+    catalog = selectable_catalog(all_rows)
+    selectable_ids = [row.run_id for row in catalog.rows]
+    render_add_to_basket_button(
+        run_id,
+        selectable_ids=selectable_ids,
+        run_id_alias=catalog.run_id_alias,
+        all_rows=all_rows,
+        key_prefix=key_prefix,
+    )
+    render_basket_panel(
+        key_prefix=key_prefix,
+        selectable_ids=selectable_ids,
+        run_id_alias=catalog.run_id_alias,
+        all_rows=all_rows,
+    )
 
 
 def current_basket() -> tuple[str, ...]:
@@ -90,8 +122,19 @@ def render_add_to_basket_button(
         st.caption(f"· {admission.reason}")
 
 
-def render_basket_panel(*, key_prefix: str) -> None:
+def render_basket_panel(
+    *,
+    key_prefix: str,
+    selectable_ids: Iterable[str],
+    run_id_alias: Mapping[str, str],
+    all_rows: Iterable[object] = (),
+) -> None:
     """篮子本体:成员、移除、清空、前往对比。
+
+    链接**渲染之前**把每个成员对当前目录再核一遍。加入时校验过不等于送出时
+    还成立:篮子是会话级的,而在此期间同一产物目录可能被一次更新的运行接管。
+    照原样拼进 URL,对比页会把它判成未知并 ``st.stop()`` ——一模一样的拒绝
+    页,只是晚了一步发生,而本模块声称要防的正是这件事。
 
     篮子为空时**什么都不画**——一个常驻的空面板会占掉每页的注意力预算,
     而它此刻没有信息。
@@ -105,6 +148,12 @@ def render_basket_panel(*, key_prefix: str) -> None:
     if not basket:
         return
 
+    checked = revalidate_basket(
+        basket,
+        selectable_ids=selectable_ids,
+        run_id_alias=run_id_alias,
+        all_rows=all_rows,
+    )
     with st.expander(
         f"对比篮子（{len(basket)}/{MAX_BASKET_SIZE}）", expanded=False,
     ):
@@ -119,14 +168,32 @@ def render_basket_panel(*, key_prefix: str) -> None:
                 _store_basket(remove_from_basket(basket, run_id))
                 st.rerun()
 
-        gap = basket_readiness(basket)
-        if gap:
+        if checked.stale:
+            # 不自动踢出:静默丢弃等于替操作人决定「这个不要了」,而他可能
+            # 正想知道它去哪了。说清原因,移除交给他。
+            st.warning(
+                f"⚠ 篮子里有 {len(checked.stale)} 个运行现在送不到对比页"
+                "（加入之后目录归属变了）。移除它们才能继续："
+            )
+            for _stale in checked.stale:
+                st.caption(f"· `{_stale.run_id}`：{_stale.reason}")
+        if checked.collapsed:
+            st.warning(
+                "⚠ 以下运行现在与篮子里的另一个指向**同一份当前工件**，"
+                "对比页会因重复而拒绝整组："
+                + "、".join(f"`{_r}`" for _r in checked.collapsed)
+            )
+
+        gap = basket_readiness(checked.live)
+        if checked.stale or checked.collapsed:
+            st.caption("· 上述问题解决前不提供对比链接——送过去只会被拒。")
+        elif gap:
             st.caption(f"⚠ {gap}")
         else:
             st.page_link(
                 COMPARISON_PAGE,
-                label=f"→ 对比这 {len(basket)} 个运行",
-                query_params={"run_ids": basket_query_value(basket)},
+                label=f"→ 对比这 {len(checked.live)} 个运行",
+                query_params={"run_ids": basket_query_value(checked.live)},
             )
             st.caption(
                 "对比页会自己核验实验合同与指标完整性——篮子只负责把这几"
