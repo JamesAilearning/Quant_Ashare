@@ -1017,20 +1017,25 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
             provider.mkdir()
-            # 变体A（第四十三轮再改判——legacy 不进 race 格）:无 nonce
-            # 会话的杀前快照读到的 finished 可能是**陈年**工件（pid 复用
-            # + 冻结钟过 legacy 窗）,据它宣告「送达不可判定」是过度声
-            # 称。legacy 照走杀后 oracle 的 no-op 判别（该分支前提已是
-            # 「无信号送达」,工件属谁都不改变「自然完成」这个结论）→
-            # already_finished 且**不带** race 标记。带 nonce 的同场景
-            # 见变体A'（r20→r35→r36→r43 四轮谱系）。
+            # 变体A（第四十四轮终判——legacy 一律 fail-closed 到不可判
+            # 定格）:codex 驳倒了 r43 的「结论不受影响」论证——
+            # signal_issued=False 只说明**前置组信号**没送达,而随后的
+            # process.kill() 完全可能真杀死了进程（POSIX 下 -9）;复检已
+            # 死时两种真相经 Popen API 不可分,legacy 又无法证明工件归属
+            # （陈年工件在 pid 复用+冻结钟下过 legacy 窗）,拿它判「自然
+            # 完成」会把一次真取消抹成「取消未执行」。诚实的唯一表述=
+            # 送达不可判定 → already_finished + race 标记 + 无归属声称
+            # 的专属标记行。五轮谱系:r20 no-op → r35 cancelled →
+            # r36 race(nonce) → r43 legacy 走 no-op → r44 legacy 走 race。
             status_path_for_provider(provider).write_text(
                 json.dumps(_record(provider)), encoding="utf-8")
             got, text = _run(provider, launched)
             self.assertEqual("already_finished", got.kind)
-            self.assertFalse(got.terminal_race,
-                             "legacy 会话据陈年工件宣告了送达不可判定")
-            self.assertIn("own terminal record", text)
+            self.assertTrue(got.terminal_race,
+                            "legacy 未 fail-closed 到不可判定格")
+            self.assertIn("without a provable identity", text)
+            self.assertNotIn("own terminal record", text,
+                             "legacy 仍声称工件归属")
         with tempfile.TemporaryDirectory() as t:
             # 变体A'（带 nonce 才进不可判定格——第四十三轮起 race 格是
             # nonce-only;nonce 转发正确性由变体N 正面钉）。
@@ -1092,6 +1097,13 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('if _last_cancel.get("terminal_race"):', page,
                       "already_finished 渲染缺不可判定分支")
         self.assertIn("无法确定是否实际送达", page, "缺不可判定措辞")
+        # legacy 竞态格的更弱措辞（第四十四轮 P2）:无 nonce 时工件归属
+        # 不可证,不许声称「终录已在盘」,也不许对本帧工件做归属复验。
+        self.assertIn('if not _rid.get("launch_nonce"):', page,
+                      "race 分支没按 legacy 分岔")
+        # 短锚不跨源码断行（老坑第三次）。
+        self.assertIn("声称上方工件属于它", page,
+                      "legacy 竞态格仍声称工件归属")
         # race 分支的渲染帧复验（第三十七轮 P2:r32/35 同款——「以上方
         # 状态为准」也要对本帧复验身份,三态改口）。
         self.assertIn("_r_current = terminal_status_confirms_the_run(",
@@ -1104,12 +1116,25 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             "missing/corrupt 三态")
         self.assertIn("暂不可读", page, "读取失败情形缺如实措辞")
         with tempfile.TemporaryDirectory() as t:
-            # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。
+            # 变体B（第四十四轮改判）:legacy + 无终录——同样落 fail-
+            # closed 不可判定格。r18/r20 判 cancelled 的理由是「孤儿收养
+            # 的收尾对无终录的自然猝死同样正确」,但那仍是一句声称
+            # （「强制终止已执行」）,而 legacy 证不出 kill 送达——两边
+            # 都不声称才诚实。
             provider = Path(t) / "prov"
             provider.mkdir()
             got, text = _run(provider, launched)
+            self.assertEqual("already_finished", got.kind)
+            self.assertTrue(got.terminal_race)
+            self.assertIn("without a provable identity", text)
+        with tempfile.TemporaryDirectory() as t:
+            # 变体B'（nonce 侧对照,防 fail-closed 误伤主路径）:带 nonce
+            # + 无终录 → 仍按已发信号的确认死亡走取消收尾。
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            got, text = _run(provider, launched, nonce="cd" * 16)
             self.assertEqual("cancelled", got.kind,
-                             "无终录的歧义死亡没走确认死亡收尾")
+                             "nonce 会话的无终录歧义死亡没走确认死亡收尾")
             self.assertIn("cancel outcome: process exited", text)
 
     def test_a_killless_retry_still_persists_its_audit_loss(self) -> None:

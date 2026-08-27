@@ -969,18 +969,36 @@ if isinstance(_last_cancel, dict):
             # 撒谎,如实说竞态与数据等价性。「以上方状态为准」须在渲染
             # 帧复验身份（第三十七轮 P2,r32/35 同款三态）。
             _rid = _last_cancel.get("graceful_identity") or {}
-            _r_current = terminal_status_confirms_the_run(
-                _status, int(_rid.get("pid") or -1),
-                launched_at=_rid.get("launched_at") or None,
-                exited_at=_rid.get("exited_at") or None,
-                launch_nonce=_rid.get("launch_nonce") or None)
+            if not _rid.get("launch_nonce"):
+                # legacy 竞态格（第四十四轮 P2）：无 nonce 时**工件归属
+                # 不可证**（陈年工件在 pid 复用+冻结钟下可过 legacy
+                # 窗）,不许声称「终录已在盘」,更不许对本帧工件做归属复
+                # 验（同样可重放）。只说能证的:进程已结束、指令已发、
+                # 送达不可判定。
+                st.info(
+                    "该运行已结束"
+                    f"（returncode={_last_cancel.get('returncode')}）。终止"
+                    "指令已发出，但**无法确定是否实际送达**——它可能在指"
+                    "令生效前已自行结束；两种情形对数据结果等价。本次运"
+                    "行由**升级前**的界面启动（无本次会话身份），本页不"
+                    "声称上方工件属于它；成败以状态工件与台账自述为准。"
+                )
+                _r_current = None
+            else:
+                _r_current = terminal_status_confirms_the_run(
+                    _status, int(_rid.get("pid") or -1),
+                    launched_at=_rid.get("launched_at") or None,
+                    exited_at=_rid.get("exited_at") or None,
+                    launch_nonce=_rid.get("launch_nonce") or None)
             _race_body = (
                 "该运行已写完终态记录（终止指令发出前即已在盘）"
                 f"（returncode={_last_cancel.get('returncode')}）。终止"
                 "指令与其自然结束存在竞态，**无法确定是否实际送达**——"
                 "二者对数据结果等价：终态已记录，唯共享台账的追加不保"
                 "证完整。")
-            if _r_current:
+            if _r_current is None:
+                pass  # legacy 格已在上面如实呈报
+            elif _r_current:
                 st.info(_race_body + "成败以上方状态为准。")
             elif _status.kind in ("missing", "corrupt"):
                 st.info(_race_body

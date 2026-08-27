@@ -621,6 +621,25 @@
       支不可达（留作纵深,不删）
 - [x] 变异两发（去 confirm 门 / 去杀前快照门）各自咬住
 
+## codex 第四十四轮（P2：杀后 oracle 的 legacy 例外被驳倒,改 fail-closed）
+
+- [x] P2 **我 r43 的论证是错的**,codex 直接驳倒:我说「该分支前提是无
+      信号送达,工件属谁都不改变自然完成的结论」——但 `signal_issued=
+      False` 只说明**前置组信号**没送达,随后的 `process.kill()` 完全可
+      能真杀死了进程（POSIX 下 returncode=-9）;复检已死时两种真相经
+      Popen API 不可分,legacy 又证不出工件归属,拿陈年工件判「自然完
+      成」会把一次**真取消**抹成「取消未执行」。修=legacy 在该格
+      fail-closed 到**送达不可判定**（already_finished + terminal_race
+      + 无归属声称的专属标记行）;页面 race 分支按无 nonce 走更弱措辞
+      （只说进程已结束/指令已发/送达不可判定,不声称工件归属,也不对本
+      帧工件做同样可重放的归属复验）
+- [x] 归属入口**七类全部 nonce-only**,r43 记的「唯一可辩护的保留」作废
+- [x] quiet-kill 变体A 第五次改判（r20 no-op → r35 cancelled → r36
+      race(nonce) → r43 legacy 走 no-op → r44 legacy 走 race）,变体B
+      同步改判并新增 B'（nonce 侧对照,防 fail-closed 误伤主路径）;变异
+      去 legacy 闸咬住
+- [x] 跨行 needle 老坑第三次犯（改短锚复绿）
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

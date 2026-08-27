@@ -749,6 +749,30 @@ def cancel_update(
                     # （nonce 会话不看窗;legacy 对观测时刻 ≥ 真实死亡
                     # 成立,第三十七轮）。
                     exited_at=datetime.now(tz=_CN_TZ).isoformat())
+            elif not signal_issued and launch_nonce is None:
+                # legacy **fail-closed**（codex 第四十四轮 P2 驳倒了我上
+                # 轮的「结论不受影响」论证）:`signal_issued=False` 只说
+                # 明**前置组信号**没送达,而随后的 `process.kill()` 完全
+                # 可能真杀死了进程——复检已死时,「kill 之前它已自然死
+                # （send_signal 内部 no-op）」与「kill 杀了它（POSIX 下
+                # returncode=-9）」经 Popen API 不可区分。legacy 又无法
+                # 证明工件归属（陈年工件在 pid 复用+冻结/回拨钟下可过
+                # legacy 窗）,拿它判「自然完成」会把一次**真取消**抹成
+                # 「取消未执行」。诚实的唯一表述=送达不可判定,与
+                # pre_kill_terminal 同格返回（页面按无 nonce 走更弱的
+                # 措辞:不声称工件归属）。
+                markers_written = _append_cancel_marker(
+                    log_path,
+                    "cancel outcome: process exited without a provable "
+                    "identity (legacy, no launch nonce) — terminate "
+                    "delivery is undecidable; the run's own status and "
+                    "ledger are its only account"
+                ) and markers_written
+                return UpdateCancel(
+                    kind="already_finished", returncode=process.returncode,
+                    markers_written=markers_written, kill_issued=False,
+                    terminal_race=True,
+                    exited_at=datetime.now(tz=_CN_TZ).isoformat())
             elif (not signal_issued
                     and terminal_record_confirms_the_run(
                         provider_dir, process.pid,

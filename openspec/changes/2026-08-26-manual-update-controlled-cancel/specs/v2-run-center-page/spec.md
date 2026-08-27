@@ -272,10 +272,15 @@ replayed by a same-pid successor under a frozen or coarse clock; and every
 read that could attribute happens AFTER work that leaves a reuse interval
 (the cancel boundary writes markers and inspects the filesystem after
 confirming death; the settlement read follows a watcher tick). Legacy
-attribution SHALL therefore fail closed: the orphaned record is left to
-the staleness threshold, the page presents the artifact as-is with no
-attribution claim, and the run's own status artifact and ledger remain its
-only account. This costs a nonce-less run — only reachable for a child
+attribution SHALL therefore fail closed EVERYWHERE, with no exception: the
+orphaned record is left to the staleness threshold, the page presents the
+artifact as-is with no attribution claim, and the run's own status artifact
+and ledger remain its only account. This includes the post-kill no-op
+oracle, where a nonce-less exit SHALL be reported as DELIVERY-UNDECIDABLE
+rather than as a natural completion — `signal_issued=False` proves only
+that the PRELIMINARY group signal failed, while the single-process kill
+that follows may well have terminated the child, and an old artifact
+passing the replayable legacy window would erase a real cancellation. This costs a nonce-less run — only reachable for a child
 launched by a pre-upgrade UI still in flight across a hot upgrade — its
 cancellation-evidence labelling, an honest degradation of the same kind as
 losing the handle on a UI restart.
