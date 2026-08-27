@@ -1369,6 +1369,21 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             "补结算没对已捕获快照做终录检出（或检出被熄火）")
         self.assertIn('"terminal_after_kill": _late_terminal', settle,
                       "补结算结局没带终录检出")
+        # 身份随行 + 渲染帧复验（第三十二轮 P2:标记在快照帧被接受,消息
+        # 在 rerun 后新帧渲染——其间接替可改写工件,「上方状态即它」须
+        # 对本帧 _status 复验,不符改口）。
+        self.assertIn('"terminal_identity"', settle,
+                      "补结算结局没带被认定终录的身份")
+        self.assertIn('_lc["terminal_identity"] = {', page,
+                      "confirm 结局没带被认定终录的身份")
+        self.assertIn("_tid_current = (", page, "渲染帧没复验终录身份")
+        self.assertIn('_status.started_at == _tid.get("started_at")', page,
+                      "复验没比对戳")
+        self.assertIn('(_status.launch_nonce or "") == '
+                      '_tid.get("launch_nonce")', page,
+                      "复验没比对 nonce")
+        self.assertIn("已被随后的记录接替", page,
+                      "接替情形缺如实改口文案")
         # 快照回归（第三十一轮场景:第一读见本次终录、盘上随后被接替改
         # 写）——快照版判定纯作用于快照,与盘无关。
         from pathlib import Path as _P

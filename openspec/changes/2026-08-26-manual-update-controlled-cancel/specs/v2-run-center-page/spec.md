@@ -423,7 +423,11 @@ one period.
   oracle, applied to the SNAPSHOT each path already read — never through a
   second artifact read, which a scheduler replacement can overwrite
   between the snapshot and the recheck, flipping the detection false
-  against the very record the frame displays
+  against the very record the frame displays; and the announcing render —
+  a re-render after the detection frame — SHALL re-verify that the current
+  banner still IS the accepted record (its stamp and nonce carried in the
+  outcome) before claiming so, saying instead that the terminal record was
+  verified at cancel time but has since been superseded when they differ
 
 #### Scenario: a same-stamp replacement with another identity is not covered
 

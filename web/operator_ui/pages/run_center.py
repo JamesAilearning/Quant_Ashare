@@ -340,6 +340,13 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         "swap_state_unknown": _late_outcome.swap_state_unknown,
         "terminal_recorded": _late_outcome.terminal_recorded,
         "terminal_after_kill": _late_terminal,
+        # 被认定终录的身份（第三十二轮 P2）：标记在本帧快照被接受,消息
+        # 却在 rerun 后的新帧渲染——其间接替可改写工件,「上方状态即它」
+        # 须在渲染帧复验,不符即改口。
+        "terminal_identity": ({
+            "started_at": _late_status.started_at or "",
+            "launch_nonce": _late_status.launch_nonce or "",
+        } if _late_terminal else None),
         "evidence_stored": _late_evidence,
     }
     st.session_state.pop(_LIVE_RUN_KEY, None)
@@ -917,6 +924,13 @@ if _live_proc is not None:
                         # 横幅自相矛盾。单独标记,措辞如实。
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["terminal_after_kill"] = True
+                        # 身份随行（第三十二轮 P2）：渲染帧要复验「上方
+                        # 状态即它」是否仍成立。
+                        _lc["terminal_identity"] = {
+                            "started_at": _fresh_status.started_at or "",
+                            "launch_nonce":
+                                _fresh_status.launch_nonce or "",
+                        }
                     elif _kn and _fresh_status.kind in (
                             "missing", "corrupt"):
                         # 重读不确凿 ≠ 无孤儿（第二十五轮 P2,与补结算
@@ -990,13 +1004,32 @@ if isinstance(_last_cancel, dict):
             # 硬杀撞上「终态已写、台账未完」窗（第二十九轮 P2）：记录
             # 经 nonce/pid 核实是本次运行自己的终录——运行本体已完成落
             # 账,说「写记录前被终止」会与上方 finished 横幅自相矛盾。
-            st.success(
-                f"强制终止已执行（returncode="
-                f"{_last_cancel.get('returncode')}），但编排器在被终止前"
-                "已写下本次运行的**终态记录**（上方状态即它，身份经核"
-                "实）——运行本体已完成落账，可能仅共享台账的追加被打断；"
-                "页面按状态工件如实展示，单飞锁已自动释放，下次更新照常。"
-            )
+            # 「上方状态即它」须在**渲染帧**复验（第三十二轮 P2）:标记
+            # 在快照帧被接受,消息在 rerun 后的新帧渲染——其间接替可改
+            # 写工件,本帧横幅可能已是别的记录。
+            _tid = _last_cancel.get("terminal_identity") or {}
+            _tid_current = (
+                _status.kind == "finished"
+                and _status.started_at == _tid.get("started_at")
+                and (_status.launch_nonce or "") == _tid.get("launch_nonce"))
+            if _tid_current:
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），但编排器在被终止"
+                    "前已写下本次运行的**终态记录**（上方状态即它，身份"
+                    "经核实）——运行本体已完成落账，可能仅共享台账的追加"
+                    "被打断；页面按状态工件如实展示，单飞锁已自动释放，"
+                    "下次更新照常。"
+                )
+            else:
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），编排器在被终止前"
+                    "已写下本次运行的终态记录（取消当时经身份核实），但"
+                    "**此刻**状态工件已被随后的记录接替——上方显示的即"
+                    "当前状态；本次运行的终态以台账为准。单飞锁已自动"
+                    "释放，下次更新照常。"
+                )
         else:
             # 进程在写下自己的 running 记录之前就被终止（或记录已是别次
             # 运行的）——没有孤儿要更正，也没有证据可存；上面那套「将持续
