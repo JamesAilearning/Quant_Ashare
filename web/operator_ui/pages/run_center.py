@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import streamlit as st
 
@@ -51,12 +51,18 @@ from web.operator_ui.update_runner import (
     START_DATE,
     build_update_argv,
     calendar_gate_warning,
+    cancel_update,
     default_log_path,
+    evidence_covers_record,
+    evidence_retires,
     gate_today,
     launch_daily_update,
     log_tail,
     log_window,
     range_problem,
+    record_bears_launch_nonce,
+    settle_late_cancel,
+    terminal_status_confirms_the_run,
 )
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
@@ -88,6 +94,17 @@ _CN_TZ = timezone(timedelta(hours=8))
 _AWAIT_LAUNCH_KEY = "run_center::awaiting_launch_since"
 _AWAIT_LAUNCH_WINDOW = AWAIT_LAUNCH_WINDOW
 _LAST_LAUNCH_KEY = "run_center::last_launch"
+#: 本会话在飞的手动更新——**活进程句柄**在内存里（update_runner 的
+#: launch 结果携带；本页零 spawn，守卫在档），受控取消的唯一通道（绝不
+#: 按 pid 杀：pid 会被回收复用）。UI 重启即失去句柄，旧运行不可取消——
+#: 如实降级。调度器的自动运行不是本 UI 子进程，天然不在射程。
+_LIVE_RUN_KEY = "run_center::live_manual_run"
+_CANCEL_ARM_KEY = "run_center::cancel_armed"
+_LAST_CANCEL_KEY = "run_center::last_cancel"
+#: 硬杀成功后的**持久**证据（不随 rerun 消失,codex #470 P1）:被取消那次
+#: 运行的状态戳。running 记录的戳与它精确相等时,页面按「已取消」呈现并
+#: 解锁启动闸;新运行写新戳,证据自动退役。
+_CANCELLED_EVIDENCE_KEY = "run_center::cancelled_evidence"
 
 # Streamlit's SessionStateProxy exposes the mapping operations used below, but
 # its stubs do not inherit MutableMapping.  Keep the cast at the UI boundary;
@@ -112,7 +129,7 @@ def _read_progress() -> AttributedProgress:
 
 def _status_signature(
     status: object, classification: str | None
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     """状态里「值得触发整页重绘」的部分。
 
     kind/started_at/finished_at **加上新鲜度分类**:前三项在一次运行
@@ -123,12 +140,19 @@ def _status_signature(
     分类由**调用方传入**而非在此重算(codex #442 r4):基线那一侧必须用
     整页渲染时刻算出的那一个值,与闸门判断同源;片段那一侧才用当下时刻
     重算。两侧都在函数内部重算的话,跨线时刻会同时翻面而元组照样相等。
+
+    launch_nonce/pid 也入签名（codex 第二十九轮 P2）:覆盖判定已按身份
+    一票裁决,而同戳接替（粗粒度/冻结时钟可造）恰恰**只有身份字段**在
+    变——不入签名,片段永不重绘,页面停在「已取消」、按钮虚开（launch
+    边界会拒,但操作人看到的是矛盾帧）直到手动交互。
     """
     return (
         str(getattr(status, "kind", "")),
         str(getattr(status, "started_at", "")),
         str(getattr(status, "finished_at", "")),
         str(classification or ""),
+        str(getattr(status, "launch_nonce", None) or ""),
+        str(getattr(status, "pid", None) or ""),
     )
 
 _provider = anchored_to_repo(resolve_default_provider_uri())
@@ -172,6 +196,217 @@ _running_fresh = (
     and record_matches_provider(_status, _provider_path)
     and _status_class == RUNNING_FRESH
 )
+# 句柄证据覆盖（codex #470 P1）:硬杀留下的 running 记录没有终态,若只在
+# 取消后首个渲染更正,任何 rerun 都会退回「正在更新」并锁住启动按钮直到
+# 六小时陈旧线。证据按状态戳精确相等绑定到**被取消的那一次**;戳变了
+# （新运行/终态）即退役。
+_cancel_evidence = st.session_state.get(_CANCELLED_EVIDENCE_KEY)
+# 覆盖判定（第二十五/二十六轮 P2）：nonce 身份在场时**一票裁决**——同戳
+# 但 nonce 不同/缺失的接替记录（粗粒度时钟可造同戳）不算覆盖;戳只留给
+# 双方都无 nonce 的 legacy 对。与证据退役、启动闸共用同一谓词。
+_cancelled_this_run = (
+    isinstance(_cancel_evidence, dict)
+    and _status.kind == "running"
+    and evidence_covers_record(
+        _status.started_at, _status.launch_nonce,
+        _cancel_evidence.get("started_at"),
+        _cancel_evidence.get("launch_nonce"))
+)
+if isinstance(_cancel_evidence, dict) and evidence_retires(
+        _status.kind, _status.started_at, _status.launch_nonce,
+        _cancel_evidence.get("started_at"),
+        _cancel_evidence.get("launch_nonce")):
+    # 只有**确凿**接替（戳不同的 running / finished 终态）才退役——
+    # corrupt/missing 是读取失败不是接替证明,瞬时卷/权限失效借它把证据
+    # 永久清掉,访问恢复后同一条孤儿 running 复现会被当活运行锁页六小时
+    # （codex 第二十三轮 P2）。绝不覆盖别人的运行;读不出来就留着,证据
+    # 只在匹配 running 出现时生效,保留无害。
+    st.session_state.pop(_CANCELLED_EVIDENCE_KEY, None)
+if _cancelled_this_run:
+    _running_fresh = False
+# 会话内在飞的手动更新（codex #470 第三轮 P2）：子进程写下 running 记录
+# 之前有一段窗口（_AWAIT_LAUNCH_KEY 盖的那段），此时 _running_fresh 仍为
+# False、启动按钮仍可点——再点一次会用第二个句柄**顶掉**第一个：第二个
+# 子进程通常被单飞锁以 exit 17 拒绝、句柄随即退役，原来那次两小时的运行
+# 就此失去唯一合法取消凭据。凭句柄本身把闸：在飞即禁再启。
+_session_live = st.session_state.get(_LIVE_RUN_KEY)
+_session_live_proc = (
+    _session_live.get("process") if isinstance(_session_live, dict) else None)
+# 退役/补结算必须在 watcher 片段注册**之前**（codex 第十三轮 P2）：片段
+# 在每次整页执行时也内联运行,死句柄支路的 st.rerun 会在走到它之后的任何
+# 代码之前中止本轮——补结算若在片段之后,下一轮又先撞片段,无限 rerun、
+# 补结算永不执行、句柄永不退役（await 支路不循环,正因它的解除条件在片段
+# 之前重算——同款结构,这里对齐）。
+_live_run = _session_live
+_live_proc = _session_live_proc
+
+
+def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
+    """迟到死亡补结算（codex 第八轮 P2 引入）——kill 已发的未决取消,进程
+    死后欠的完整收尾。收尾义务与当场确认死亡**完全同款**（codex 第九轮
+    P2b）,走共享的补结算边界:结局标记 + 严格 swap 检查 + unknown 三态。
+    单一实现、两处调用（顶部退役块 + confirm 分支的 already_finished 竞
+    态拦截,第十四轮 P2）——分抄两份正是第九轮抓过的分叉。末尾整页重
+    绘,**不返回**。"""
+    _late_lp = (
+        _live_run.get("log_path") if isinstance(_live_run, dict) else "")
+    # 原失败尝试的标记状态从未决上下文带回（codex 第十轮 P2）：请求/
+    # 失败标记当时没落盘的话,审计链缺口不因迟到结局标记写成而消失。
+    # 缺键按 False 走（fail-closed:证不出审计完整就不声称）。
+    _late_markers = bool(
+        _live_run.get("cancel_pending_markers_written", False)
+        if isinstance(_live_run, dict) else False)
+    _late_outcome = settle_late_cancel(
+        _live_proc, Path(_late_lp) if _late_lp else None,
+        provider_dir=_provider_path,
+        markers_written=_late_markers,
+        launched_at=_live_run.get("launched_at")
+        if isinstance(_live_run, dict) else None)
+    # 证据落盘。身份=**生存期内观察到的精确戳候选**（codex 第十二轮
+    # P2:第八轮的请求时刻上界拒真孤儿、第十一轮的观测时刻上界收回
+    # 收 pid 的接替者——死亡观测可晚于真实死亡最长一个轮询周期,该
+    # 空窗内 OS 可把 pid 回收给接替的调度器运行,戳与 pid 双双落窗。
+    # 唯一两头都站得住的身份:趁进程可证活着时（confirm 当刻 + watcher
+    # 每拍）观察它自己写的记录戳,补结算只收养**精确相等**的那条;
+    # 没有候选=证不出身份,fail-closed 不收养,孤儿等陈旧线。）
+    _late_status = read_update_status(_status_path)
+    # 身份主判据=launch nonce（codex 第二十四轮 P2:子进程把它写进每条
+    # 记录——覆盖生存期内**任意时刻**写出的记录,含「最后一次观察之后、
+    # 死亡之前」尾窗里的;观察式候选在数学上封不住尾窗）。legacy 记录
+    # （无 nonce 的旧产出器在飞运行）保留 pid+精确候选链;带**别人**
+    # nonce 的记录直接拒。
+    _kill_nonce = (
+        _live_run.get("launch_nonce")
+        if isinstance(_live_run, dict) else None)
+    # 迟到收养 **nonce-only**（第四十二轮 P2,r41 结论的同一适用）:
+    # legacy 路径里 pid 可回收、一切时间量（窗/精确戳/生存期候选）在冻
+    # 结/粗粒度时钟下均可被同 pid 接替重放——不存在不可重放身份,一律
+    # fail-closed:无 nonce 会话的迟到孤儿不收养,等六小时陈旧线。
+    _late_evidence = (
+        _late_status.kind == "running"
+        and record_matches_provider(_late_status, _provider_path)
+        and _late_status.pid == _live_proc.pid
+        and record_bears_launch_nonce(
+            _late_status.launch_nonce, _kill_nonce))
+    # 迟到死亡同样可能撞上「终态已写、台账未完」窗（codex 第三十轮 P2:
+    # kill 成功、宽限窗超时,Windows 子进程仍可在真正终止前写完终态——
+    # 检出只装在 confirm 当场分支的话,补结算帧照样落「写记录前被终止」
+    # 兜底,与同帧 finished 横幅矛盾）。与 confirm 分支共用同一终态
+    # oracle;上界用补结算观测时刻（nonce 身份在场时窗本不参与,legacy
+    # 对观测时刻 ≥ 真实死亡亦成立）。
+    # 快照版核实（第三十一轮 P2）：判定作用在**本帧已读到的**
+    # _late_status 上,绝不二次读取——重读与快照之间调度器接替可改写
+    # 工件,第一读见本次终录、第二读见接替,检出翻假、帧自相矛盾。
+    _late_terminal = terminal_status_confirms_the_run(
+        _late_status, _live_proc.pid,
+        launched_at=_live_run.get("launched_at")
+        if isinstance(_live_run, dict) else None,
+        exited_at=_late_outcome.exited_at,
+        launch_nonce=_kill_nonce)
+    if _late_terminal and not _kill_nonce:
+        # legacy 迟到终录归属 **fail-closed**（第四十一轮 P2,codex 点破
+        # 数学终点:r39 的生存期候选钉法在冻结/粗粒度时钟下同样可被同
+        # pid 同戳的接替**重放**——legacy 路径里 pid 可回收、一切时间量
+        # 可重放,不存在不可重放的身份）。无 nonce 即不做迟到终录归属:
+        # 孤儿走收养链/陈旧线,页面按状态工件如实展示,不声称任何归属。
+        _late_terminal = False
+    if _late_evidence:
+        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+            "started_at": _late_status.started_at or "",
+            "launch_nonce": _kill_nonce or "",
+            "kind": "cancelled",
+        }
+    elif _kill_nonce and _late_status.kind in ("missing", "corrupt"):
+        # 读取不确凿 ≠ 无孤儿（codex 第二十五轮 P2:此前这里连未决上下
+        # 文带 nonce 一起丢,证据却还没落——卷瞬时失效恢复后孤儿复现,
+        # 锁页六小时）。被杀运行的身份是**先验已知**的（我们自己的
+        # launch nonce）,证据落盘不必依赖这次读取:nonce 证据先落,孤儿
+        # 何时可读何时被盖住;无孤儿时证据惰性无害。
+        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+            "started_at": "",
+            "launch_nonce": _kill_nonce,
+            "kind": "cancelled",
+        }
+    # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
+    # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
+    # 落证据,操作人得到的答复必须与当场死亡一致。
+    st.session_state[_LAST_CANCEL_KEY] = {
+        "kind": _late_outcome.kind,
+        "graceful": _late_outcome.graceful,
+        "returncode": _late_outcome.returncode,
+        "error": _late_outcome.error,
+        "swap_interrupted": _late_outcome.swap_interrupted,
+        "markers_written": _late_outcome.markers_written,
+        "swap_state_unknown": _late_outcome.swap_state_unknown,
+        "terminal_recorded": _late_outcome.terminal_recorded,
+        "terminal_after_kill": _late_terminal,
+        # 被认定终录的身份（第三十二轮 P2）：标记在本帧快照被接受,消息
+        # 却在 rerun 后的新帧渲染——其间接替可改写工件,「上方状态即它」
+        # 须在渲染帧复验,不符即改口。
+        "terminal_identity": ({
+            "started_at": _late_status.started_at or "",
+            "launch_nonce": _late_status.launch_nonce or "",
+            # 渲染帧复验用共享 oracle（第三十八轮 P2:手写三元比对漏
+            # pid,legacy 无 nonce 会话下同戳异 pid 的接替会过检）——身
+            # 份四件套随行。
+            "pid": _live_proc.pid,
+            "launched_at": _live_run.get("launched_at")
+            if isinstance(_live_run, dict) else "",
+            "exited_at": _late_outcome.exited_at or "",
+            # 取消当时核实到的终态**事实**也随行（第三十三轮 P2:该窗
+            # 恰是「终态已写、台账追加被打断」——接替抹掉快照后,台账里
+            # 可能根本没有这条,改口文案不得把操作人指向台账,只能呈现
+            # 当时核实到的东西）。
+            "exit_code": _late_status.exit_code,
+            "run_date": _late_status.run_date or "",
+        } if _late_terminal else None),
+        "evidence_stored": _late_evidence,
+    }
+    st.session_state.pop(_LIVE_RUN_KEY, None)
+    st.session_state.pop(_CANCEL_ARM_KEY, None)
+    # 当场重绘：上方状态横幅/闸门判断都算在补结算**之前**,不重绘会
+    # 带着旧判断渲染到底。幂等出口:_LIVE_RUN_KEY 已 pop,重绘后不会
+    # 再进本分支,不会循环。
+    st.rerun()
+
+
+if _live_proc is not None and _live_proc.poll() is not None:
+    _pending_at = (
+        _live_run.get("cancel_pending_at")
+        if isinstance(_live_run, dict) else None)
+    if _pending_at:
+        # kill 已发的未决取消迟到死亡——完整收尾（内部整页重绘,不返回）。
+        _settle_late_pending(_live_run, _live_proc)
+    # 进程已结束——句柄退役，成败由状态工件/台账自述（自然完成,无未决
+    # 取消;kill 导致的死亡在上面的补结算分支里已经 rerun 走人）。
+    # 中断证据（codex 第四十五轮 P2）：子进程可能写了 running 记录却没
+    # 写终录就死了（被外部杀死/崩溃）——句柄一丢,那条 running 记录无人
+    # 更正,`_running_fresh` 恒真,启动按钮锁到六小时陈旧线。本会话的
+    # nonce 是先验已知的可证身份,落一条**中断**证据（与取消证据同一
+    # 键,kind 区分措辞:它不是被本页取消的）。惰性:没有匹配记录时无
+    # 害,匹配记录出现即被如实盖住。
+    _dead_nonce = (
+        _live_run.get("launch_nonce") if isinstance(_live_run, dict) else None)
+    if _dead_nonce:
+        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+            "started_at": "",
+            "launch_nonce": _dead_nonce,
+            "kind": "interrupted",
+        }
+    st.session_state.pop(_LIVE_RUN_KEY, None)
+    st.session_state.pop(_CANCEL_ARM_KEY, None)
+    _session_live = None
+    _session_live_proc = None
+_session_run_alive = (
+    _session_live_proc is not None and _session_live_proc.poll() is None)
+# 交给 watcher 盯的**任何**在飞句柄（codex 第九轮 P2a 引入未决取消侧,
+# 第四十五轮 P2 扩到全部）：句柄死亡可以完全不改状态签名、不推日志进度
+# ——未决取消的迟到死亡是一种（硬杀后签名冻结）,普通在飞运行被外部杀死
+# 而没写终态是另一种,终态已写、子进程仍在收尾台账时死亡是第三种。只盯
+# 未决取消的话,后两种下顶部退役块要等操作人手动交互才执行,取消控件与
+# 被禁的启动按钮一直挂到六小时陈旧线。顶部退役块已把死句柄清成 None,
+# 所以这里拿到的必是活句柄或 None。
+_watched_live_proc = _session_live_proc
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
     _status, _provider_path
@@ -189,7 +424,23 @@ elif _status.kind == "corrupt":
     st.error(f"⚠ 状态记录损坏(绝不用默认值顶替):{_status.error}")
 elif _status.kind == "running":
     _cls = _status_class  # 同一次分类,勿重算(见上)
-    if _cls == RUNNING_FRESH:
+    if _cancelled_this_run:
+        if (_cancel_evidence or {}).get("kind") == "interrupted":
+            # 中断 ≠ 取消（第四十六轮 P2）:本会话启动的运行死于外部原
+            # 因（被杀/崩溃）,页面不许说成「已被本会话取消」。
+            st.warning(
+                f"⛔ 该 running 记录(始于 {_status.started_at})对应的运行"
+                "**已结束**——本会话持有的进程句柄确认它已退出,但它没有"
+                "写下终态记录（外部终止或崩溃）;这不是仍在运行,也不是本"
+                "页取消的。单飞锁已随进程释放,可直接重新启动更新。"
+            )
+        else:
+            st.warning(
+                f"⛔ 该 running 记录(始于 {_status.started_at})已被本会话"
+                "**取消**——进程经句柄确认退出,不会再写终态;这不是仍在运行。"
+                "单飞锁已随进程释放,可直接重新启动更新。"
+            )
+    elif _cls == RUNNING_FRESH:
         st.info(f"🔄 一次更新正在进行:始于 {_status.started_at}。")
     elif _cls == RUNNING_STALE:
         st.warning(
@@ -291,7 +542,10 @@ if _running_fresh:
 elif not _awaiting_launch:
     st.session_state.pop(_AWAIT_LAUNCH_KEY, None)
 
-_watching = _running_fresh or _awaiting_launch
+# 未决取消也要看着：等它死的期间状态签名/进度可能全程不动（硬杀后两者
+# 都冻结），没有 watcher 它的补结算永远等不来（codex 第九轮 P2a）。
+_watching = (
+    _running_fresh or _awaiting_launch or _watched_live_proc is not None)
 
 # 「我刚点的刷新到底生效了没」——状态没变时整页重绘长得一模一样,读取
 # 时刻是唯一能证明重读发生过的痕迹(#440 后续:操作人反馈按钮像坏的)。
@@ -331,6 +585,18 @@ if _watching:
             return
         if _read_progress() != _baseline_progress:
             # fetch 又推进了一格 —— 整页重绘,让上面那句进度跟上。
+            st.rerun(scope="app")
+            return
+        # 未决取消的迟到死亡（codex 第九轮 P2a）:硬杀后状态签名与日志
+        # 进度都可能不再变化——没有这一支,主脚本里的补结算块要等操作人
+        # 手动交互才会重新执行,死进程的取消控件与孤儿 running 会一直
+        # 挂着。句柄一死就把整页拉起来,让补结算当场跑。
+        # 在飞句柄一死就把整页拉起来,让顶部退役/补结算当场跑（第四十
+        # 五轮 P2:不限未决取消——普通运行被外部杀死、或终态已写而子进
+        # 程仍在收尾时死亡,签名与日志同样可以纹丝不动）。生存期候选观
+        # 察（r12/17/23）已随第四十二轮的 nonce-only 收养删除。
+        if (_watched_live_proc is not None
+                and _watched_live_proc.poll() is not None):
             st.rerun(scope="app")
             return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
@@ -411,16 +677,38 @@ with _col_launch:
         type="primary",
         # 范围不合法就不让点:畸形日期要到两小时后才在 tushare 那头炸。
         # 日历闸预警**不**禁用按钮 —— no-op 无害,操作人可能就是要它。
-        disabled=_running_fresh or _range_error is not None,
+        disabled=(_running_fresh or _session_run_alive
+                  or _range_error is not None),
         use_container_width=True,
     )
 if _refresh_clicked:
     st.toast(f"已重读状态工件({_read_at:%H:%M:%S})")
-if _launch_clicked:
+if _launch_clicked and _session_run_alive:
+    # 竞态兜底（按钮 disabled 之外的第二道）：本会话已有在飞运行时拒绝
+    # 再启——顶掉句柄=原运行失去取消凭据。
+    st.error(
+        "本会话已有一次手动更新在飞——先取消它或等它结束，再启动新的。"
+    )
+elif _launch_clicked:
+    # 证据时间绑定的**下界**必须在派生调用之前采样：子进程可能在派生
+    # 返回后、我们记时之前就写下 running 记录——晚采的下界会把真被杀的
+    # 运行判成「launch 之前的旧记录」拒绑，孤儿照样锁页六小时
+    # （codex 第六轮 P1；本页零派生，动作全在 audited runner 里）。
+    _pre_launch_at = datetime.now(tz=_CN_TZ).isoformat()
     _launch = launch_daily_update(
         _provider_path, _tushare_dir, _update_registry,
         start_date=_start_input.strip() or None,
         end_date=_end_input.strip() or None,
+        # 已取消孤儿的精确戳——launch 内部的状态闸凭它放行**那一条**记录
+        # （codex 第二轮 P1:按钮解锁了、闸还挡着=假解锁）。
+        cancelled_started_at=(
+            (_cancel_evidence or {}).get("started_at")
+            if _cancelled_this_run else None),
+        # nonce 放行同步递进（第二十五轮 P2）：nonce-only 证据的孤儿若只
+        # 放行戳,会重演「按钮解锁、闸仍拒」的假解锁（第二轮同款）。
+        cancelled_launch_nonce=(
+            (_cancel_evidence or {}).get("launch_nonce")
+            if _cancelled_this_run else None),
     )
     # 结果暂存 + 整页 rerun:守望者的注册发生在本行**之上**,所以本次
     # 脚本运行里设的等待标记要等下一轮才生效。立刻 rerun 让它当场生效,
@@ -435,6 +723,18 @@ if _launch_clicked:
         st.session_state[_AWAIT_LAUNCH_KEY] = datetime.now(
             tz=_CN_TZ
         ).isoformat()
+        # 活句柄入会话——受控取消的唯一凭据（frozen dataclass 里的
+        # process 字段；见 update_runner.UpdateLaunch）。
+        st.session_state[_LIVE_RUN_KEY] = {
+            "process": _launch.process,
+            "log_path": str(_launch.log_path) if _launch.log_path else "",
+            # 证据时间绑定的下界（codex 第五/六轮 P1）：**spawn 之前**
+            # 采样——子进程写 running 永远晚于它。
+            "launched_at": _pre_launch_at,
+            # 本次 launch 的一次性身份——子进程会把它写进每条状态记录,
+            # 收养凭 nonce 认领,无观察窗（codex 第二十四轮 P2）。
+            "launch_nonce": _launch.launch_nonce,
+        }
     st.rerun()
 
 _last_launch = st.session_state.pop(_LAST_LAUNCH_KEY, None)
@@ -448,6 +748,481 @@ if isinstance(_last_launch, dict):
     else:
         st.error(
             f"未启动({_last_launch.get('kind')}):{_last_launch.get('error')}"
+        )
+
+# --- 受控取消（2026-08-26-manual-update-controlled-cancel） ---
+# 只对**本会话启动且仍在飞**的手动更新可见；两步确认。数据安全前提：管线
+# 是 build-then-atomic-swap——切换前任意时点终止，在线 bundle 一字节不动，
+# 仍是最后一次成功更新的数据（无论自动还是手动）。
+_live_run = st.session_state.get(_LIVE_RUN_KEY)
+_live_proc = (
+    _live_run.get("process") if isinstance(_live_run, dict) else None)
+if _live_proc is not None and _live_proc.poll() is not None:
+    # 死亡发生在顶部退役/补结算块之后（本轮脚本运行途中）——此处不再做
+    # 任何结算（codex 第十三轮 P2:退役/补结算已整体移到 watcher 片段注
+    # 册之前,否则片段的死句柄 rerun 会在走到这里之前中止每一轮脚本,
+    # 补结算永不执行）。本轮只收起取消控件;下一轮顶部块接手退役或补结
+    # 算,未决死亡由片段的轮询保证在 30 秒内拉起那一轮。
+    _live_proc = None
+if _live_proc is not None:
+    if not st.session_state.get(_CANCEL_ARM_KEY):
+        if st.button(
+            "⛔ 取消本会话启动的手动更新",
+            key="run_center::cancel_request",
+            use_container_width=True,
+        ):
+            st.session_state[_CANCEL_ARM_KEY] = True
+            st.rerun()
+    else:
+        st.error(
+            "确认取消这次手动更新？管线只有校验通过后才原子切换——除"
+            "**切换瞬间的两段重命名窗口**外，取消不影响在线数据（仍是最"
+            "后一次成功更新的那份）；若恰好落在切换窗内，本页会响亮提示"
+            "并指引立即重跑更新（启动修复自动复原,swap 契约本就承诺"
+            "crash-atomicity + 事后修复）。Windows 下为强制终止：状态工"
+            "件会停在 running（本页据句柄证据持续如实标注，不伪造终态）；"
+            "单飞锁随进程消亡自动释放；遗留半成品由下次运行的启动修复"
+            "清理。"
+        )
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if st.button(
+                "确认取消",
+                key="run_center::cancel_confirm",
+                type="primary",
+                use_container_width=True,
+            ):
+                _lp = (_live_run or {}).get("log_path") or ""
+                # 请求时刻——迟到死亡补结算的**触发标记 + 审计戳**
+                # （codex 第八轮 P2 引入）。不再当绑定上界用：子进程可在
+                # 请求之后才写出自己的 running 记录,请求时刻上界会把真孤
+                # 儿拒之窗外（codex 第十一轮 P2）——绑定上界改用补结算入
+                # 口的死亡观测时刻。
+                _cancel_requested_at = datetime.now(tz=_CN_TZ).isoformat()
+                _outcome = cancel_update(
+                    _live_proc, Path(_lp) if _lp else None,
+                    provider_dir=_provider_path,
+                    # graceful 终态核实的时间窗下界（codex 第十一轮
+                    # P2：纯 pid 会把复用同 pid 的陈年 finished 工件核
+                    # 实成本次终态）。
+                    launched_at=(_live_run or {}).get("launched_at"),
+                    # 上一次失败尝试的标记状态,跨重试聚合（codex 第十五
+                    # 轮 P2）:先前的审计缺口不因本次重试写成而消失,存量
+                    # False 也不被本次 True 覆盖——聚合在取消边界单点做。
+                    prior_markers_written=(_live_run or {}).get(
+                        "cancel_pending_markers_written"),
+                    # graceful 终态核实的身份主判据（第二十七轮 P2:pid
+                    # 复用+冻结时钟可让陈年 finished 工件过 pid+窗;
+                    # nonce 唯一,陈年/接替工件拿不到）。
+                    launch_nonce=(_live_run or {}).get("launch_nonce"))
+                if (_outcome.kind == "already_finished"
+                        and isinstance(_live_run, dict)
+                        and _live_run.get("cancel_pending_at")):
+                    # 竞态拦截（codex 第十四轮 P2）：先前 cancel_failed
+                    # 已发 kill、操作人重试,进程恰在「顶部结算检查之后、
+                    # cancel_update 初检之前」死掉——no-op 语义只属于
+                    # **没有未决取消**的自然结束;这次死亡是先前 kill 导
+                    # 致的,按 already_finished 丢弃句柄会把迟到收尾（结
+                    # 局标记/swap 诊断/孤儿证据）整个跳过:孤儿锁页六小
+                    # 时、切换窗命中无人报。改走完整补结算（内部整页重
+                    # 绘,不返回）。
+                    _settle_late_pending(_live_run, _live_proc)
+                st.session_state[_LAST_CANCEL_KEY] = {
+                    "kind": _outcome.kind,
+                    "graceful": _outcome.graceful,
+                    "returncode": _outcome.returncode,
+                    "error": _outcome.error,
+                    "swap_interrupted": _outcome.swap_interrupted,
+                    "markers_written": _outcome.markers_written,
+                    "swap_state_unknown": _outcome.swap_state_unknown,
+                    "terminal_recorded": _outcome.terminal_recorded,
+                    "terminal_race": _outcome.terminal_race,
+                    # graceful 终态核实的**身份随行**（第三十五轮 P2:
+                    # 只带布尔的话,核实与 rerun 渲染之间被接替改写时,
+                    # 「状态工件如实可查」会对着接替横幅说——渲染帧要
+                    # 用同一 oracle 对本帧 _status 复验）。
+                    # terminal_race 结局同用（第三十七轮 P2:该格的
+                    # 「成败以上方状态为准」同样要在渲染帧复验身份）。
+                    "graceful_identity": ({
+                        "pid": _live_proc.pid,
+                        "launch_nonce":
+                            (_live_run or {}).get("launch_nonce") or "",
+                        "launched_at":
+                            (_live_run or {}).get("launched_at") or "",
+                        "exited_at": _outcome.exited_at or "",
+                    } if (_outcome.terminal_recorded
+                          or _outcome.terminal_race) else None),
+                    "evidence_stored": False,
+                }
+                # 上界由取消边界在**确认死亡当刻**返回（codex 第六轮
+                # P1）：cancel_update 死亡确认后还要写标记/查文件系统，
+                # 页面此刻再采时间会把那段里起跑的调度器接替也框进窗。
+                _killed_at = _outcome.exited_at
+                if _outcome.kind in ("cancelled", "already_finished"):
+                    # 只有确认终局才交出句柄——cancel_failed 时进程可能
+                    # 还活着,句柄是唯一合法取消凭据,丢了就只剩任务管理
+                    # 器（codex #470 P2）。
+                    st.session_state.pop(_LIVE_RUN_KEY, None)
+                elif (_outcome.kind == "cancel_failed"
+                        and _outcome.kill_issued
+                        and isinstance(_live_run, dict)):
+                    # 取消未决上下文（codex 第八轮 P2）：kill 已发、宽限
+                    # 窗内没等到——进程可能在返回之后才迟到死亡。退役块
+                    # 凭这个标记补结算证据,否则迟到死亡被当自然完成、孤
+                    # 儿 running 无证据锁页六小时。
+                    # 只在 kill **实际发出**时才留（codex 第十轮 P2）：
+                    # kill 调用自身抛了=进程没被碰过,之后自然跑完就是
+                    # 自然完成,补结算成「已强制取消」是撒谎——那种失败
+                    # 走普通退役,状态工件自述。
+                    _live_run["cancel_pending_at"] = _cancel_requested_at
+                    # 原失败尝试的标记落盘结果一并携带（codex 第十轮
+                    # P2）：请求/失败标记当时没写进去,迟到结局标记写成
+                    # 了,审计链仍缺头两条——补结算不得从乐观缺省重来。
+                    _live_run["cancel_pending_markers_written"] = (
+                        _outcome.markers_written)
+                elif (_outcome.kind == "cancel_failed"
+                        and isinstance(_live_run, dict)
+                        and _live_run.get("cancel_pending_at")):
+                    # kill 调用没发出去的重试,但**先前的 kill 已在未决**
+                    # （codex 第十六轮 P2）：本次的标记缺失同属这条未决
+                    # 取消的审计链——聚合值（cancel_update 已按 prior 种
+                    # 子聚合,False 不被洗回）写回,否则迟到结算从陈旧
+                    # True 起步,报出完整审计链、抹掉本次缺失的请求/失败
+                    # 标记。不动 cancel_pending_at:本次没发 kill,未决
+                    # 身份仍属先前那次。
+                    _live_run["cancel_pending_markers_written"] = (
+                        _outcome.markers_written)
+                if (_outcome.kind == "cancelled"
+                        and not _outcome.terminal_recorded):
+                    # 进程死了且**没有核实到**它写下终态——硬杀必然如此;
+                    # graceful 也可能如此（SIGINT 落在终录路径就位之前,
+                    # 若它已写 running 就同样留下孤儿——codex 第十轮
+                    # P2）。两者同走孤儿收养:按状态戳存持久证据,跨
+                    # rerun 更正呈现并解锁启动闸（codex P1）。
+                    # 戳必须在进程终止后**重读**:子进程可能在页面顶部那次
+                    # 读取之后才写下它的 running 记录,拿页首快照会存下前
+                    # 一次运行的旧戳,下一轮精确匹配落空、证据被当场退役,
+                    # 孤儿记录照样锁页六小时（codex 第二轮 P1）。只有重读
+                    # 确认是本 provider 的 running 记录才落证据。
+                    _fresh_status = read_update_status(_status_path)
+                    # 身份+时间绑定（codex 第五/九轮）：单飞锁随进程消亡
+                    # 即释放，调度器可在「杀死之后、重读之前」起跑并写下
+                    # 自己的 running——按 provider+kind 收养会把活着的调
+                    # 度器运行标成已取消并解锁启动闸。时间窗之外还必须
+                    # 记录 pid == 被杀句柄 pid：launch 之后、子进程拿锁之
+                    # 前起跑并夺锁的调度器,started_at 恰好落在窗内,光看
+                    # 时间照样误收养（第九轮 P2c）。
+                    # 收养 **nonce-only**（第四十二轮 P2 同类扫全）：
+                    # 本重读发生在 cancel_update 返回之后——死亡确认后
+                    # 它还写标记、查文件系统,pid 在那段可被回收;冻结/
+                    # 粗粒度时钟下接替者的 running 能同时满足 legacy 的
+                    # pid+窗（codex 指出的正是同一间隙,其第二条只举了
+                    # graceful 终态核实）。legacy 无不可重放身份（第四十
+                    # 一轮结论）,故无 nonce 即不收养:孤儿走陈旧线,页面
+                    # 按工件如实展示。
+                    _kn = (_live_run or {}).get("launch_nonce")
+                    if (_fresh_status.kind == "running"
+                            and record_matches_provider(
+                                _fresh_status, _provider_path)
+                            # pid 与 nonce 双钉,与补结算侧对称（纵深:
+                            # nonce 已足够,pid 比对零成本不放弃）。
+                            and _fresh_status.pid == _live_proc.pid
+                            and record_bears_launch_nonce(
+                                _fresh_status.launch_nonce, _kn)):
+                        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                            "started_at": _fresh_status.started_at or "",
+                            "launch_nonce": _kn or "",
+                            "kind": "cancelled",
+                        }
+                        _lc = st.session_state[_LAST_CANCEL_KEY]
+                        _lc["evidence_stored"] = True
+                    elif _kn and terminal_status_confirms_the_run(
+                            _fresh_status, _live_proc.pid,
+                            launched_at=(_live_run or {}).get("launched_at"),
+                            exited_at=_killed_at,
+                            launch_nonce=_kn):
+                        # 归属 nonce-only（第四十三轮 P2:本重读同样
+                        # 在 cancel_update 返回之后——legacy 的 pid+窗
+                        # 可被回收 pid 的接替在冻结钟下过检;这是第五条
+                        # 归属入口,第四十二轮扫全时漏掉的一处）。
+                        # 硬杀撞上「终态已写、台账未完」窗（第二十九轮
+                        # P2,Windows 实际可达:编排器写完终态还要追加台
+                        # 账,操作人恰在其间硬杀）。重读见 finished 且经
+                        # nonce/pid 核实是本次运行自己的终录——不是「写
+                        # 记录前被终止」,把它说成无记录会与上方 finished
+                        # 横幅自相矛盾。单独标记,措辞如实。
+                        _lc = st.session_state[_LAST_CANCEL_KEY]
+                        _lc["terminal_after_kill"] = True
+                        # 身份随行（第三十二轮 P2）：渲染帧要复验「上方
+                        # 状态即它」是否仍成立。
+                        _lc["terminal_identity"] = {
+                            "started_at": _fresh_status.started_at or "",
+                            "launch_nonce":
+                                _fresh_status.launch_nonce or "",
+                            "pid": _live_proc.pid,
+                            "launched_at":
+                                (_live_run or {}).get("launched_at") or "",
+                            "exited_at": _killed_at or "",
+                            "exit_code": _fresh_status.exit_code,
+                            "run_date": _fresh_status.run_date or "",
+                        }
+                    elif _kn and _fresh_status.kind in (
+                            "missing", "corrupt"):
+                        # 重读不确凿 ≠ 无孤儿（第二十五轮 P2,与补结算
+                        # 同款）：被杀运行的 nonce 先验已知,证据先落——
+                        # 孤儿何时可读何时被盖住;无孤儿时惰性无害。
+                        # evidence_stored 保持 False:措辞只对确凿读取
+                        # 说话。
+                        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+                            "started_at": "",
+                            "launch_nonce": _kn,
+                            "kind": "cancelled",
+                        }
+                st.session_state.pop(_CANCEL_ARM_KEY, None)
+                st.rerun()
+        with _c2:
+            if st.button(
+                "保留运行",
+                key="run_center::cancel_abort",
+                use_container_width=True,
+            ):
+                st.session_state.pop(_CANCEL_ARM_KEY, None)
+                st.rerun()
+
+_last_cancel = st.session_state.pop(_LAST_CANCEL_KEY, None)
+if isinstance(_last_cancel, dict):
+    if _last_cancel.get("kind") == "already_finished":
+        if _last_cancel.get("terminal_race"):
+            # 「终录先在 + kill 静默返回 + 死亡」格（第三十六轮 P2）：
+            # 送达不可判定——「取消未执行」与「强制终止已执行」都可能
+            # 撒谎,如实说竞态与数据等价性。「以上方状态为准」须在渲染
+            # 帧复验身份（第三十七轮 P2,r32/35 同款三态）。
+            _rid = _last_cancel.get("graceful_identity") or {}
+            if not _rid.get("launch_nonce"):
+                # legacy 竞态格（第四十四轮 P2）：无 nonce 时**工件归属
+                # 不可证**（陈年工件在 pid 复用+冻结钟下可过 legacy
+                # 窗）,不许声称「终录已在盘」,更不许对本帧工件做归属复
+                # 验（同样可重放）。只说能证的:进程已结束、指令已发、
+                # 送达不可判定。
+                st.info(
+                    "该运行已结束"
+                    f"（returncode={_last_cancel.get('returncode')}）。终止"
+                    "指令已发出，但**无法确定是否实际送达**——它可能在指"
+                    "令生效前已自行结束；两种情形对数据结果等价。本次运"
+                    "行由**升级前**的界面启动（无本次会话身份），本页不"
+                    "声称上方工件属于它；成败以状态工件与台账自述为准。"
+                )
+                _r_current = None
+            else:
+                _r_current = terminal_status_confirms_the_run(
+                    _status, int(_rid.get("pid") or -1),
+                    launched_at=_rid.get("launched_at") or None,
+                    exited_at=_rid.get("exited_at") or None,
+                    launch_nonce=_rid.get("launch_nonce") or None)
+            _race_body = (
+                "该运行已写完终态记录（终止指令发出前即已在盘）"
+                f"（returncode={_last_cancel.get('returncode')}）。终止"
+                "指令与其自然结束存在竞态，**无法确定是否实际送达**——"
+                "二者对数据结果等价：终态已记录，唯共享台账的追加不保"
+                "证完整。")
+            if _r_current is None:
+                pass  # legacy 格已在上面如实呈报
+            elif _r_current:
+                st.info(_race_body + "成败以上方状态为准。")
+            elif _status.kind in ("missing", "corrupt"):
+                st.info(_race_body
+                        + "**此刻**状态工件暂不可读——无法确认其当前内容，"
+                          "成败以取消当时核实到的终态为准。")
+            else:
+                st.info(_race_body
+                        + "**此刻**状态工件已被随后的记录接替——上方显示"
+                          "的即当前状态；本次终态以取消当时核实到的为准。")
+        else:
+            st.info(
+                "取消未执行：该运行在取消前已自行结束"
+                f"（returncode={_last_cancel.get('returncode')}）——成败"
+                "以上方状态为准（台账为尽力追加，本页未核实）。"
+            )
+    elif _last_cancel.get("kind") == "cancelled":
+        # 「编排器自己写下了终态记录」只许在**核实到**时说（finished 且
+        # 写者 pid 属本次运行——codex 第十轮 P2）：SIGINT 可落在编排器
+        # 还在 import/解析配置/拿锁的阶段,终录路径尚未就位,及时退出证明
+        # 不了终态写了。没核实到的 graceful 与硬杀同走孤儿收养呈报,措辞
+        # 如实区分。
+        _mode = ("礼貌信号生效、但未核实到编排器写下终态记录"
+                 if _last_cancel.get("graceful") else "强制终止")
+        if (_last_cancel.get("graceful")
+                and _last_cancel.get("terminal_recorded")):
+            # 只声称核实过的东西（第三十四轮 P2）：terminal_recorded 只
+            # 验了**状态工件**;台账追加是 best-effort（写失败被编排器刻
+            # 意吞掉照常退出）,本页没核实过,不许说「台账如实可查」。
+            # 「状态工件如实可查」还须在**渲染帧**复验（第三十五轮 P2,
+            # 与 terminal_after_kill 的 r32 同款）:核实与 rerun 之间接
+            # 替可改写工件,本帧横幅可能已是别的记录——用同一 oracle 对
+            # 本帧 _status 复验,不符如实改口。
+            _gid = _last_cancel.get("graceful_identity") or {}
+            _g_current = terminal_status_confirms_the_run(
+                _status, int(_gid.get("pid") or -1),
+                launched_at=_gid.get("launched_at") or None,
+                exited_at=_gid.get("exited_at") or None,
+                launch_nonce=_gid.get("launch_nonce") or None)
+            if _g_current:
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（已核实：finished 且写者 pid 属本次运行）——状态"
+                    "工件如实可查（台账为尽力追加，不在本页核实范围）。"
+                    + ("" if (_last_cancel.get("swap_interrupted")
+                              or _last_cancel.get("swap_state_unknown"))
+                       else "在线数据未受影响。")
+                )
+            elif _status.kind in ("missing", "corrupt"):
+                # 读取失败 ≠ 被接替（第三十六轮 P2,r23/25 同款三态）：
+                # 「已被接替」只许对**合法且不匹配**的记录说。
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（取消当时经身份核实），但**此刻**状态工件暂不可读"
+                    "——无法确认其当前内容；本次终态以取消当时的核实为准"
+                    "（台账为尽力追加，不在本页核实范围）。"
+                )
+            else:
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（取消当时经身份核实），但**此刻**状态工件已被随后"
+                    "的记录接替——上方显示的即当前状态；本次终态以取消"
+                    "当时的核实为准（台账为尽力追加，不在本页核实范围）。"
+                    + ("" if (_last_cancel.get("swap_interrupted")
+                              or _last_cancel.get("swap_state_unknown"))
+                       else "在线数据未受影响。")
+                )
+        elif _last_cancel.get("evidence_stored") and _cancelled_this_run:
+            st.success(
+                f"已取消（{_mode}，returncode="
+                f"{_last_cancel.get('returncode')}）。"
+                "**状态工件仍标 running**——该进程没有写下终态记录，"
+                "本页将持续按「已取消」如实标注（跨刷新有效），启动按钮"
+                "已解锁；单飞锁已自动释放，下次更新照常。"
+            )
+        elif _last_cancel.get("evidence_stored"):
+            # 证据落盘后、本次渲染前,调度器接替写下了新 running——顶部
+            # 逻辑已按纪律退役证据、恢复 _running_fresh,而历史的
+            # evidence_stored=True 不代表**此刻**仍在覆盖:照念「将持续
+            # 标注/已解锁」会与同一帧上方的「正在运行」+禁用按钮自相矛
+            # 盾（codex 第二十二轮 P2）。以本帧判定为准,如实改口。
+            st.success(
+                f"已取消（{_mode}，returncode="
+                f"{_last_cancel.get('returncode')}）。取消证据曾落盘，"
+                "但**此刻**状态工件已被一次更新的运行接替（证据按纪律"
+                "退役，绝不覆盖别人的运行）——上方显示的即当前状态，"
+                "启动闸以它为准。"
+            )
+        elif _last_cancel.get("terminal_after_kill"):
+            # 硬杀撞上「终态已写、台账未完」窗（第二十九轮 P2）：记录
+            # 经 nonce/pid 核实是本次运行自己的终录——运行本体已完成落
+            # 账,说「写记录前被终止」会与上方 finished 横幅自相矛盾。
+            # 「上方状态即它」须在**渲染帧**复验（第三十二轮 P2）:标记
+            # 在快照帧被接受,消息在 rerun 后的新帧渲染——其间接替可改
+            # 写工件,本帧横幅可能已是别的记录。
+            _tid = _last_cancel.get("terminal_identity") or {}
+            # 复验走共享 oracle（第三十八轮 P2）:手写三元比对漏 pid——
+            # legacy 无 nonce 会话下,同戳异 pid 的 finished 接替（粗粒
+            # 度时钟可造同戳）会被认成本次终录。oracle=nonce 一票裁决/
+            # legacy pid+全窗,与取消当时的核实判据同构。
+            _tid_current = terminal_status_confirms_the_run(
+                _status, int(_tid.get("pid") or -1),
+                launched_at=_tid.get("launched_at") or None,
+                exited_at=_tid.get("exited_at") or None,
+                launch_nonce=_tid.get("launch_nonce") or None)
+            if _tid_current and not _tid.get("launch_nonce"):
+                # legacy 渲染帧复验补精确戳（第四十轮 P2）：oracle 的
+                # legacy 分支只有 pid+窗,而补结算路径的 exited_at 是宽
+                # 观测界——快照与 rerun 之间回收 pid 的接替在冻结/回拨
+                # 时钟下仍可落窗。r39 已在结算帧钉了生存期戳,渲染帧对
+                # 随行的同一 started_at 同款精确相等（对 confirm 路径的
+                # 紧界无害,严格更强）。
+                _tid_current = (
+                    _status.started_at == _tid.get("started_at"))
+            if _tid_current:
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），但编排器在被终止"
+                    "前已写下本次运行的**终态记录**（上方状态即它，身份"
+                    "经核实）——运行本体已写完终态记录，可能仅共享台账的"
+                    "追加被打断（台账不保证）；页面按状态工件如实展示，单飞锁已自动释放，"
+                    "下次更新照常。"
+                )
+            elif _status.kind in ("missing", "corrupt"):
+                # 读取失败 ≠ 被接替（第三十六轮,与 graceful 复验同款
+                # 三态）。
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），编排器在被终止前"
+                    "已写下本次运行的终态记录（取消当时经身份核实：运行日 "
+                    f"{_tid.get('run_date') or '?'}，始于 "
+                    f"{_tid.get('started_at') or '?'}，exit "
+                    f"{_tid.get('exit_code')}），但**此刻**状态工件暂不可"
+                    "读——无法确认其当前内容。台账追加可能恰在终止时被打"
+                    "断，本次终态**不保证**已入台账；以上即取消当时核实到"
+                    "的终态。单飞锁已自动释放，下次更新照常。"
+                )
+            else:
+                # 不许指向台账（第三十三轮 P2）：本窗恰是「终态已写、
+                # 台账追加被打断」,接替抹掉快照后台账里可能根本没有这
+                # 条——只呈现取消当时核实到的事实,并明说台账不保证。
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），编排器在被终止前"
+                    "已写下本次运行的终态记录（取消当时经身份核实：运行日 "
+                    f"{_tid.get('run_date') or '?'}，始于 "
+                    f"{_tid.get('started_at') or '?'}，exit "
+                    f"{_tid.get('exit_code')}），但**此刻**状态工件"
+                    "已被随后的记录接替——上方显示的即当前状态。注意：台账追加"
+                    "可能恰在终止时被打断，本次终态**不保证**已入台账；"
+                    "以上即取消当时核实到的终态。单飞锁已自动释放，下次"
+                    "更新照常。"
+                )
+        else:
+            # 重读时没有本次运行的匹配记录——**唯一已证实的事实**只是
+            # 「此刻不在」:可能进程在写下记录前即被终止,也可能它写过、
+            # 但在死亡与重读之间被接替改写/工件暂不可读（codex 第三十四
+            # 轮 P2:把「写前被杀」当已证事实是过度声称;不确凿读取路径
+            # 已留 nonce 证据,孤儿若复现会被如实盖住）。没有孤儿要更
+            # 正;「将持续标注/已解锁」在此会与下一次 rerun 矛盾（codex
+            # 第四轮 P2）。按状态工件如实展示。
+            st.success(
+                f"已取消（{_mode}，returncode="
+                f"{_last_cancel.get('returncode')}）。重读时状态工件中"
+                "**没有**本次运行的记录——可能它在写下记录前即被终止，"
+                "也可能其记录已被随后的运行接替或工件暂不可读（若以本次"
+                "身份复现，将按已取消如实标注）。无需更正标注，页面按状"
+                "态工件如实展示；单飞锁已自动释放，下次更新照常。"
+            )
+    else:
+        st.error(
+            f"取消失败：{_last_cancel.get('error')}"
+        )
+    # 以下警告在**共同作用域**：cancel_failed 同样可能标记写失败——嵌在
+    # cancelled 分支里会让失败结局的审计缺失永远渲染不到（codex 第七轮
+    # P2）。swap 两条只在 cancelled 才可能为真，放共同层无害。
+    if _last_cancel.get("swap_state_unknown"):
+        st.warning(
+            "⚠ 取消后**无法核实**数据目录状态（检查自身失败：卷不可"
+            "用/权限/IO 错）——本页不声称在线数据无恙；请人工确认 "
+            "provider 目录与 .bak/.new 的现状，必要时立即重跑更新。"
+        )
+    if (_last_cancel.get("kind") in ("cancelled", "cancel_failed",
+                                     "already_finished")
+            and not _last_cancel.get("markers_written", True)):
+        st.warning(
+            "⚠ 取消动作的**日志标记写入失败**（权限/磁盘满？）——这次"
+            "操作在共享日志里没有审计线索；请检查 "
+            "`logs/daily_update.log` 的可写性。"
+        )
+    if _last_cancel.get("swap_interrupted"):
+        st.error(
+            "⚠ 本次取消**恰好落在切换窗内**：canonical 数据目录此刻"
+            "缺位（swap 契约的 crash 态）。请**立即重新启动一次更新**"
+            "——启动修复会自动复原（.bak/.new 均在）；在此之前出单侧"
+            "会拒绝读取，这是 fail-loud 而非数据丢失。"
         )
 
 with st.expander("日志尾部(只读)"):

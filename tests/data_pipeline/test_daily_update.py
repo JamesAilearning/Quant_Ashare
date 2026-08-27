@@ -524,6 +524,47 @@ class StatusArtifactTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_FETCH_HARD)
             self.assertEqual(seen.get("state"), "running")
             self.assertNotIn("exit_code", seen)
+            # 写者进程身份（#470 第九轮）：UI 受控取消收养孤儿 running
+            # 记录做证据的硬条件是「记录 pid == 被杀句柄 pid」——记录必须
+            # 落写者自己的 pid（编排器 in-process 跑在本测试进程里）。
+            import os as _os
+            self.assertEqual(seen.get("pid"), _os.getpid())
+            # 无 launch nonce 环境时键不出现（调度器运行形态,#470 第二
+            # 十四轮）。
+            self.assertNotIn("launch_nonce", seen)
+
+    def test_the_launch_nonce_lands_in_every_status_record(self) -> None:
+        # UI launcher 注入的一次性身份必须随每条状态记录落盘（#470 第二
+        # 十四轮:随记录本体落盘的身份没有观察窗）;环境垃圾不落。
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            seen: dict = {}
+
+            def fetch(argv: list[str]) -> int:
+                seen.update(self._read(cfg))
+                return 1
+
+            nonce = "ab" * 16
+            with mock.patch.dict(
+                    os.environ,
+                    {"QUANT_DAILY_UPDATE_LAUNCH_NONCE": nonce}):
+                rc = run_daily_update(
+                    cfg, {**_Recorder().all(), "fetch": fetch})
+            self.assertEqual(rc, EXIT_FETCH_HARD)
+            self.assertEqual(seen.get("launch_nonce"), nonce,
+                             "running 记录没带 launch nonce")
+            st = self._read(cfg)
+            self.assertEqual(st.get("launch_nonce"), nonce,
+                             "终态记录没带 launch nonce")
+        with tempfile.TemporaryDirectory() as t:
+            cfg = _config(Path(t))
+            with mock.patch.dict(
+                    os.environ,
+                    {"QUANT_DAILY_UPDATE_LAUNCH_NONCE": "NOT-HEX!"}):
+                run_daily_update(cfg, _Recorder(codes={"fetch": 1}).all())
+            self.assertNotIn("launch_nonce", self._read(cfg),
+                             "环境垃圾被落进了记录")
             # ...and the terminal record overwrote it with the failure.
             st = self._read(cfg)
             self.assertEqual(st["state"], "finished")

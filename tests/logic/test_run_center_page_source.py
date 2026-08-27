@@ -82,7 +82,10 @@ class PageSourceTests(unittest.TestCase):
         # classification — a page that drops the guard would invite
         # double launches that only the single-flight lock then stops.
         self.assertIn("RUNNING_FRESH", self.src)
-        self.assertIn("disabled=_running_fresh", self.src)
+        # 锚串随受控取消更新（表达式增强为「新鲜 running 或会话在飞」，
+        # 断言意图一字未动：freshness 闸仍然在耗，且多了一道会话闸——
+        # 顶掉句柄=原运行失去取消凭据，见 test_update_cancel）。
+        self.assertIn("disabled=(_running_fresh or _session_run_alive", self.src)
 
     def test_recommend_is_gated_on_the_ensemble_incumbent(self) -> None:
         # Ensemble-only by spec: the legacy single-model path stays a
@@ -111,7 +114,12 @@ class PageSourceTests(unittest.TestCase):
         # so the watcher registers in the same interaction.
         self.assertIn("_AWAIT_LAUNCH_KEY", self.src)
         self.assertIn("_AWAIT_LAUNCH_WINDOW", self.src)
-        self.assertIn("_watching = _running_fresh or _awaiting_launch", self.src)
+        # 锚串随第九轮更新（watching 纳入未决取消句柄——硬杀后签名/进度
+        # 双冻结，等它死只能盯句柄），断言意图一字未动：原两个触发源仍在。
+        self.assertIn(
+            "_running_fresh or _awaiting_launch"
+            " or _watched_live_proc is not None",
+            self.src)
         self.assertIn("if _watching:", self.src)
         # The marker must be bounded, or a failed launch polls forever.
         # (r3 起判据抽成纯函数 await_window_expired,主脚本与片段共用同一
@@ -131,7 +139,9 @@ class PageSourceTests(unittest.TestCase):
         # 的「有界」窗口形同虚设,会一直轮询下去。
         self.assertIn("_await_deadline", self.src)
         fragment_at = self.src.index("def _watch_update_completion()")
-        body = self.src[fragment_at : fragment_at + 1400]
+        # 窗宽随片段体增长放大（第九/十二轮加了未决取消支路），断言意图
+        # 一字未动：到期判断仍在片段体内。
+        body = self.src[fragment_at : fragment_at + 3000]
         self.assertIn("await_window_expired", body)
         self.assertIn("st.rerun(scope=\"app\")", body)
         # 签名分支必须 return,否则到期判断会在同一次 tick 里重复触发。
@@ -175,7 +185,14 @@ class PageSourceTests(unittest.TestCase):
         # the signature now.
         sig_at = self.src.index("def _status_signature")
         body = self.src[sig_at : sig_at + 1400]
-        self.assertIn("tuple[str, str, str, str]", body)
+        # 锚串随第二十九轮扩展（签名加 launch_nonce/pid 身份字段——同戳
+        # 接替只有身份在变,不入签名片段永不重绘）,断言意图不变:新鲜度
+        # 分类仍在签名元组里。
+        self.assertIn("tuple[str, str, str, str, str, str]", body)
+        self.assertIn('getattr(status, "launch_nonce"', body,
+                      "签名缺 nonce 身份字段")
+        self.assertIn('getattr(status, "pid"', body,
+                      "签名缺 pid 身份字段")
         self.assertIn("classification or", body)
         # codex #442 r4: 分类由调用方传入，函数内部**不得**重算——两侧各自
         # 重算时，跨线时刻会同时翻面而元组照样相等，闸门永久锁死。

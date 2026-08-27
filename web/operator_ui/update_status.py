@@ -90,6 +90,14 @@ class UpdateRunStatus:
     failed_stage: str | None = None
     detail: str = ""
     error: str = ""
+    #: 写者进程的 pid（#470 第九轮:受控取消收养孤儿 running 记录做证据的
+    #: **进程身份**硬条件）。旧产出器写的记录没有这个键 → ``None``——收养
+    #: 侧对 None 一律不绑定（fail-closed:证不出身份就不声称）。
+    pid: int | None = None
+    #: UI 启动器为该次 launch 生成的一次性身份,由子进程自己写进每条记录
+    #: （#470 第二十四轮:随记录本体落盘的身份没有观察窗,覆盖生存期内
+    #: 任意时刻写出的记录）。调度器/旧产出器的记录没有这个键 → ``None``。
+    launch_nonce: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -264,6 +272,39 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             error=f"{state} 记录缺少非空字段：{', '.join(missing)}"
                   f"（截断的记录绝不按成功/运行中渲染）",
         )
+    # pid 是**可选**键（旧产出器的在盘记录没有它,缺 = None,不算截断）,
+    # 但在场就必须是正 int:它是取消收养的身份判据,一个 ``true``/字符串
+    # pid 流到比较处要么静默永不绑定、要么 ``True == 1`` 误绑定——在场
+    # 即验,与本模块其余字段同款纪律。bool 先排(isinstance(True, int))。
+    # 「在场」按**键**判,不按值:显式 ``"pid": null`` 经 .get() 与旧记录
+    # 缺键无法区分,会被当合法 legacy 放行——而它是新契约下的畸形记录,
+    # 硬取消后证据绑不上它,页面误称无匹配 running、锁启动到六小时陈旧
+    # 线（codex 第二十一轮 P2）。
+    pid_value: int | None = None
+    if "pid" in payload:
+        pid_raw = payload["pid"]
+        if (isinstance(pid_raw, bool)
+                or not isinstance(pid_raw, int)
+                or pid_raw <= 0):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"pid 非法（got {pid_raw!r}，期望正整数;显式 null "
+                      f"不等于缺省）",
+            )
+        pid_value = pid_raw
+    # launch_nonce 同 pid 纪律:可选键,在场就必须是产出器会写的形状
+    # （32 位小写 hex）——畸形值当损坏,不静默当缺省（#470 第二十四轮）。
+    nonce_value: str | None = None
+    if "launch_nonce" in payload:
+        nonce_raw = payload["launch_nonce"]
+        if not (isinstance(nonce_raw, str) and len(nonce_raw) == 32
+                and all(c in "0123456789abcdef" for c in nonce_raw)):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"launch_nonce 非法（got {nonce_raw!r}，期望 32 位"
+                      f"小写 hex;显式 null/畸形不等于缺省）",
+            )
+        nonce_value = nonce_raw
     exit_code = payload.get("exit_code")
     if state == "finished" and (
         isinstance(exit_code, bool) or not isinstance(exit_code, int)
@@ -325,4 +366,6 @@ def read_update_status(path: Path) -> UpdateRunStatus:
             if payload.get("failed_stage") is not None else None
         ),
         detail=str(payload.get("detail") or ""),
+        pid=pid_value,
+        launch_nonce=nonce_value,
     )

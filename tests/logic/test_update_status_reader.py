@@ -175,6 +175,69 @@ class ReadUpdateStatusTests(unittest.TestCase):
             self.assertFalse(st.ok)
             self.assertIsNone(st.exit_code)
 
+    def test_the_writer_pid_is_parsed_and_optional(self) -> None:
+        # pid 是取消收养的**进程身份**判据（#470 第九轮）:新产出器落
+        # os.getpid();旧的在盘记录没有这个键——缺 = None（不算截断,收养
+        # 侧对 None fail-closed 不绑定）,在场就必须是正 int。
+        base = {"schema_version": 1, "state": "running",
+                "provider_dir": _FINISHED_OK["provider_dir"],
+                "run_date": "2026-08-14",
+                "started_at": "2026-08-14T20:43:00+08:00"}
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**base, "pid": 31337})
+            self.assertEqual(31337, read_update_status(p).pid)
+            _write(p, base)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "running", "缺 pid 被误判截断")
+            self.assertIsNone(st.pid)
+
+    def test_a_malformed_pid_is_corrupt_not_coerced(self) -> None:
+        # 在场即验:``true`` 冒充 pid 会 ``True == 1`` 误绑定,字符串会
+        # 静默永不绑定——两者都不是「读出来再说」,是损坏。
+        base = {"schema_version": 1, "state": "running",
+                "provider_dir": _FINISHED_OK["provider_dir"],
+                "run_date": "2026-08-14",
+                "started_at": "2026-08-14T20:43:00+08:00"}
+        # None 即显式 ``"pid": null``——键在场就得是正 int,经 .get() 与
+        # 缺键混同会把畸形记录放行成合法 legacy（codex 第二十一轮 P2:
+        # 硬取消后证据绑不上它,页面误称无匹配 running、锁启动六小时）。
+        for bad in (True, "31337", 0, -4, 3.0, None):
+            with self.subTest(pid=bad):
+                with tempfile.TemporaryDirectory() as t:
+                    p = Path(t) / STATUS_FILENAME
+                    _write(p, {**base, "pid": bad})
+                    st = read_update_status(p)
+                    self.assertEqual(st.kind, "corrupt")
+                    self.assertIn("pid", st.error)
+
+    def test_the_launch_nonce_is_parsed_and_optional(self) -> None:
+        # launch_nonce 同 pid 纪律（#470 第二十四轮）:可选键（调度器/旧
+        # 产出器的记录没有）,在场必须是产出器会写的 32 位小写 hex,畸形
+        # 值当损坏不静默当缺省。
+        base = {"schema_version": 1, "state": "running",
+                "provider_dir": _FINISHED_OK["provider_dir"],
+                "run_date": "2026-08-14",
+                "started_at": "2026-08-14T20:43:00+08:00"}
+        good = "ab" * 16
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**base, "launch_nonce": good})
+            st = read_update_status(p)
+            self.assertEqual(good, st.launch_nonce)
+            _write(p, base)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "running", "缺 nonce 被误判截断")
+            self.assertIsNone(st.launch_nonce)
+        for bad in (None, "", "XYZ", "AB" * 16, "ab" * 16 + "0", 123):
+            with self.subTest(nonce=bad):
+                with tempfile.TemporaryDirectory() as t:
+                    p = Path(t) / STATUS_FILENAME
+                    _write(p, {**base, "launch_nonce": bad})
+                    st = read_update_status(p)
+                    self.assertEqual(st.kind, "corrupt")
+                    self.assertIn("launch_nonce", st.error)
+
     def test_corrupt_json_is_loud(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME
