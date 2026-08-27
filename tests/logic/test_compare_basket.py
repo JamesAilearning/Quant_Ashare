@@ -37,6 +37,8 @@ class _Row:
     run_id: str
     type: str = "pipeline"
     run_dir: str = "output/runs/x"
+    source: str = "ui"
+    operator_ui_job_id: str = ""
 
 
 class AdmissionTests(unittest.TestCase):
@@ -76,16 +78,70 @@ class AdmissionTests(unittest.TestCase):
             "ui-9",
             selectable_ids=["cli-1"],
             run_id_alias={},
-            all_rows=[_Row("ui-9"), _Row("cli-1")],
+            all_rows=[
+                _Row("ui-9", source="ui"),
+                _Row("cli-1", source="cli", operator_ui_job_id="ui-9"),
+            ],
         )
 
         self.assertFalse(admission.admissible)
         self.assertEqual(admission.verdict, ADMIT_SUPERSEDED)
         self.assertIn("cli-1", admission.reason)
-        # 而且**不能**把它说成「被更新的运行接管」：最常见的成因是同一次运行
-        # 的 UI 作业与 CLI 目录记录之间镜像证明不成立，那是同一份产物的两条
-        # 记录，不是两次运行。说成后者会让操作人去找一个并不存在的新运行。
+        # 有生产者关系 ⇒ 同一次运行的两条记录，镜像证明不成立。**不能**说成
+        # 「被更新的运行接管」——那会让操作人去找一个并不存在的新运行。
+        #
+        # 断言钉「镜像证明不成立」这句独有措辞，不钉「同一次运行」：后者也出现
+        # 在无生产者关系那条的「无法判断它们是同一次运行还是先后两次」里，钉它
+        # 两条分支都通过（首版正是这么写的，变异实测逃逸）。
+        self.assertIn("镜像证明不成立", admission.reason)
         self.assertNotIn("接管", admission.reason)
+        self.assertNotIn("无法判断", admission.reason)
+
+    def test_a_genuine_takeover_is_called_a_takeover(self) -> None:
+        # 两次**独立**的同类型运行复用同一个 output_dir，目录里只留最新那次。
+        # 这时说「同一份产物的另一条记录」才是假话——上一版把两种成因说成了
+        # 同一句，只是换了个方向的同一个错误。
+        admission = admit_to_basket(
+            "old-run",
+            selectable_ids=["new-run"],
+            run_id_alias={},
+            all_rows=[_Row("old-run", source="cli"),
+                      _Row("new-run", source="cli")],
+        )
+
+        self.assertEqual(admission.verdict, ADMIT_SUPERSEDED)
+        self.assertIn("接管", admission.reason)
+        self.assertNotIn("镜像证明不成立", admission.reason)
+        self.assertNotIn("无法判断", admission.reason)
+
+    def test_no_producer_link_means_the_cause_is_not_guessed(self) -> None:
+        # 来源不同但没有可核实的生产者关系——两种成因都说不出口，就不说。
+        admission = admit_to_basket(
+            "ui-9",
+            selectable_ids=["cli-1"],
+            run_id_alias={},
+            all_rows=[_Row("ui-9", source="ui"), _Row("cli-1", source="cli")],
+        )
+
+        self.assertEqual(admission.verdict, ADMIT_SUPERSEDED)
+        self.assertIn("无法判断", admission.reason)
+
+    def test_the_owner_must_be_of_the_same_run_type(self) -> None:
+        # `selectable_catalog` 的所有权是按 (类型, 目录) 定的。只按目录匹配，
+        # 会把一条旧 pipeline 记录说成「由某个 walk_forward id 代表」，而那个
+        # id 根本不是它那一组的所有者。
+        admission = admit_to_basket(
+            "old-pipeline",
+            selectable_ids=["some-wf"],
+            run_id_alias={},
+            all_rows=[
+                _Row("old-pipeline", type="pipeline"),
+                _Row("some-wf", type="walk_forward"),
+            ],
+        )
+
+        self.assertEqual(admission.verdict, ADMIT_UNKNOWN)
+        self.assertNotIn("some-wf", admission.reason)
 
     def test_a_row_on_a_different_directory_is_not_offered_as_its_owner(
         self,

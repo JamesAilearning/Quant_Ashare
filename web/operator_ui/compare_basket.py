@@ -162,12 +162,11 @@ def admit_to_basket(
     # 时间线互相包含时才认这层镜像；证明不成立时它让 CLI 行当所有者，于是
     # 来源页交出的 UI id 既不可选、也不是别名键。把那个 id 说出来，操作人
     # 才知道下一步该找谁。
-    owner = _same_directory_owner(run_id, selectable_ids, all_rows)
-    if owner:
+    owner_row = _same_directory_owner(run_id, selectable_ids, all_rows)
+    if owner_row is not None:
         return BasketAdmission(
             run_id, "", ADMIT_SUPERSEDED,
-            f"该产物目录在对比页的目录里由 `{owner}` 代表（同一份产物的另一条"
-            f"记录），`{run_id}` 本身不可直接对比。",
+            _supersession_reason(run_id, row, owner_row),
         )
     # 走到这里说明：这条记录在目录输入里、类型可比、有产物目录，却既不可选、
     # 也不是别名键，而**同目录上也找不到任何可选的替代记录**。
@@ -188,28 +187,78 @@ def admit_to_basket(
 
 def _same_directory_owner(
     run_id: str, selectable_ids: Iterable[str], all_rows: Iterable[object],
-) -> str:
-    """同一份产物目录上，对比页目录**实际**认的那个 id（没有就空串）。
+) -> object | None:
+    """同一份产物目录上，对比页目录**实际**认的那一行（没有就 ``None``）。
 
     目录键的推导直接复用对比页那一份（``_catalog_dir_key``）——在这里另写
     一套 normcase/锚定规则，就是第二份会漂的推导，而漂的那一份会把两条本
     该配对的记录说成互不相干。
+
+    **类型也要对上**：``selectable_catalog`` 的所有权是按 ``(类型, 目录)``
+    定的，所以同一个目录下 pipeline 与 walk_forward 各有自己的所有者。只按
+    目录匹配，会把一条旧 pipeline 记录说成「由某个 walk_forward id 代表」，
+    而那个 id 根本不是它那一组的所有者。
     """
 
     rows = list(all_rows)
     mine = next((r for r in rows if getattr(r, "run_id", "") == run_id), None)
     if mine is None or not str(getattr(mine, "run_dir", "")):
-        return ""
+        return None
     mine_key = _catalog_dir_key(str(getattr(mine, "run_dir", "")))
+    mine_type = str(getattr(mine, "type", ""))
     selectable = set(selectable_ids)
     for row in rows:
         other_id = str(getattr(row, "run_id", ""))
         other_dir = str(getattr(row, "run_dir", ""))
         if other_id == run_id or other_id not in selectable or not other_dir:
             continue
+        if str(getattr(row, "type", "")) != mine_type:
+            continue
         if _catalog_dir_key(other_dir) == mine_key:
-            return other_id
-    return ""
+            return row
+    return None
+
+
+def _supersession_reason(run_id: str, mine: object, owner: object) -> str:
+    """同目录换了个 id 当所有者——**为什么**换的。
+
+    两种成因，对操作人的下一步完全不同，不许合并成一句：
+
+    * **同一次运行的两条记录**（一条 UI 作业、一条 CLI 目录记录）。
+      ``selectable_catalog`` 只在 CLI 行**生产者记录**了这个 UI 作业 id、且
+      时间线互相包含时才认这层镜像；证明不成立时它让另一条当所有者。这不是
+      「被接管」——产物就是这一次跑出来的。
+    * **真的被接管**：两次**独立**的同类型运行复用了同一个 output_dir，目录
+      里当然只留最新那次。这时说「同一份产物的另一条记录」是假话。
+
+    判据用手上的实据，不猜：来源不同（ui × cli）且任一方**生产者记录**了对方
+    的 id ⇒ 镜像；来源相同 ⇒ 独立的两次运行；来源不同但没有生产者关系 ⇒
+    只说「目录里由它代表」，不替它编成因。
+    """
+
+    owner_id = str(getattr(owner, "run_id", ""))
+    mine_source = str(getattr(mine, "source", ""))
+    owner_source = str(getattr(owner, "source", ""))
+    linked = (
+        str(getattr(owner, "operator_ui_job_id", "")) == run_id
+        or str(getattr(mine, "operator_ui_job_id", "")) == owner_id
+    )
+    if mine_source == owner_source:
+        return (
+            f"`{run_id}` 的产物目录已被同目录的更新运行 `{owner_id}` 接管，"
+            "它不再是该目录的当前所有者，因此不可直接对比。"
+        )
+    if linked:
+        return (
+            f"`{run_id}` 与 `{owner_id}` 是**同一次运行**的两条记录（UI 作业"
+            "与 CLI 目录记录），但两者的镜像证明不成立（生产者字段或时间线"
+            f"对不上），所以对比页的目录里由 `{owner_id}` 代表这份产物。"
+        )
+    return (
+        f"该产物目录在对比页的目录里由 `{owner_id}` 代表，`{run_id}` 本身"
+        "不可直接对比。两条记录之间没有可核实的生产者关系，所以无法判断"
+        "它们是同一次运行还是先后两次。"
+    )
 
 
 def add_to_basket(
