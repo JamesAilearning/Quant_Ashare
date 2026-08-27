@@ -411,6 +411,7 @@ def terminal_record_confirms_the_run(
     *,
     launched_at: str | None,
     exited_at: str | None,
+    launch_nonce: str | None = None,
 ) -> bool:
     """状态工件里是否有**本次运行自己写下的**终态记录。
 
@@ -419,9 +420,13 @@ def terminal_record_confirms_the_run(
     锁的阶段——终录路径尚未就位,进程照样在宽限窗内体面退出,而工件此刻
     要么缺失、要么还是**上一次**运行的记录。
 
-    判据与收养同款,**身份+时间**合取（codex 第十一轮 P2:光有 pid 不够
-    ——本次 launch 可以复用某个**旧** finished 工件里存的 pid,SIGINT 又
-    把新子进程杀在写任何状态之前,纯 pid 会把陈年工件核实成本次终态）:
+    身份在场一票裁决（codex 第二十七轮 P2,与覆盖谓词同语义）:本会话有
+    launch nonce 时,子进程写下的终录必然带同一 nonce——核实=finished
+    且 nonce 相等且 pid 相等,**不再看时间窗**（pid 复用 + 冻结/粗粒度时
+    钟可让陈年工件同时满足 pid 与窗;nonce 唯一,陈年/接替工件拿不到）。
+    记录带 nonce 而会话没有（或互异）同样拒。
+
+    legacy 合取（双方都无 nonce,旧产出器在飞会话,第十一轮原判据）:
 
     * 身份:finished 且写者 pid == 被杀句柄 pid（第九轮判据）。
     * 时间窗:记录的 started_at/finished_at 都落在本次
@@ -440,6 +445,8 @@ def terminal_record_confirms_the_run(
         return False
     if status.kind != "finished" or status.pid != pid:
         return False
+    if launch_nonce or status.launch_nonce:
+        return record_bears_launch_nonce(status.launch_nonce, launch_nonce)
     try:
         started = datetime.fromisoformat(status.started_at)
         finished = datetime.fromisoformat(status.finished_at)
@@ -573,6 +580,7 @@ def cancel_update(
     grace_seconds: float = _CANCEL_GRACE_SECONDS,
     launched_at: str | None = None,
     prior_markers_written: bool | None = None,
+    launch_nonce: str | None = None,
 ) -> UpdateCancel:
     """受控取消一次**本会话启动的**手动更新。
 
@@ -744,7 +752,7 @@ def cancel_update(
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
         graceful=graceful, markers_written=markers_written, late=False,
-        launched_at=launched_at)
+        launched_at=launched_at, launch_nonce=launch_nonce)
 
 
 def settle_late_cancel(
@@ -778,7 +786,7 @@ def settle_late_cancel(
     return _confirmed_death_outcome(
         process, log_path, provider_dir,
         graceful=False, markers_written=markers_written, late=True,
-        launched_at=launched_at)
+        launched_at=launched_at, launch_nonce=None)
 
 
 def _confirmed_death_outcome(
@@ -790,6 +798,7 @@ def _confirmed_death_outcome(
     markers_written: bool,
     late: bool,
     launched_at: str | None,
+    launch_nonce: str | None,
 ) -> UpdateCancel:
     """确认死亡后的共同收尾:结局标记 + 切换窗检查 + 结果组装。
 
@@ -865,7 +874,8 @@ def _confirmed_death_outcome(
     # 成本次终态）。
     terminal_recorded = graceful and terminal_record_confirms_the_run(
         provider_dir, process.pid,
-        launched_at=launched_at, exited_at=exited_at)
+        launched_at=launched_at, exited_at=exited_at,
+        launch_nonce=launch_nonce)
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
         swap_interrupted=swap_interrupted, markers_written=markers_written,

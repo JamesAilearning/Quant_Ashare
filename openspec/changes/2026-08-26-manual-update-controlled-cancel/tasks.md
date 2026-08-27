@@ -399,6 +399,20 @@
       同戳记录:覆盖→确凿接替）;真值全表 + 闸同戳异 nonce 不放行 +
       页面双钉;变异（退回 or 语义）双测咬住
 
+## codex 第二十七轮（P2：graceful 终态核实同上 nonce 一票裁决）
+
+- [x] P2 terminal_record_confirms_the_run 还停在 pid+时间窗——pid 复用
+      + 冻结/粗粒度时钟可让陈年 finished 工件同时过 pid 与窗,
+      terminal_recorded=True 使页面跳过孤儿证据链、谎称编排器写了核实
+      终录。修=核实器同上第二十六轮语义:任一侧带 nonce → 必须双方同
+      nonce（窗不再是判据——nonce 唯一,陈年/接替工件拿不到;冻结钟下
+      本次运行的合法终录也不再被窗误拒）;legacy 双无 nonce 保留原
+      pid+窗合取。launch_nonce 经 cancel_update→_confirmed_death_outcome
+      穿线,页面 confirm 调用递会话 nonce（settle 传 None:graceful=False
+      短路）。真值六支（同 nonce 窗内/窗外都认;异/无 nonce 同窗拒;
+      反向 legacy 会话拒 nonce 记录）+ 页面接线钉;变异（去 nonce 分支
+      退回 pid+窗）咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

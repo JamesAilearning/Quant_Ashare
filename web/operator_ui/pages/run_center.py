@@ -755,7 +755,11 @@ if _live_proc is not None:
                     # 轮 P2）:先前的审计缺口不因本次重试写成而消失,存量
                     # False 也不被本次 True 覆盖——聚合在取消边界单点做。
                     prior_markers_written=(_live_run or {}).get(
-                        "cancel_pending_markers_written"))
+                        "cancel_pending_markers_written"),
+                    # graceful 终态核实的身份主判据（第二十七轮 P2:pid
+                    # 复用+冻结时钟可让陈年 finished 工件过 pid+窗;
+                    # nonce 唯一,陈年/接替工件拿不到）。
+                    launch_nonce=(_live_run or {}).get("launch_nonce"))
                 if (_outcome.kind == "already_finished"
                         and isinstance(_live_run, dict)
                         and _live_run.get("cancel_pending_at")):

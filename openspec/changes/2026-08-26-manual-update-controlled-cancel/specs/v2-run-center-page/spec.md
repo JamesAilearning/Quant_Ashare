@@ -277,16 +277,21 @@ polite signal can land while the orchestrator is still importing modules,
 parsing configuration, or acquiring the single-flight lock — before its
 terminal-record path is armed — and the process still exits within the
 grace window while the artifact stays missing, stale, or still `running`.
-Verification SHALL require the status artifact to show a `finished` record
-whose writer pid equals the killed handle's pid (the same process identity
-the adoption uses) AND whose `started_at`/`finished_at` both fall inside
-the session's launch-to-exit window — pid alone would let a launch that
-reuses the pid stored in an OLDER finished artifact verify that stale
-artifact as this run's terminal record when the signal kills the new child
-before it writes anything; anything else — a running record, a pid-less
-record, out-of-window or unparseable or zone-naive stamps, a missing or
-corrupt artifact, an unverifiable provider, an absent window bound — SHALL
-read as not-confirmed. A graceful exit WITHOUT a confirmed terminal record SHALL
+Verification SHALL apply the same identity-decides rule as coverage: when
+the session holds a launch nonce (or the record bears one), the `finished`
+record confirms the run only if it bears THAT nonce alongside the matching
+pid — the time window is no longer a criterion there, because pid reuse
+combined with a frozen or coarse host clock can let an OLDER finished
+artifact satisfy pid and window together, while the nonce is unique to
+this launch and unreachable to stale or replacement artifacts. Only for
+nonce-less legacy pairs SHALL verification fall back to the original
+conjunction: a `finished` record whose writer pid equals the killed
+handle's pid AND whose `started_at`/`finished_at` both fall inside the
+session's launch-to-exit window. Anything else — a running record, a
+pid-less record, a nonce mismatch in either direction, out-of-window or
+unparseable or zone-naive stamps in the legacy pair, a missing or corrupt
+artifact, an unverifiable provider, an absent window bound — SHALL read as
+not-confirmed. A graceful exit WITHOUT a confirmed terminal record SHALL
 flow through the same orphan-adoption presentation as a forcible kill
 (worded honestly as a polite exit whose terminal record was not confirmed),
 because such an exit can leave the same orphaned `running` record a hard
@@ -446,11 +451,13 @@ one period.
 #### Scenario: a stale terminal artifact with a reused pid is not verified
 
 - **GIVEN** a launch whose child received the same pid stored in an older
-  `finished` artifact and was killed before writing any status
+  `finished` artifact and was killed before writing any status — with the
+  host clock coarse or frozen enough that the old artifact's stamps also
+  satisfy the launch-to-exit window
 - **WHEN** the graceful outcome verifies the terminal record
-- **THEN** verification fails on the time window — the old artifact's
-  stamps predate this session's launch — and the page does not claim the
-  orchestrator wrote a terminal record
+- **THEN** verification fails on the nonce — the stale artifact does not
+  bear this launch's nonce — and the page does not claim the orchestrator
+  wrote a terminal record
 
 #### Scenario: a silent kill return does not fabricate delivery evidence
 

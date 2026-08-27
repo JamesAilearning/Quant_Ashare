@@ -1204,8 +1204,44 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                                       "pid": 77}), encoding="utf-8")
             self.assertFalse(
                 terminal_record_confirms_the_run(provider, 77, **win))
+            # 身份一票裁决（第二十七轮 P2）:会话有 nonce 时,pid 复用+冻
+            # 结时钟可让陈年工件过 pid+窗——记录必须带同一 nonce;窗不
+            # 再是判据（nonce 相等即本次运行写的,冻结钟同戳也认）。
+            nn = "ab" * 16
+            sp.write_text(json.dumps({**base, "pid": 77, "launch_nonce": nn}),
+                          encoding="utf-8")
+            self.assertTrue(terminal_record_confirms_the_run(
+                provider, 77, **win, launch_nonce=nn))
+            self.assertTrue(
+                terminal_record_confirms_the_run(
+                    provider, 77,
+                    launched_at="2026-08-27T09:30:00+08:00",
+                    exited_at="2026-08-27T09:31:00+08:00",
+                    launch_nonce=nn),
+                "nonce 相等却因窗外被拒——窗对 nonce 身份不再是判据")
+            # 陈年/接替:同 pid 同窗但异 nonce 或无 nonce → 拒。
+            sp.write_text(json.dumps({**base, "pid": 77,
+                                      "launch_nonce": "cd" * 16}),
+                          encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77, **win, launch_nonce=nn),
+                "异 nonce 的陈年工件被核实成本次终录")
+            sp.write_text(json.dumps({**base, "pid": 77}), encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77, **win, launch_nonce=nn),
+                "无 nonce 的陈年工件被核实成本次终录")
+            # 反向:记录带 nonce、会话没有（legacy 会话）→ 拒。
+            sp.write_text(json.dumps({**base, "pid": 77, "launch_nonce": nn}),
+                          encoding="utf-8")
+            self.assertFalse(terminal_record_confirms_the_run(
+                provider, 77, **win))
         self.assertFalse(terminal_record_confirms_the_run(
             None, 77, **win))
+        # 接线:页面 cancel_update 调用带 launch_nonce。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('launch_nonce=(_live_run or {}).get("launch_nonce")',
+                      page, "graceful 终态核实没拿到会话 nonce")
         # 页面接线：核实版声称以 terminal_recorded 为条件;未核实的
         # graceful 与硬杀同走孤儿收养（收养条件不再看 graceful）。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
