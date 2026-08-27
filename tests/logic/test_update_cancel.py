@@ -1161,9 +1161,16 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('if _last_cancel.get("terminal_race"):', page,
                       "already_finished 渲染缺不可判定分支")
         self.assertIn("无法确定是否实际送达", page, "缺不可判定措辞")
+        # race 分支的渲染帧复验（第三十七轮 P2:r32/35 同款——「以上方
+        # 状态为准」也要对本帧复验身份,三态改口）。
+        self.assertIn("_r_current = terminal_status_confirms_the_run(",
+                      page, "race 分支没做渲染帧复验")
+        self.assertIn("or _outcome.terminal_race) else None", page,
+                      "race 结局没随行身份")
         self.assertEqual(
-            2, page.count('elif _status.kind in ("missing", "corrupt"):'),
-            "两处渲染帧复验（graceful/终录后杀）缺 missing/corrupt 三态")
+            3, page.count('elif _status.kind in ("missing", "corrupt"):'),
+            "三处渲染帧复验（graceful/终录后杀/terminal_race）缺 "
+            "missing/corrupt 三态")
         self.assertIn("暂不可读", page, "读取失败情形缺如实措辞")
         with tempfile.TemporaryDirectory() as t:
             # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。
@@ -1414,9 +1421,9 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 补结算帧照样矛盾）:oracle 调用恰好两处（confirm+补结算）,补
         # 结算结局带 terminal_after_kill 键。
         self.assertEqual(
-            3, page.count("terminal_status_confirms_the_run("),
-            "快照版终态检出不是恰好三处（confirm + 补结算 + graceful "
-            "渲染帧复验,第三十五轮加第三处）")
+            4, page.count("terminal_status_confirms_the_run("),
+            "快照版终态检出不是恰好四处（confirm + 补结算 + graceful "
+            "渲染复验 + terminal_race 渲染复验,第三十七轮加第四处）")
         self.assertEqual(
             0, page.count("terminal_record_confirms_the_run("),
             "页面残留读盘版核实（会引入二次读取竞态,第三十一轮）")

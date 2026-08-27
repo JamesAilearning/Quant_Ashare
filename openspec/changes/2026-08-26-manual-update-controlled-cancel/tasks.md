@@ -529,6 +529,15 @@
       匹配=声称成立;missing/corrupt=「暂不可读,以取消当时核实为准」;
       合法不匹配才说「已被接替」。计数钉（三态分支恰两处）
 
+## codex 第三十七轮（P2：terminal_race 分支补渲染帧复验）
+
+- [x] P2 r36 新增的 race 分支只带布尔——「成败以上方状态为准」在接替
+      改写后对着接替横幅说（r32/35 同类第三次出现）。修=race 结局同用
+      graceful_identity 身份随行（条件放宽为 terminal_recorded or
+      terminal_race;runner race 返回补 exited_at 观测界）,渲染帧同款
+      oracle 复验+三态改口（匹配/暂不可读/已被接替）。快照 oracle 页
+      面调用 3→4、missing/corrupt 三态 2→3 计数钉同步
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

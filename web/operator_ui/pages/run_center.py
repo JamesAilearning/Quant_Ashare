@@ -823,6 +823,8 @@ if _live_proc is not None:
                     # 只带布尔的话,核实与 rerun 渲染之间被接替改写时,
                     # 「状态工件如实可查」会对着接替横幅说——渲染帧要
                     # 用同一 oracle 对本帧 _status 复验）。
+                    # terminal_race 结局同用（第三十七轮 P2:该格的
+                    # 「成败以上方状态为准」同样要在渲染帧复验身份）。
                     "graceful_identity": ({
                         "pid": _live_proc.pid,
                         "launch_nonce":
@@ -830,7 +832,8 @@ if _live_proc is not None:
                         "launched_at":
                             (_live_run or {}).get("launched_at") or "",
                         "exited_at": _outcome.exited_at or "",
-                    } if _outcome.terminal_recorded else None),
+                    } if (_outcome.terminal_recorded
+                          or _outcome.terminal_race) else None),
                     "evidence_stored": False,
                 }
                 # 上界由取消边界在**确认死亡当刻**返回（codex 第六轮
@@ -980,14 +983,30 @@ if isinstance(_last_cancel, dict):
         if _last_cancel.get("terminal_race"):
             # 「终录先在 + kill 静默返回 + 死亡」格（第三十六轮 P2）：
             # 送达不可判定——「取消未执行」与「强制终止已执行」都可能
-            # 撒谎,如实说竞态与数据等价性。
-            st.info(
+            # 撒谎,如实说竞态与数据等价性。「以上方状态为准」须在渲染
+            # 帧复验身份（第三十七轮 P2,r32/35 同款三态）。
+            _rid = _last_cancel.get("graceful_identity") or {}
+            _r_current = terminal_status_confirms_the_run(
+                _status, int(_rid.get("pid") or -1),
+                launched_at=_rid.get("launched_at") or None,
+                exited_at=_rid.get("exited_at") or None,
+                launch_nonce=_rid.get("launch_nonce") or None)
+            _race_body = (
                 "该运行已写完终态记录（终止指令发出前即已在盘）"
                 f"（returncode={_last_cancel.get('returncode')}）。终止"
                 "指令与其自然结束存在竞态，**无法确定是否实际送达**——"
                 "二者对数据结果等价：终态已记录，唯共享台账的追加不保"
-                "证完整。成败以上方状态为准。"
-            )
+                "证完整。")
+            if _r_current:
+                st.info(_race_body + "成败以上方状态为准。")
+            elif _status.kind in ("missing", "corrupt"):
+                st.info(_race_body
+                        + "**此刻**状态工件暂不可读——无法确认其当前内容，"
+                          "成败以取消当时核实到的终态为准。")
+            else:
+                st.info(_race_body
+                        + "**此刻**状态工件已被随后的记录接替——上方显示"
+                          "的即当前状态；本次终态以取消当时核实到的为准。")
         else:
             st.info(
                 "取消未执行：该运行在取消前已自行结束"

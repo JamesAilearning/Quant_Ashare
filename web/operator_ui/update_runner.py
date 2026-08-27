@@ -780,7 +780,11 @@ def cancel_update(
                 return UpdateCancel(
                     kind="already_finished", returncode=process.returncode,
                     markers_written=markers_written, kill_issued=False,
-                    terminal_race=True)
+                    terminal_race=True,
+                    # 死亡观测时刻——页面渲染帧复验该格身份时的时间界
+                    # （nonce 会话不看窗;legacy 对观测时刻 ≥ 真实死亡
+                    # 成立,第三十七轮）。
+                    exited_at=datetime.now(tz=_CN_TZ).isoformat())
             elif (not signal_issued
                     and terminal_record_confirms_the_run(
                         provider_dir, process.pid,
