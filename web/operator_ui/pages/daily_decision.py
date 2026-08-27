@@ -56,6 +56,8 @@ from web.operator_ui.pages._daily_decision_helpers import (
     artifact_meta_status,
     artifact_schema_is_supported,
     banner_status,
+    baseline_roster,
+    find_nominal_baseline,
     hold_state,
     journal_model_id,
     list_recommendation_artifacts,
@@ -374,6 +376,87 @@ if _hold.is_hold:
         "N5 生产节奏下调仓只发生在每 ISO 周第一个交易日;下一再平衡日:**"
         + (_hold.next_rebalance_date or "(超出日历尾部,未知)")
         + "**。入场决策表单已阻断。"
+    )
+
+# ---------------------------------------------------------------------------
+# 名义持仓的基准(只读对照,PR-1)
+#
+# 生产是 csi800 / N5 / 周频 iso_week —— 绝大多数交易日是 HOLD 日。所以「我此刻
+# 名义上跟的是哪一天的那张单」这个问题,答案通常**不是**今天。此前这一页只能
+# 一次看一天(日期下拉框只给日期、不标哪天是再平衡日),要回答它得逐个日期点开、
+# 逐个看上面那条 HOLD 横幅。
+#
+# 这里把那次回溯做成一次可复核的搜索:找到了就说是哪一天,找不到就说沿途每一份
+# 工件**各自因为什么**被跳过。「基准在 30 天前」和「一份合格的基准都没有」对
+# 操作人的下一步完全不同。
+#
+# 红线(操作人已明令):这一段是**只读对照**。不接收手输持仓、不生成差分单、
+# 不设缓冲带、不给任何形如下单指令的东西。工件里本来也只有 rank / 评分 /
+# 可交易标志——没有权重、没有股数、没有金额,所以名单只能是代码集合。
+# ---------------------------------------------------------------------------
+st.markdown("#### 名义持仓基准")
+
+
+def _read_baseline_payload(path: Path) -> dict[str, Any] | None:
+    """读一份候选工件——走与本页其余读盘同一道输出目录守卫。"""
+    result = read_json_artifact(path, artifact_name=path.name)
+    if result.issue is not None or not isinstance(result.value, dict):
+        return None
+    loaded: dict[str, Any] = result.value
+    return loaded
+
+
+_baseline = find_nominal_baseline(
+    _artifacts, read_payload=_read_baseline_payload, as_of=_selected_date,
+)
+if _baseline.found:
+    _baseline_meta = _baseline.baseline_payload.get("meta")
+    _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
+    try:
+        _baseline_roster = baseline_roster(_baseline.baseline_payload)
+    except ValueError as _roster_exc:
+        st.error(f"⚠ 基准工件形状违约:{_roster_exc}")
+        _baseline_roster = ()
+    st.info(
+        f"截至 **{_selected_date}**,名义上跟的是 **{_baseline.baseline_date}** "
+        f"那次再平衡的清单(共 **{len(_baseline_roster)}** 只 · "
+        f"topk={_baseline_meta.get('topk', '—')} · "
+        f"universe={_baseline_meta.get('instruments', '—')})。"
+    )
+    st.caption(
+        "「名义」= 按那张单**应当**持有的代码集合。这里不知道你的实际账户持仓,"
+        "也不产生任何调仓指令——本页只做只读对照。"
+    )
+    if _baseline_roster:
+        st.dataframe(
+            [{"序": _i + 1, "代码": _code}
+             for _i, _code in enumerate(_baseline_roster)],
+            hide_index=True,
+            width="stretch",
+        )
+else:
+    st.warning(
+        f"⚠ 截至 **{_selected_date}** 找不到可信的名义持仓基准"
+        f"(已回溯 {_baseline.scanned} 份工件)。"
+    )
+    st.caption(
+        "「找不到基准」不等于「没有持仓」——它表示**这台机器上的工件**回答不了"
+        "「此刻名义上该持有什么」。下方逐条列出每一份被跳过的工件与原因。"
+    )
+if _baseline.skipped:
+    with st.expander(
+        f"回溯途中跳过的工件({len(_baseline.skipped)} 份)", expanded=False,
+    ):
+        st.dataframe(
+            [{"日期": _c.trade_date, "原因": _c.detail}
+             for _c in _baseline.skipped],
+            hide_index=True,
+            width="stretch",
+        )
+if _baseline.limit_reached:
+    st.caption(
+        f"· 回溯在第 {_baseline.scanned} 份停下(扫描上限)。更早的工件没有读——"
+        "无上界地往回翻会把「基准早已过期」说成「找到了」。"
     )
 
 # ---------------------------------------------------------------------------

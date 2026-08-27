@@ -7,6 +7,7 @@ No Streamlit imports here — everything is unit-testable plain Python
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -658,3 +659,181 @@ def provenance_verdict(
         ensemble_sha_matches=bool(inc_sha) and art_sha == inc_sha,
         single_sha_mismatch=status.sha_mismatch,
     )
+
+
+# ---------------------------------------------------------------------------
+# 名义持仓的基准：最近一次「再平衡日」工件
+#
+# 生产是 csi800 / N5 / 周频 iso_week —— 大多数交易日是 HOLD 日，出单工件写
+# ``rebalance_day: false``。所以「我此刻名义上跟的是哪一天的那张单」这个问题，
+# 答案通常**不是今天**，而要往回找到最近一个再平衡日。
+#
+# 这一页此前只能一次看一天（日期下拉框只给日期、不标哪天是再平衡日），要回答
+# 这个问题得逐个日期点开、逐个看 HOLD 横幅。下面这组纯函数把那次回溯做成一次
+# 可复核的搜索：找到了就说是哪一天，找不到就说**沿途每一份工件各自因为什么被
+# 跳过**——「没有基准」和「基准在 30 天前」对操作人的下一步完全不同。
+#
+# 边界（本模块的既有纪律，这里逐条继承）：
+# * 不重推产出器的节奏语义：只读它写下的 ``rebalance_day``，绝不自己按日历算
+#   哪天该再平衡（``src.inference.rebalance_schedule`` 是产出器那一侧的东西，
+#   把它引进 web/ 会跨越现有 import 边界）。
+# * 不做 I/O：读盘由调用方注入，页面注入的是过了 ``guard_output_path`` 的那个
+#   读取器。这样这组函数保持可单测，而读边界仍由页面那一侧执法。
+# * 不推断缺失：老工件没有 cadence 字段时**不**假设它是再平衡日——那等于替一次
+#   没记录节奏的运行编造语义。
+# ---------------------------------------------------------------------------
+
+#: 一份候选工件被跳过的原因。每一类对操作人的下一步不同，不许合并成「不可用」。
+BASELINE_SKIP_HOLD = "hold_day"
+BASELINE_SKIP_NO_CADENCE = "no_cadence"
+BASELINE_SKIP_MALFORMED_CADENCE = "malformed_cadence"
+BASELINE_SKIP_UNSUPPORTED_SCHEMA = "unsupported_schema"
+BASELINE_SKIP_ENTRY_TIMING = "entry_timing"
+BASELINE_SKIP_UNREADABLE = "unreadable"
+
+#: 回溯的硬上界。模块的读侧纪律拒绝「无上界地扩大读取直到找到」——一次翻遍
+#: 全部历史工件既慢又会把「基准早已过期」这个事实说成「找到了」。
+DEFAULT_BASELINE_SCAN_LIMIT: Final[int] = 60
+
+
+@dataclass(frozen=True)
+class SkippedCandidate:
+    """回溯途中被跳过的一份工件，以及**为什么**。"""
+
+    trade_date: str
+    reason: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class NominalBaselineSearch:
+    """向后找「最近一次再平衡日工件」的结果。
+
+    ``baseline_date`` 为空串表示**没找到**——那不是异常，是一个要如实呈报的
+    状态（本机当下就是这样：磁盘上只有一份 HOLD 日工件和一份没有 cadence 字段
+    的老工件）。
+    """
+
+    baseline_date: str
+    baseline_payload: dict[str, Any]
+    skipped: tuple[SkippedCandidate, ...]
+    scanned: int
+    limit_reached: bool
+    exhausted: bool
+
+    @property
+    def found(self) -> bool:
+        return bool(self.baseline_date)
+
+
+def _baseline_rejection(payload: dict[str, Any]) -> SkippedCandidate | None:
+    """这份 payload 能不能当基准；不能就说是哪一种不能。"""
+    if not artifact_schema_is_supported(payload):
+        return SkippedCandidate(
+            "", BASELINE_SKIP_UNSUPPORTED_SCHEMA,
+            "工件 schema 版本不是本页支持的那一版，其字段语义无法确认。",
+        )
+    if not artifact_entry_timing_is_valid(payload):
+        return SkippedCandidate(
+            "", BASELINE_SKIP_ENTRY_TIMING,
+            "工件的 as_of / entry 日期不构成严格向前的建仓时点，不可作为基准。",
+        )
+    state = hold_state(payload)
+    if state.malformed:
+        return SkippedCandidate(
+            "", BASELINE_SKIP_MALFORMED_CADENCE, state.malformed)
+    if "rebalance_day" not in payload:
+        # 老工件没有节奏语义。**不**当作再平衡日——那等于替一次没记录节奏的
+        # 运行编造语义（`hold_state` 对它返回 is_hold=False，正是这里不能只看
+        # is_hold 的原因）。
+        return SkippedCandidate(
+            "", BASELINE_SKIP_NO_CADENCE,
+            "工件没有记录 rebalance_day（早于节奏语义），无法确认它是不是再平衡日。",
+        )
+    if state.is_hold:
+        return SkippedCandidate(
+            "", BASELINE_SKIP_HOLD, "该日是 HOLD 日，不换手。")
+    return None
+
+
+def find_nominal_baseline(
+    artifacts: Sequence[tuple[str, Path]],
+    *,
+    read_payload: Callable[[Path], dict[str, Any] | None],
+    as_of: str = "",
+    limit: int = DEFAULT_BASELINE_SCAN_LIMIT,
+) -> NominalBaselineSearch:
+    """从 ``as_of`` 起向后找**第一份**可信的再平衡日工件。
+
+    ``artifacts`` 是 :func:`list_recommendation_artifacts` 的产出（日期倒序）。
+    ``read_payload`` 读一份工件，读不出来返回 ``None``——由调用方注入，因为读盘
+    要过页面那一侧的输出目录守卫。``as_of`` 为空表示从最新的一份开始。
+
+    返回的 ``skipped`` 逐条记账，不静默跳过：操作人要能看出「基准是 30 天前那
+    一次」和「一份合格的基准都没有」的区别，也要能看出中间是被 HOLD 日填满的
+    还是被一串损坏工件填满的。
+    """
+
+    skipped: list[SkippedCandidate] = []
+    scanned = 0
+    limit_reached = False
+    for artifact_date, path in artifacts:
+        if as_of and artifact_date > as_of:
+            continue
+        if scanned >= limit:
+            limit_reached = True
+            break
+        scanned += 1
+        payload = read_payload(path)
+        if payload is None:
+            skipped.append(SkippedCandidate(
+                artifact_date, BASELINE_SKIP_UNREADABLE,
+                "工件读不出来（缺失、损坏、或不在允许的输出目录内）。",
+            ))
+            continue
+        rejection = _baseline_rejection(payload)
+        if rejection is None:
+            return NominalBaselineSearch(
+                baseline_date=artifact_date,
+                baseline_payload=payload,
+                skipped=tuple(skipped),
+                scanned=scanned,
+                limit_reached=False,
+                exhausted=False,
+            )
+        skipped.append(SkippedCandidate(
+            artifact_date, rejection.reason, rejection.detail))
+    return NominalBaselineSearch(
+        baseline_date="",
+        baseline_payload={},
+        skipped=tuple(skipped),
+        scanned=scanned,
+        limit_reached=limit_reached,
+        exhausted=not limit_reached,
+    )
+
+
+def baseline_roster(payload: dict[str, Any]) -> tuple[str, ...]:
+    """基准工件的**代码集合**（按工件里的顺序，即 rank 序）。
+
+    刻意只给代码，不给任何数量口径：工件里只有 rank / predicted_score /
+    tradable_flag，**没有权重、没有股数、没有金额**。把一个等权假设写进这里，
+    就是凭空造出一份工件从未记录的仓位。
+
+    代码缺失时**抛**，不静默丢弃那一条。``picks_table_rows`` 对
+    ``stock_code`` 不做校验（``pick.get`` 缺失即 ``None``），而静默丢弃会让
+    名单比工件的候选数**少一条却不说**——操作人看到「共 49 只」，无从知道
+    第 50 条是被丢了还是本来就没有。这与本模块对 picks 形状违约的既有处置
+    同源：损坏要被看见，不要被渲染成一个良性的空缺。
+    """
+    roster: list[str] = []
+    for index, row in enumerate(picks_table_rows(payload)):
+        code = row.get("代码")
+        if not isinstance(code, str) or not code:
+            raise ValueError(
+                "工件形状违约:第 "
+                f"{index + 1} 条候选缺少 stock_code(实际 {code!r})"
+                "——文件可能损坏。"
+            )
+        roster.append(code)
+    return tuple(roster)
