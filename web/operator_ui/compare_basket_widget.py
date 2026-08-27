@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 import streamlit as st
 
@@ -34,30 +35,54 @@ from web.operator_ui.pages._research_run_comparison_helpers import (
 COMPARISON_PAGE = "pages/research_run_comparison.py"
 
 
-def render_compare_basket_controls(run_id: str, *, key_prefix: str) -> None:
-    """来源页的**唯一**入口：加入按钮 + 篮子面板，目录只读一次。
+@dataclass(frozen=True)
+class CatalogView:
+    """本帧读到的目录，按加入按钮与篮子面板都需要的形状。
 
-    目录在这里读、也只在这里读。让每个来源页自己读，等于把「传全量目录行
-    还是只传当前所有者」这个坑挖三遍——其中两遍已经在评审里被抓到过一次。
-    传全量行是必需的：只传当前所有者的话，「被同目录的更新运行接管」会退化
-    成「目录里根本没有这条」，分因就没了，操作人只剩一句「不可用」。
+    加入按钮在来源页的动作列里画，篮子面板要在**页面宽度**下画（成员行、
+    每条失效说明、嵌套的移除列、跳转链接挤进三分之一列宽会没法读）。两者
+    因此分两次调用——但目录只读一次，判定逻辑也只有一份：让每页各读一次，
+    等于把「传全量目录行还是只传当前所有者」这个坑挖三遍。
     """
 
-    all_rows = load_all_jobs_read_only()
+    all_rows: tuple[object, ...]
+    selectable_ids: tuple[str, ...]
+    run_id_alias: Mapping[str, str]
+
+
+def render_add_to_basket(run_id: str, *, key_prefix: str) -> CatalogView:
+    """画「加入对比」按钮，并把本帧读到的目录交回给调用方。
+
+    调用方拿它去画篮子面板（``render_basket``）——**在动作列之外**。传全量
+    目录行是必需的：只传当前所有者的话，「被同目录的更新运行接管」会退化成
+    「目录里根本没有这条」，分因就没了，操作人只剩一句「不可用」。
+    """
+
+    all_rows = tuple(load_all_jobs_read_only())
     catalog = selectable_catalog(all_rows)
-    selectable_ids = [row.run_id for row in catalog.rows]
+    view = CatalogView(
+        all_rows=all_rows,
+        selectable_ids=tuple(row.run_id for row in catalog.rows),
+        run_id_alias=catalog.run_id_alias,
+    )
     render_add_to_basket_button(
         run_id,
-        selectable_ids=selectable_ids,
-        run_id_alias=catalog.run_id_alias,
-        all_rows=all_rows,
+        selectable_ids=view.selectable_ids,
+        run_id_alias=view.run_id_alias,
+        all_rows=view.all_rows,
         key_prefix=key_prefix,
     )
+    return view
+
+
+def render_basket(view: CatalogView, *, key_prefix: str) -> None:
+    """在**页面宽度**下画篮子面板，复用上一步读到的目录。"""
+
     render_basket_panel(
         key_prefix=key_prefix,
-        selectable_ids=selectable_ids,
-        run_id_alias=catalog.run_id_alias,
-        all_rows=all_rows,
+        selectable_ids=view.selectable_ids,
+        run_id_alias=view.run_id_alias,
+        all_rows=view.all_rows,
     )
 
 
@@ -182,6 +207,14 @@ def render_basket_panel(
                 "⚠ 以下运行现在与篮子里的另一个指向**同一份当前工件**，"
                 "对比页会因重复而拒绝整组："
                 + "、".join(f"`{_r}`" for _r in checked.collapsed)
+            )
+        if checked.rerouted:
+            # 加入时当场披露别名是本模块的纪律,复核路径同样要披露:否则篮子
+            # 显示 A、链接静默带 B 过去,两个名字都合法,操作人无从发现。
+            st.caption(
+                "· 以下成员的当前工件已由另一个 ID 持有，对比将以后者进行："
+                + "、".join(
+                    f"`{_from}` → `{_to}`" for _from, _to in checked.rerouted)
             )
 
         gap = basket_readiness(checked.live)

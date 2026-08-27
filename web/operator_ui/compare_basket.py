@@ -174,6 +174,11 @@ class BasketRevalidation:
     #: 加入时是两个不同的运行,如今解析到同一个所有者。对比页会因重复而
     #: 整页停下,所以这里就要说出来。
     collapsed: tuple[str, ...]
+    #: 加入之后**改了名**的成员:``(篮子里存的 id, 现在会送出去的 id)``。
+    #: 加入时当场披露别名是本模块的既有纪律,而复核路径此前没有——于是篮子
+    #: 显示 A、链接静默带 B 过去,两个名字都合法,操作人无从发现。同一条
+    #: 纪律要覆盖**两条**路径。
+    rerouted: tuple[tuple[str, str], ...] = ()
 
 
 def revalidate_basket(
@@ -199,6 +204,7 @@ def revalidate_basket(
     live: list[str] = []
     stale: list[BasketAdmission] = []
     collapsed: list[str] = []
+    rerouted: list[tuple[str, str]] = []
     for run_id in basket:
         admission = admit_to_basket(
             run_id,
@@ -210,13 +216,18 @@ def revalidate_basket(
             stale.append(admission)
             continue
         resolved = admission.resolved_run_id
+        if resolved != run_id:
+            # 加入时当场披露别名是本模块的纪律。复核路径不披露的话,篮子
+            # 显示 A、链接静默带 B 过去——两个名字都合法,操作人无从发现。
+            rerouted.append((run_id, resolved))
         if resolved in seen:
             collapsed.append(run_id)
             continue
         seen.add(resolved)
         live.append(resolved)
     return BasketRevalidation(
-        live=tuple(live), stale=tuple(stale), collapsed=tuple(collapsed))
+        live=tuple(live), stale=tuple(stale), collapsed=tuple(collapsed),
+        rerouted=tuple(rerouted))
 
 
 def basket_readiness(basket: Sequence[str]) -> str:

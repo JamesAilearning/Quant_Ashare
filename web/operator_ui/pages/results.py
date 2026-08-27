@@ -120,7 +120,8 @@ from web.operator_ui.bundle_health import (  # noqa: E402, PLC0415
     render_bundle_health_banner,
 )
 from web.operator_ui.compare_basket_widget import (  # noqa: E402, PLC0415
-    render_compare_basket_controls,
+    render_add_to_basket,
+    render_basket,
 )
 
 # Detect current theme for Plotly charts
@@ -335,7 +336,9 @@ else:
     # 接受并展示的 walk_forward 运行既没有加入按钮、连已有的篮子也看不到
     # (codex P2 on #472)。这一类「守卫只覆盖了一部分入口」本仓踩过多次:
     # 判据要放在**所有**入口都必经的位置,而不是某一条路径上。
-    render_compare_basket_controls(selected_job_id, key_prefix="results")
+    _basket_catalog = render_add_to_basket(
+        selected_job_id, key_prefix="results")
+    render_basket(_basket_catalog, key_prefix="results")
 
     if mode == "pipeline" or pipeline_report:
         _render_pipeline_dashboard(

@@ -199,7 +199,10 @@ class RevalidationTests(unittest.TestCase):
         self.assertEqual(checked.live, ("ui-9",))
         self.assertEqual(checked.collapsed, ("cli-1",))
 
-    def test_revalidation_resolves_aliases_for_the_link(self) -> None:
+    def test_revalidation_resolves_aliases_and_says_it_rerouted(self) -> None:
+        # 加入时当场披露别名是本模块的纪律。复核路径不披露的话,篮子显示
+        # `cli-1`、链接静默带 `ui-9` 过去——两个名字都合法,操作人无从发现。
+        # 同一条纪律要覆盖**两条**路径。
         checked = revalidate_basket(
             ("cli-1", "run-b"),
             selectable_ids=["ui-9", "run-b"],
@@ -208,6 +211,19 @@ class RevalidationTests(unittest.TestCase):
 
         self.assertEqual(checked.live, ("ui-9", "run-b"))
         self.assertEqual(checked.stale, ())
+        self.assertEqual(checked.rerouted, (("cli-1", "ui-9"),))
+
+    def test_a_member_that_still_resolves_to_itself_is_not_rerouted(
+        self,
+    ) -> None:
+        # 每个成员都报一句「改名了」等于把这条提示变成噪音。
+        checked = revalidate_basket(
+            ("run-a", "run-b"),
+            selectable_ids=["run-a", "run-b"],
+            run_id_alias={},
+        )
+
+        self.assertEqual(checked.rerouted, ())
 
     def test_an_intact_basket_passes_through_in_order(self) -> None:
         checked = revalidate_basket(

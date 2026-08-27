@@ -32,7 +32,8 @@ from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
 from web.operator_ui.compare_basket_widget import (
-    render_compare_basket_controls,
+    render_add_to_basket,
+    render_basket,
 )
 from web.operator_ui.components import (
     render_empty_state,
@@ -600,7 +601,10 @@ _wf_selected_run_id = str(run_options.get(str(selected), "") or "")
 if _wf_selected_run_id:
     _wf_basket_col, _ = st.columns([1, 3])
     with _wf_basket_col:
-        render_compare_basket_controls(_wf_selected_run_id, key_prefix="wf")
+        _basket_catalog = render_add_to_basket(
+            _wf_selected_run_id, key_prefix="wf")
+    # 面板画在 1:3 动作列**之外**——挤进那四分之一宽会没法读。
+    render_basket(_basket_catalog, key_prefix="wf")
 
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"

@@ -24,7 +24,8 @@ import streamlit as st
 
 from web.operator_ui._param_guard import sanitize as _sanitize_qp
 from web.operator_ui.compare_basket_widget import (
-    render_compare_basket_controls,
+    render_add_to_basket,
+    render_basket,
 )
 from web.operator_ui.components import (
     render_badge,
@@ -724,7 +725,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
             # 与篮子渲染都在 `render_compare_basket_controls` 里,三个来源页
             # 共用同一份:各写一份的话「传全量行还是只传当前所有者」这种坑
             # 要挖三遍。
-            render_compare_basket_controls(
+            _basket_catalog = render_add_to_basket(
                 selected.run_id, key_prefix="jobs")
         if _stoppable:
             with act_stop:
@@ -744,6 +745,9 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     except JobManagerError as exc:
                         st.toast(f"停止失败：{exc}", icon="⚠️")
                     st.rerun()
+    # 面板画在动作列**之外**:成员行、每条失效说明、嵌套的移除列、跳转链接
+    # 挤进三分之一列宽会没法读。目录仍是上面那次读的,不重读。
+    render_basket(_basket_catalog, key_prefix="jobs")
 
 # ---------------------------------------------------------------------------
 # Pagination — real prev/next nav over offset-sliced pages (UI review

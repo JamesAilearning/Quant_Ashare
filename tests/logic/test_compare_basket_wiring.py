@@ -133,7 +133,8 @@ class SourcePageWiringTests(unittest.TestCase):
                 mock.patch.object(
                     widget, "render_add_to_basket_button", _capture), \
                 mock.patch.object(widget, "render_basket_panel", _capture):
-            widget.render_compare_basket_controls("owner-1", key_prefix="t")
+            view = widget.render_add_to_basket("owner-1", key_prefix="t")
+            widget.render_basket(view, key_prefix="t")
 
         forwarded = seen["t"]
         self.assertEqual(len(forwarded), 2, "按钮与面板都要收到目录")
@@ -164,7 +165,8 @@ class SourcePageWiringTests(unittest.TestCase):
                     widget, "render_add_to_basket_button", lambda *a, **k: None), \
                 mock.patch.object(
                     widget, "render_basket_panel", lambda *a, **k: None):
-            widget.render_compare_basket_controls("x", key_prefix="t")
+            view = widget.render_add_to_basket("x", key_prefix="t")
+            widget.render_basket(view, key_prefix="t")
 
         self.assertEqual(len(calls), 1)
 
@@ -172,8 +174,14 @@ class SourcePageWiringTests(unittest.TestCase):
         source = _JOBS_PAGE.read_text(encoding="utf-8")
 
         self.assertIn(
-            "            render_compare_basket_controls(\n"
+            "            _basket_catalog = render_add_to_basket(\n"
             '                selected.run_id, key_prefix="jobs")\n',
+            source,
+        )
+        # 面板必须画在动作列**之外**:成员行、失效说明、嵌套的移除列、跳转
+        # 链接挤进三分之一列宽会没法读（codex P2 on #472 r2）。
+        self.assertIn(
+            '\n    render_basket(_basket_catalog, key_prefix="jobs")\n',
             source,
         )
         # 动作栏多了一列。旧的 2/3 列布局会把新按钮挤到别的动作上面。
@@ -191,16 +199,18 @@ class SourcePageWiringTests(unittest.TestCase):
         source = _RESULTS_PAGE.read_text(encoding="utf-8")
 
         self.assertIn(
-            "    render_compare_basket_controls("
-            'selected_job_id, key_prefix="results")\n',
+            "    _basket_catalog = render_add_to_basket(\n"
+            '        selected_job_id, key_prefix="results")\n'
+            '    render_basket(_basket_catalog, key_prefix="results")\n',
             source,
         )
         # 必须在模式分支**之前**。分支之后放两份就又回到「两条路径各写一
         # 遍」,而那正是这条意见的来源。
-        control_at = source.index("render_compare_basket_controls(")
+        control_at = source.index("_basket_catalog = render_add_to_basket(")
         branch_at = source.index('    if mode == "pipeline" or pipeline_report:')
         self.assertLess(control_at, branch_at)
-        self.assertEqual(source.count("render_compare_basket_controls("), 1)
+        self.assertEqual(source.count("render_add_to_basket("), 1)
+        self.assertEqual(source.count("render_basket(_basket_catalog"), 1)
         # 旧位置(pipeline 专属的动作栏)不许留残余。
         render_source = _RESULTS_RENDER.read_text(encoding="utf-8")
         self.assertNotIn("compare_basket", render_source)
@@ -209,10 +219,13 @@ class SourcePageWiringTests(unittest.TestCase):
         source = _WALK_FORWARD_PAGE.read_text(encoding="utf-8")
 
         self.assertIn(
-            "        render_compare_basket_controls("
-            '_wf_selected_run_id, key_prefix="wf")\n',
+            "        _basket_catalog = render_add_to_basket(\n"
+            '            _wf_selected_run_id, key_prefix="wf")\n',
             source,
         )
+        # 面板画在 1:3 动作列**之外**——挤进那四分之一宽会没法读。
+        self.assertIn(
+            '\n    render_basket(_basket_catalog, key_prefix="wf")\n', source)
         # 本页的「当前运行」是目录键映射出来的 id,不是 selectbox 的返回值。
         self.assertIn(
             '_wf_selected_run_id = str(run_options.get(str(selected), "")'
@@ -346,6 +359,17 @@ class WidgetJudgesBeforeTheClickTests(unittest.TestCase):
         self.assertIn(
             '                st.caption(f"· `{_stale.run_id}`：'
             '{_stale.reason}")\n',
+            self.source,
+        )
+
+    def test_a_member_that_changed_id_is_disclosed(self) -> None:
+        # 加入时当场披露别名是本模块的纪律。复核路径不披露的话,篮子显示 A、
+        # 链接静默带 B 过去——两个名字都合法,操作人无从发现（codex P2 on
+        # #472 r2）。同一条纪律要覆盖**两条**路径。
+        self.assertIn("        if checked.rerouted:\n", self.source)
+        self.assertIn(
+            '                    f"`{_from}` → `{_to}`" '
+            "for _from, _to in checked.rerouted)\n",
             self.source,
         )
 
