@@ -908,11 +908,15 @@ if _live_proc is not None:
                         }
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["evidence_stored"] = True
-                    elif terminal_status_confirms_the_run(
+                    elif _kn and terminal_status_confirms_the_run(
                             _fresh_status, _live_proc.pid,
                             launched_at=(_live_run or {}).get("launched_at"),
                             exited_at=_killed_at,
                             launch_nonce=_kn):
+                        # 归属 nonce-only（第四十三轮 P2:本重读同样
+                        # 在 cancel_update 返回之后——legacy 的 pid+窗
+                        # 可被回收 pid 的接替在冻结钟下过检;这是第五条
+                        # 归属入口,第四十二轮扫全时漏掉的一处）。
                         # 硬杀撞上「终态已写、台账未完」窗（第二十九轮
                         # P2,Windows 实际可达:编排器写完终态还要追加台
                         # 账,操作人恰在其间硬杀）。重读见 finished 且经

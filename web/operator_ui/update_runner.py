@@ -653,6 +653,13 @@ def cancel_update(
         # 断」;终录仅在杀后才出现,才是真自然完成（kill 内部 no-op）。
         pre_kill_terminal = (
             provider_dir is not None
+            # nonce 门（第四十三轮同类扫全）:快照读到的 finished 可能是
+            # **陈年**工件（上次运行留下,pid 恰被复用 + 冻结钟过 legacy
+            # 窗）——误判会把「无信号送达的自然完成」说成「送达不可判
+            # 定」,方向上是过度声称。legacy 会话不进 race 格,照走杀后
+            # oracle 的 no-op 判别（其 legacy 分支保留:该分支前提已是
+            # 「无信号送达」,工件属谁都不改变「自然完成」的结论）。
+            and launch_nonce is not None
             and terminal_record_confirms_the_run(
                 provider_dir, process.pid,
                 launched_at=launched_at,

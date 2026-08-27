@@ -1017,24 +1017,23 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
             provider.mkdir()
-            # 变体A（第三十六轮再改判——终态）:终录在 kill **之前**已在
-            # 盘 + kill 静默返回 + 死亡 = **送达不可判定**格:杀前快照只
-            # 证明记录时序,不证明送达（TerminateProcess 真杀了收尾中的
-            # 活进程,与进程在快照后自然退出、CPython 吞 access-denied
-            # 正常返回,经 Popen API 无法区分——r35 判 cancelled 会在后
-            # 一情形谎称强制终止已执行,r20 判普通 already_finished 会在
-            # 前一情形谎称取消未执行）。终态=already_finished +
-            # terminal_race 标记 + 专属竞态标记行,页面如实说不可判定。
+            # 变体A（第四十三轮再改判——legacy 不进 race 格）:无 nonce
+            # 会话的杀前快照读到的 finished 可能是**陈年**工件（pid 复用
+            # + 冻结钟过 legacy 窗）,据它宣告「送达不可判定」是过度声
+            # 称。legacy 照走杀后 oracle 的 no-op 判别（该分支前提已是
+            # 「无信号送达」,工件属谁都不改变「自然完成」这个结论）→
+            # already_finished 且**不带** race 标记。带 nonce 的同场景
+            # 见变体A'（r20→r35→r36→r43 四轮谱系）。
             status_path_for_provider(provider).write_text(
                 json.dumps(_record(provider)), encoding="utf-8")
             got, text = _run(provider, launched)
             self.assertEqual("already_finished", got.kind)
-            self.assertTrue(got.terminal_race,
-                            "终录先在的静默返回没标送达不可判定")
-            self.assertIn("terminate delivery is undecidable", text)
+            self.assertFalse(got.terminal_race,
+                             "legacy 会话据陈年工件宣告了送达不可判定")
+            self.assertIn("own terminal record", text)
         with tempfile.TemporaryDirectory() as t:
-            # 变体A'（带 nonce,同上归不可判定格;nonce 转发正确性由变体
-            # N 正面钉）。
+            # 变体A'（带 nonce 才进不可判定格——第四十三轮起 race 格是
+            # nonce-only;nonce 转发正确性由变体N 正面钉）。
             provider = Path(t) / "prov"
             provider.mkdir()
             _nn = "ab" * 16
@@ -1339,10 +1338,12 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
         # 锚随第三十一轮升级为**快照版**（判定作用在本帧已读到的快照,
-        # 不二次读取——重读与快照之间接替可改写工件,检出翻假）。
-        self.assertIn("elif terminal_status_confirms_the_run(\n"
+        # 不二次读取——重读与快照之间接替可改写工件,检出翻假）,第四十
+        # 三轮再加 nonce 门（第五条归属入口:legacy 的 pid+窗同样可被回
+        # 收 pid 的接替在冻结钟下过检）。
+        self.assertIn("elif _kn and terminal_status_confirms_the_run(\n"
                       "                            _fresh_status", page,
-                      "confirm 分支没对已捕获快照做终录检出")
+                      "confirm 终录检出没对 legacy fail-closed")
         self.assertIn('_lc["terminal_after_kill"] = True', page,
                       "终录检出没入结局标记")
         self.assertIn('elif _last_cancel.get("terminal_after_kill"):', page,

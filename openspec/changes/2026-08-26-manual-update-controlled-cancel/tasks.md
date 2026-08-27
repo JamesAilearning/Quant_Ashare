@@ -599,6 +599,28 @@
       不再获得证据标注,孤儿 running 等六小时陈旧线——与「UI 重启失去
       句柄」同类的如实降级。若用户/codex 认为过度,可回退到 r40 状态
 
+## codex 第四十三轮（P2：confirm 终录检出补 nonce 门 + 归属入口全审计）
+
+- [x] P2 我第四十二轮「同类扫全」**漏了一条**——confirm 路径的
+      terminal_after_kill 检出仍把可能为空的 `_kn` 传进 oracle,legacy
+      的 pid+窗同样可被回收 pid 的接替在冻结钟下过检。修=加 `_kn and`
+      门。教训:自称扫全时必须**列表逐条**核对,不能凭记忆数
+- [x] **同类第六处（codex 未提,自扫补上）**:runner 的杀前终态快照
+      （pre_kill_terminal）读到的 finished 可能是陈年工件（pid 复用+冻
+      结钟过 legacy 窗）,据它宣告「送达不可判定」是过度声称。加 nonce
+      门;legacy 照走杀后 oracle 的 no-op 判别。quiet-kill 变体A 第四次
+      改判（r20→r35→r36→r43 谱系注在档）
+- [x] **归属入口全审计（逐条列表,非记忆）**——七类调用点门控状态:
+      ①杀前快照=nonce 门(本轮) ②杀后 oracle=**保留 legacy**（该分支前
+      提已是「无信号送达」,工件属谁都不改变「自然完成」结论,误判不改
+      变结果——唯一可辩护的保留） ③graceful 核实=nonce-only(r42)
+      ④启动闸放行/⑤页首覆盖=共享谓词,而证据只由 nonce 会话产生,
+      legacy 分支不可达 ⑥补结算收养=nonce-only(r42)、补结算终录=
+      fail-closed(r41) ⑦confirm 收养=nonce-only(r42)、confirm 终录=
+      nonce 门(本轮);三处渲染帧复验的身份来源均已 nonce 门,legacy 分
+      支不可达（留作纵深,不删）
+- [x] 变异两发（去 confirm 门 / 去杀前快照门）各自咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程
