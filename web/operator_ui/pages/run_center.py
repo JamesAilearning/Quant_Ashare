@@ -346,6 +346,13 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         "terminal_identity": ({
             "started_at": _late_status.started_at or "",
             "launch_nonce": _late_status.launch_nonce or "",
+            # 渲染帧复验用共享 oracle（第三十八轮 P2:手写三元比对漏
+            # pid,legacy 无 nonce 会话下同戳异 pid 的接替会过检）——身
+            # 份四件套随行。
+            "pid": _live_proc.pid,
+            "launched_at": _live_run.get("launched_at")
+            if isinstance(_live_run, dict) else "",
+            "exited_at": _late_outcome.exited_at or "",
             # 取消当时核实到的终态**事实**也随行（第三十三轮 P2:该窗
             # 恰是「终态已写、台账追加被打断」——接替抹掉快照后,台账里
             # 可能根本没有这条,改口文案不得把操作人指向台账,只能呈现
@@ -952,6 +959,10 @@ if _live_proc is not None:
                             "started_at": _fresh_status.started_at or "",
                             "launch_nonce":
                                 _fresh_status.launch_nonce or "",
+                            "pid": _live_proc.pid,
+                            "launched_at":
+                                (_live_run or {}).get("launched_at") or "",
+                            "exited_at": _killed_at or "",
                             "exit_code": _fresh_status.exit_code,
                             "run_date": _fresh_status.run_date or "",
                         }
@@ -1093,10 +1104,15 @@ if isinstance(_last_cancel, dict):
             # 在快照帧被接受,消息在 rerun 后的新帧渲染——其间接替可改
             # 写工件,本帧横幅可能已是别的记录。
             _tid = _last_cancel.get("terminal_identity") or {}
-            _tid_current = (
-                _status.kind == "finished"
-                and _status.started_at == _tid.get("started_at")
-                and (_status.launch_nonce or "") == _tid.get("launch_nonce"))
+            # 复验走共享 oracle（第三十八轮 P2）:手写三元比对漏 pid——
+            # legacy 无 nonce 会话下,同戳异 pid 的 finished 接替（粗粒
+            # 度时钟可造同戳）会被认成本次终录。oracle=nonce 一票裁决/
+            # legacy pid+全窗,与取消当时的核实判据同构。
+            _tid_current = terminal_status_confirms_the_run(
+                _status, int(_tid.get("pid") or -1),
+                launched_at=_tid.get("launched_at") or None,
+                exited_at=_tid.get("exited_at") or None,
+                launch_nonce=_tid.get("launch_nonce") or None)
             if _tid_current:
                 st.success(
                     f"强制终止已执行（returncode="

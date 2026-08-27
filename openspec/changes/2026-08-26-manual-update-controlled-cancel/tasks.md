@@ -538,6 +538,16 @@
       oracle 复验+三态改口（匹配/暂不可读/已被接替）。快照 oracle 页
       面调用 3→4、missing/corrupt 三态 2→3 计数钉同步
 
+## codex 第三十八轮（P2：tak 复验统一到共享 oracle,补 pid 身份）
+
+- [x] P2 r32 的 _tid_current 手写三元比对（kind/戳/nonce）漏 pid——
+      legacy 无 nonce 会话下,同戳异 pid 的 finished 接替（粗粒度时钟可
+      造同戳）被认成本次终录。修=terminal_identity 补随行 pid/
+      launched_at/exited_at 四件套（confirm/补结算两写点）,复验改调共
+      享 terminal_status_confirms_the_run（nonce 一票裁决/legacy
+      pid+全窗,与取消当时核实判据同构）。快照 oracle 页面调用 4→5 计
+      数钉;三条声称链复验至此全部同一 oracle,无手写比对残留
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

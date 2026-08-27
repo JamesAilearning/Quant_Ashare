@@ -1421,9 +1421,10 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 补结算帧照样矛盾）:oracle 调用恰好两处（confirm+补结算）,补
         # 结算结局带 terminal_after_kill 键。
         self.assertEqual(
-            4, page.count("terminal_status_confirms_the_run("),
-            "快照版终态检出不是恰好四处（confirm + 补结算 + graceful "
-            "渲染复验 + terminal_race 渲染复验,第三十七轮加第四处）")
+            5, page.count("terminal_status_confirms_the_run("),
+            "快照版终态检出不是恰好五处（confirm + 补结算 + graceful/"
+            "terminal_after_kill/terminal_race 三条声称链的渲染帧复验——"
+            "第三十八轮把 tak 的手写三元比对也统一到 oracle）")
         self.assertEqual(
             0, page.count("terminal_record_confirms_the_run("),
             "页面残留读盘版核实（会引入二次读取竞态,第三十一轮）")
@@ -1443,12 +1444,16 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                       "补结算结局没带被认定终录的身份")
         self.assertIn('_lc["terminal_identity"] = {', page,
                       "confirm 结局没带被认定终录的身份")
-        self.assertIn("_tid_current = (", page, "渲染帧没复验终录身份")
-        self.assertIn('_status.started_at == _tid.get("started_at")', page,
-                      "复验没比对戳")
-        self.assertIn('(_status.launch_nonce or "") == '
-                      '_tid.get("launch_nonce")', page,
-                      "复验没比对 nonce")
+        self.assertIn("_tid_current = terminal_status_confirms_the_run(",
+                      page, "渲染帧没复验终录身份")
+        # 锚随第三十八轮升级:手写三元比对漏 pid（legacy 同戳异 pid 接替
+        # 过检）,复验统一到共享 oracle,身份四件套随行。
+        self.assertIn("_tid_current = terminal_status_confirms_the_run(",
+                      page, "tak 复验没走共享 oracle")
+        self.assertIn('int(_tid.get("pid") or -1)', page,
+                      "tak 复验缺 pid 身份")
+        self.assertIn('"pid": _live_proc.pid', page,
+                      "terminal_identity 没随行 pid")
         self.assertIn("已被随后的记录接替", page,
                       "接替情形缺如实改口文案")
         # 改口文案不许指向台账（第三十三轮 P2:该窗恰是「终态已写、台账
