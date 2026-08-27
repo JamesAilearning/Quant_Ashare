@@ -108,18 +108,46 @@ class WriterWiringTests(unittest.TestCase):
     """
 
     def test_the_progress_line_stamps_through_the_suffix_helper(self) -> None:
+        """进度行的尾部实参**必须**是那两个后缀助手拼出来的。
+
+        原来钉的是源码串（含具体缩进与换行）。#474 第二轮给同一条行再加一个
+        运行身份后缀时，那串因为换行改写而失配——它钉住的是**排版**，不是
+        「这条行经由助手取得后缀」。改成 AST：找到进度那条 ``_logger.info``，
+        看它最后一个实参里出现了哪些方法调用。排版怎么改都不影响，而任何一个
+        助手被摘掉就会红。
+        """
+        import ast
+
         source = (
             PROJECT_ROOT / "src" / "data" / "tushare" / "fetcher.py"
         ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
 
-        self.assertIn(
-            '                        "  %s year=%d progress: %d/%d tickers "\n'
-            '                        "(written=%d, skipped=%d)%s",\n',
-            source,
-        )
-        self.assertIn(
-            "                        self._progress_provider_suffix(),\n",
-            source,
+        progress_calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "info"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and "progress: %d/%d tickers" in node.args[0].value
+        ]
+        self.assertEqual(len(progress_calls), 1, "进度行应当只有一处写点")
+        fmt = progress_calls[0].args[0].value
+        self.assertTrue(
+            fmt.rstrip().endswith("%s"), f"后缀占位符必须在行尾:{fmt!r}")
+
+        suffix_arg = progress_calls[0].args[-1]
+        helpers = {
+            node.func.attr for node in ast.walk(suffix_arg)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        self.assertEqual(
+            helpers,
+            {"_progress_run_suffix", "_progress_provider_suffix"},
+            "尾部实参必须由这两个助手拼出;自己在调用点拼串就是第二份会漂的实现",
         )
 
     def test_the_cli_forwards_the_flag_into_the_config(self) -> None:

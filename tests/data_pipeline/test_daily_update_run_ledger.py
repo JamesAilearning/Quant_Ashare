@@ -645,5 +645,63 @@ class TheRunBoundaryIsDatedAndOwned(unittest.TestCase):
         self.assertFalse([m for m in seen if "run finished" in m.lower()])
 
 
+class RunIdReachesBothEndsTests(unittest.TestCase):
+    """进度归属的两端拿的必须是**同一个** id。
+
+    读侧的判据是逐字节相等：状态工件里的 ``run_id`` 对进度行上的 ``run=``。
+    两端只要有一端没拿到（或拿到不同的一个），归属就永远比不上——而那看起来
+    只是「归属报不出来」，与「本来就不知道」长得一模一样，不像个 bug
+    （codex P2 on #474 的同一根因：一条修好归属的路径在生产上不生效）。
+
+    所以这里**整跑**一次编排，把两端的值取出来对。分别测「工件写了」和
+    「argv 传了」证明不了它们是同一个。
+    """
+
+    def test_the_artifact_and_the_fetch_argv_carry_one_identity(self) -> None:
+        seen: dict[str, list[str]] = {}
+
+        def make(stage: str):
+            def run(argv: list[str]) -> int:
+                seen[stage] = list(argv)
+                return 0
+            return run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _box(Path(tmp))
+            runners = {s: make(s) for s in STAGES}
+
+            du.run_daily_update(cfg, runners)  # type: ignore[arg-type]
+
+            status = json.loads(
+                du.default_status_path(cfg.provider_dir).read_text(
+                    encoding="utf-8"))
+
+        argv = seen["fetch"]
+        self.assertIn("--run-id", argv)
+        stamped = argv[argv.index("--run-id") + 1]
+
+        self.assertEqual(
+            status["run_id"], stamped,
+            "工件与 fetch argv 必须带同一个 run_id;不同就永远比不上",
+        )
+        # 形状同 launch_nonce：读侧按 32 位小写 hex 验，畸形当损坏。
+        self.assertEqual(len(stamped), 32)
+        self.assertTrue(all(c in "0123456789abcdef" for c in stamped))
+
+    def test_two_runs_get_two_identities(self) -> None:
+        # 同一个 provider 的**上一次**运行留在日志窗口里的行，靠的就是这个
+        # 不同才不会被当成本次的。id 若可复用，那条行会被收下。
+        ids = []
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = _box(Path(tmp))
+                du.run_daily_update(cfg, _runners())  # type: ignore[arg-type]
+                ids.append(json.loads(
+                    du.default_status_path(cfg.provider_dir).read_text(
+                        encoding="utf-8"))["run_id"])
+
+        self.assertNotEqual(ids[0], ids[1])
+
+
 if __name__ == "__main__":
     unittest.main()

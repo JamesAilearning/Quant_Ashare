@@ -202,6 +202,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "against their own. Empty (a hand-run fetch) leaves the lines "
              "unstamped, and readers fall back to boundary attribution.",
     )
+    p.add_argument(
+        "--run-id", default="",
+        help="One-time identity of THIS orchestrated run, stamped on every "
+             "progress line. The provider tag says WHO wrote a line; it "
+             "cannot say WHICH RUN wrote it, and the run boundary that could "
+             "is not readable in production: readers take only the log's "
+             "trailing window, which a multi-year fetch overruns long before "
+             "it finishes. The orchestrator writes the same id into the run "
+             "status artifact, so both ends of the comparison live outside "
+             "the log window. Empty (a hand-run fetch) leaves the lines "
+             "without a run id, and readers fall back to boundary "
+             "attribution.",
+    )
     return p
 
 
@@ -295,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             assume_verified_ranges=assume_verified_ranges,
             verify_all_years=args.verify_all_years,
             provider_tag=args.provider_tag,
+            run_id=args.run_id,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)

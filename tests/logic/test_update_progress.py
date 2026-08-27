@@ -129,7 +129,7 @@ class PagePlacementTests(unittest.TestCase):
         # 进度仍必须只在 running 分支内渲染 —— 非 running 时那条是上一次
         # 运行的残留。旧锚 `_progress = _read_progress()` 现在会先匹配到
         # 后面的 `_baseline_progress = _read_progress()`，定位到分支之外。
-        progress_at = self.src.index("_attributed = _read_progress()")
+        progress_at = self.src.index("_attributed = _read_progress(")
         next_branch = self.src.index("elif _status.ok:")
         self.assertLess(running_at, progress_at)
         self.assertLess(progress_at, next_branch)
@@ -148,19 +148,57 @@ class PagePlacementTests(unittest.TestCase):
         # codex #450 r1: 片段计时只重跑片段，而追加的 fetch 行**不改变**状态
         # 签名（kind/started_at/分类都不动）。只比签名的话，页面会一直冻在
         # 「还没有进度行」直到运行结束。
-        self.assertIn("_baseline_progress = _read_progress()", self.src)
+        self.assertIn("_baseline_progress = _read_progress(", self.src)
         fragment_at = self.src.index("def _watch_update_completion()")
         body = self.src[fragment_at : fragment_at + 1400]
-        self.assertIn("_read_progress() != _baseline_progress", body)
+        self.assertIn("_read_progress(_run_id) != _baseline_progress", body)
         # 基线必须在片段注册**之前**定格 —— 两侧都在片段里重算是 #442 r2
         # 已经证伪过的错法。
-        baseline_at = self.src.index("_baseline_progress = _read_progress()")
+        baseline_at = self.src.index("_baseline_progress = _read_progress(")
         self.assertLess(baseline_at, fragment_at)
 
     def test_one_progress_reader_shared_by_page_and_fragment(self) -> None:
         # 两处各写一份正是它们会分叉的方式（这一页上已经栽过三次）。
-        self.assertEqual(self.src.count("def _read_progress()"), 1)
-        self.assertGreaterEqual(self.src.count("_read_progress()"), 3)
+        self.assertEqual(self.src.count("def _read_progress("), 1)
+        self.assertGreaterEqual(self.src.count("_read_progress("), 4)
+
+    def test_every_read_passes_the_same_run_identity(self) -> None:
+        # 归属现在按运行身份过滤（#474 第二轮）。三处调用只要有一处不传
+        # 同一个 id，那个「进度变了没有」的比较就不是同一个问题的两次
+        # 回答：基线按 A 过滤、片段按空过滤，第一条别人的行就会把整页
+        # 拉起来重绘，而页面上那句进度并没有变。
+        calls = [
+            line.strip() for line in self.src.splitlines()
+            if "_read_progress(" in line and "def _read_progress(" not in line
+        ]
+        self.assertEqual(len(calls), 3, calls)
+        for call in calls:
+            with self.subTest(call=call):
+                self.assertIn("_read_progress(_run_id)", call)
+
+    def test_the_caption_dispatches_on_the_attribution_source(self) -> None:
+        # run 戳路径**没有**边界戳（它没读边界）。页面若只按
+        # `boundary_stamp == _status.started_at` 分派，一次归属确定的运行会
+        # 落进「边界与状态记录对不上」那一支，被说成对不上（#474 第二轮）。
+        #
+        # 钉**条件整行**：钉 `"run_stamp"` 这个串会被「条件熄火」变异逃走
+        # （`elif False:` 之下那一支的字面量原样还在）。
+        self.assertIn(
+            '    elif _attributed.attribution == "run_stamp":\n', self.src)
+        # 且必须排在边界戳比较**之前**，否则空串会先撞上那支。
+        by_source = self.src.index(
+            'elif _attributed.attribution == "run_stamp":')
+        by_stamp = self.src.index("_attributed.boundary_stamp == (")
+        self.assertLess(by_source, by_stamp)
+
+    def test_the_reader_forwards_the_run_identity(self) -> None:
+        # 参数收了不用 = 三个调用点都白传。钉的是读取器真的把它交下去。
+        self.assertIn("        run_id=run_id)\n", self.src)
+
+    def test_the_new_unattributed_reason_is_spelled_out(self) -> None:
+        # 「窗口里的进度行带的是别的运行的身份」与「窗口截断」对操作人的
+        # 下一步不同：后者会让他去调大窗口，而问题在别处。
+        self.assertIn('"no_own_run_stamp"', self.src)
 
     def test_the_caption_does_not_claim_overall_progress(self) -> None:
         # 明确否认「整轮进度」这层含义；也不得渲染成进度条。

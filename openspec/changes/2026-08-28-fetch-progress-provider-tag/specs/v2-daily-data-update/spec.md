@@ -40,3 +40,37 @@ while stamping produces a line that reads as another provider's.
 - **GIVEN** a fetch invoked without a provider identity
 - **WHEN** a progress line is written
 - **THEN** the line carries no provider field at all
+
+### Requirement: Each run SHALL mint one identity and record it at both ends
+
+The orchestrator SHALL mint a one-time identity for each run and SHALL write
+the SAME value into the run status artifact and into the fetch stage's
+arguments, so the fetcher can stamp it on every progress line.
+
+Writing it at only one end, or minting it twice, leaves the reader with two
+values that never compare equal — and that failure is indistinguishable from
+"attribution is simply unknown", so it would not look like a defect.
+
+Two runs SHALL receive different identities. Reuse would let a line left in the
+log by the previous run be collected as this run's progress.
+
+The identity SHALL be omitted entirely rather than passed as an empty value
+when there is none, so a reader can distinguish "this run reported no identity"
+from "it reported an empty one".
+
+The stamp SHALL be placed before the provider stamp on the line. The provider
+stamp is a filesystem path and may contain spaces, so it must run to the end of
+the line; putting the run identity after it lets a directory name containing
+the run marker surrender part of itself as an identity.
+
+#### Scenario: the artifact and the fetch arguments carry one identity
+
+- **GIVEN** a full orchestrated run
+- **WHEN** the status artifact and the fetch stage's arguments are compared
+- **THEN** both carry the same run identity
+
+#### Scenario: a hand-run fetch stamps no identity
+
+- **GIVEN** a fetch invoked without a run identity
+- **WHEN** it writes a progress line
+- **THEN** the line carries no run marker at all

@@ -98,6 +98,12 @@ class UpdateRunStatus:
     #: （#470 第二十四轮:随记录本体落盘的身份没有观察窗,覆盖生存期内
     #: 任意时刻写出的记录）。调度器/旧产出器的记录没有这个键 → ``None``。
     launch_nonce: str | None = None
+    #: 本次运行的一次性身份,同时盖在**每一条** fetch 进度行上（#474）。
+    #: 进度归属的对照物就是它:行自带运行身份、对照物在工件里,两端都
+    #: 不经过日志尾部窗口——而运行边界必须经过,所以在真实生产上读不到
+    #: （一次多年 fetch 每 200 支票一行,边界开跑不久就被挤出窗口)。
+    #: 旧产出器的记录没有这个键 → ``None``,读侧退回边界归属。
+    run_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -305,6 +311,21 @@ def read_update_status(path: Path) -> UpdateRunStatus:
                       f"小写 hex;显式 null/畸形不等于缺省）",
             )
         nonce_value = nonce_raw
+    # run_id 同 pid / launch_nonce 纪律:可选键,在场就必须是产出器会写
+    # 的形状（32 位小写 hex——编排器的 uuid4().hex）。畸形值当损坏,不
+    # 静默当缺省:读成「没有身份」会让归属悄悄退回边界法,而边界法在
+    # 生产上答不出来——操作人看到「归属未知」,而不是「工件坏了」。
+    run_id_value: str | None = None
+    if "run_id" in payload:
+        run_raw = payload["run_id"]
+        if not (isinstance(run_raw, str) and len(run_raw) == 32
+                and all(c in "0123456789abcdef" for c in run_raw)):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"run_id 非法（got {run_raw!r}，期望 32 位小写 "
+                      f"hex;显式 null/畸形不等于缺省）",
+            )
+        run_id_value = run_raw
     exit_code = payload.get("exit_code")
     if state == "finished" and (
         isinstance(exit_code, bool) or not isinstance(exit_code, int)
@@ -368,4 +389,5 @@ def read_update_status(path: Path) -> UpdateRunStatus:
         detail=str(payload.get("detail") or ""),
         pid=pid_value,
         launch_nonce=nonce_value,
+        run_id=run_id_value,
     )

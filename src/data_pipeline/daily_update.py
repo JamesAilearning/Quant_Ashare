@@ -798,6 +798,7 @@ class DailyUpdatePlan:
 
 def build_plan(
     config: DailyUpdateConfig, *, run_date: date | None = None,
+    run_id: str = "",
 ) -> DailyUpdatePlan:
     """Assemble every stage's argv up front (pure; also what --dry-run prints).
 
@@ -824,6 +825,18 @@ def build_plan(
         # 「别人的行」,而那看起来只是「归属报不出来」,不像个 bug。
         "--provider-tag", _norm(config.provider_dir),
     ]
+    if run_id:
+        # 本次运行的一次性身份,盖在**每一条**进度行上。
+        #
+        # provider 标记回答「谁写的这行」,回答不了「哪一次运行写的」——那还
+        # 得靠日志里那条运行边界,而边界在真实生产里**读不到**:读侧只取日志
+        # 尾部 4000 字符,而一次 fetch 每 200 支票写一行、每个 endpoint×年
+        # 一整段,边界在运行开始不久就被挤出窗口(codex P2 on #474)。于是这
+        # 条本该修好归属的改动,在它唯一要服务的那个工作负载上不生效。
+        #
+        # run_id 让归属**不依赖窗口**:行自己带着运行身份,而对照物在状态
+        # 工件里(随记录本体落盘,不在日志尾部)。两端都在窗口之外。
+        fetch += ["--run-id", run_id]
     if config.rate_limit_sleep_ms is not None:
         fetch += ["--rate-limit-sleep-ms", str(config.rate_limit_sleep_ms)]
     bins = [
@@ -973,6 +986,11 @@ def run_daily_update(
     # the artifact and the fetch plan can never name different days.
     run_date = config.now if config.now is not None else date.today()
     started_at = datetime.now(tz=_CN_TZ)
+    # 本次运行的一次性身份(uuid4().hex,与 launch_nonce 同形状同纪律)。
+    # 它同时写进**状态工件**和**每一条 fetch 进度行**,让读侧的归属判定
+    # 完全不经过日志窗口:对照物在工件里,证据在行里,两端都不会被尾部
+    # 截断挤掉(codex P2 on #474——边界法在真实生产上读不到边界)。
+    run_id = uuid4().hex
     base = {
         "schema_version": STATUS_SCHEMA_VERSION,
         # The record's IDENTITY (codex #434 r18): two independently scheduled
@@ -988,6 +1006,9 @@ def run_daily_update(
         # 句柄的 pid」;时间窗只防 pid 复用。没有身份,一个恰好在窗内起跑
         # 的调度器接替运行会被误收养成「已取消」——把活着的运行标成死的。
         "pid": os.getpid(),
+        # 见上:进度行归属的对照物。旧产出器的记录没有这个键 → 读侧退回
+        # 边界法(标记落地之前的行为),不是错误。
+        "run_id": run_id,
     }
     # launch nonce——UI 启动器为**这一次** launch 生成的一次性身份,经环境
     # 变量传入,随本运行的每条状态记录落盘（#470 第二十四轮:观察式收养候
@@ -1007,7 +1028,7 @@ def run_daily_update(
     _record_status(status_path, {**base, "state": "running"})
     try:
         exit_code, failed_stage, detail = _execute_daily_update(
-            config, runners, run_date=run_date)
+            config, runners, run_date=run_date, run_id=run_id)
     except BaseException as exc:
         # 阶段**抛异常**（而非返回退出码）时，下面的终态构造根本走不到——
         # status 卡在 running、台账恰好漏掉最需要记的那次失败。这条路在
@@ -1073,6 +1094,7 @@ def _execute_daily_update(
     config: DailyUpdateConfig,
     runners: Mapping[str, Runner] | None = None,
     run_date: date | None = None,
+    run_id: str = "",
 ) -> tuple[int, str | None, str]:
     """The orchestration body; returns ``(exit_code, failed_stage, detail)``.
 
@@ -1100,7 +1122,7 @@ def _execute_daily_update(
     # operator-visible record would name a different day than the run used.
     if run_date is None:
         run_date = config.now if config.now is not None else date.today()
-    plan = build_plan(config, run_date=run_date)
+    plan = build_plan(config, run_date=run_date, run_id=run_id)
 
     if config.dry_run:
         _logger.info("[dry-run] daily update plan — nothing will be executed:")

@@ -67,10 +67,16 @@ from pathlib import Path
 #:
 #: 标记锚**行尾**(``$``):不锚的话,一个恰好含 ``provider=`` 的路径片段
 #: (endpoint 名、目录名)会被当成标记读走。写侧只把它放在行尾。
+#:
+#: ``run=`` 排在 ``provider=`` **之前**,这是承重的:provider 是路径,可以
+#: 含空格,所以它必须占到行尾;把 run 放在它后面,``.*?`` 与可选组的回溯
+#: 会让一个含 `` run=`` 的目录名把自己的一截交出去当运行身份。run 的
+#: 字符集(非空白,写侧是 uuid4 的 hex)不含空格,放前面就没有这个歧义。
 _PROGRESS_RE = re.compile(
     r"(?P<endpoint>\S+)\s+year=(?P<year>\d+)\s+progress:\s*"
     r"(?P<done>\d+)\s*/\s*(?P<total>\d+)\s+tickers\s*"
     r"\(written=(?P<written>\d+),\s*skipped=(?P<skipped>\d+)\)"
+    r"(?: run=(?P<run>\S+))?"
     r"(?: provider=(?P<provider>.*?))?\r?$"
 )
 
@@ -126,6 +132,9 @@ class FetchProgress:
     #: 空串是**「这条行没报身份」**,绝不是「身份为空」——不带标记的行不属于
     #: 任何人,归属退回边界判据。
     provider: str = ""
+    #: 写侧盖在这条行上的**运行**身份,或空串（老日志 / 手工跑的 fetch）。
+    #: 与 ``provider`` 同纪律:空串是「这条行没报运行身份」,不是「身份为空」。
+    run: str = ""
 
     def describe(self) -> str:
         """一行如实描述,时刻与范围都写在里面。"""
@@ -137,13 +146,16 @@ class FetchProgress:
 
 
 def last_fetch_progress(
-    log_text: str, *, provider_key: str = "",
+    log_text: str, *, provider_key: str = "", run_id: str = "",
 ) -> FetchProgress | None:
     """日志文本里**最后**一条进度行;没有则 ``None``。
 
     取最后一条而不是第一条:日志是追加的,前面还躺着历次运行的进度行。
     ``total`` 为 0 的行直接丢弃——那种行说不出任何进度,渲染出来只会是
     ``0/0``。
+
+    ``run_id`` 非空时**只取带该运行身份的行**:这是最强的过滤——一条带
+    我们运行 id 的行,只可能是这一次运行写的,不需要任何位置证据。
 
     ``provider_key`` 非空时**只取带该标记的行**:兄弟 provider 的行交错在
     同一份日志里,不过滤的话「最后一条」很可能是别人的。不带标记的行在这
@@ -161,6 +173,14 @@ def last_fetch_progress(
         match = _PROGRESS_RE.search(line)
         if match is None:
             continue
+        if run_id:
+            # 运行身份是**逐字节相等**,没有宽容化的余地:对照物是同一次
+            # 运行写进状态工件的那一个 uuid4().hex。差一个字节 = 别人的
+            # 行,而那只会退化成「归属报不出来」;反过来是说错话。
+            # 畸形的戳在这里自然落选——它不匹配,不是「日志损坏」
+            # (那会让一条脏行毁掉整个页面的归属)。
+            if match.group("run") != run_id:
+                continue
         if provider_key:
             stamped = match.group("provider")
             if stamped is None or not _provider_matches(stamped, provider_key):
@@ -181,6 +201,7 @@ def last_fetch_progress(
         skipped=int(hit.group("skipped")),
         at=clock.group("clock") if clock else "",
         provider=hit.group("provider") or "",
+        run=hit.group("run") or "",
     )
 
 
@@ -227,6 +248,13 @@ class AttributedProgress:
     #: ``corrupt_boundary``(有边界但戳验不过——日志损坏,不硬解释)。
     #: 归属确定时为空串。
     unattributed_reason: str = ""
+    #: 归属**是怎么来的**——``run_stamp``(行自带本次运行身份,不经过日志
+    #: 窗口)/``boundary``(靠日志里那条运行边界定位)/空串(未归属)。
+    #:
+    #: 页面必须按这个字段分派,而不是按 ``boundary_stamp`` 是否等于工件
+    #: 里的起跑时刻:run_stamp 路径**根本没有**边界戳,拿它去比就会把一
+    #: 次归属确定的运行说成「边界与工件对不上」。
+    attribution: str = ""
 
 
 def _own_boundary(
@@ -345,8 +373,25 @@ def _current_segment(
     return (last.end(), last.group("started")), ""
 
 
+def _has_foreign_run_stamp(log_text: str, run_id: str) -> bool:
+    """窗口里有带运行身份、但身份不是我们的进度行。
+
+    这条判据只用来**换一句更准的话**,不用来下归属结论:它证明的是
+    「fetch 侧已经在报运行身份了,而报的不是我们」。
+    """
+    for line in log_text.splitlines():
+        match = _PROGRESS_RE.search(line)
+        if match is None:
+            continue
+        stamped = match.group("run")
+        if stamped and stamped != run_id:
+            return True
+    return False
+
+
 def last_fetch_progress_for_run(
     log_text: str, *, provider_dir: Path, window_complete: bool,
+    run_id: str = "",
 ) -> AttributedProgress:
     """取最后一条 fetch 进度,并说清它属不属于最近一次运行。
 
@@ -363,6 +408,27 @@ def last_fetch_progress_for_run(
     """
     provider_key = os.path.normcase(str(provider_dir.resolve()))
 
+    # ── run 戳路径:归属的**主**路径,因为它是唯一不经过日志窗口的。
+    #
+    # 下面两条路径都要在窗口里找到一条**边界**。而生产上找不到:读侧只
+    # 取日志尾部 4000 字符(`update_runner.log_window`),一次多年 fetch
+    # 每 200 支票写一行、每个 endpoint×年一整段——边界在运行开始不久
+    # 就被挤出窗口。也就是说边界法在它唯一要服务的那个工作负载上不生
+    # 效(codex P2 on #474,与我们自己的量化结论一致)。
+    #
+    # run 戳把两端都挪到窗口之外:证据是**行自己带的**运行身份,对照物
+    # 是同一次运行写进**状态工件**的那一个。窗口截不截断都不影响。
+    #
+    # 上一次运行留在窗口里的行不会被误收:它们带的是上一次的 run_id。
+    # 这正是 provider 标记做不到的——provider 说「谁写的」,说不出
+    # 「哪一次」,所以标记路径仍然需要边界来划分运行。
+    if run_id:
+        stamped = last_fetch_progress(log_text, run_id=run_id)
+        if stamped is not None:
+            return AttributedProgress(
+                progress=stamped, attributed=True,
+                attribution="run_stamp")
+
     # 标记路径优先。窗口里有**我们自己**盖过标记的进度行,就说明这份日志的
     # fetch 侧已经在报身份了——归属可以只靠「我们最后一条边界 + 按标记过滤」,
     # 不需要窗口完整,也不怕别人的边界穿插。这是本路径存在的全部理由:真实
@@ -377,7 +443,8 @@ def last_fetch_progress_for_run(
         tagged = last_fetch_progress(log_text[end:], provider_key=provider_key)
         if tagged is not None:
             return AttributedProgress(
-                progress=tagged, attributed=True, boundary_stamp=started)
+                progress=tagged, attributed=True, boundary_stamp=started,
+                attribution="boundary")
 
     if not window_complete:
         boundary, reason = None, "window_truncated"
@@ -388,6 +455,11 @@ def last_fetch_progress_for_run(
         # 报成「窗口截断」——那会让操作人去调大读取窗口,而问题在别处。
         if tagged_reason == "corrupt_boundary":
             reason = tagged_reason
+        elif run_id and _has_foreign_run_stamp(log_text, run_id):
+            # 窗口里有带运行身份的行,但**没有一条是我们的**。这不是
+            # 「窗口截断」——截断会让人去调大窗口,而问题在别处:本次运行
+            # 的 fetch 还没写出第一条进度行(或它压根没跑到 fetch)。
+            reason = "no_own_run_stamp"
         return AttributedProgress(
             progress=last_fetch_progress(log_text), attributed=False,
             unattributed_reason=reason)
@@ -396,4 +468,5 @@ def last_fetch_progress_for_run(
         progress=last_fetch_progress(log_text[end:]),
         attributed=True,
         boundary_stamp=started,
+        attribution="boundary",
     )
