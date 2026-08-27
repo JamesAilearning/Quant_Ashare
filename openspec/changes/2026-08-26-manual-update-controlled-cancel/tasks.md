@@ -577,6 +577,28 @@
       实展示。confirm 当场路径保留 legacy 合取（界在死亡确认当刻采样,
       无回收窗）。守卫=闸+fail-closed 双钉+assertNotIn 戳判据残留
 
+## codex 第四十二轮（2×P2 + 同类扫全：legacy 归属整体 fail-closed）
+
+- [x] P2 迟到 running 收养仍留可重放的 legacy 链（戳/候选）——r41 的
+      结论（legacy 无不可重放身份）同样适用。修=迟到收养 nonce-only
+- [x] P2 graceful 终态核实的 legacy 分支同样可重放:本收尾在死亡确认后
+      还写标记、查文件系统,读终录在其后——pid 在该间隙可回收,冻结时钟
+      下接替者的 finished 满足 legacy 的 pid+窗。修=核实 nonce-only
+      （`graceful and launch_nonce is not None`）
+- [x] **同类扫全（守卫覆盖全部入口纪律,codex 未提但同一间隙）**:
+      confirm 当场路径的 running 收养 legacy 回退
+      （evidence_binds_to_killed_run）走的正是 codex 第二条指出的同一
+      间隙（cancel_update 返回后才重读）——一并 fail-closed。至此四条
+      归属入口（confirm 收养/迟到收养/graceful 核实/迟到终录）**全部
+      nonce-only**,页面零 legacy 回退
+- [x] **候选链死代码清理**:observe_own_running_record 函数、
+      UpdateCancel.own_running_stamp 字段、两处边界捕获、页面三处观察
+      点与 watcher 候选刷新支路——nonce-only 后全无消费者（watcher 保
+      留死亡检测）。相关两个测试整体删除,其余锚随语义改判
+- [x] **代价如实记档**:热替换部署时在飞的旧（无 nonce）子进程,取消后
+      不再获得证据标注,孤儿 running 等六小时陈旧线——与「UI 重启失去
+      句柄」同类的如实降级。若用户/codex 认为过度,可回退到 r40 状态
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

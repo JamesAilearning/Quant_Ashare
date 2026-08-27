@@ -263,16 +263,22 @@ already finished; absent both → classified as a signalled confirmed death,
 whose epilogue (artifact reread, orphan adoption or the honest no-orphan
 presentation) treats even a recordless natural crash correctly.
 
-Late (settlement-time) terminal attribution SHALL be nonce-only: for a
-nonce-less pending cancellation there is NO non-replayable identity — the
-pid is recyclable and every timestamp quantity (windows, exact stamps,
-lifetime-observed candidates) can be replayed by a same-pid successor
-under a frozen or coarse clock — so the late path SHALL fail closed
-instead of attributing a terminal record to the cancelled run: the orphan
-flows through the adoption chain or the staleness threshold, and the page
-presents the artifact as-is without an attribution claim. (The immediate
-confirmation path keeps its legacy conjunction: its bounds are sampled at
-the death-confirmation instant, leaving no reuse window.)
+EVERY attribution of an artifact record to the cancelled run — running
+adoption and terminal verification alike, on both the immediate and the
+late path — SHALL be NONCE-ONLY. For a nonce-less run there is NO
+non-replayable identity: the pid is recyclable and every timestamp
+quantity (windows, exact stamps, lifetime-observed candidates) can be
+replayed by a same-pid successor under a frozen or coarse clock; and every
+read that could attribute happens AFTER work that leaves a reuse interval
+(the cancel boundary writes markers and inspects the filesystem after
+confirming death; the settlement read follows a watcher tick). Legacy
+attribution SHALL therefore fail closed: the orphaned record is left to
+the staleness threshold, the page presents the artifact as-is with no
+attribution claim, and the run's own status artifact and ledger remain its
+only account. This costs a nonce-less run — only reachable for a child
+launched by a pre-upgrade UI still in flight across a hot upgrade — its
+cancellation-evidence labelling, an honest degradation of the same kind as
+losing the handle on a UI restart.
 
 Every render-frame revalidation of a previously verified record (the
 graceful terminal claim, the terminal-after-kill claim) SHALL distinguish

@@ -210,7 +210,7 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         for needle, why in (
             ("_CANCELLED_EVIDENCE_KEY", "持久证据键"),
-            ("cancelled_run_matches(", "覆盖走精确相等 helper"),
+            ("evidence_covers_record(", "覆盖走共享身份谓词"),
             ("_cancel_evidence.get(\"started_at\")", "证据字段取用"),
             ("_running_fresh = False", "启动闸解锁"),
             ("已被本会话", "running 分支的已取消措辞"),
@@ -507,31 +507,25 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 锚取补结算块自己的首行注释（confirm 分支里「迟到死亡补结算的
         # 时间上界」是另一处提及，不能用裸词切）。
         settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
-        # 断言意图随第十二轮**再次刻意改判**：第八轮请求时刻上界拒真孤
-        # 儿（子进程可在请求后才写记录）;第十一轮死亡观测上界收回收 pid
-        # 的接替者（观测可晚于真实死亡最长一个轮询周期）。终态取法=生存
-        # 期内观察到的**精确戳候选**（活→读→活,pid 在两次 poll 间被子
-        # 进程持续持有不可能回收）,补结算只收养精确相等那条 + 直接 pid
-        # 相等;无候选 fail-closed。
-        self.assertIn("cancel_pending_own_started_at", settle,
-                      "补结算没用生存期内观察的身份候选")
-        # 锚串随第二十四轮更新（收养主判据升级为 launch nonce,精确候选
-        # 降为 legacy 无 nonce 记录的回退——断言意图:候选链仍在且仍按
-        # 精确相等）。
-        self.assertIn("cancelled_run_matches(", settle,
-                      "候选没按精确相等收养")
-        self.assertIn("_own_stamp)", settle, "候选回退链缺失")
+        # 迟到收养身份的四代谱系,终态=**nonce-only fail-closed**（第四
+        # 十二轮）:第八轮请求时刻上界拒真孤儿 → 第十一轮死亡观测上界收
+        # 回收 pid 的接替者 → 第十二/十七/二十三轮生存期观察候选 → 第四
+        # 十一/四十二轮 codex 点破:legacy 路径里 pid 可回收、一切时间量
+        # （窗/精确戳/候选）在冻结时钟下均可被同 pid 接替**重放**,不存
+        # 在不可重放身份。故迟到收养只认 launch nonce,无 nonce 不收养。
         self.assertIn("record_bears_launch_nonce(", settle,
                       "补结算收养缺 nonce 主判据")
-        self.assertIn("_late_status.launch_nonce is None", settle,
-                      "候选回退没限定在无 nonce 的 legacy 记录")
         self.assertIn("_late_status.pid == _live_proc.pid", settle,
                       "补结算收养缺直接 pid 相等")
+        self.assertNotIn("cancelled_run_matches(", settle,
+                         "迟到收养仍留可重放的戳回退（第四十二轮已 "
+                         "fail-closed）")
+        self.assertNotIn("_own_stamp", settle,
+                         "迟到收养仍留生存期候选回退（同上已 fail-closed）")
         self.assertNotIn("_pending_at,", settle,
                          "请求时刻仍被当绑定上界（第十一轮已改判）")
         self.assertNotIn("evidence_binds_to_killed_run(", settle,
-                         "补结算仍用时间窗绑定（第十二轮已改为生存期内"
-                         "候选——观测上界收回收 pid 的接替者）")
+                         "补结算仍用时间窗绑定（可重放,已 fail-closed）")
 
     def test_a_record_written_after_the_request_still_binds(self) -> None:
         # 窗语义回归（第十一轮引入;第十二轮后该窗只服务**当场**路径,
@@ -551,69 +545,6 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             record, launched, request,
             record_pid=4242, killed_pid=4242),
             "（对照）请求时刻上界确实会拒掉这条真孤儿——第八轮错法的实证")
-
-    def test_own_record_is_observed_only_within_the_lifetime(self) -> None:
-        # 迟到收养的身份候选只能在进程**可证活着**时取（codex 第十二轮
-        # P2）：活→读→活,pid 在两次 poll 间被子进程持续持有不可能回收;
-        # 死后观测到的记录可能是回收 pid 的接替者。真值：活+记录是它的→
-        # 返回戳;进程已死→None;pid 不同→None;别的 provider→None。
-        import json
-        import os as _os
-
-        from web.operator_ui.update_runner import observe_own_running_record
-        from web.operator_ui.update_status import status_path_for_provider
-        proc = _spawn(_SLEEPER)
-        try:
-            time.sleep(0.5)
-            with tempfile.TemporaryDirectory() as t:
-                provider = Path(t) / "prov"
-                provider.mkdir()
-                stamp = "2026-08-27T09:00:00+08:00"
-                record = {
-                    "schema_version": 1, "state": "running",
-                    "provider_dir": _os.path.normcase(
-                        str(provider.resolve())),
-                    "run_date": "2026-08-27", "started_at": stamp,
-                    "pid": proc.pid,
-                }
-                sp = status_path_for_provider(provider)
-                sp.write_text(json.dumps(record), encoding="utf-8")
-                self.assertEqual(
-                    stamp, observe_own_running_record(proc, provider),
-                    "活着且记录是它的——候选没取到")
-                # pid 不同（别的运行的记录）：不认。
-                sp.write_text(json.dumps({**record, "pid": proc.pid + 1}),
-                              encoding="utf-8")
-                self.assertIsNone(observe_own_running_record(proc, provider))
-                # 属别的 provider：不认。
-                sp.write_text(json.dumps({
-                    **record, "provider_dir": _os.path.normcase(
-                        str((Path(t) / "other").resolve()))}),
-                    encoding="utf-8")
-                self.assertIsNone(observe_own_running_record(proc, provider))
-                # 进程已死：即便记录严丝合缝也不认——死后无法证明 pid
-                # 没被回收。
-                sp.write_text(json.dumps(record), encoding="utf-8")
-                proc.kill()
-                proc.wait(timeout=30)
-                self.assertIsNone(observe_own_running_record(proc, provider))
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-        # 页面接线：取消前 + confirm 失败后 + watcher 片段,三处都在生存
-        # 期内取候选（第十七轮 P2:取消调用可耗满宽限窗,kill 恰在返回后
-        # 生效——只有确认后那一次会撞死进程,须有取消前观察兜底）。
-        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
-                ).read_text(encoding="utf-8")
-        self.assertEqual(3, page.count("observe_own_running_record("),
-                         "候选观察不是恰好三处（取消前/confirm 失败后/"
-                         "watcher）")
-        _before_at = page.index("_own_before = observe_own_running_record(")
-        _cancel_at = page.index("_outcome = cancel_update(")
-        self.assertLess(_before_at, _cancel_at,
-                        "取消前观察没在取消调用之前")
-        self.assertIn("or _own_before", page,
-                      "失败分支没用取消前观察兜底")
 
     def test_a_late_settlement_owes_the_full_cancel_epilogue(self) -> None:
         # 迟到死亡的收尾义务与当场确认死亡**完全同款**（codex 第九轮
@@ -732,21 +663,22 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                       "片段没盯未决句柄的死亡")
 
     def test_evidence_adoption_is_pid_bound_at_both_sites(self) -> None:
-        # 两处收养都必须带 pid 身份——漏一处,该处就退回纯时间/纯戳,第
-        # 九轮 P2c 的夺锁调度器场景原样复活。当场 confirm 分支走
-        # evidence_binds_to_killed_run（record_pid/killed_pid）;迟到补结
-        # 算第十二轮改为「生存期内候选精确戳 + 直接 pid 相等」（时间窗
-        # 上界已被证伪,见 test_a_late_death_...）。
+        # 两处收养（confirm 当场 / 迟到补结算）都必须带 pid 身份——漏一
+        # 处,第九轮 P2c 的夺锁调度器场景原样复活。第四十二轮起两处**都
+        # 是 nonce+pid**:legacy 的时间窗/戳/候选链全部可重放,已 fail-
+        # closed 删除（见 test_a_late_death_... 与本轮 legacy 谱系注）。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertEqual(
-            1, page.count("record_pid="),
-            "当场收养的 pid 身份参数不是恰好一处（confirm）")
-        self.assertIn("record_pid=_fresh_status.pid", page)
-        self.assertEqual(1, page.count("killed_pid=_live_proc.pid"),
-                         "当场收养的句柄侧 pid 缺失")
+        self.assertIn("_fresh_status.pid", page,
+                      "confirm 收养缺 pid 身份")
         self.assertIn("_late_status.pid == _live_proc.pid", page,
                       "补结算收养缺 pid 身份")
+        self.assertEqual(
+            2, page.count("record_bears_launch_nonce("),
+            "两处收养的 nonce 主判据不是恰好两处")
+        self.assertNotIn("evidence_binds_to_killed_run(", page,
+                         "confirm 收养仍留可重放的时间窗 legacy 回退"
+                         "（第四十二轮已 fail-closed）")
 
     def test_late_settlement_needs_an_actually_issued_kill(self) -> None:
         # cancel_failed 的两种失败对迟到死亡语义相反（codex 第十轮 P2）：
@@ -1328,6 +1260,14 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn('launch_nonce=(_live_run or {}).get("launch_nonce")',
                       page, "graceful 终态核实没拿到会话 nonce")
+        # graceful 终态核实 **nonce-only**（第四十二轮 P2）：本收尾在死
+        # 亡确认后还写标记、查文件系统,读终录发生在这些工作之后——pid
+        # 在该间隙可被回收,冻结时钟下接替者的 finished 能同时满足
+        # legacy 的 pid+窗。无 nonce 会话 fail-closed 不核实。
+        src = (_ROOT / "web" / "operator_ui" / "update_runner.py"
+               ).read_text(encoding="utf-8")
+        self.assertIn("graceful and launch_nonce is not None", src,
+                      "graceful 终态核实没对 legacy fail-closed")
         # 页面接线：核实版声称以 terminal_recorded 为条件;未核实的
         # graceful 与硬杀同走孤儿收养（收养条件不再看 graceful）。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
@@ -1583,14 +1523,15 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                     provider, cancelled_started_at=live_stamp,
                     cancelled_launch_nonce=nonce),
                 "同戳异 nonce 的接替被启动闸放行")
-        # 收养处 legacy 回退收紧到「双方都无 nonce」:本会话有 kill
-        # nonce 时,子进程必然写 nonce——无 nonce 记录不可能是它。
+        # 收养处的 legacy 回退第四十二轮**整体删除**（不再是「收紧到双
+        # 方都无 nonce」）:legacy 无不可重放身份,两处收养一律 nonce-
+        # only,页面不留任何戳/窗回退。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertIn("not _kill_nonce", page,
-                      "补结算 legacy 回退没被 kill nonce 关掉")
-        self.assertIn("not _kn", page,
-                      "confirm legacy 回退没被 kill nonce 关掉")
+        self.assertNotIn("_late_status.launch_nonce is None", page,
+                         "补结算仍留 legacy 收养回退")
+        self.assertNotIn("_fresh_status.launch_nonce is None", page,
+                         "confirm 仍留 legacy 收养回退")
 
     def test_nonce_evidence_survives_an_inconclusive_settlement_read(
             self) -> None:
@@ -1683,53 +1624,6 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn("evidence_retires(", page,
                       "页面退役没走确凿接替判定")
-
-    def test_the_boundary_captures_a_candidate_while_provably_alive(
-            self) -> None:
-        # 记录写在页面取消前观察之后、进程又死在 cancel_update 返回与页
-        # 面事后观察之间——两端观察双双落空（codex 第二十三轮 P2）。
-        # 边界内的 TimeoutExpired/复检仍活是最后一个可证生存期窗口,在
-        # 那里补一次观察并随 UpdateCancel 带回。
-        import json
-        import os as _os
-
-        from web.operator_ui.update_status import status_path_for_provider
-
-        class _Survivor:
-            pid = 999998
-            returncode = None
-            def poll(self):
-                return None
-            def kill(self):
-                pass
-            def wait(self, timeout=None):
-                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout)
-        with tempfile.TemporaryDirectory() as t:
-            provider = Path(t) / "prov"
-            provider.mkdir()
-            stamp = "2026-08-27T09:00:00+08:00"
-            status_path_for_provider(provider).write_text(json.dumps({
-                "schema_version": 1, "state": "running",
-                "provider_dir": _os.path.normcase(str(provider.resolve())),
-                "run_date": "2026-08-27", "started_at": stamp,
-                "pid": _Survivor.pid,
-            }), encoding="utf-8")
-            got = cancel_update(
-                _Survivor(), Path(t) / "log.log",  # type: ignore[arg-type]
-                provider_dir=provider, grace_seconds=0.5)
-            self.assertEqual("cancel_failed", got.kind)
-            self.assertEqual(stamp, got.own_running_stamp,
-                             "超时失败路径没在边界内捕获候选")
-            # 无 provider 时不观察（None）。
-            got2 = cancel_update(
-                _Survivor(), Path(t) / "log.log",  # type: ignore[arg-type]
-                grace_seconds=0.5)
-            self.assertIsNone(got2.own_running_stamp)
-        # 页面接线：三级兜底链含边界捕获。
-        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
-                ).read_text(encoding="utf-8")
-        self.assertIn("or _outcome.own_running_stamp", page,
-                      "候选兜底链缺边界捕获")
 
     def test_the_unlocked_claim_is_conditioned_on_live_evidence(self) -> None:
         # 证据落盘后、rerun 渲染前,调度器接替写下新 running——顶部逻辑

@@ -330,12 +330,6 @@ class UpdateCancel:
     #: 用专属措辞如实说「无法确定是否实际送达」,不在「取消未执行」与
     #: 「强制终止已执行」两个都可能撒谎的标签里二选一。
     terminal_race: bool = False
-    #: cancel_failed 时,在**边界内、进程确证还活着**的时刻观察到的它自己
-    #: 的 running 记录戳（codex 第二十三轮 P2:子进程可在页面取消前观察
-    #: 之后才写出记录、又在本函数返回与页面事后观察之间死掉——两端观察
-    #: 双双落空,真孤儿无候选被拒收养。宽限窗超时/复检仍活的失败路径是
-    #: 最后一个可证生存期窗口,在这里补一次观察）。None=没观察到。
-    own_running_stamp: str | None = None
 
 
 #: 礼貌信号后的等待窗。POSIX 下 SIGINT → KeyboardInterrupt → 编排器的
@@ -490,35 +484,6 @@ def terminal_status_confirms_the_run(
     if any(t.tzinfo is None for t in (started, finished, launched, exited)):
         return False
     return launched <= started <= finished <= exited
-
-
-def observe_own_running_record(
-    process: subprocess.Popen[bytes], provider_dir: Path,
-) -> str | None:
-    """在进程**可证活着**的时刻,观察它自己写下的 running 记录戳。
-
-    迟到收养需要一个**不可能越过被杀进程真实生存期**的身份（codex 第十
-    二轮 P2:观测时刻上界留了「真实死亡→观测」最长一个轮询周期的空窗,
-    OS 可在其中把 pid 回收给接替的调度器运行——戳和 pid 双双落窗,活运
-    行被标成已取消）。取法=活→读→活 三步:两次 ``poll()`` 都在世,期间
-    这个 pid 被该子进程**持续持有**,不可能被回收——读到的「pid==句柄」
-    记录必然是它自己写的。返回该记录的 ``started_at`` 作精确身份候选;
-    观察不到（进程已死/记录不是它的/属别的 provider/推导不出状态路径）
-    返回 None——收养侧对 None fail-closed:宁可孤儿等六小时陈旧线,不
-    收养证不出身份的记录。
-    """
-    if process.poll() is not None:
-        return None
-    try:
-        status = read_update_status(status_path_for_provider(provider_dir))
-    except ValueError:
-        return None
-    if (status.kind == "running"
-            and record_matches_provider(status, provider_dir)
-            and status.pid == process.pid
-            and process.poll() is None):
-        return status.started_at or None
-    return None
 
 
 def record_bears_launch_nonce(
@@ -717,12 +682,7 @@ def cancel_update(
                 return UpdateCancel(
                     kind="cancel_failed", error=f"终止进程失败:{exc}",
                     markers_written=markers_written,
-                    kill_issued=signal_issued,
-                    # 进程确证还活着——趁生存期在边界内补一次候选观察
-                    # （第二十三轮 P2）。
-                    own_running_stamp=(
-                        observe_own_running_record(process, provider_dir)
-                        if provider_dir is not None else None))
+                    kill_issued=signal_issued)
         else:
             # kill() **正常返回不是送达证据**（codex 第二十轮 P2）：
             # CPython 的 Popen.kill()→send_signal() 内部先 poll,进程恰在
@@ -757,10 +717,7 @@ def cancel_update(
                         kind="cancel_failed",
                         error="进程在宽限窗内未退出;请用任务管理器核查后"
                               "重试",
-                        markers_written=markers_written, kill_issued=True,
-                        own_running_stamp=(
-                            observe_own_running_record(process, provider_dir)
-                            if provider_dir is not None else None))
+                        markers_written=markers_written, kill_issued=True)
             elif not signal_issued and pre_kill_terminal:
                 # 「终录先在 + kill 静默返回 + 死亡」——**送达不可判定**
                 # （第三十五/三十六轮）:杀前快照只证明记录时序,不证明送
@@ -886,10 +843,10 @@ def _confirmed_death_outcome(
     接替者框进窗）,是当场收养的时间上界;迟到路径 = 补结算入口的观测
     时刻,**仅作呈报**,不当收养界——观测可晚于真实死亡最长一个轮询周
     期,该空窗内 pid 可被回收给接替运行（codex 第十二轮 P2）。迟到收养
-    的身份是 ``observe_own_running_record`` 在进程可证活着时观察到的
-    精确戳候选（第八轮的请求时刻上界、第十一轮的观测时刻上界先后被证
-    伪:前者拒真孤儿,后者收回收 pid 的接替者——生存期内观察是唯一
-    两头都站得住的取法）。
+    的身份是 **launch nonce**（第二十四轮起）:第八轮的请求时刻上界、
+    第十一轮的观测时刻上界、第十二/十七/二十三轮的生存期观察候选先后
+    被证伪——legacy 路径里 pid 可回收、一切时间量可重放（第四十一/四十
+    二轮）,故迟到路径 nonce-only,无 nonce 即不收养。
 
     ``launched_at``:本会话 spawn 前采样的下界,供 graceful 终态核实的
     时间窗用;调用方没有它（None）时终态核实 fail-closed。
@@ -945,13 +902,18 @@ def _confirmed_death_outcome(
                 "restores it") and markers_written
     # graceful 的终态声称要**核实**不要推断（codex 第十轮 P2）:进程死了,
     # 它的记录不会再变,此刻读是安全的。硬杀恒 False（不读——被强杀的进程
-    # 写没写终态由页面的重读收养链自己回答）。身份+时间窗合取,见 helper
-    # （codex 第十一轮 P2:纯 pid 会把复用同 pid 的陈年 finished 工件核实
-    # 成本次终态）。
-    terminal_recorded = graceful and terminal_record_confirms_the_run(
-        provider_dir, process.pid,
-        launched_at=launched_at, exited_at=exited_at,
-        launch_nonce=launch_nonce)
+    # 写没写终态由页面的重读收养链自己回答）。核实 **nonce-only**（第四
+    # 十二轮 P2）:本收尾在死亡确认后还写标记、查文件系统,读终录发生在
+    # 这些工作之后——pid 在该间隙可被回收,冻结/粗粒度时钟下接替者的
+    # finished 能同时满足 legacy 的 pid+窗（r41 结论:legacy 无不可重放
+    # 身份）。无 nonce 会话 fail-closed 不核实,页面按孤儿收养链/工件
+    # 如实呈报。
+    terminal_recorded = (
+        graceful and launch_nonce is not None
+        and terminal_record_confirms_the_run(
+            provider_dir, process.pid,
+            launched_at=launched_at, exited_at=exited_at,
+            launch_nonce=launch_nonce))
     return UpdateCancel(
         kind="cancelled", graceful=graceful, returncode=process.returncode,
         swap_interrupted=swap_interrupted, markers_written=markers_written,

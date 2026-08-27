@@ -52,16 +52,13 @@ from web.operator_ui.update_runner import (
     build_update_argv,
     calendar_gate_warning,
     cancel_update,
-    cancelled_run_matches,
     default_log_path,
-    evidence_binds_to_killed_run,
     evidence_covers_record,
     evidence_retires,
     gate_today,
     launch_daily_update,
     log_tail,
     log_window,
-    observe_own_running_record,
     range_problem,
     record_bears_launch_nonce,
     settle_late_cancel,
@@ -272,9 +269,6 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
     # 唯一两头都站得住的身份:趁进程可证活着时（confirm 当刻 + watcher
     # 每拍）观察它自己写的记录戳,补结算只收养**精确相等**的那条;
     # 没有候选=证不出身份,fail-closed 不收养,孤儿等陈旧线。）
-    _own_stamp = (
-        _live_run.get("cancel_pending_own_started_at")
-        if isinstance(_live_run, dict) else None)
     _late_status = read_update_status(_status_path)
     # 身份主判据=launch nonce（codex 第二十四轮 P2:子进程把它写进每条
     # 记录——覆盖生存期内**任意时刻**写出的记录,含「最后一次观察之后、
@@ -284,19 +278,16 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
     _kill_nonce = (
         _live_run.get("launch_nonce")
         if isinstance(_live_run, dict) else None)
+    # 迟到收养 **nonce-only**（第四十二轮 P2,r41 结论的同一适用）:
+    # legacy 路径里 pid 可回收、一切时间量（窗/精确戳/生存期候选）在冻
+    # 结/粗粒度时钟下均可被同 pid 接替重放——不存在不可重放身份,一律
+    # fail-closed:无 nonce 会话的迟到孤儿不收养,等六小时陈旧线。
     _late_evidence = (
         _late_status.kind == "running"
         and record_matches_provider(_late_status, _provider_path)
         and _late_status.pid == _live_proc.pid
-        and (record_bears_launch_nonce(
-                _late_status.launch_nonce, _kill_nonce)
-             # legacy 回退只对「双方都无 nonce」的旧对开放（第二十六轮:
-             # 本会话有 kill nonce 时,我们的子进程必然写 nonce——无
-             # nonce 记录不可能是它,即便 pid+戳恰好都对上也不收养）。
-             or (not _kill_nonce
-                 and _late_status.launch_nonce is None
-                 and cancelled_run_matches(
-                     _late_status.started_at, _own_stamp))))
+        and record_bears_launch_nonce(
+            _late_status.launch_nonce, _kill_nonce))
     # 迟到死亡同样可能撞上「终态已写、台账未完」窗（codex 第三十轮 P2:
     # kill 成功、宽限窗超时,Windows 子进程仍可在真正终止前写完终态——
     # 检出只装在 confirm 当场分支的话,补结算帧照样落「写记录前被终止」
@@ -574,19 +565,13 @@ if _watching:
         # 进度都可能不再变化——没有这一支,主脚本里的补结算块要等操作人
         # 手动交互才会重新执行,死进程的取消控件与孤儿 running 会一直
         # 挂着。句柄一死就把整页拉起来,让补结算当场跑。
-        if _pending_cancel_proc is not None:
-            if _pending_cancel_proc.poll() is not None:
-                st.rerun(scope="app")
-                return
-            # 还活着:趁生存期**可证**时刷新它自己写的记录戳（codex 第
-            # 十二轮 P2——迟到收养的身份候选,pid 在两次 poll 之间被子
-            # 进程持续持有,不可能被回收;死后观测到的任何记录都可能是
-            # 回收 pid 的接替者,不能再当身份）。fragment 每次整页渲染
-            # 也执行一遍,交互驱动的刷新一并覆盖。
-            _own = observe_own_running_record(
-                _pending_cancel_proc, _provider_path)
-            if _own and isinstance(_session_live, dict):
-                _session_live["cancel_pending_own_started_at"] = _own
+        # 未决取消的句柄一死就把整页拉起来,让补结算当场跑。生存期候
+        # 选观察（r12/17/23）已随第四十二轮的 nonce-only 收养删除——
+        # legacy 路径无不可重放身份,候选无消费者。
+        if (_pending_cancel_proc is not None
+                and _pending_cancel_proc.poll() is not None):
+            st.rerun(scope="app")
+            return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再
         # 执行,所以主脚本里算出的窗口判断在片段注册之后永远不会被重新求值。
         # 子进程若在写出 running 记录前就死掉(例如撞单飞锁秒退 exit 17),
@@ -781,14 +766,6 @@ if _live_proc is not None:
                 use_container_width=True,
             ):
                 _lp = (_live_run or {}).get("log_path") or ""
-                # 生存期候选的**取消前**观察（codex 第十七轮 P2）：取消
-                # 调用可耗满宽限窗,kill 恰在它返回之后生效——确认后的那
-                # 次观察会撞上死进程返回 None,已写出 running 的真孤儿因
-                # 无候选被拒收养、锁页六小时。此刻进程还没被碰,观察必然
-                # 落在生存期内;记录戳在写出后不变,前后观察若都成功必然
-                # 同值。
-                _own_before = observe_own_running_record(
-                    _live_proc, _provider_path)
                 # 请求时刻——迟到死亡补结算的**触发标记 + 审计戳**
                 # （codex 第八轮 P2 引入）。不再当绑定上界用：子进程可在
                 # 请求之后才写出自己的 running 记录,请求时刻上界会把真孤
@@ -876,20 +853,6 @@ if _live_proc is not None:
                     # 了,审计链仍缺头两条——补结算不得从乐观缺省重来。
                     _live_run["cancel_pending_markers_written"] = (
                         _outcome.markers_written)
-                    # 趁进程此刻可能还活着,再观察一次它自己写的记录戳
-                    # （codex 第十二轮 P2:候选只能在生存期内取——此后
-                    # watcher 每 30 秒续刷）。三级兜底:事后观察 → 取消
-                    # 边界内的观察（第二十三轮 P2:记录写在取消前观察之
-                    # 后、进程又死在边界返回与此处之间时,两端双双落空,
-                    # 只有边界内 TimeoutExpired/复检仍活那一刻能看到）→
-                    # 取消前观察（第十七轮 P2）。多次观察若都成功必然
-                    # 同戳（记录戳写出后不变）。
-                    _own_now = (
-                        observe_own_running_record(_live_proc, _provider_path)
-                        or _outcome.own_running_stamp
-                        or _own_before)
-                    if _own_now:
-                        _live_run["cancel_pending_own_started_at"] = _own_now
                 elif (_outcome.kind == "cancel_failed"
                         and isinstance(_live_run, dict)
                         and _live_run.get("cancel_pending_at")):
@@ -922,25 +885,23 @@ if _live_proc is not None:
                     # 记录 pid == 被杀句柄 pid：launch 之后、子进程拿锁之
                     # 前起跑并夺锁的调度器,started_at 恰好落在窗内,光看
                     # 时间照样误收养（第九轮 P2c）。
-                    # nonce 主判据在此同款生效（第二十四轮）：带本次
-                    # launch nonce 的记录必然是被杀子进程自己写的,无需
-                    # 时间窗;legacy 记录（无 nonce）保留 pid+时间窗链。
+                    # 收养 **nonce-only**（第四十二轮 P2 同类扫全）：
+                    # 本重读发生在 cancel_update 返回之后——死亡确认后
+                    # 它还写标记、查文件系统,pid 在那段可被回收;冻结/
+                    # 粗粒度时钟下接替者的 running 能同时满足 legacy 的
+                    # pid+窗（codex 指出的正是同一间隙,其第二条只举了
+                    # graceful 终态核实）。legacy 无不可重放身份（第四十
+                    # 一轮结论）,故无 nonce 即不收养:孤儿走陈旧线,页面
+                    # 按工件如实展示。
                     _kn = (_live_run or {}).get("launch_nonce")
                     if (_fresh_status.kind == "running"
                             and record_matches_provider(
                                 _fresh_status, _provider_path)
-                            and (record_bears_launch_nonce(
-                                    _fresh_status.launch_nonce, _kn)
-                                 # legacy 回退只对双方都无 nonce 的旧对
-                                 # 开放（第二十六轮,同补结算）。
-                                 or (not _kn
-                                     and _fresh_status.launch_nonce is None
-                                     and evidence_binds_to_killed_run(
-                                         _fresh_status.started_at,
-                                         (_live_run or {}).get("launched_at"),
-                                         _killed_at,
-                                         record_pid=_fresh_status.pid,
-                                         killed_pid=_live_proc.pid)))):
+                            # pid 与 nonce 双钉,与补结算侧对称（纵深:
+                            # nonce 已足够,pid 比对零成本不放弃）。
+                            and _fresh_status.pid == _live_proc.pid
+                            and record_bears_launch_nonce(
+                                _fresh_status.launch_nonce, _kn)):
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                             "launch_nonce": _kn or "",
