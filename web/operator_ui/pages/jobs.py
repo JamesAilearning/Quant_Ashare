@@ -23,6 +23,10 @@ import pandas as pd
 import streamlit as st
 
 from web.operator_ui._param_guard import sanitize as _sanitize_qp
+from web.operator_ui.compare_basket_widget import (
+    render_add_to_basket_button,
+    render_basket_panel,
+)
 from web.operator_ui.components import (
     render_badge,
     render_empty_state,
@@ -42,9 +46,13 @@ from web.operator_ui.job_io import (
     jobs_eligible_for_cleanup,
     list_all_jobs,
     load_all_jobs,
+    load_all_jobs_read_only,
 )
 from web.operator_ui.job_manager import JobManager, JobManagerError
 from web.operator_ui.page_header import render_page_header
+from web.operator_ui.pages._research_run_comparison_helpers import (
+    selectable_catalog,
+)
 
 # ---------------------------------------------------------------------------
 # URL <-> session sync helpers
@@ -654,9 +662,9 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
         # button just calls it and reruns to reflect the new status.
         _stoppable = selected.status in ("running", "stop_failed")
         if _stoppable:
-            act_open, act_copy, act_stop = st.columns(3)
+            act_open, act_copy, act_compare, act_stop = st.columns(4)
         else:
-            act_open, act_copy = st.columns(2)
+            act_open, act_copy, act_compare = st.columns(3)
         with act_open:
             # 只有 pipeline / walk_forward 有详情视图(数据源作业的检视视图在
             # U3 已下线)。按钮照旧渲染却路由过去,得到的是「运行未找到,可能
@@ -714,6 +722,26 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                 width="content",
                 unsafe_allow_javascript=True,
             )
+        with act_compare:
+            # 对比页的可选目录不是「所有运行」:每个 (类型, 产物目录) 只留
+            # 一个当前所有者。把一个已被接管的 run_id 塞进 URL,对比页会
+            # st.error + st.stop() ——整页停在拒绝信息上。所以准入在**按下
+            # 之前**就判好,不可加入时按钮禁用并当场说清是哪一种不可加入。
+            # 用 selectable_catalog 本身而不是自己重推目录归属:那套所有权
+            # 规则(生产者记录的 UI/CLI 关系、时间只作生命周期佐证)在这里
+            # 重写一遍必然与对比页漂移。
+            # 全量原始行也传下去:catalog.rows 只有当前所有者,拿它当
+            # all_rows 的话「被同目录的更新运行接管」会退化成「目录里根本
+            # 没有这条」——分因就没了,操作人只剩一句「不可用」。
+            _all_catalog_rows = load_all_jobs_read_only()
+            _compare_catalog = selectable_catalog(_all_catalog_rows)
+            render_add_to_basket_button(
+                selected.run_id,
+                selectable_ids=[row.run_id for row in _compare_catalog.rows],
+                run_id_alias=_compare_catalog.run_id_alias,
+                all_rows=_all_catalog_rows,
+                key_prefix="jobs",
+            )
         if _stoppable:
             with act_stop:
                 _stop_label = (
@@ -732,6 +760,7 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     except JobManagerError as exc:
                         st.toast(f"停止失败：{exc}", icon="⚠️")
                     st.rerun()
+    render_basket_panel(key_prefix="jobs")
 
 # ---------------------------------------------------------------------------
 # Pagination — real prev/next nav over offset-sliced pages (UI review

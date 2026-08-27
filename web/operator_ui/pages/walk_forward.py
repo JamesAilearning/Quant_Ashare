@@ -31,6 +31,10 @@ import streamlit as st
 from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
+from web.operator_ui.compare_basket_widget import (
+    render_add_to_basket_button,
+    render_basket_panel,
+)
 from web.operator_ui.components import (
     render_empty_state,
     render_error_state,
@@ -45,9 +49,13 @@ from web.operator_ui.job_io import (
     canonical_dir_key,
     fold_catalog_by_dir,
     load_all_jobs,
+    load_all_jobs_read_only,
 )
 from web.operator_ui.job_manager import JobManager
 from web.operator_ui.page_header import render_page_header
+from web.operator_ui.pages._research_run_comparison_helpers import (
+    selectable_catalog,
+)
 
 # Pure helpers + constants moved to ``_walk_forward_helpers`` in UI review
 # P1-1. Re-exported here so legacy tests that do
@@ -588,6 +596,25 @@ if _metrics_purpose is not None and _metrics_purpose != _metric_status:
             f"(声明用途 metrics_purpose={_metrics_purpose},实测判定 "
             f"metric_status={_metric_status}——声明只能让判定更差,不能更好)"
         )
+
+# 本页此前没有任何 run-level 动作:看完一次滚动验证想跟另一次比,只能记下
+# 运行 ID 再手工去对比页的下拉框里找。准入在按下之前判好——对比页的可选目录
+# 每个产物目录只留一个当前所有者,把被接管的 id 送过去会让整页停在
+# st.error + st.stop()。
+_wf_selected_run_id = str(run_options.get(str(selected), "") or "")
+if _wf_selected_run_id:
+    _wf_basket_col, _ = st.columns([1, 3])
+    with _wf_basket_col:
+        _all_catalog_rows = load_all_jobs_read_only()
+        _compare_catalog = selectable_catalog(_all_catalog_rows)
+        render_add_to_basket_button(
+            _wf_selected_run_id,
+            selectable_ids=[row.run_id for row in _compare_catalog.rows],
+            run_id_alias=_compare_catalog.run_id_alias,
+            all_rows=_all_catalog_rows,
+            key_prefix="wf",
+        )
+    render_basket_panel(key_prefix="wf")
 
 st.caption(
     "ℹ 下方年化、回撤、IR 均为**扣费后超额**口径（相对回测基准），非策略绝对收益。"
