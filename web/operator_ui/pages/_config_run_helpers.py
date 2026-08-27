@@ -304,17 +304,47 @@ def _values_agree(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
+def prefill_baseline_with_source_mode(
+    prefill_config: Mapping[str, Any], source_mode: str,
+) -> dict[str, Any]:
+    """把结果页单独带过来的源模式折进比较基线。
+
+    UI 启动的运行把 ``mode`` 写进 ``job.json`` 而**不是**归档 config.yaml
+    （``JobManager.start(config_dict, mode)`` 把两者分开收，
+    ``_write_config_yaml`` 只落 ``config_dict``）。只比 config.yaml 的话，
+    操作人把一次 walk_forward 重跑改成 pipeline，复核区会说「共有字段逐项
+    一致」——而模式正是本次提交与那次运行最大的一处不同。
+
+    源 YAML 自带 ``mode`` 时以它为准：那是源运行自己记下的，比作业台账的
+    转述更近一层。``source_mode`` 为空时不合成——凭空写一个模式等于替一次
+    没记录模式的运行编造基线。
+    """
+
+    baseline = dict(prefill_config)
+    if source_mode and "mode" not in baseline:
+        baseline["mode"] = source_mode
+    return baseline
+
+
 def prefill_divergences_from_source_run(
     prefill_config: Mapping[str, Any],
     emitted_config: Mapping[str, Any],
     *,
     known_keys: Collection[str],
+    other_mode_keys: Collection[str] = (),
 ) -> tuple[PrefillDivergence, ...]:
     """预填与**即将提交**之间的全部差异,按四类分开。
 
     ``known_keys``:本次模式真正会提交的键集合（PIPELINE_KEYS /
-    WALK_FORWARD_KEYS）。源运行里属于**另一个**模式的键必须单列——它们不
-    是「值被改了」,是本次压根不提交,和真实的值改动混在一起会把后者淹掉。
+    WALK_FORWARD_KEYS,外加 ``mode``）。``other_mode_keys``:**另一个**模式的
+    键集合。源运行里属于另一模式的键必须单列——它们不是「值被改了」,是本次
+    压根不提交,和真实的值改动混在一起会把后者淹掉。
+
+    两个集合都要传,是因为「不在本模式 schema 里」有两种成因,对操作人的
+    下一步不同:属于对面模式（切模式即生效）vs 本页压根不认识（已删除的
+    历史键）。只看 ``known_keys`` 会把后者也标成「属于另一个模式」,而
+    ``unsupported_prefill_keys`` 同时说它「本页不支持」——两句自相矛盾。
+    本页不认识的键不进本函数的结果,专归 ``unsupported_prefill_keys``。
 
     分类语义（每类对操作人的下一步不同）:
 
@@ -333,6 +363,7 @@ def prefill_divergences_from_source_run(
     """
 
     known = set(known_keys)
+    other_mode = set(other_mode_keys) - known
     out: list[PrefillDivergence] = []
     candidates = (
         (set(prefill_config) | (set(emitted_config) & known))
@@ -352,6 +383,11 @@ def prefill_divergences_from_source_run(
                     emitted_present=emitted_present))
             continue
         if source_present and key not in known:
+            if key not in other_mode:
+                # 本页两个模式都不认识它 ⇒ 已删除的历史键。归
+                # `unsupported_prefill_keys` 独家报告;在这里也说一遍就会
+                # 与它自相矛盾（「属于另一个模式」vs「本页不支持」）。
+                continue
             out.append(PrefillDivergence(
                 key=key, classification=DIVERGENCE_MODE_INAPPLICABLE,
                 source_value=source_value, source_present=True,

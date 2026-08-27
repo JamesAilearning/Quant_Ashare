@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -165,8 +166,36 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         # 分桶取子集、以及「有改动 / 无改动」两条渲染分支都不沉默。
         self.assertIn(
             "prefill_divergences_from_source_run(\n"
-            "        PREFILL_CONFIG, preview_config, known_keys=known_keys,\n"
+            "        _prefill_baseline, preview_config,\n"
+            "        known_keys=_review_known_keys,\n"
+            "        other_mode_keys=_review_other_mode_keys,\n"
             "    )",
+            source,
+        )
+        # 比较基线含源模式（UI 运行的 mode 只在 job.json 里）,且 `mode`
+        # 参与比较,否则切模式后复核区说「逐项一致」。
+        self.assertIn(
+            "\n    _prefill_baseline = prefill_baseline_with_source_mode(\n",
+            source,
+        )
+        self.assertIn(
+            "\n    _review_known_keys = frozenset(known_keys) | {\"mode\"}\n",
+            source,
+        )
+        # 「另一个模式的键」必须来自对面模式的 schema。只看 known_keys 会
+        # 把已删除的历史键也标成 mode_only,与 unsupported 的报告自相矛盾。
+        self.assertIn(
+            "\n    _review_other_mode_keys = (\n"
+            "        frozenset(WALK_FORWARD_KEYS) if mode == \"pipeline\"\n"
+            "        else frozenset(PIPELINE_KEYS)\n"
+            "    )\n",
+            source,
+        )
+        # unsupported 也要看合成后的基线,否则 mode 会被它当成不支持的键。
+        self.assertIn(
+            "\n    _unsupported_prefill = unsupported_prefill_keys(\n"
+            "        _prefill_baseline, preview_config,\n"
+            "    )\n",
             source,
         )
         self.assertIn(
@@ -184,23 +213,17 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("\n        if _source_missing:\n", source)
         self.assertIn("\n        if _mode_only:\n", source)
         self.assertIn("\n        if _run_scoped:\n", source)
-        # 预填必须**无条件**覆盖已知键。条件写入（只在该字段的 session 键
-        # 尚不存在时才写）在最常见路径上 100% 失效:`_cr()` 只要被调用
-        # 过就把 `cr_*` 种满,操作人只要打开过一次本页,之后点「用此配置
-        # 重跑」一个字段也进不来,而横幅照说「已预填」。
+        # 预填的写入**行为**（覆盖而非跳过、只写已知键、只把值不同的记成
+        # 覆盖）由运行时测试保证——源码串看不见 session 状态,拿它去钉状态
+        # 只会钉出一条随缩进漂移的假守卫。这里只钉接线:页面确实走那个被
+        # 真跑过的函数,而且基线含源模式。
         self.assertIn(
-            "\n            st.session_state[_session_key] = v\n", source)
-        self.assertNotIn('f"cr_{k}" not in st.session_state', source)
-        # 覆盖不许是静默的。钉**条件表达式整行**——只钉 append 那句的话,
-        # 把守它的 if 熄火（`if False and ...`）能原样逃逸,append 还在、
-        # 语义已反转（#470 连栽两轮的同一形态）。
-        self.assertIn(
-            "\n            if _session_key in st.session_state "
-            "and not _values_agree(\n"
-            "                    _previous, v):\n"
-            "                _prefill_overwritten.append((k, _previous, v))\n",
+            "\n        _prefill_overwritten = _apply_prefill_to_session(\n"
+            "            prefill_baseline_with_source_mode(\n",
             source,
         )
+        self.assertIn("\n            _PREFILL_APPLICABLE_KEYS,\n", source)
+        # 覆盖列表要渲染出来:覆盖不许是静默的。
         self.assertIn("\n    if _prefill_overwritten:\n", source)
         # 解析失败要响亮,不许静默返回空 dict 让横幅照说「已预填」。
         self.assertIn('st.session_state["prefill_config_error"] = (', source)
@@ -747,9 +770,14 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
     warning the pipeline path runs (instruments=all vs a major index inflates
     "excess vs benchmark"). UI-audit follow-up.
 
-    (The sibling WF-date preset/prefill fix was reverted: routing the dates
-    through _cr regressed provider-calendar tracking — codex P2 on #300 — and a
-    correct fix needs runtime verification. The dates stay on the live default.)
+    (WF-date prefill history: routing the dates through ``_cr`` regressed
+    provider-calendar tracking — codex P2 on #300 — because ``_cr`` SEEDS the
+    provider-derived default into session and then sticks to it, freezing a
+    first-render no-calendar fallback. #471 restores prefill through
+    ``_prefilled_trading_day``, which only READS: with no prefill present it
+    writes nothing, so the live default keeps recomputing every rerun. Runtime
+    coverage for both directions lives in
+    ``tests/logic/test_config_run_prefill_runtime.py``.)
     """
 
     def setUp(self) -> None:
@@ -757,13 +785,72 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
             "web/operator_ui/pages/config_run.py"
         ).read_text(encoding="utf-8")
 
-    def test_wf_dates_stay_on_live_provider_default(self) -> None:
-        # Provider-tracking raw default (NOT _cr) — reverted per codex P2.
+    def test_wf_dates_honour_prefill_over_the_live_default(self) -> None:
+        # overall_start/overall_end 是滚动验证窗口的两个**定义性**字段。
+        # 预填把它们写进 session,控件不读的话,重跑跑的区间与源运行不同,
+        # 而复核区看不出来(两侧都是控件产出的 live default)——codex P1
+        # on #471。钉调用形态整行:只钉函数名的话,把 default= 换回裸的
+        # live default 能原样逃逸。
         self.assertIn(
-            'default=walk_forward_date_defaults["overall_start"]', self.source
+            '                default=_prefilled_trading_day(\n'
+            '                    "overall_start",\n'
+            '                    walk_forward_date_defaults["overall_start"]),'
+            '\n',
+            self.source,
         )
         self.assertIn(
-            'default=walk_forward_date_defaults["overall_end"]', self.source
+            '                default=_prefilled_trading_day(\n'
+            '                    "overall_end",\n'
+            '                    walk_forward_date_defaults["overall_end"]),\n',
+            self.source,
+        )
+
+    def test_wf_dates_still_do_not_seed_the_live_default(self) -> None:
+        # #300 的病根是 `_cr` **写**:它把 provider 相关的 default 种进
+        # session 并从此粘住。`_prefilled_trading_day` 只读。
+        self.assertNotIn('_cr("overall_start"', self.source)
+        self.assertNotIn('_cr("overall_end"', self.source)
+        # 「函数体里没有写 session」要**解析**着问,不是按文本切:按
+        # `\ndef ` 切会一路切到文件末尾的模块级代码(那里当然有赋值),
+        # 守卫于是恒红或恒绿地失去意义。
+        function = next(
+            node
+            for node in ast.parse(self.source).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_prefilled_trading_day"
+        )
+        def _is_session_state(node: ast.expr) -> bool:
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "session_state"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "st"
+            )
+
+        writes: list[str] = []
+        for node in ast.walk(function):
+            # `st.session_state[...] = ...`（含增量与带注解赋值）
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and _is_session_state(
+                        target.value):
+                    writes.append(f"assign@{node.lineno}")
+            # `st.session_state.pop(...)` 之类的原地修改
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"pop", "update", "setdefault", "clear"}
+                and _is_session_state(node.func.value)
+            ):
+                writes.append(f"{node.func.attr}@{node.lineno}")
+        self.assertEqual(
+            writes, [],
+            "_prefilled_trading_day 必须只读 session:任何写入都会把 provider"
+            " 相关的 live default 种住,复现 #300 的回滚原因",
         )
 
     def test_wf_branch_runs_universe_benchmark_alignment(self) -> None:

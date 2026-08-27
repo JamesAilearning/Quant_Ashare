@@ -67,6 +67,7 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     divergences_of,
     explicitly_applied_preset_name,
     portable_config_for_preset_review,
+    prefill_baseline_with_source_mode,
     prefill_divergences_from_source_run,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
@@ -364,6 +365,61 @@ if _PREFILL_ERROR:
 #: 它的键要先落进 session,`mode` 切过去时才有值可用。
 _PREFILL_APPLICABLE_KEYS = frozenset(PIPELINE_KEYS) | frozenset(
     WALK_FORWARD_KEYS) | {"mode"}
+
+
+def _apply_prefill_to_session(
+    incoming: dict[str, Any], applicable_keys: frozenset[str],
+) -> list[tuple[str, Any, Any]]:
+    """把预填值写进本页的字段状态,返回被覆盖的 ``(键, 旧值, 新值)``。
+
+    顶层函数而非模块级散代码,是为了让它能被**真跑**:源码串断言看不见
+    session 状态,而这里的每一条规则（覆盖而非跳过、只写已知键、只把值
+    不同的记成覆盖）都只在运行时才成立或失败。
+
+    预填**即权威**,无条件覆盖已知键。此前是条件写入（只在该字段的 session
+    键尚不存在时才写）,在最常见路径上 100% 失效:``_cr()`` 只要被调用过就把
+    ``cr_*`` 种满,所以操作人只要打开过一次本页,之后点「用此配置重跑」就一
+    个字段也预填不进来,而横幅照说「已预填」。覆盖是安全的:点重跑本身就是
+    显式指令,且时序上晚于本会话此前的任何编辑;调用方的 token 保证每份源
+    载荷只应用一次,预填之后的编辑照常生效。
+
+    只覆盖**已知键**:源 YAML 的任意键都写 ``cr_<key>`` 会撞上控件键
+    （``cr_preset_selector`` / ``cr_show_diff_toggle`` 等）。
+    """
+
+    overwritten: list[tuple[str, Any, Any]] = []
+    for key, value in incoming.items():
+        if key not in applicable_keys:
+            continue
+        session_key = f"cr_{key}"
+        previous = st.session_state.get(session_key)
+        if session_key in st.session_state and not _values_agree(
+                previous, value):
+            overwritten.append((key, previous, value))
+        st.session_state[session_key] = value
+    return overwritten
+
+
+def _prefilled_trading_day(field: str, live_default: str) -> str:
+    """滚动验证窗口端点:预填过就用预填值,否则用日历重算的 live default。
+
+    刻意**只读不写**,也刻意不走 ``_cr``。``_cr`` 会把 live default **种进**
+    session 并从此粘住,于是第一帧的 no-calendar 回退被冻结、后续按 provider
+    日历重算的窗口被无视（codex P2 on #300,那次改动因此被回滚）。这里没有
+    预填时一个字节也不写,live default 每帧照常重算,#300 的病根不复现。
+
+    修的是另一个缺陷:``overall_start`` / ``overall_end`` 是滚动验证窗口的
+    两个**定义性**字段,预填把它们写进了 session,而控件此前从不读——于是
+    「用此配置重跑」一次滚动验证运行,跑的日期区间与源运行不同,而复核区
+    看不出来（它比的是控件产出的值,两侧都是 live default）。
+    """
+
+    value = st.session_state.get(f"cr_{field}")
+    if isinstance(value, str) and value:
+        return value
+    return live_default
+
+
 _prefill_overwritten: list[tuple[str, Any, Any]] = []
 if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
@@ -377,29 +433,13 @@ if PREFILL_CONFIG:
         # it Default or Smoke.
         st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
         st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
-        # 预填**即权威**,无条件覆盖已知键。此前是条件写入（只在该字段的
-        # session 键尚不存在时才写）,在最常见路径上 100% 失
-        # 效:`_cr()` 只要被调用过就把 `cr_*` 种满,所以操作人只要打开过
-        # 一次本页,之后点「用此配置重跑」就一个字段也预填不进来,而横幅
-        # 照说「已预填」。覆盖是安全的:点重跑本身就是显式指令,且时序上
-        # 晚于本会话此前的任何编辑;token 保证每份源载荷只应用一次,预填
-        # 之后的编辑照常生效。被覆盖且值不同的字段在下方响亮列出——覆盖
-        # 不是静默的。
-        # 只覆盖**已知键**:源 YAML 的任意键都写 `cr_<key>` 会撞上控件键
-        # （cr_preset_selector / cr_show_diff_toggle 等)。
-        source_mode = st.session_state.get("prefill_config_source_mode", "")
-        _incoming = dict(PREFILL_CONFIG)
-        if source_mode:
-            _incoming.setdefault("mode", source_mode)
-        for k, v in _incoming.items():
-            if k not in _PREFILL_APPLICABLE_KEYS:
-                continue
-            _session_key = f"cr_{k}"
-            _previous = st.session_state.get(_session_key)
-            if _session_key in st.session_state and not _values_agree(
-                    _previous, v):
-                _prefill_overwritten.append((k, _previous, v))
-            st.session_state[_session_key] = v
+        _prefill_overwritten = _apply_prefill_to_session(
+            prefill_baseline_with_source_mode(
+                PREFILL_CONFIG,
+                str(st.session_state.get("prefill_config_source_mode", "")),
+            ),
+            _PREFILL_APPLICABLE_KEYS,
+        )
         st.session_state["prefill_config_applied_token"] = prefill_token
         st.session_state["prefill_overwritten_fields"] = list(
             _prefill_overwritten)
@@ -677,19 +717,23 @@ with form_col:
                     metadata=provider_metadata,
                 )
         else:
-            # NOTE: these read the LIVE default recomputed from the current
-            # provider's calendar each rerun (NOT via _cr). Routing them through
-            # _cr to honour preset/rerun prefill regressed provider-tracking —
-            # _cr seed-and-sticks the (provider-dependent) default, freezing a
-            # first-render no-calendar fallback and ignoring the recomputed
-            # window (codex P2 on #300). Honouring preset/prefill here without
-            # losing provider-tracking needs a separate, runtime-verified fix.
+            # 预填过就用预填值,否则用 provider 日历每帧重算的 live default
+            # ——`_prefilled_trading_day` 只读不写,所以 #300 那次回滚的病根
+            # (`_cr` 把 live default 种住并冻结 no-calendar 回退) 不复现。
+            # 不接线的后果是:重跑一次滚动验证运行,窗口的两个定义性字段仍
+            # 是本机 live default,跑的区间与源运行不同(codex P1 on #471)。
             overall_start = _select_trading_day(
-                "overall_start", default=walk_forward_date_defaults["overall_start"],
+                "overall_start",
+                default=_prefilled_trading_day(
+                    "overall_start",
+                    walk_forward_date_defaults["overall_start"]),
                 metadata=provider_metadata,
             )
             overall_end = _select_trading_day(
-                "overall_end", default=walk_forward_date_defaults["overall_end"],
+                "overall_end",
+                default=_prefilled_trading_day(
+                    "overall_end",
+                    walk_forward_date_defaults["overall_end"]),
                 metadata=provider_metadata,
             )
             wf1, wf2 = st.columns(2)
@@ -1096,15 +1140,31 @@ with form_col:
     _preset_differences = config_preset_differences(
         preview_config, _review_preset,
     )
+    # 比较基线要含源模式:UI 启动的运行把 mode 写进 job.json 而不是归档
+    # config.yaml,只比 YAML 的话,把一次 walk_forward 重跑改成 pipeline
+    # 会被说成「共有字段逐项一致」(codex P2 on #471)。
+    _prefill_baseline = prefill_baseline_with_source_mode(
+        PREFILL_CONFIG,
+        str(st.session_state.get("prefill_config_source_mode", "")),
+    )
     _unsupported_prefill = unsupported_prefill_keys(
-        PREFILL_CONFIG, preview_config,
+        _prefill_baseline, preview_config,
+    )
+    # `mode` 是**本次提交**的一部分(`preview_config = {"mode": mode, ...}`)
+    # 却不在两个 KEYS 常量里,不加就永远不参与比较。
+    _review_known_keys = frozenset(known_keys) | {"mode"}
+    _review_other_mode_keys = (
+        frozenset(WALK_FORWARD_KEYS) if mode == "pipeline"
+        else frozenset(PIPELINE_KEYS)
     )
     # 与**被重跑那次运行**的差异（不是与预设的差异——上面那张表比的是
     # 预设）。预填现在无条件覆盖已知键,但那只保证「预填那一刻」一致:预
     # 填之后操作人还能改任何字段。提交前把差异摊开,让「我重跑的到底是不
     # 是那次运行」有一处可核对的答案。
     _prefill_divergences = prefill_divergences_from_source_run(
-        PREFILL_CONFIG, preview_config, known_keys=known_keys,
+        _prefill_baseline, preview_config,
+        known_keys=_review_known_keys,
+        other_mode_keys=_review_other_mode_keys,
     )
 
     with st.expander("完整提交配置（只读）", expanded=True):

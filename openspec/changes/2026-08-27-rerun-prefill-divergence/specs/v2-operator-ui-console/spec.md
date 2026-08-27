@@ -21,6 +21,18 @@ operator who had been editing can see exactly what the rerun replaced.
 Fields outside the page's submit schema SHALL NOT be written into session
 state under a `cr_*` key: those keys collide with widget keys.
 
+Every field the prefill writes SHALL be read back by the widget that submits
+it, including the walk-forward window endpoints. A field written into session
+state but never read is indistinguishable from one that was never prefilled:
+the launched run silently covers a different window than the source run, and
+the pre-launch review cannot see it either (both sides then show the widget's
+own live default).
+
+Reading a prefilled value SHALL NOT seed a value into session state when no
+prefill is present. Seeding a provider-derived default freezes a first-render
+no-calendar fallback and ignores the window recomputed from the current
+provider calendar on later reruns.
+
 #### Scenario: prefill overwrites a field the operator had already set
 
 - **GIVEN** an operator who opened the config page (seeding every field key),
@@ -34,6 +46,20 @@ state under a `cr_*` key: those keys collide with widget keys.
 - **GIVEN** a rerun prefill that has already been applied in this session
 - **WHEN** the operator then edits a field and the script reruns
 - **THEN** the operator's later edit stands; the prefill is not re-applied
+
+#### Scenario: the walk-forward window is restored from the source run
+
+- **GIVEN** a rerun prefill from a walk-forward run whose overall window
+  differs from this machine's calendar-derived default
+- **WHEN** the config page renders the window fields
+- **THEN** they show the source run's window
+
+#### Scenario: no prefill leaves the window on the live calendar default
+
+- **GIVEN** no rerun prefill in this session
+- **WHEN** the config page renders the walk-forward window fields
+- **THEN** they show the default recomputed from the current provider
+  calendar, and nothing is written into session state for them
 
 ### Requirement: A failed prefill SHALL be reported, never silently empty
 
@@ -81,6 +107,21 @@ noise teaches operators to ignore the whole block:
 - a field that is scoped to a single run (`output_dir`, injected by the job
   manager) and therefore neither carried nor missing.
 
+"Belongs to the other run mode" SHALL be decided from the other mode's own
+schema, never from mere absence from the current mode's schema. A key absent
+from BOTH schemas is a removed legacy field; classifying it as other-mode
+while the unsupported-field report simultaneously calls it unsupported hands
+the operator two contradictory claims about the same key. Such keys SHALL be
+left to the unsupported-field report alone.
+
+The run mode SHALL itself be a compared field. For UI-launched runs the mode
+is recorded in the job ledger rather than the archived `config.yaml`, so the
+comparison baseline SHALL incorporate the separately carried source mode;
+otherwise switching a rerun from one mode to the other is reported as
+field-for-field identical. Where the archived configuration records a mode of
+its own, that value SHALL win — it is the run's own record rather than the
+ledger's restatement. An absent source mode SHALL NOT be invented.
+
 For a field the source run did not record, the source-side value SHALL be left
 empty. Substituting the page's current value, or this page's default, is
 FORBIDDEN — that invents a baseline for a run that never recorded one.
@@ -113,6 +154,22 @@ operator must be able to tell "verified identical" from "nobody checked".
 - **THEN** the unrecorded field and the other-mode field appear in their own
   groups, with the unrecorded field's source value shown as absent rather than
   filled in
+
+#### Scenario: a removed legacy key is reported once, not contradicted
+
+- **GIVEN** a rerun from a run whose configuration records a key belonging to
+  neither mode's current schema
+- **WHEN** the pre-launch review renders
+- **THEN** that key appears only in the unsupported-field report, and is not
+  also described as belonging to the other mode
+
+#### Scenario: switching the run mode is disclosed
+
+- **GIVEN** a rerun prefill from a walk-forward run, with the page switched to
+  pipeline mode and every shared field left as prefilled
+- **WHEN** the pre-launch review renders
+- **THEN** the mode change is listed as a value difference rather than the
+  configuration being called identical
 
 #### Scenario: an unedited rerun states its equality
 

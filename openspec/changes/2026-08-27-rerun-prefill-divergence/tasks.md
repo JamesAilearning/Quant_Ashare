@@ -51,7 +51,26 @@
 - [x] 5.4 变异复验（钉条件表达式整行，不钉标识符或赋值行）
 - [x] 5.5 `tests/logic` 全量 + ruff + mypy --strict + openspec validate --strict
 
-## 6. 划界（本 change 不做）
+## 6. codex #471 三条（r2）
+
+- [x] 6.1 **P1** WF 窗口两个定义性字段接线:新增 `_prefilled_trading_day`
+      （**只读**,不走 `_cr`）——`_cr` 的 seed-and-stick 正是 #300 回滚的原因,
+      这里没有预填时一个字节也不写,live default 每帧照常重算
+- [x] 6.2 **P1 附带** 预填写入抽成顶层 `_apply_prefill_to_session`,与
+      `_prefilled_trading_day` 一起用 AST + 假 st **真跑**
+      （`tests/logic/test_config_run_prefill_runtime.py`,沿用
+      `test_jobs_url_handoff_source.py` 的既有做法）——源码串看不见 session
+      状态,这正是 codex 说「源码测试测不到」的那一层
+- [x] 6.3 **P2** 比较基线折进源模式（`prefill_baseline_with_source_mode`）+
+      `mode` 进 known_keys:UI 运行的 mode 只在 job.json,不折进来的话切模式
+      会被说成「逐项一致」
+- [x] 6.4 **P2** `other_mode_keys` 参数:mode_only 只在键属于**对面模式的
+      schema** 时成立;两个 schema 都不认识的历史键专归
+      `unsupported_prefill_keys`,不再自相矛盾
+- [x] 6.5 变异复验扩到 **32 条全咬住**（新增 WF 三条、基线/known/other_mode
+      三条、helpers 三条）
+
+## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂
   on_change，回调面比本 change 大一个量级，且复核区已给出等价答案。

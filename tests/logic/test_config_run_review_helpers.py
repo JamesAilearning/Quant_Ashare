@@ -15,6 +15,7 @@ from web.operator_ui.pages._config_run_helpers import (
     effective_preset_for_review,
     explicitly_applied_preset_name,
     portable_config_for_preset_review,
+    prefill_baseline_with_source_mode,
     prefill_divergences_from_source_run,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
@@ -276,6 +277,7 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
             {"mode": "walk_forward", "topk": 50, "overall_start": "2020-01-01"},
             {"mode": "pipeline", "topk": 30},
             known_keys=("mode", "topk"),
+            other_mode_keys=("overall_start", "overall_end"),
         )
 
         self.assertEqual(
@@ -305,9 +307,10 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
 
     def test_divergences_of_filters_by_class(self) -> None:
         divergences = prefill_divergences_from_source_run(
-            {"mode": "pipeline", "topk": 50, "legacy_toggle": True},
+            {"mode": "pipeline", "topk": 50, "overall_start": "2020-01-01"},
             {"mode": "pipeline", "topk": 30, "n_drop": 5},
             known_keys=("mode", "topk", "n_drop"),
+            other_mode_keys=("overall_start",),
         )
 
         self.assertEqual(
@@ -323,7 +326,62 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
             [d.key
              for d in divergences_of(
                  divergences, DIVERGENCE_MODE_INAPPLICABLE)],
-            ["legacy_toggle"],
+            ["overall_start"],
+        )
+
+    def test_legacy_key_is_left_to_the_unsupported_reporter_alone(self) -> None:
+        # 一个已删除的历史键既不在本模式 schema、也不在对面模式 schema。
+        # 只看 known_keys 会把它标成「属于另一个模式」,而
+        # `unsupported_prefill_keys` 同时说它「本页不支持」——操作人拿到
+        # 两句自相矛盾的结论。本函数不认领它。
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "pipeline", "topk": 50, "legacy_toggle": True},
+            {"mode": "pipeline", "topk": 50},
+            known_keys=("mode", "topk"),
+            other_mode_keys=("overall_start", "overall_end"),
+        )
+
+        self.assertEqual(divergences, ())
+        self.assertEqual(
+            unsupported_prefill_keys(
+                {"mode": "pipeline", "topk": 50, "legacy_toggle": True},
+                {"mode": "pipeline", "topk": 50},
+            ),
+            ("legacy_toggle",),
+        )
+
+    def test_source_mode_joins_the_comparison_baseline(self) -> None:
+        # UI 启动的运行把 mode 写进 job.json 而**不是**归档 config.yaml
+        # （JobManager.start(config_dict, mode) 分开收）。不折进来的话,把
+        # 一次 walk_forward 重跑改成 pipeline 会被说成「逐项一致」。
+        baseline = prefill_baseline_with_source_mode(
+            {"topk": 50}, "walk_forward")
+
+        self.assertEqual(baseline, {"topk": 50, "mode": "walk_forward"})
+        divergences = prefill_divergences_from_source_run(
+            baseline, {"mode": "pipeline", "topk": 50},
+            known_keys=("mode", "topk"),
+        )
+        self.assertEqual(
+            [(d.key, d.source_value, d.emitted_value)
+             for d in divergences_of(divergences, DIVERGENCE_CHANGED)],
+            [("mode", "walk_forward", "pipeline")],
+        )
+
+    def test_source_yaml_mode_outranks_the_job_ledger(self) -> None:
+        # 源 YAML 自带 mode 时以它为准:那是源运行自己记下的,比作业台账的
+        # 转述更近一层。
+        self.assertEqual(
+            prefill_baseline_with_source_mode(
+                {"mode": "pipeline"}, "walk_forward"),
+            {"mode": "pipeline"},
+        )
+
+    def test_absent_source_mode_is_never_invented(self) -> None:
+        # 凭空写一个模式 = 替一次没记录模式的运行编造基线。
+        self.assertEqual(
+            prefill_baseline_with_source_mode({"topk": 50}, ""),
+            {"topk": 50},
         )
 
 
