@@ -224,7 +224,6 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 假解锁——切换窗命中后被指引的「立即重跑」会一直 already_running
         # 到六小时线（codex 第二轮 P1）。闸只放行**戳完全相等**的那一条。
         import json
-
         from datetime import datetime, timedelta, timezone
 
         from web.operator_ui.update_runner import _blocking_run_status
@@ -552,10 +551,10 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 死后观测到的记录可能是回收 pid 的接替者。真值：活+记录是它的→
         # 返回戳;进程已死→None;pid 不同→None;别的 provider→None。
         import json
+        import os as _os
 
         from web.operator_ui.update_runner import observe_own_running_record
         from web.operator_ui.update_status import status_path_for_provider
-        import os as _os
         proc = _spawn(_SLEEPER)
         try:
             time.sleep(0.5)
@@ -1017,12 +1016,12 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 返回后已死+无信号在先 → 终态 oracle:本次运行自己的终态记录在
         # =自然完成(already_finished);不在=按已发信号的确认死亡走。
         import json
+        import os as _os
         from datetime import datetime, timedelta, timezone
         from unittest import mock
 
         import web.operator_ui.update_runner as _runner
         from web.operator_ui.update_status import status_path_for_provider
-        import os as _os
 
         class _DiesQuietly:
             pid = 999993
@@ -1134,12 +1133,12 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 轮 P2）：SIGINT 可落在 import/解析配置/拿锁阶段,终录路径尚未
         # 就位。核实=finished 且写者 pid == 被杀句柄 pid。
         import json
+        import os as _os
 
         from web.operator_ui.update_runner import (
             terminal_record_confirms_the_run,
         )
         from web.operator_ui.update_status import status_path_for_provider
-        import os as _os
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
             provider.mkdir()
