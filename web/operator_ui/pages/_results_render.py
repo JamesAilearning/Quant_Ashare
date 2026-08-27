@@ -273,9 +273,25 @@ def _render_header_actions(
     action_cols = st.columns([1, 1, 1, 1])
     with action_cols[0]:
         if st.button("用此配置重跑", disabled=not config_bytes):
-            st.session_state["prefill_config_yaml"] = config_bytes.decode("utf-8", errors="replace")
-            st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
-            st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
+            # 严格解码,不再 errors="replace"。替换字符会把坏字节变成
+            # U+FFFD 后原样交给 YAML:运气好是解析报错,运气不好是解析成功
+            # 但某个值被悄悄改写,而横幅照说「已预填」。宁可就地报错、不
+            # 跳页,也不带一份被污染的配置进配置页。
+            try:
+                _prefill_yaml = config_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                st.error(
+                    f"⚠ 该运行的 config.yaml 不是合法 UTF-8（{exc}）——**未**"
+                    "预填任何字段，也未跳转。可用右侧「下载 config.yaml」"
+                    "取原始字节自行检查。"
+                )
+            else:
+                st.session_state["prefill_config_yaml"] = _prefill_yaml
+                st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
+                # 源运行的模式。归档 config.yaml 未必带 `mode`（CLI 跑出的
+                # 就没有）,而配置页要靠它决定预填哪一套字段 schema。
+                st.session_state["prefill_config_source_mode"] = str(job.get("mode") or "")
+                st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
     with action_cols[1]:
         st.download_button(
             "导出指标 CSV",

@@ -121,6 +121,29 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("_cached_bundle_zip(str(run_dir)", source)
         self.assertNotIn("bundle_zip_bytes(run_dir)", source)
 
+    def test_rerun_prefill_decodes_strictly_and_carries_the_source_mode(
+        self,
+    ) -> None:
+        source = _results_combined_source()
+
+        # 严格解码。`errors="replace"` 把坏字节变成 U+FFFD 后原样交给
+        # YAML:运气好是解析报错,运气不好是解析成功但某个值被悄悄改写,
+        # 而配置页横幅照说「已预填」。
+        self.assertIn('config_bytes.decode("utf-8")\n', source)
+        self.assertNotIn('config_bytes.decode("utf-8", errors="replace")',
+                         source)
+        self.assertIn("\n            except UnicodeDecodeError as exc:\n",
+                      source)
+        # 解码失败不跳页——不带一份被污染的配置进配置页。
+        self.assertIn("不是合法 UTF-8", source)
+        # 源运行的模式必须随载荷带过去:归档 config.yaml 未必有 `mode`
+        # （CLI 跑出的就没有）,配置页要靠它决定预填哪一套字段 schema。
+        self.assertIn(
+            '\n                st.session_state["prefill_config_source_mode"]'
+            ' = str(job.get("mode") or "")\n',
+            source,
+        )
+
     def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
         source = _results_combined_source()
 

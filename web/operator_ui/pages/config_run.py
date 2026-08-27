@@ -47,6 +47,10 @@ from web.operator_ui.page_header import render_page_header
 # "Module level import not at top of file" — Codex P2 on PR #202.
 from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _PIPELINE_DATE_FALLBACK,
+    DIVERGENCE_CHANGED,
+    DIVERGENCE_MODE_INAPPLICABLE,
+    DIVERGENCE_RUN_SCOPED,
+    DIVERGENCE_SOURCE_MISSING,
     _calibration_seconds_per_unit,
     _estimate_duration,
     _last_n_days_split,
@@ -56,11 +60,14 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _safe_pipeline_last_index,
     _six_increasing_indices,
     _trading_day_options,
+    _values_agree,
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
+    divergences_of,
     explicitly_applied_preset_name,
     portable_config_for_preset_review,
+    prefill_divergences_from_source_run,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
@@ -309,14 +316,31 @@ def _detect_preset() -> str:
 
 
 def _prefill_config() -> dict[str, Any]:
+    """被重跑那次运行的配置,或空 dict。
+
+    解析失败**不静默**:此前 YAMLError 与「顶层不是 dict」都直接返回空
+    dict,页面于是一个字都不说——操作人以为没点中按钮,或以为预填成功了。
+    失败原因写进 session,由页面响亮报出（fail-loud 纪律）。
+    """
+    st.session_state.pop("prefill_config_error", None)
     raw = st.session_state.get("prefill_config_yaml")
     if not raw:
         return {}
     try:
         loaded = yaml.safe_load(str(raw))
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        st.session_state["prefill_config_error"] = (
+            f"源运行的 config.yaml 解析失败（{type(exc).__name__}）——本次"
+            f"**未预填任何字段**:{exc}"
+        )
         return {}
-    return loaded if isinstance(loaded, dict) else {}
+    if not isinstance(loaded, dict):
+        st.session_state["prefill_config_error"] = (
+            f"源运行的 config.yaml 顶层不是映射（读到 "
+            f"{type(loaded).__name__}）——本次**未预填任何字段**。"
+        )
+        return {}
+    return loaded
 
 
 # ---------------------------------------------------------------------------
@@ -330,23 +354,72 @@ render_page_header(
 # ---------------------------------------------------------------------------
 # Prefill from previous run
 # ---------------------------------------------------------------------------
+# `_prefill_config()` 每帧都从同一份 `prefill_config_yaml` 重新解析,所以
+# 失败是幂等重现的——不需要跨帧保存错误,读当帧这一次即可。
 PREFILL_CONFIG = _prefill_config()
+_PREFILL_ERROR = st.session_state.get("prefill_config_error")
+if _PREFILL_ERROR:
+    st.error(f"⚠ {_PREFILL_ERROR}")
+#: 预填**一次性覆盖**的已知键集合。跨模式取并集:源运行可能是另一个模式,
+#: 它的键要先落进 session,`mode` 切过去时才有值可用。
+_PREFILL_APPLICABLE_KEYS = frozenset(PIPELINE_KEYS) | frozenset(
+    WALK_FORWARD_KEYS) | {"mode"}
+_prefill_overwritten: list[tuple[str, Any, Any]] = []
 if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
-    st.info(f"已从上一次运行 {source_job} 预填配置。启动前请核对参数。")
-    prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
+    prefill_token = (
+        f"{source_job}:"
+        f"{hashlib.md5(str(st.session_state.get('prefill_config_yaml', '')).encode('utf-8')).hexdigest()}"
+    )
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
         # A rerun prefill is not a preset selection. Clear any prior review
         # identity/snapshot before the automatic field matching below may label
         # it Default or Smoke.
         st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
         st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
-        if PREFILL_CONFIG.get("provider_uri"):
-            st.session_state["cr_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])
-        for k, v in PREFILL_CONFIG.items():
-            if k != "provider_uri" and f"cr_{k}" not in st.session_state:
-                st.session_state[f"cr_{k}"] = v
+        # 预填**即权威**,无条件覆盖已知键。此前是条件写入（只在该字段的
+        # session 键尚不存在时才写）,在最常见路径上 100% 失
+        # 效:`_cr()` 只要被调用过就把 `cr_*` 种满,所以操作人只要打开过
+        # 一次本页,之后点「用此配置重跑」就一个字段也预填不进来,而横幅
+        # 照说「已预填」。覆盖是安全的:点重跑本身就是显式指令,且时序上
+        # 晚于本会话此前的任何编辑;token 保证每份源载荷只应用一次,预填
+        # 之后的编辑照常生效。被覆盖且值不同的字段在下方响亮列出——覆盖
+        # 不是静默的。
+        # 只覆盖**已知键**:源 YAML 的任意键都写 `cr_<key>` 会撞上控件键
+        # （cr_preset_selector / cr_show_diff_toggle 等)。
+        source_mode = st.session_state.get("prefill_config_source_mode", "")
+        _incoming = dict(PREFILL_CONFIG)
+        if source_mode:
+            _incoming.setdefault("mode", source_mode)
+        for k, v in _incoming.items():
+            if k not in _PREFILL_APPLICABLE_KEYS:
+                continue
+            _session_key = f"cr_{k}"
+            _previous = st.session_state.get(_session_key)
+            if _session_key in st.session_state and not _values_agree(
+                    _previous, v):
+                _prefill_overwritten.append((k, _previous, v))
+            st.session_state[_session_key] = v
         st.session_state["prefill_config_applied_token"] = prefill_token
+        st.session_state["prefill_overwritten_fields"] = list(
+            _prefill_overwritten)
+    else:
+        _prefill_overwritten = list(
+            st.session_state.get("prefill_overwritten_fields") or [])
+    st.info(
+        f"已从上一次运行 {source_job} 预填配置——本页已按该次运行**覆盖**"
+        "相应字段。启动前请核对参数；页面底部的复核区会逐项列出即将提交"
+        "的配置与该次运行的差异。"
+    )
+    if _prefill_overwritten:
+        st.warning(
+            f"⚠ 预填覆盖了本会话此前的 {len(_prefill_overwritten)} 个字段"
+            "（点「用此配置重跑」即以源运行为准）：\n"
+            + "\n".join(
+                f"- `{_k}`：`{_old}` → `{_new}`"
+                for _k, _old, _new in _prefill_overwritten
+            )
+        )
 
 
 def _cr(key: str, default: Any = None) -> Any:
@@ -1026,6 +1099,13 @@ with form_col:
     _unsupported_prefill = unsupported_prefill_keys(
         PREFILL_CONFIG, preview_config,
     )
+    # 与**被重跑那次运行**的差异（不是与预设的差异——上面那张表比的是
+    # 预设）。预填现在无条件覆盖已知键,但那只保证「预填那一刻」一致:预
+    # 填之后操作人还能改任何字段。提交前把差异摊开,让「我重跑的到底是不
+    # 是那次运行」有一处可核对的答案。
+    _prefill_divergences = prefill_divergences_from_source_run(
+        PREFILL_CONFIG, preview_config, known_keys=known_keys,
+    )
 
     with st.expander("完整提交配置（只读）", expanded=True):
         st.caption(
@@ -1081,6 +1161,87 @@ with form_col:
                 ],
                 hide_index=True,
                 width="stretch",
+            )
+
+    if PREFILL_CONFIG:
+        _source_job = st.session_state.get("prefill_config_source_job", "")
+        # 四类分开说。混成一句的话,一次老运行重跑会被十几行 schema 演进
+        # 噪音淹掉真正需要确认的值改动,操作人会学会忽略整块。
+        _changed = divergences_of(_prefill_divergences, DIVERGENCE_CHANGED)
+        _source_missing = divergences_of(
+            _prefill_divergences, DIVERGENCE_SOURCE_MISSING)
+        _mode_only = divergences_of(
+            _prefill_divergences, DIVERGENCE_MODE_INAPPLICABLE)
+        _run_scoped = divergences_of(
+            _prefill_divergences, DIVERGENCE_RUN_SCOPED)
+        if _changed:
+            st.warning(
+                f"⚠ 即将提交的配置与被重跑的运行 `{_source_job}` **有 "
+                f"{len(_changed)} 项值不同**——预填之后这些字段被改过。"
+                "这不是错误，但请确认差异是你要的："
+            )
+            st.dataframe(
+                [
+                    {
+                        "配置项": _d.key,
+                        f"源运行（{_source_job}）": str(_d.source_value),
+                        "即将提交": str(_d.emitted_value),
+                    }
+                    for _d in _changed
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.caption(
+                f"✓ 即将提交的配置与运行 `{_source_job}` 在两侧共有的字段上"
+                "逐项一致。"
+            )
+        if _source_missing:
+            with st.expander(
+                f"源运行未记录的字段（{len(_source_missing)} 项，"
+                "本次按本页当前值提交）",
+                expanded=False,
+            ):
+                st.caption(
+                    "这些键在那次运行的 config.yaml 里**不存在**——多半是它"
+                    "早于该字段进入 schema。本页不推断「它当时用的是默认"
+                    "值」：那等于替一次没记录的运行编造基线。"
+                )
+                st.dataframe(
+                    [
+                        {"配置项": _d.key, "即将提交": str(_d.emitted_value)}
+                        for _d in _source_missing
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+        if _mode_only:
+            with st.expander(
+                f"属于另一个模式的字段（{len(_mode_only)} 项，本次不提交）",
+                expanded=False,
+            ):
+                st.caption(
+                    f"当前模式是 `{mode}`，这些键属于另一模式的 schema——它们"
+                    "已随预填落入本页状态，切换模式后即生效，但本次提交不含"
+                    "它们。"
+                )
+                st.dataframe(
+                    [
+                        {
+                            "配置项": _d.key,
+                            f"源运行（{_source_job}）": str(_d.source_value),
+                        }
+                        for _d in _mode_only
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+        if _run_scoped:
+            st.caption(
+                "· 源运行的 `"
+                + "`、`".join(_d.key for _d in _run_scoped)
+                + "` 随那一次运行而生（由作业管理器注入），不随配置携带。"
             )
 
     if _unsupported_prefill:

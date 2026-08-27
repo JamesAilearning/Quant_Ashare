@@ -159,6 +159,54 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         )
         self.assertIn("复核基线", source)
         self.assertIn("unsupported_prefill_keys(", source)
+        # 与被重跑运行的差异必须在提交前摊开,且**四类分开**——把 schema
+        # 演进噪音和真实的值改动堆成一句,操作人只会学会忽略整块。钉:调用
+        # 带 known_keys（少了它,另一模式的键会被误报成「值被改了」）、四个
+        # 分桶取子集、以及「有改动 / 无改动」两条渲染分支都不沉默。
+        self.assertIn(
+            "prefill_divergences_from_source_run(\n"
+            "        PREFILL_CONFIG, preview_config, known_keys=known_keys,\n"
+            "    )",
+            source,
+        )
+        self.assertIn(
+            "_changed = divergences_of(_prefill_divergences, "
+            "DIVERGENCE_CHANGED)\n",
+            source,
+        )
+        self.assertIn("DIVERGENCE_SOURCE_MISSING)\n", source)
+        self.assertIn("DIVERGENCE_MODE_INAPPLICABLE)\n", source)
+        self.assertIn("DIVERGENCE_RUN_SCOPED)\n", source)
+        self.assertIn("\n    if PREFILL_CONFIG:\n", source)
+        self.assertIn("\n        if _changed:\n", source)
+        self.assertIn("\n        else:\n            st.caption(\n", source)
+        self.assertIn("逐项一致", source)
+        self.assertIn("\n        if _source_missing:\n", source)
+        self.assertIn("\n        if _mode_only:\n", source)
+        self.assertIn("\n        if _run_scoped:\n", source)
+        # 预填必须**无条件**覆盖已知键。条件写入（只在该字段的 session 键
+        # 尚不存在时才写）在最常见路径上 100% 失效:`_cr()` 只要被调用
+        # 过就把 `cr_*` 种满,操作人只要打开过一次本页,之后点「用此配置
+        # 重跑」一个字段也进不来,而横幅照说「已预填」。
+        self.assertIn(
+            "\n            st.session_state[_session_key] = v\n", source)
+        self.assertNotIn('f"cr_{k}" not in st.session_state', source)
+        # 覆盖不许是静默的。钉**条件表达式整行**——只钉 append 那句的话,
+        # 把守它的 if 熄火（`if False and ...`）能原样逃逸,append 还在、
+        # 语义已反转（#470 连栽两轮的同一形态）。
+        self.assertIn(
+            "\n            if _session_key in st.session_state "
+            "and not _values_agree(\n"
+            "                    _previous, v):\n"
+            "                _prefill_overwritten.append((k, _previous, v))\n",
+            source,
+        )
+        self.assertIn("\n    if _prefill_overwritten:\n", source)
+        # 解析失败要响亮,不许静默返回空 dict 让横幅照说「已预填」。
+        self.assertIn('st.session_state["prefill_config_error"] = (', source)
+        self.assertIn("\n    except yaml.YAMLError as exc:\n", source)
+        self.assertIn("\n    if not isinstance(loaded, dict):\n", source)
+        self.assertIn("\nif _PREFILL_ERROR:\n", source)
         self.assertIn("启动研究运行", source)
         self.assertIn("不会发布模型、修改 production serving", source)
         # The review is read-only: it consumes preview_config, while the page

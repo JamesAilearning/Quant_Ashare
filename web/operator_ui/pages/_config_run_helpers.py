@@ -13,7 +13,7 @@ side cannot accidentally drift the calendar math.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -261,6 +261,126 @@ def snapshot_preset_for_review(
     )
 
 
+#: 由 JobManager 注入、随运行而生的键——它属于那一次运行,不属于配置本身
+#: （job_manager.py 在 start() 里强制写 output_dir）。重跑时它既不该被携带,
+#: 也不该被报成「本页 schema 不支持」——后者会让每次重跑都出现一句假警告。
+_RUN_SCOPED_PREFILL_KEYS = frozenset({"output_dir"})
+
+#: 差异分类。四类对操作人的下一步完全不同,不许混成一句（把 schema 演进
+#: 噪音和真实的值改动堆在一起,操作人只会学会忽略整块）。
+DIVERGENCE_CHANGED = "changed"                # 两侧都有、值不同
+DIVERGENCE_SOURCE_MISSING = "source_missing"  # 源运行没记这个键（旧 schema）
+DIVERGENCE_MODE_INAPPLICABLE = "mode_only"    # 属于另一个模式,本次不提交
+DIVERGENCE_RUN_SCOPED = "run_scoped"          # 随运行而生（output_dir）
+
+
+@dataclass(frozen=True)
+class PrefillDivergence:
+    """预填与即将提交之间的一项差异,带**分类**。"""
+
+    key: str
+    classification: str
+    source_value: Any | None
+    source_present: bool
+    emitted_value: Any | None
+    emitted_present: bool
+
+
+def _values_agree(left: Any, right: Any) -> bool:
+    """两个配置值是否**语义相同**。
+
+    预填值来自被重跑那次运行的 YAML（``yaml.safe_load`` 的原生类型）,生效
+    值来自表单控件（``st.number_input`` 等按控件类型归一）。同一个数在两侧
+    可以是 ``50`` 与 ``50.0``——那不是操作人改过它,报成差异只会制造噪音、
+    把真差异淹掉。``==`` 本身就跨 int/float 比数值,所以这里**不**加
+    ``float(left) == float(right)`` 那层:它对内建类型零收益,却会把超出
+    float 精度的大整数判成相同。唯一需要自己动手的是 bool。
+    """
+    if isinstance(left, bool) != isinstance(right, bool):
+        # 一侧 bool 一侧不是:``True == 1`` 为真会让它们判成相同,而
+        # ``risk_constraints_enabled: true`` 与 ``: 1`` 在配置语义里不是
+        # 一回事。
+        return False
+    return bool(left == right)
+
+
+def prefill_divergences_from_source_run(
+    prefill_config: Mapping[str, Any],
+    emitted_config: Mapping[str, Any],
+    *,
+    known_keys: Collection[str],
+) -> tuple[PrefillDivergence, ...]:
+    """预填与**即将提交**之间的全部差异,按四类分开。
+
+    ``known_keys``:本次模式真正会提交的键集合（PIPELINE_KEYS /
+    WALK_FORWARD_KEYS）。源运行里属于**另一个**模式的键必须单列——它们不
+    是「值被改了」,是本次压根不提交,和真实的值改动混在一起会把后者淹掉。
+
+    分类语义（每类对操作人的下一步不同）:
+
+    * ``changed``：两侧都有、值不同——真正需要确认的那些
+    * ``source_missing``：源运行没记这个键。**绝不**推断成「源运行用的是
+      默认值」:老运行的 schema 更窄（实测样本缺 namechange_path/成本族/
+      守卫三件套等十余键）,臆造基线正是
+      ``explicitly_applied_preset_name`` 的 docstring 禁止的事
+    * ``mode_only``：键属于另一个模式,本次不提交
+    * ``run_scoped``：随运行而生（output_dir 由 JobManager 注入）,既不
+      携带也不算 schema 缺口
+
+    机器本地键（``provider_uri`` / ``namechange_path``）整体排除:它们由本机
+    环境强制覆写,源运行记的是产出机器的路径,报出来只是每次重跑固定两行
+    噪音。与预设比较用的是同一套排除（``_MACHINE_LOCAL_PRESET_KEYS``）。
+    """
+
+    known = set(known_keys)
+    out: list[PrefillDivergence] = []
+    candidates = (
+        (set(prefill_config) | (set(emitted_config) & known))
+        - _MACHINE_LOCAL_PRESET_KEYS
+    )
+    for key in sorted(candidates):
+        source_present = key in prefill_config
+        emitted_present = key in emitted_config
+        source_value = prefill_config.get(key)
+        emitted_value = emitted_config.get(key)
+        if key in _RUN_SCOPED_PREFILL_KEYS:
+            if source_present:
+                out.append(PrefillDivergence(
+                    key=key, classification=DIVERGENCE_RUN_SCOPED,
+                    source_value=source_value, source_present=True,
+                    emitted_value=emitted_value,
+                    emitted_present=emitted_present))
+            continue
+        if source_present and key not in known:
+            out.append(PrefillDivergence(
+                key=key, classification=DIVERGENCE_MODE_INAPPLICABLE,
+                source_value=source_value, source_present=True,
+                emitted_value=emitted_value, emitted_present=emitted_present))
+            continue
+        if not source_present and emitted_present:
+            out.append(PrefillDivergence(
+                key=key, classification=DIVERGENCE_SOURCE_MISSING,
+                source_value=None, source_present=False,
+                emitted_value=emitted_value, emitted_present=True))
+            continue
+        if not emitted_present:
+            continue
+        if _values_agree(source_value, emitted_value):
+            continue
+        out.append(PrefillDivergence(
+            key=key, classification=DIVERGENCE_CHANGED,
+            source_value=source_value, source_present=True,
+            emitted_value=emitted_value, emitted_present=True))
+    return tuple(out)
+
+
+def divergences_of(
+    divergences: tuple[PrefillDivergence, ...], classification: str,
+) -> tuple[PrefillDivergence, ...]:
+    """按分类取子集——渲染侧不许自己写过滤条件（两处过滤会分叉）。"""
+    return tuple(d for d in divergences if d.classification == classification)
+
+
 def unsupported_prefill_keys(
     prefill_config: Mapping[str, Any],
     emitted_config: Mapping[str, Any],
@@ -270,9 +390,17 @@ def unsupported_prefill_keys(
     A historic configuration can contain fields unsupported by the standalone
     UI.  Reporting them is intentionally conservative: it does not add them
     to the launch payload or pretend their old semantics still apply.
+
+    Run-scoped keys are excluded: ``output_dir`` is injected by the job
+    manager on every launch, so it is present in *every* archived config and
+    absent from *every* emitted one.  Reporting it would put a standing false
+    warning on every rerun, which is exactly how operators learn to ignore
+    the whole block.
     """
 
-    return tuple(sorted(set(prefill_config) - set(emitted_config)))
+    return tuple(sorted(
+        (set(prefill_config) - set(emitted_config)) - _RUN_SCOPED_PREFILL_KEYS
+    ))
 
 
 def _trading_day_options(calendar_dates: tuple[date, ...]) -> list[str]:
