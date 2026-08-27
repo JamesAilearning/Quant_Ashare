@@ -432,7 +432,17 @@ one period.
   cancel time (run date, start stamp, exit code) and SHALL NOT direct the
   operator to the ledger as authoritative: the very window this outcome
   represents is a kill between the terminal status write and the ledger
-  append, so the ledger may never have received the entry
+  append, so the ledger may never have received the entry. More generally, NO cancel
+outcome wording may present the ledger as verified or authoritative: the
+orchestrator's ledger append is deliberately best-effort (a failed append
+is swallowed and the process exits normally), and this page verifies only
+the status artifact — ledger mentions SHALL be qualified as best-effort
+and unverified. And an absent matching record on the post-kill reread
+SHALL NOT be presented as proof the child was killed before writing: the
+only verified fact is that no matching record exists NOW — the child may
+have written its record and had it superseded between its death and the
+reread, or the artifact may be momentarily unreadable — and the wording
+SHALL name these possibilities instead of asserting a pre-write kill
 
 #### Scenario: a same-stamp replacement with another identity is not covered
 

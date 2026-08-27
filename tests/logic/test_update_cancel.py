@@ -1345,9 +1345,11 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                       "缺专属措辞分支")
         self.assertIn("终态记录**（上方状态即它", page,
                       "措辞没指向上方 finished 横幅")
-        # 源码序:专属分支必须在「无记录」兜底 else 之前。
+        # 源码序:专属分支必须在「无匹配记录」兜底 else 之前（锚随第三
+        # 十四轮兜底改述更新——「写前被杀」不再当已证事实说,断言意图
+        # 不动）。
         tak_at = page.index('elif _last_cancel.get("terminal_after_kill"):')
-        norec_at = page.index("进程在写下自己的 running 记录之前就被终止")
+        norec_at = page.index("唯一已证实的事实")
         self.assertLess(tak_at, norec_at,
                         "专属分支在兜底之后——永远渲染不到")
         # 迟到补结算同款检出（第三十轮 P2:超时 kill 的迟到死亡同样可撞
@@ -1390,6 +1392,21 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertNotIn("终态以台账为准", page,
                          "改口文案仍把操作人指向可能不存在的台账行")
         self.assertIn("不保证**已入台账", page, "缺台账不保证声明")
+        # 全页台账措辞审计（第三十四轮 P2）:台账追加是 best-effort（写
+        # 失败被编排器刻意吞掉）,任何「台账如实可查/以台账为准」类承诺
+        # 都是过度声称——graceful 成功文案只声称核实过的状态工件。
+        self.assertNotIn("状态与台账如实", page,
+                         "graceful 文案仍承诺台账可查")
+        self.assertNotIn("状态与台账为准", page,
+                         "no-op 文案仍以台账为准")
+        self.assertIn("台账为尽力追加，不在本页核实范围", page,
+                      "graceful 文案缺台账不保证声明")
+        # 兜底不再把「写前被杀」当已证事实:如实列举歧义 + nonce 复现
+        # 承诺。
+        self.assertNotIn("（进程在写下记录前即被终止）——无需", page,
+                         "兜底仍把写前被杀当已证事实")
+        self.assertIn("也可能其记录已被随后的运行接替或工件暂不可读",
+                      page, "兜底缺歧义如实列举")
         self.assertIn('"exit_code": _late_status.exit_code', page,
                       "补结算身份没随行终态事实")
         self.assertIn('"exit_code": _fresh_status.exit_code', page,

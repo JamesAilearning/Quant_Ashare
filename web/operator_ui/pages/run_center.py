@@ -967,7 +967,7 @@ if isinstance(_last_cancel, dict):
         st.info(
             "取消未执行：该运行在取消前已自行结束"
             f"（returncode={_last_cancel.get('returncode')}）——成败以上方"
-            "状态与台账为准。"
+            "状态为准（台账为尽力追加，本页未核实）。"
         )
     elif _last_cancel.get("kind") == "cancelled":
         # 「编排器自己写下了终态记录」只许在**核实到**时说（finished 且
@@ -979,10 +979,13 @@ if isinstance(_last_cancel, dict):
                  if _last_cancel.get("graceful") else "强制终止")
         if (_last_cancel.get("graceful")
                 and _last_cancel.get("terminal_recorded")):
+            # 只声称核实过的东西（第三十四轮 P2）：terminal_recorded 只
+            # 验了**状态工件**;台账追加是 best-effort（写失败被编排器刻
+            # 意吞掉照常退出）,本页没核实过,不许说「台账如实可查」。
             st.success(
                 "已取消（礼貌信号生效）：编排器自己写下了终态记录（已核"
-                "实：finished 且写者 pid 属本次运行），状态与台账如实"
-                "可查。"
+                "实：finished 且写者 pid 属本次运行）——状态工件如实可"
+                "查（台账为尽力追加，不在本页核实范围）。"
                 + ("" if (_last_cancel.get("swap_interrupted")
                           or _last_cancel.get("swap_state_unknown"))
                    else "在线数据未受影响。")
@@ -1025,8 +1028,8 @@ if isinstance(_last_cancel, dict):
                     f"强制终止已执行（returncode="
                     f"{_last_cancel.get('returncode')}），但编排器在被终止"
                     "前已写下本次运行的**终态记录**（上方状态即它，身份"
-                    "经核实）——运行本体已完成落账，可能仅共享台账的追加"
-                    "被打断；页面按状态工件如实展示，单飞锁已自动释放，"
+                    "经核实）——运行本体已写完终态记录，可能仅共享台账的"
+                    "追加被打断（台账不保证）；页面按状态工件如实展示，单飞锁已自动释放，"
                     "下次更新照常。"
                 )
             else:
@@ -1046,16 +1049,20 @@ if isinstance(_last_cancel, dict):
                     "更新照常。"
                 )
         else:
-            # 进程在写下自己的 running 记录之前就被终止（或记录已是别次
-            # 运行的）——没有孤儿要更正，也没有证据可存；上面那套「将持续
-            # 标注/已解锁」的话在这种情形下会与下一次 rerun 矛盾
-            # （codex 第四轮 P2）。按状态工件如实展示即可。
+            # 重读时没有本次运行的匹配记录——**唯一已证实的事实**只是
+            # 「此刻不在」:可能进程在写下记录前即被终止,也可能它写过、
+            # 但在死亡与重读之间被接替改写/工件暂不可读（codex 第三十四
+            # 轮 P2:把「写前被杀」当已证事实是过度声称;不确凿读取路径
+            # 已留 nonce 证据,孤儿若复现会被如实盖住）。没有孤儿要更
+            # 正;「将持续标注/已解锁」在此会与下一次 rerun 矛盾（codex
+            # 第四轮 P2）。按状态工件如实展示。
             st.success(
                 f"已取消（{_mode}，returncode="
-                f"{_last_cancel.get('returncode')}）。状态工件此刻没有该"
-                "运行的 running 记录（进程在写下记录前即被终止）——无需"
-                "更正标注，页面按状态工件如实展示；单飞锁已自动释放，"
-                "下次更新照常。"
+                f"{_last_cancel.get('returncode')}）。重读时状态工件中"
+                "**没有**本次运行的记录——可能它在写下记录前即被终止，"
+                "也可能其记录已被随后的运行接替或工件暂不可读（若以本次"
+                "身份复现，将按已取消如实标注）。无需更正标注，页面按状"
+                "态工件如实展示；单飞锁已自动释放，下次更新照常。"
             )
     else:
         st.error(
