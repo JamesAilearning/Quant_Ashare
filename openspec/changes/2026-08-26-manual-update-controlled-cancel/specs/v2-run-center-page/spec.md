@@ -347,7 +347,16 @@ externally never writes a terminal record; a run that already wrote its
 terminal record can still be finishing its ledger append — so a watcher
 comparing only those never fires and the retirement would wait for a
 manual interaction, leaving dead-process cancel controls and a disabled
-launch button standing until the staleness threshold. Settling SHALL immediately re-render
+launch button standing until the staleness threshold.
+
+Retiring a handle SHALL persist nonce-bound INTERRUPTED-RUN evidence
+whenever the session holds a launch nonce: a child can write its `running`
+record and then die without a terminal one (killed externally, crashed),
+and dropping the handle without evidence leaves that record presented as
+live and the launch button disabled until the staleness threshold. That
+evidence SHALL be presented HONESTLY as an interruption, never as a
+cancellation this page performed — the run ended for reasons outside the
+page, and the page knows only that its handle confirmed the exit. Settling SHALL immediately re-render
 the page so the corrected state (not the pre-settlement banner) is what the
 operator sees.
 

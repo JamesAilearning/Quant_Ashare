@@ -314,6 +314,7 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": _late_status.started_at or "",
             "launch_nonce": _kill_nonce or "",
+            "kind": "cancelled",
         }
     elif _kill_nonce and _late_status.kind in ("missing", "corrupt"):
         # 读取不确凿 ≠ 无孤儿（codex 第二十五轮 P2:此前这里连未决上下
@@ -324,6 +325,7 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": "",
             "launch_nonce": _kill_nonce,
+            "kind": "cancelled",
         }
     # 结局按与当场取消同一套渲染呈报（成功文案 + swap/unknown/标记
     # 三警告都在 _LAST_CANCEL_KEY 的消费处）——迟到死亡不能只默默
@@ -377,6 +379,20 @@ if _live_proc is not None and _live_proc.poll() is not None:
         _settle_late_pending(_live_run, _live_proc)
     # 进程已结束——句柄退役，成败由状态工件/台账自述（自然完成,无未决
     # 取消;kill 导致的死亡在上面的补结算分支里已经 rerun 走人）。
+    # 中断证据（codex 第四十五轮 P2）：子进程可能写了 running 记录却没
+    # 写终录就死了（被外部杀死/崩溃）——句柄一丢,那条 running 记录无人
+    # 更正,`_running_fresh` 恒真,启动按钮锁到六小时陈旧线。本会话的
+    # nonce 是先验已知的可证身份,落一条**中断**证据（与取消证据同一
+    # 键,kind 区分措辞:它不是被本页取消的）。惰性:没有匹配记录时无
+    # 害,匹配记录出现即被如实盖住。
+    _dead_nonce = (
+        _live_run.get("launch_nonce") if isinstance(_live_run, dict) else None)
+    if _dead_nonce:
+        st.session_state[_CANCELLED_EVIDENCE_KEY] = {
+            "started_at": "",
+            "launch_nonce": _dead_nonce,
+            "kind": "interrupted",
+        }
     st.session_state.pop(_LIVE_RUN_KEY, None)
     st.session_state.pop(_CANCEL_ARM_KEY, None)
     _session_live = None
@@ -409,11 +425,21 @@ elif _status.kind == "corrupt":
 elif _status.kind == "running":
     _cls = _status_class  # 同一次分类,勿重算(见上)
     if _cancelled_this_run:
-        st.warning(
-            f"⛔ 该 running 记录(始于 {_status.started_at})已被本会话"
-            "**取消**——进程经句柄确认退出,不会再写终态;这不是仍在运行。"
-            "单飞锁已随进程释放,可直接重新启动更新。"
-        )
+        if (_cancel_evidence or {}).get("kind") == "interrupted":
+            # 中断 ≠ 取消（第四十六轮 P2）:本会话启动的运行死于外部原
+            # 因（被杀/崩溃）,页面不许说成「已被本会话取消」。
+            st.warning(
+                f"⛔ 该 running 记录(始于 {_status.started_at})对应的运行"
+                "**已结束**——本会话持有的进程句柄确认它已退出,但它没有"
+                "写下终态记录（外部终止或崩溃）;这不是仍在运行,也不是本"
+                "页取消的。单飞锁已随进程释放,可直接重新启动更新。"
+            )
+        else:
+            st.warning(
+                f"⛔ 该 running 记录(始于 {_status.started_at})已被本会话"
+                "**取消**——进程经句柄确认退出,不会再写终态;这不是仍在运行。"
+                "单飞锁已随进程释放,可直接重新启动更新。"
+            )
     elif _cls == RUNNING_FRESH:
         st.info(f"🔄 一次更新正在进行:始于 {_status.started_at}。")
     elif _cls == RUNNING_STALE:
@@ -906,6 +932,7 @@ if _live_proc is not None:
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                             "launch_nonce": _kn or "",
+                            "kind": "cancelled",
                         }
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["evidence_stored"] = True
@@ -949,6 +976,7 @@ if _live_proc is not None:
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": "",
                             "launch_nonce": _kn,
+                            "kind": "cancelled",
                         }
                 st.session_state.pop(_CANCEL_ARM_KEY, None)
                 st.rerun()

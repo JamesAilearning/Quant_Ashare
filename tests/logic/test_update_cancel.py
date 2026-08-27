@@ -1622,6 +1622,29 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                     provider, cancelled_launch_nonce="cd" * 16),
                 "别人的 nonce 被放行")
 
+    def test_an_externally_killed_run_is_not_left_looking_live(self) -> None:
+        # 普通退役分支（无未决取消）丢句柄时不落证据（codex 第四十六轮
+        # P2）:子进程可能写了 nonce-bearing 的 running 记录却没写终录就
+        # 被外部杀死/崩溃——那条记录无人更正,_running_fresh 恒真,启动
+        # 按钮锁到六小时陈旧线。本会话 nonce 先验已知,落一条**中断**证
+        # 据（同键 kind 区分:它不是被本页取消的,措辞必须如实）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('"kind": "interrupted"', page,
+                      "普通退役没落中断证据")
+        self.assertIn("_dead_nonce = (", page, "退役分支没取会话 nonce")
+        # 钉**条件行本身**（第四十五轮同款教训:只钉赋值时,把条件熄火成
+        # `if False and _dead_nonce:` 仍能过——本轮变异实测再逃逸一次）。
+        self.assertIn(chr(10) + "    if _dead_nonce:" + chr(10), page,
+                      "中断证据的落盘条件被熄火/收窄")
+        # 措辞分岔:中断不许说成「已被本会话取消」。
+        self.assertIn('(_cancel_evidence or {}).get("kind") == "interrupted"',
+                      page, "running 分支没按证据种类分岔措辞")
+        self.assertIn("也不是本", page, "中断措辞没否认「本页取消」")
+        # 取消侧证据全部带 kind（否则中断措辞会漏到取消场景）。
+        self.assertEqual(4, page.count('"kind": "cancelled"'),
+                         "四处取消证据写入没都带 kind")
+
     def test_evidence_survives_inconclusive_status_reads(self) -> None:
         # corrupt/missing 是**读取失败**不是接替证明（codex 第二十三轮
         # P2）：瞬时卷/权限失效借它把证据永久清掉,访问恢复后同一条孤儿
