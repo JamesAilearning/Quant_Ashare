@@ -47,6 +47,7 @@ from web.operator_ui.page_header import render_page_header
 # "Module level import not at top of file" — Codex P2 on PR #202.
 from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _PIPELINE_DATE_FALLBACK,
+    _RUN_SCOPED_PREFILL_KEYS,
     DIVERGENCE_CHANGED,
     DIVERGENCE_MODE_INAPPLICABLE,
     DIVERGENCE_RUN_SCOPED,
@@ -363,8 +364,15 @@ if _PREFILL_ERROR:
     st.error(f"⚠ {_PREFILL_ERROR}")
 #: 预填**一次性覆盖**的已知键集合。跨模式取并集:源运行可能是另一个模式,
 #: 它的键要先落进 session,`mode` 切过去时才有值可用。
-_PREFILL_APPLICABLE_KEYS = frozenset(PIPELINE_KEYS) | frozenset(
-    WALK_FORWARD_KEYS) | {"mode"}
+#:
+#: 扣掉 run-scoped 键:两个后端 KEYS 常量都含 `output_dir`,但本页从不提交
+#: 它(`JobManager.start` 每次自己注入)。不扣的话,同一会话里连着重跑两次
+#: 作业,第二次会把第一次的目录报成「被覆盖」——一个本页同时声明「随运行
+#: 而生、不会携带」的字段。假警告比没有警告更坏:操作人学会忽略整块。
+_PREFILL_APPLICABLE_KEYS = (
+    (frozenset(PIPELINE_KEYS) | frozenset(WALK_FORWARD_KEYS) | {"mode"})
+    - _RUN_SCOPED_PREFILL_KEYS
+)
 
 
 def _apply_prefill_to_session(

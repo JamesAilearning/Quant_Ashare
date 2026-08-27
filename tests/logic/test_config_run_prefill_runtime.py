@@ -56,6 +56,45 @@ _APPLICABLE = frozenset({
 })
 
 
+def _page_applicable_keys() -> frozenset[str]:
+    """页面**真正**用的可用键集合,按它自己的表达式算出来。
+
+    在测试里抄一份「PIPELINE_KEYS | WALK_FORWARD_KEYS - run_scoped」等于把
+    同一条规则写两份:页面漏掉那个减法时,抄的这份照样绿。取页面里那行赋值
+    的 AST 真跑它。
+    """
+    from web.operator_ui.config_forms import PIPELINE_KEYS, WALK_FORWARD_KEYS
+    from web.operator_ui.pages._config_run_helpers import (
+        _RUN_SCOPED_PREFILL_KEYS,
+    )
+
+    tree = ast.parse(_CONFIG_RUN_PAGE.read_text(encoding="utf-8"))
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_PREFILL_APPLICABLE_KEYS"
+            for target in node.targets
+        )
+    )
+    namespace: dict[str, Any] = {
+        "PIPELINE_KEYS": PIPELINE_KEYS,
+        "WALK_FORWARD_KEYS": WALK_FORWARD_KEYS,
+        "_RUN_SCOPED_PREFILL_KEYS": _RUN_SCOPED_PREFILL_KEYS,
+    }
+    exec(  # noqa: S102 - 取的是本仓自己的页面源码
+        compile(
+            ast.Module(body=[assignment], type_ignores=[]),
+            str(_CONFIG_RUN_PAGE),
+            "exec",
+        ),
+        namespace,
+    )
+    return frozenset(namespace["_PREFILL_APPLICABLE_KEYS"])
+
+
 def test_prefill_overwrites_a_field_the_page_already_seeded() -> None:
     # 缺陷本体:`_cr()` 只要被调用过就把 `cr_*` 种满,所以「打开过一次配置
     # 页」之后每个键都已存在。条件写入在这条路径上一个字段也进不来。
@@ -87,6 +126,29 @@ def test_prefill_never_writes_keys_outside_the_submit_schema() -> None:
     apply_prefill({"topk": 50, "preset_selector": "Smoke"}, _APPLICABLE)
 
     assert session == {"cr_topk": 50}
+
+
+def test_run_scoped_key_never_produces_a_false_overwrite_warning() -> None:
+    # codex P2 on #471:两个后端 KEYS 常量都含 `output_dir`,但本页从不提交
+    # 它(JobManager.start 每次自己注入)。不扣掉的话,同一会话里连着重跑两
+    # 次作业,第二次会把第一次的目录报成「被覆盖」——一个本页同时声明「随
+    # 运行而生、不会携带」的字段。这里用**页面真正的**可用键集合跑,而不是
+    # 自己编一个:编的那个漏掉了才是这条测试要抓的东西。
+    applicable = _page_applicable_keys()
+    assert "output_dir" not in applicable
+    session: dict[str, Any] = {"cr_output_dir": "output/runs/first"}
+    apply_prefill = _load("_apply_prefill_to_session", session)
+
+    overwritten = apply_prefill(
+        {"topk": 50, "output_dir": "output/runs/second"}, applicable)
+
+    assert overwritten == []
+    assert session["cr_output_dir"] == "output/runs/first"
+
+
+def test_mode_survives_the_run_scoped_subtraction() -> None:
+    # 扣 run-scoped 时手滑扣掉 `mode`,源运行的模式就再也落不进本页状态。
+    assert "mode" in _page_applicable_keys()
 
 
 def test_numerically_equal_value_is_not_reported_as_overwritten() -> None:
