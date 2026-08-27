@@ -818,6 +818,7 @@ if _live_proc is not None:
                     "markers_written": _outcome.markers_written,
                     "swap_state_unknown": _outcome.swap_state_unknown,
                     "terminal_recorded": _outcome.terminal_recorded,
+                    "terminal_race": _outcome.terminal_race,
                     # graceful 终态核实的**身份随行**（第三十五轮 P2:
                     # 只带布尔的话,核实与 rerun 渲染之间被接替改写时,
                     # 「状态工件如实可查」会对着接替横幅说——渲染帧要
@@ -976,11 +977,23 @@ if _live_proc is not None:
 _last_cancel = st.session_state.pop(_LAST_CANCEL_KEY, None)
 if isinstance(_last_cancel, dict):
     if _last_cancel.get("kind") == "already_finished":
-        st.info(
-            "取消未执行：该运行在取消前已自行结束"
-            f"（returncode={_last_cancel.get('returncode')}）——成败以上方"
-            "状态为准（台账为尽力追加，本页未核实）。"
-        )
+        if _last_cancel.get("terminal_race"):
+            # 「终录先在 + kill 静默返回 + 死亡」格（第三十六轮 P2）：
+            # 送达不可判定——「取消未执行」与「强制终止已执行」都可能
+            # 撒谎,如实说竞态与数据等价性。
+            st.info(
+                "该运行已写完终态记录（终止指令发出前即已在盘）"
+                f"（returncode={_last_cancel.get('returncode')}）。终止"
+                "指令与其自然结束存在竞态，**无法确定是否实际送达**——"
+                "二者对数据结果等价：终态已记录，唯共享台账的追加不保"
+                "证完整。成败以上方状态为准。"
+            )
+        else:
+            st.info(
+                "取消未执行：该运行在取消前已自行结束"
+                f"（returncode={_last_cancel.get('returncode')}）——成败"
+                "以上方状态为准（台账为尽力追加，本页未核实）。"
+            )
     elif _last_cancel.get("kind") == "cancelled":
         # 「编排器自己写下了终态记录」只许在**核实到**时说（finished 且
         # 写者 pid 属本次运行——codex 第十轮 P2）：SIGINT 可落在编排器
@@ -1012,6 +1025,15 @@ if isinstance(_last_cancel, dict):
                     + ("" if (_last_cancel.get("swap_interrupted")
                               or _last_cancel.get("swap_state_unknown"))
                        else "在线数据未受影响。")
+                )
+            elif _status.kind in ("missing", "corrupt"):
+                # 读取失败 ≠ 被接替（第三十六轮 P2,r23/25 同款三态）：
+                # 「已被接替」只许对**合法且不匹配**的记录说。
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（取消当时经身份核实），但**此刻**状态工件暂不可读"
+                    "——无法确认其当前内容；本次终态以取消当时的核实为准"
+                    "（台账为尽力追加，不在本页核实范围）。"
                 )
             else:
                 st.success(
@@ -1064,6 +1086,20 @@ if isinstance(_last_cancel, dict):
                     "经核实）——运行本体已写完终态记录，可能仅共享台账的"
                     "追加被打断（台账不保证）；页面按状态工件如实展示，单飞锁已自动释放，"
                     "下次更新照常。"
+                )
+            elif _status.kind in ("missing", "corrupt"):
+                # 读取失败 ≠ 被接替（第三十六轮,与 graceful 复验同款
+                # 三态）。
+                st.success(
+                    f"强制终止已执行（returncode="
+                    f"{_last_cancel.get('returncode')}），编排器在被终止前"
+                    "已写下本次运行的终态记录（取消当时经身份核实：运行日 "
+                    f"{_tid.get('run_date') or '?'}，始于 "
+                    f"{_tid.get('started_at') or '?'}，exit "
+                    f"{_tid.get('exit_code')}），但**此刻**状态工件暂不可"
+                    "读——无法确认其当前内容。台账追加可能恰在终止时被打"
+                    "断，本次终态**不保证**已入台账；以上即取消当时核实到"
+                    "的终态。单飞锁已自动释放，下次更新照常。"
                 )
             else:
                 # 不许指向台账（第三十三轮 P2）：本窗恰是「终态已写、

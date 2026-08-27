@@ -1085,29 +1085,32 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             provider = Path(t) / "prov"
             provider.mkdir()
-            # 变体A（第三十五轮改判）:终录在 kill **之前**已在盘——预检
-            # 活着 + 终录先在 = 「终态已写、正在追加台账」的收尾窗,杀点
-            # 落在终录之后:这是**真取消**（TerminateProcess 对活进程即
-            # 执行）,不是 no-op;报 already_finished 会谎称取消未执行、
-            # 绕过页面 terminal_after_kill 链。
+            # 变体A（第三十六轮再改判——终态）:终录在 kill **之前**已在
+            # 盘 + kill 静默返回 + 死亡 = **送达不可判定**格:杀前快照只
+            # 证明记录时序,不证明送达（TerminateProcess 真杀了收尾中的
+            # 活进程,与进程在快照后自然退出、CPython 吞 access-denied
+            # 正常返回,经 Popen API 无法区分——r35 判 cancelled 会在后
+            # 一情形谎称强制终止已执行,r20 判普通 already_finished 会在
+            # 前一情形谎称取消未执行）。终态=already_finished +
+            # terminal_race 标记 + 专属竞态标记行,页面如实说不可判定。
             status_path_for_provider(provider).write_text(
                 json.dumps(_record(provider)), encoding="utf-8")
             got, text = _run(provider, launched)
-            self.assertEqual("cancelled", got.kind,
-                             "终录先在的收尾窗硬杀被谎报成取消未执行")
-            self.assertIn("cancel outcome: process exited", text)
+            self.assertEqual("already_finished", got.kind)
+            self.assertTrue(got.terminal_race,
+                            "终录先在的静默返回没标送达不可判定")
+            self.assertIn("terminate delivery is undecidable", text)
         with tempfile.TemporaryDirectory() as t:
-            # 变体A'（第二十八轮引入,第三十五轮同步改判）:带 nonce 的
-            # 终录先在——同上归真取消;nonce 转发正确性由「不因
-            # nonce vs None 被拒」间接钉住(拒掉会落 else 也成 cancelled,
-            # 无法区分,故另以变体N 正面钉转发)。
+            # 变体A'（带 nonce,同上归不可判定格;nonce 转发正确性由变体
+            # N 正面钉）。
             provider = Path(t) / "prov"
             provider.mkdir()
             _nn = "ab" * 16
             status_path_for_provider(provider).write_text(
                 json.dumps(_record(provider, _nn)), encoding="utf-8")
             got, text = _run(provider, launched, nonce=_nn)
-            self.assertEqual("cancelled", got.kind)
+            self.assertEqual("already_finished", got.kind)
+            self.assertTrue(got.terminal_race)
         with tempfile.TemporaryDirectory() as t:
             # 变体N（第三十五轮）:真 no-op——终录**仅在杀中/杀后**才出现
             # （子进程在 poll→kill 微秒窗内自然跑完,send_signal 内部
@@ -1146,7 +1149,22 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                              "杀中才出现的终录没被判真自然完成"
                              "（或 nonce 没转发被拒）")
             self.assertFalse(got.kill_issued)
+            self.assertFalse(got.terminal_race,
+                             "真自然完成被误标送达不可判定")
             self.assertIn("own terminal record", text)
+        # 页面接线（第三十六轮）:不可判定格专属措辞 + 两处渲染帧复验的
+        # missing/corrupt 三态（读取失败 ≠ 被接替,r23/25 同款）。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('"terminal_race": _outcome.terminal_race', page,
+                      "confirm 结局没带竞态标记")
+        self.assertIn('if _last_cancel.get("terminal_race"):', page,
+                      "already_finished 渲染缺不可判定分支")
+        self.assertIn("无法确定是否实际送达", page, "缺不可判定措辞")
+        self.assertEqual(
+            2, page.count('elif _status.kind in ("missing", "corrupt"):'),
+            "两处渲染帧复验（graceful/终录后杀）缺 missing/corrupt 三态")
+        self.assertIn("暂不可读", page, "读取失败情形缺如实措辞")
         with tempfile.TemporaryDirectory() as t:
             # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。
             provider = Path(t) / "prov"

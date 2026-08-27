@@ -322,6 +322,14 @@ class UpdateCancel:
     #: （codex 第十轮 P2）;页面只有在这里为 True 时才许声称「编排器自己
     #: 写下了终态记录」。硬杀恒 False。
     terminal_recorded: bool = False
+    #: 「终录先在 + kill 静默返回 + 死亡」格的**送达不可判定**标记（第三
+    #: 十六轮 P2）:杀前快照只证明记录时序,不证明送达——TerminateProcess
+    #: 真杀了活进程,与它在快照后、TerminateProcess 前自然退出（CPython
+    #: 吞 access-denied 记 exit code 正常返回）,经 Popen API 无法区分。
+    #: 二者对数据结果**等价**（终态已记录;台账追加不保证）,页面对此格
+    #: 用专属措辞如实说「无法确定是否实际送达」,不在「取消未执行」与
+    #: 「强制终止已执行」两个都可能撒谎的标签里二选一。
+    terminal_race: bool = False
     #: cancel_failed 时,在**边界内、进程确证还活着**的时刻观察到的它自己
     #: 的 running 记录戳（codex 第二十三轮 P2:子进程可在页面取消前观察
     #: 之后才写出记录、又在本函数返回与页面事后观察之间死掉——两端观察
@@ -753,7 +761,27 @@ def cancel_update(
                         own_running_stamp=(
                             observe_own_running_record(process, provider_dir)
                             if provider_dir is not None else None))
-            elif (not signal_issued and not pre_kill_terminal
+            elif not signal_issued and pre_kill_terminal:
+                # 「终录先在 + kill 静默返回 + 死亡」——**送达不可判定**
+                # （第三十五/三十六轮）:杀前快照只证明记录时序,不证明送
+                # 达。TerminateProcess 真杀了收尾中的活进程,与进程在快照
+                # 后、TerminateProcess 前自然退出（CPython 吞 access-
+                # denied 正常返回）,经 Popen API 无法区分;报「取消未执
+                # 行」或「强制终止已执行」都可能撒谎。二者对数据结果等
+                # 价:终态已记录,台账追加不保证——按 already_finished +
+                # terminal_race 返回,页面用专属措辞如实说不可判定。
+                markers_written = _append_cancel_marker(
+                    log_path,
+                    "cancel outcome: terminal record predates the kill; "
+                    "terminate delivery is undecidable (natural-exit race) "
+                    "— data outcome identical either way, ledger append "
+                    "not guaranteed"
+                ) and markers_written
+                return UpdateCancel(
+                    kind="already_finished", returncode=process.returncode,
+                    markers_written=markers_written, kill_issued=False,
+                    terminal_race=True)
+            elif (not signal_issued
                     and terminal_record_confirms_the_run(
                         provider_dir, process.pid,
                         launched_at=launched_at,
@@ -763,9 +791,7 @@ def cancel_update(
                         # 「nonce vs None」拒掉,自然完成反被报成强制取消。
                         launch_nonce=launch_nonce)):
                 # 无任何信号在先 + 终录**仅在杀后**才出现——它在微秒窗
-                # 内自然跑完了,kill() 什么都没发（第三十五轮:终录早已
-                # 在的情形不走这里——那是杀点落在终录后收尾上的真取消,
-                # 落到下面的 else 按已发信号归类）。
+                # 内自然跑完了,kill() 什么都没发:真自然完成。
                 markers_written = _append_cancel_marker(
                     log_path,
                     "cancel outcome: process had already finished with its "
