@@ -413,6 +413,15 @@
       反向 legacy 会话拒 nonce 记录）+ 页面接线钉;变异（去 nonce 分支
       退回 pid+窗）咬住
 
+## codex 第二十八轮（P2：no-op kill oracle 转发 nonce——r27 集成回归）
+
+- [x] P2 我第二十七轮的集成回归——r20「kill 静默返回」分支的终态
+      oracle 调用没转发 launch_nonce:新语义下 UI 子进程带 nonce 的合法
+      终录被「nonce vs None」拒掉,自然完成落进 else 被记 signal_issued
+      =True、报成强制取消。修=调用点转发 cancel_update 的 launch_nonce;
+      _DiesQuietly 回归补变体A'（会话带 nonce + 终录带同 nonce →
+      already_finished）;变异（去转发）咬住
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

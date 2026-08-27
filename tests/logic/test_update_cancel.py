@@ -1043,7 +1043,7 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             def wait(self, timeout=None):
                 raise AssertionError("已死不应再等")
 
-        def _run(provider, launched):
+        def _run(provider, launched, nonce=None):
             proc = _DiesQuietly()
             with tempfile.TemporaryDirectory() as t2:
                 log = Path(t2) / "log.log"
@@ -1054,12 +1054,12 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                         got = cancel_update(
                             proc, log,  # type: ignore[arg-type]
                             provider_dir=provider, grace_seconds=0.3,
-                            launched_at=launched)
+                            launched_at=launched, launch_nonce=nonce)
                 else:
                     got = cancel_update(
                         proc, log,  # type: ignore[arg-type]
                         provider_dir=provider, grace_seconds=0.3,
-                        launched_at=launched)
+                        launched_at=launched, launch_nonce=nonce)
                 return got, (log.read_text(encoding="utf-8")
                              if log.exists() else "")
 
@@ -1085,6 +1085,28 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             self.assertEqual("already_finished", got.kind,
                              "静默返回被当成送达证据,自然完成被报成取消")
             self.assertFalse(got.kill_issued)
+            self.assertIn("own terminal record", text)
+        with tempfile.TemporaryDirectory() as t:
+            # 变体A'（第二十八轮 P2）:会话带 nonce 的 UI launch,子进程
+            # 的终录**带同一 nonce**——oracle 调用必须转发 nonce,否则
+            # 「nonce vs None」拒掉合法终录,自然完成反被报成强制取消
+            # （第二十七轮改动的集成回归）。
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            _nn = "ab" * 16
+            status_path_for_provider(provider).write_text(json.dumps({
+                "schema_version": 1, "state": "finished",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": _now.date().isoformat(),
+                "started_at": (_now - timedelta(hours=1)).isoformat(),
+                "finished_at": (_now - timedelta(minutes=1)).isoformat(),
+                "exit_code": 0, "failed_stage": None, "detail": "complete",
+                "pid": _DiesQuietly.pid, "launch_nonce": _nn,
+            }), encoding="utf-8")
+            got, text = _run(provider, launched, nonce=_nn)
+            self.assertEqual("already_finished", got.kind,
+                             "带 nonce 的合法终录被 oracle 拒掉,自然完成"
+                             "被报成强制取消（nonce 没转发）")
             self.assertIn("own terminal record", text)
         with tempfile.TemporaryDirectory() as t:
             # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。

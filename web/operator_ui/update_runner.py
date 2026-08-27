@@ -717,7 +717,11 @@ def cancel_update(
             elif not signal_issued and terminal_record_confirms_the_run(
                     provider_dir, process.pid,
                     launched_at=launched_at,
-                    exited_at=datetime.now(tz=_CN_TZ).isoformat()):
+                    exited_at=datetime.now(tz=_CN_TZ).isoformat(),
+                    # 第二十八轮 P2:UI 子进程的终录带 nonce,第二十七轮
+                    # 起 nonce 一票裁决——不转发会把合法终录按
+                    # 「nonce vs None」拒掉,自然完成反被报成强制取消。
+                    launch_nonce=launch_nonce):
                 # 无任何信号在先 + 本次运行自己的终态记录在——它在微秒窗
                 # 内自然跑完了,kill() 什么都没发。
                 markers_written = _append_cancel_marker(
