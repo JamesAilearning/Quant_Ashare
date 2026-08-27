@@ -82,6 +82,21 @@ class DailySignalSummaryTests(unittest.TestCase):
         self.assertEqual(result.kind, "hold")
         self.assertIn("不构成入场指令", result.detail)
 
+    def test_a_non_bool_cadence_field_is_never_summarised_as_a_signal(
+        self,
+    ) -> None:
+        # `rebalance_day: "yes"` 是产出器产不出的形态。`hold_state` 对它返回
+        # is_hold=False 且带 malformed——只看 is_hold 会把一份损坏工件当成
+        # 「有再平衡指令」端上头卡。这道闸此前无用例覆盖（#475 变异守卫抓到）。
+        result = summarise_daily_signal(
+            "2026-08-18",
+            {**_ensemble_payload(), "rebalance_day": "yes"},
+            incumbent=self.incumbent,
+            current_model_sha=None,
+        )
+        self.assertEqual(result.kind, "needs_verification")
+        self.assertIn("rebalance_day", result.detail)
+
     def test_provenance_or_payload_mismatch_never_becomes_a_signal(self) -> None:
         cases = (
             ("other manifest", _ensemble_payload(manifest="other")),

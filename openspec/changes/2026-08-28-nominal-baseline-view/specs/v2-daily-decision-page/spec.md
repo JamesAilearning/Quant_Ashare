@@ -31,6 +31,20 @@ an operator selects directly; a backward scan that applied fewer of them would
 be a second, weaker validation path over the same files, and would present as a
 trustworthy baseline an artifact the page itself refuses to render.
 
+The scan SHALL apply the producer shape contract through the SAME implementation
+the today-workbench summary applies, not through a parallel list of checks. That
+contract covers both groups of fields the scan draws conclusions from: the
+candidate list (per-row key and type contract, no duplicate codes, contiguous
+ranks, descending scores, a count within `meta.topk`) and the cadence record
+(both cadence fields written together or neither, a rebalance day's next date
+equal to its own as-of session, and a hold's next date a strict ISO weekday no
+earlier than its entry session). Enumerating these separately in each reader is
+how the weaker path returns: a review that names two missing checks leaves the
+rest of the same class in place. The shape contract SHALL NOT include the
+provenance verdict, which asks whether an artifact came from the CURRENT
+incumbent — an older rebalance was legitimately produced by an earlier model,
+and rejecting it on that ground would be wrong.
+
 **Only a validated hold SHALL license scanning further back.** A disqualified
 artifact SHALL stop the search and be reported as such, because it may itself
 record a rebalance that supersedes any older roster — scanning past it can
@@ -51,6 +65,20 @@ stop the search: it is neither a proven rebalance nor a proven hold.
 - **GIVEN** the only earlier artifact records no cadence field
 - **WHEN** the page renders
 - **THEN** it does not treat that artifact as a rebalance day
+
+#### Scenario: an incomplete cadence pair stops the scan
+
+- **GIVEN** an artifact records `rebalance_day` without `next_rebalance_date`
+- **WHEN** the page renders
+- **THEN** the scan stops there and reports the baseline as unknowable, rather
+  than reading the missing field as an unrecorded next date
+
+#### Scenario: a roster with a repeated code is not a position count
+
+- **GIVEN** an artifact whose candidate list names the same code twice
+- **WHEN** the page renders
+- **THEN** the scan refuses that artifact as a baseline, and the roster reader
+  raises rather than reporting the row count as the number of positions
 
 ### Requirement: A search that finds nothing SHALL say what it skipped and why
 
