@@ -420,6 +420,8 @@ def divergences_of(
 def unsupported_prefill_keys(
     prefill_config: Mapping[str, Any],
     emitted_config: Mapping[str, Any],
+    *,
+    other_mode_keys: Collection[str] = (),
 ) -> tuple[str, ...]:
     """Name prefilled fields that the current page will not submit.
 
@@ -432,10 +434,21 @@ def unsupported_prefill_keys(
     absent from *every* emitted one.  Reporting it would put a standing false
     warning on every rerun, which is exactly how operators learn to ignore
     the whole block.
+
+    ``other_mode_keys`` 同样排除,而且是**承重**的:属于另一个模式的键按定义
+    就不在本次的 emitted 里,所以每一个 mode_only 键都必然同时落进这份
+    「本页不支持」名单——于是同一个 ``overall_start`` 会在展开区被说成「属于
+    另一模式、切过去就生效」,又在黄色警告里被说成「不属于本页当前支持的提交
+    schema」。两句直接打架,而操作人无从判断该信哪一句。
+
+    一个键只能有**一种**归属:要么本页认得它（属于另一模式，切过去生效），
+    要么本页不认得它（schema 缺口）。这里减掉前者，剩下的才是后者。
     """
 
     return tuple(sorted(
-        (set(prefill_config) - set(emitted_config)) - _RUN_SCOPED_PREFILL_KEYS
+        (set(prefill_config) - set(emitted_config))
+        - _RUN_SCOPED_PREFILL_KEYS
+        - set(other_mode_keys)
     ))
 
 

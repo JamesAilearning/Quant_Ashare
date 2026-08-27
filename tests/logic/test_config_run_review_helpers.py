@@ -329,6 +329,32 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
             ["overall_start"],
         )
 
+    def test_an_other_mode_key_is_not_also_called_unsupported(self) -> None:
+        # 属于另一模式的键按定义就不在本次的 emitted 里，所以每一个 mode_only
+        # 键都会**同时**落进「本页不支持」名单——同一个 overall_start 于是在
+        # 展开区被说成「切模式即生效」，又在黄色警告里被说成「本页不支持」。
+        # 一个键只能有一种归属。
+        prefill = {"mode": "walk_forward", "topk": 50,
+                   "overall_start": "2020-01-01", "legacy_toggle": True}
+        emitted = {"mode": "pipeline", "topk": 50}
+        other_mode = ("overall_start", "overall_end")
+
+        divergences = prefill_divergences_from_source_run(
+            prefill, emitted, known_keys=("mode", "topk"),
+            other_mode_keys=other_mode)
+        unsupported = unsupported_prefill_keys(
+            prefill, emitted, other_mode_keys=other_mode)
+
+        mode_only = {
+            d.key
+            for d in divergences_of(divergences, DIVERGENCE_MODE_INAPPLICABLE)
+        }
+        self.assertEqual(mode_only, {"overall_start"})
+        # 两份报告的交集必须为空——这才是「一个键一种归属」。
+        self.assertEqual(mode_only & set(unsupported), set())
+        # 而本页两个模式都不认识的键仍然只归 unsupported。
+        self.assertEqual(unsupported, ("legacy_toggle",))
+
     def test_legacy_key_is_left_to_the_unsupported_reporter_alone(self) -> None:
         # 一个已删除的历史键既不在本模式 schema、也不在对面模式 schema。
         # 只看 known_keys 会把它标成「属于另一个模式」,而

@@ -496,7 +496,27 @@ def _prefilled_trading_day(field: str, live_default: str) -> str:
     return live_default
 
 
+#: 这一帧**有没有一份重跑载荷**——与「那份载荷解析出几个字段」是两回事。
+#:
+#: 用 `if PREFILL_CONFIG:` 当判据，会把一份合法但为空的归档配置（YAML 里就是
+#: `{}`）与「压根没点重跑」混成同一格：预填不跑、横幅不出、复核区也不出，
+#: 点「用此配置重跑」看起来**什么都没发生**。而那恰恰是最该说话的时刻——
+#: 操作人有理由怀疑是不是按钮坏了。
+#:
+#: 载荷在场与否只看那个 session 键在不在，不看它的解析结果；解析失败另有
+#: `prefill_config_error` 响亮报出，两条路不合并。
+_HAS_PREFILL_PAYLOAD = bool(
+    str(st.session_state.get("prefill_config_yaml", "")).strip())
+
 _prefill_overwritten: list[tuple[str, Any, Any]] = []
+if _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG and not _PREFILL_ERROR:
+    # 解析成功、顶层是映射、但一个键都没有。这是**合法**的归档配置，不是
+    # 错误——所以不走 `st.error`；但它必须说话，否则与「没点按钮」不可分辨。
+    st.warning(
+        f"⚠ 运行 {st.session_state.get('prefill_config_source_job', '')} 的 "
+        "config.yaml 是一份**空配置**（合法 YAML，但没有任何字段）——本次"
+        "**没有任何字段可预填**，下方仍是本页当前的值。"
+    )
 if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
     prefill_token = (
@@ -1241,9 +1261,6 @@ with form_col:
         PREFILL_CONFIG,
         str(st.session_state.get("prefill_config_source_mode", "")),
     )
-    _unsupported_prefill = unsupported_prefill_keys(
-        _prefill_baseline, preview_config,
-    )
     # `mode` 是**本次提交**的一部分(`preview_config = {"mode": mode, ...}`)
     # 却不在两个 KEYS 常量里,不加就永远不参与比较。
     _review_known_keys = frozenset(known_keys) | {"mode"}
@@ -1255,6 +1272,12 @@ with form_col:
     _review_other_mode_keys = (
         _WALK_FORWARD_ONLY_EMITTED if mode == "pipeline"
         else _PIPELINE_ONLY_EMITTED
+    )
+    # 「本页不支持」的名单要先减掉「属于另一模式」的那些,否则同一个键会同时
+    # 拿到两句互相打架的结论（展开区说切模式即生效，黄色警告说本页不支持）。
+    _unsupported_prefill = unsupported_prefill_keys(
+        _prefill_baseline, preview_config,
+        other_mode_keys=_review_other_mode_keys,
     )
     # 与**被重跑那次运行**的差异（不是与预设的差异——上面那张表比的是
     # 预设）。预填现在无条件覆盖已知键,但那只保证「预填那一刻」一致:预

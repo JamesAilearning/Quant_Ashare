@@ -192,13 +192,25 @@ class ConfigRunPageSourceTests(unittest.TestCase):
             "    )\n",
             source,
         )
-        # unsupported 也要看合成后的基线,否则 mode 会被它当成不支持的键。
+        # unsupported 也要看合成后的基线,否则 mode 会被它当成不支持的键;
+        # 并且必须减掉 other_mode——否则同一个键会同时拿到「切模式即生效」
+        # 与「本页不支持」两句互相打架的结论。
         self.assertIn(
             "\n    _unsupported_prefill = unsupported_prefill_keys(\n"
             "        _prefill_baseline, preview_config,\n"
+            "        other_mode_keys=_review_other_mode_keys,\n"
             "    )\n",
             source,
         )
+        # 一份合法但为空的归档配置必须说话:与「没点按钮」不可分辨是最坏的
+        # 一种沉默——操作人有理由怀疑是不是按钮坏了。
+        self.assertIn("\n_HAS_PREFILL_PAYLOAD = bool(\n", source)
+        self.assertIn(
+            "\nif _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG "
+            "and not _PREFILL_ERROR:\n",
+            source,
+        )
+        self.assertIn("是一份**空配置**", source)
         self.assertIn(
             "_changed = divergences_of(_prefill_divergences, "
             "DIVERGENCE_CHANGED)\n",
