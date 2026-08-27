@@ -1384,6 +1384,16 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                       "复验没比对 nonce")
         self.assertIn("已被随后的记录接替", page,
                       "接替情形缺如实改口文案")
+        # 改口文案不许指向台账（第三十三轮 P2:该窗恰是「终态已写、台账
+        # 追加被打断」,接替抹掉快照后台账可能根本没有这条）——随行事实
+        # 呈现 + 明说不保证入账。
+        self.assertNotIn("终态以台账为准", page,
+                         "改口文案仍把操作人指向可能不存在的台账行")
+        self.assertIn("不保证**已入台账", page, "缺台账不保证声明")
+        self.assertIn('"exit_code": _late_status.exit_code', page,
+                      "补结算身份没随行终态事实")
+        self.assertIn('"exit_code": _fresh_status.exit_code', page,
+                      "confirm 身份没随行终态事实")
         # 快照回归（第三十一轮场景:第一读见本次终录、盘上随后被接替改
         # 写）——快照版判定纯作用于快照,与盘无关。
         from pathlib import Path as _P

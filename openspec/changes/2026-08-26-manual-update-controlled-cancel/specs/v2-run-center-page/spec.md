@@ -427,7 +427,12 @@ one period.
   a re-render after the detection frame — SHALL re-verify that the current
   banner still IS the accepted record (its stamp and nonce carried in the
   outcome) before claiming so, saying instead that the terminal record was
-  verified at cancel time but has since been superseded when they differ
+  verified at cancel time but has since been superseded when they differ —
+  and that superseded wording SHALL carry the terminal facts verified at
+  cancel time (run date, start stamp, exit code) and SHALL NOT direct the
+  operator to the ledger as authoritative: the very window this outcome
+  represents is a kill between the terminal status write and the ledger
+  append, so the ledger may never have received the entry
 
 #### Scenario: a same-stamp replacement with another identity is not covered
 

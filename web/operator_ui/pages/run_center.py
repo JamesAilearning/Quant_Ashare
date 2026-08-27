@@ -346,6 +346,12 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         "terminal_identity": ({
             "started_at": _late_status.started_at or "",
             "launch_nonce": _late_status.launch_nonce or "",
+            # 取消当时核实到的终态**事实**也随行（第三十三轮 P2:该窗
+            # 恰是「终态已写、台账追加被打断」——接替抹掉快照后,台账里
+            # 可能根本没有这条,改口文案不得把操作人指向台账,只能呈现
+            # 当时核实到的东西）。
+            "exit_code": _late_status.exit_code,
+            "run_date": _late_status.run_date or "",
         } if _late_terminal else None),
         "evidence_stored": _late_evidence,
     }
@@ -930,6 +936,8 @@ if _live_proc is not None:
                             "started_at": _fresh_status.started_at or "",
                             "launch_nonce":
                                 _fresh_status.launch_nonce or "",
+                            "exit_code": _fresh_status.exit_code,
+                            "run_date": _fresh_status.run_date or "",
                         }
                     elif _kn and _fresh_status.kind in (
                             "missing", "corrupt"):
@@ -1022,13 +1030,20 @@ if isinstance(_last_cancel, dict):
                     "下次更新照常。"
                 )
             else:
+                # 不许指向台账（第三十三轮 P2）：本窗恰是「终态已写、
+                # 台账追加被打断」,接替抹掉快照后台账里可能根本没有这
+                # 条——只呈现取消当时核实到的事实,并明说台账不保证。
                 st.success(
                     f"强制终止已执行（returncode="
                     f"{_last_cancel.get('returncode')}），编排器在被终止前"
-                    "已写下本次运行的终态记录（取消当时经身份核实），但"
-                    "**此刻**状态工件已被随后的记录接替——上方显示的即"
-                    "当前状态；本次运行的终态以台账为准。单飞锁已自动"
-                    "释放，下次更新照常。"
+                    "已写下本次运行的终态记录（取消当时经身份核实：运行日 "
+                    f"{_tid.get('run_date') or '?'}，始于 "
+                    f"{_tid.get('started_at') or '?'}，exit "
+                    f"{_tid.get('exit_code')}），但**此刻**状态工件"
+                    "已被随后的记录接替——上方显示的即当前状态。注意：台账追加"
+                    "可能恰在终止时被打断，本次终态**不保证**已入台账；"
+                    "以上即取消当时核实到的终态。单飞锁已自动释放，下次"
+                    "更新照常。"
                 )
         else:
             # 进程在写下自己的 running 记录之前就被终止（或记录已是别次
