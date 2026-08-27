@@ -1347,6 +1347,21 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         norec_at = page.index("进程在写下自己的 running 记录之前就被终止")
         self.assertLess(tak_at, norec_at,
                         "专属分支在兜底之后——永远渲染不到")
+        # 迟到补结算同款检出（第三十轮 P2:超时 kill 的迟到死亡同样可撞
+        # 「终态已写、台账未完」窗——检出只装在 confirm 当场分支的话,
+        # 补结算帧照样矛盾）:oracle 调用恰好两处（confirm+补结算）,补
+        # 结算结局带 terminal_after_kill 键。
+        self.assertEqual(
+            2, page.count("terminal_record_confirms_the_run("),
+            "终态 oracle 调用不是恰好两处（confirm + 补结算）")
+        settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
+        # 锚带赋值前缀:`False and oracle(...)` 这类熄火变异会破坏该串
+        # （裸函数名锚咬不住,本轮变异实测逃逸过一次）。
+        self.assertIn(
+            "_late_terminal = terminal_record_confirms_the_run(", settle,
+            "补结算没做终录检出（或检出被熄火）")
+        self.assertIn('"terminal_after_kill": _late_terminal', settle,
+                      "补结算结局没带终录检出")
 
     def test_a_nonce_mismatch_overrides_a_matching_stamp(self) -> None:
         # 身份一票裁决（codex 第二十六轮 P2）：粗粒度/冻结的系统时钟可以

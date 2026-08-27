@@ -410,13 +410,17 @@ one period.
 #### Scenario: a finished record surviving a hard kill is named as such
 
 - **GIVEN** a hard kill landing after the orchestrator wrote its matching
-  terminal record but before it finished appending the ledger
-- **WHEN** the post-kill reread finds that `finished` record and the
-  terminal oracle confirms its identity
+  terminal record but before it finished appending the ledger — whether
+  the death is confirmed immediately or arrives late after a timed-out
+  kill and is settled by the watcher
+- **WHEN** the post-kill (or settlement-time) reread finds that `finished`
+  record and the terminal oracle confirms its identity
 - **THEN** the page reports that the run completed its terminal record
   before termination — possibly only the ledger append was interrupted —
   instead of claiming the process was killed before writing any record,
-  which would contradict the finished banner in the same frame
+  which would contradict the finished banner in the same frame; both the
+  immediate-confirmation and the late-settlement paths run the same
+  oracle
 
 #### Scenario: a same-stamp replacement with another identity is not covered
 

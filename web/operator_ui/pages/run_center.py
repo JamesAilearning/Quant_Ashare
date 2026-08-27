@@ -297,6 +297,18 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
                  and _late_status.launch_nonce is None
                  and cancelled_run_matches(
                      _late_status.started_at, _own_stamp))))
+    # 迟到死亡同样可能撞上「终态已写、台账未完」窗（codex 第三十轮 P2:
+    # kill 成功、宽限窗超时,Windows 子进程仍可在真正终止前写完终态——
+    # 检出只装在 confirm 当场分支的话,补结算帧照样落「写记录前被终止」
+    # 兜底,与同帧 finished 横幅矛盾）。与 confirm 分支共用同一终态
+    # oracle;上界用补结算观测时刻（nonce 身份在场时窗本不参与,legacy
+    # 对观测时刻 ≥ 真实死亡亦成立）。
+    _late_terminal = terminal_record_confirms_the_run(
+        _provider_path, _live_proc.pid,
+        launched_at=_live_run.get("launched_at")
+        if isinstance(_live_run, dict) else None,
+        exited_at=_late_outcome.exited_at,
+        launch_nonce=_kill_nonce)
     if _late_evidence:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": _late_status.started_at or "",
@@ -324,6 +336,7 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         "markers_written": _late_outcome.markers_written,
         "swap_state_unknown": _late_outcome.swap_state_unknown,
         "terminal_recorded": _late_outcome.terminal_recorded,
+        "terminal_after_kill": _late_terminal,
         "evidence_stored": _late_evidence,
     }
     st.session_state.pop(_LIVE_RUN_KEY, None)
