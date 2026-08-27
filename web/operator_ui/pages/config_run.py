@@ -362,16 +362,39 @@ PREFILL_CONFIG = _prefill_config()
 _PREFILL_ERROR = st.session_state.get("prefill_config_error")
 if _PREFILL_ERROR:
     st.error(f"⚠ {_PREFILL_ERROR}")
-#: 本页在各模式下**额外**发出的键——共享段之外、模式专属的那些。
-#:
-#: 它们不是 PIPELINE_KEYS / WALK_FORWARD_KEYS(那是**后端** schema,含本页
-#: 任何模式下都不发的字段)。复核区判断「这个键属于另一个模式,切过去就生
-#: 效」时必须用这一份:用后端全集会把本页压根不发的字段也说成「切模式即
-#: 生效」,而 `unsupported_prefill_keys` 同时说「本页不支持」——两句自相矛盾。
-#:
-#: 与下方 `config_dict.update({...})` 的两个字面量一一对应,由
-#: `test_operator_ui_config_run_source` 的 AST 守卫钉住同步(两处分叉时,
-#: 复核区会对某个字段说错话,而页面照常提交)。
+# ---------------------------------------------------------------------------
+# 本页**真正会提交**的键
+#
+# 这不是 PIPELINE_KEYS / WALK_FORWARD_KEYS。那两个是**后端** schema,含本页
+# 任何模式下都不发的字段（`run_factor_analysis` 等）。把后端全集当成「本页
+# 的字段」用,同一个错误已经在这个 change 里出现过三种形态:
+#
+#   * `output_dir` 被预填写进 session ⇒ 第二次重跑报一条假的「被覆盖」;
+#   * 后端独有字段被复核区标成 mode_only ⇒「切模式即生效」是假的,而
+#     `unsupported_prefill_keys` 同时说「本页不支持」,两句自相矛盾;
+#   * 同一个字段被预填写进 session ⇒ 下次重跑又报一条假的「被覆盖」,而复核
+#     区同时说「本次不会携带它」。
+#
+# 所以「本页发出什么」只有这一处定义,三个消费者（预填写入、复核区的
+# mode_only 判定、提交前的对比基线）都从它派生。
+#
+# 三份常量与页面下方 `config_dict` 的字面量一一对应,由
+# `test_operator_ui_config_run_source` 的 AST 守卫钉住同步——分叉的后果是
+# **说错话而不报错**:某个字段被说成会生效/被覆盖,而页面照常提交,没有任何
+# 东西会红。
+# ---------------------------------------------------------------------------
+
+#: 两个模式共享的提交字段（`config_dict = {...}` 字面量）。
+_SHARED_EMITTED = frozenset({
+    "adjust_mode", "attribution_sleeve_grouping", "benchmark_code",
+    "commission_rate", "compute_device", "early_stopping_rounds",
+    "feature_handler", "init_cash", "instruments", "learning_rate",
+    "limit_threshold", "min_cost", "model_type", "n_drop",
+    "num_boost_round", "provider_uri", "risk_constraints_calibration",
+    "risk_constraints_enabled", "seed", "signal_to_execution_lag",
+    "slippage_bps", "topk",
+})
+#: 各模式**额外**发出的字段（两个 `config_dict.update({...})` 字面量）。
 _PIPELINE_ONLY_EMITTED = frozenset({
     "train_start", "train_end", "valid_start", "valid_end",
     "test_start", "test_end",
@@ -380,18 +403,26 @@ _WALK_FORWARD_ONLY_EMITTED = frozenset({
     "overall_start", "overall_end", "train_months", "valid_months",
     "test_months", "step_months", "ensemble_window",
 })
-
-#: 预填**一次性覆盖**的已知键集合。跨模式取并集:源运行可能是另一个模式,
-#: 它的键要先落进 session,`mode` 切过去时才有值可用。
-#:
-#: 扣掉 run-scoped 键:两个后端 KEYS 常量都含 `output_dir`,但本页从不提交
-#: 它(`JobManager.start` 每次自己注入)。不扣的话,同一会话里连着重跑两次
-#: 作业,第二次会把第一次的目录报成「被覆盖」——一个本页同时声明「随运行
-#: 而生、不会携带」的字段。假警告比没有警告更坏:操作人学会忽略整块。
-_PREFILL_APPLICABLE_KEYS = (
-    (frozenset(PIPELINE_KEYS) | frozenset(WALK_FORWARD_KEYS) | {"mode"})
-    - _RUN_SCOPED_PREFILL_KEYS
+#: 本页在**某个**模式下会提交的全部字段。`namechange_path` 由 setdefault 补
+#: 上（本页无控件但确实随配置发出）;`mode` 是提交载荷的一部分。
+_PAGE_EMITTED_KEYS = (
+    _SHARED_EMITTED | _PIPELINE_ONLY_EMITTED | _WALK_FORWARD_ONLY_EMITTED
+    | {"namechange_path", "mode"}
 )
+
+#: 预填**一次性覆盖**的键。跨模式取并集:源运行可能是另一个模式,它的键要先
+#: 落进 session,`mode` 切过去时才有值可用。
+#:
+#: run-scoped 键（`output_dir`）**不在**上面三份常量里,所以这里不需要再减
+#: 一次。刻意不加那道减法:它是 no-op,而 no-op 的兜底恰恰会掩盖「有人把
+#: `output_dir` 写进 `_SHARED_EMITTED`」这种错误——那才是要修的地方。守卫在
+#: 测试里响亮地钉住两者无交集（fail-loud 优于静默兜底）。
+#:
+#: 为什么 run-scoped 键必须缺席:`output_dir` 由 JobManager 每次注入,本页从
+#: 不提交它。让它进来的话,同一会话里连着重跑两次作业,第二次会把第一次的目
+#: 录报成「被覆盖」——一个本页同时声明「随运行而生、不会携带」的字段。假警
+#: 告比没有警告更坏:操作人学会忽略整块。
+_PREFILL_APPLICABLE_KEYS = _PAGE_EMITTED_KEYS
 
 
 def _apply_prefill_to_session(

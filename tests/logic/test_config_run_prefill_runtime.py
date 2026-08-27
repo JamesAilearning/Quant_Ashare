@@ -68,17 +68,30 @@ def _page_applicable_keys() -> frozenset[str]:
         _RUN_SCOPED_PREFILL_KEYS,
     )
 
+    # 整条派生链一起取:`_PREFILL_APPLICABLE_KEYS` 由 `_PAGE_EMITTED_KEYS`
+    # 派生,后者又由三份 `*_EMITTED` 派生。只取最后一行、把中间量当外部注入,
+    # 等于把链条中段替换成测试自己的版本——页面在中段漏一个键就测不出来。
+    wanted = {
+        "_SHARED_EMITTED", "_PIPELINE_ONLY_EMITTED",
+        "_WALK_FORWARD_ONLY_EMITTED", "_PAGE_EMITTED_KEYS",
+        "_PREFILL_APPLICABLE_KEYS",
+    }
     tree = ast.parse(_CONFIG_RUN_PAGE.read_text(encoding="utf-8"))
-    assignment = next(
+    chain = [
         node
         for node in tree.body
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name)
-            and target.id == "_PREFILL_APPLICABLE_KEYS"
+            isinstance(target, ast.Name) and target.id in wanted
             for target in node.targets
         )
-    )
+    ]
+    assert {
+        target.id
+        for node in chain
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    } == wanted, "派生链上的常量少了——守卫会静默失去覆盖面"
     namespace: dict[str, Any] = {
         "PIPELINE_KEYS": PIPELINE_KEYS,
         "WALK_FORWARD_KEYS": WALK_FORWARD_KEYS,
@@ -86,7 +99,7 @@ def _page_applicable_keys() -> frozenset[str]:
     }
     exec(  # noqa: S102 - 取的是本仓自己的页面源码
         compile(
-            ast.Module(body=[assignment], type_ignores=[]),
+            ast.Module(body=chain, type_ignores=[]),
             str(_CONFIG_RUN_PAGE),
             "exec",
         ),

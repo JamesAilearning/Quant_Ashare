@@ -99,6 +99,28 @@
 - [x] 6c.4 变异复验扩到 **36 条全咬住**（新增「other_mode 退回后端全集」
       「ONLY_EMITTED 漏一个键」「模式专属集合混进共享键」）
 
+## 6d. codex #471 第五轮（r5）——修在根上
+
+- [x] 6d.1 **P2** `_PREFILL_APPLICABLE_KEYS` 也用了后端 schema 全集,于是
+      `cr_run_factor_analysis` 这种「本页没有控件、永不提交」的字段被写进
+      session,下次重跑另一个值时被报成「被覆盖」,而复核区同时说「本次不会
+      携带它」。这是同一个根因（后端 schema ≠ 本页发出的字段）的**第三种
+      形态**——前两种是 `output_dir` 与 mode_only 判定
+- [x] 6d.2 不再逐处修:新增 `_SHARED_EMITTED` / `_PAGE_EMITTED_KEYS`,把
+      「本页发出什么」收成**一处定义**,三个消费者（预填写入、mode_only
+      判定、对比基线）都从它派生
+- [x] 6d.3 AST 守卫扩到共享段:`_SHARED_EMITTED` == `config_dict = {...}`
+      字面量的键;`setdefault` 补的字段也要在 `_PAGE_EMITTED_KEYS` 里
+- [x] 6d.4 **一条变异逃逸,揭示了真问题**:
+      `_PAGE_EMITTED_KEYS - _RUN_SCOPED_PREFILL_KEYS` 在重构后成了 no-op
+      （三份常量本就不含 `output_dir`）。删掉那道静默兜底,换成测试里响亮
+      钉住「两者无交集」——no-op 的兜底恰恰会掩盖「有人把 `output_dir` 写进
+      `_SHARED_EMITTED`」这种错误
+- [x] 6d.5 运行时用例取**整条派生链**的 AST 真跑,不再只取最后一行、把中间
+      量当外部注入（那等于把链条中段换成测试自己的版本,页面在中段漏一个键
+      就测不出来）
+- [x] 6d.6 变异复验 **40 条全咬住**
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂

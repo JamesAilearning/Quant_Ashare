@@ -786,6 +786,96 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
             "web/operator_ui/pages/config_run.py"
         ).read_text(encoding="utf-8")
 
+    def test_shared_emitted_matches_the_shared_config_literal(self) -> None:
+        """``_SHARED_EMITTED`` == 页面 ``config_dict = {...}`` 字面量的键。
+
+        这份分叉的后果与两个 ``*_ONLY_EMITTED`` 一样是**说错话而不报错**:
+        漏一个键,那个字段的预填就再也进不来(而横幅照说「已预填」);多一个
+        键,一个本页从不提交的字段会被写进 session,下次重跑再被报成「被覆
+        盖」——而复核区同时说「本次不会携带它」。
+        """
+        from web.operator_ui.pages.config_run import _SHARED_EMITTED
+
+        tree = ast.parse(self.source)
+        literal = next(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "config_dict"
+            and isinstance(node.value, ast.Dict)
+        )
+        declared = {
+            key.value
+            for key in literal.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+
+        self.assertEqual(declared, set(_SHARED_EMITTED))
+
+    def test_page_emitted_keys_cover_the_setdefault_fields(self) -> None:
+        # `namechange_path` 没有控件,靠 setdefault 补上——但它**确实**随配置
+        # 发出。漏掉它,重跑一次归档配置时它的值就进不了本页状态。
+        from web.operator_ui.pages.config_run import _PAGE_EMITTED_KEYS
+
+        self.assertIn("namechange_path", _PAGE_EMITTED_KEYS)
+        self.assertIn("mode", _PAGE_EMITTED_KEYS)
+        for node in ast.walk(ast.parse(self.source)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "setdefault"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "config_dict"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                self.assertIn(node.args[0].value, _PAGE_EMITTED_KEYS)
+
+    def test_prefill_applies_only_to_fields_the_page_emits(self) -> None:
+        """预填写入的键集合 ⊆ 本页真会提交的字段。
+
+        用后端 schema 全集的话,``cr_run_factor_analysis`` 这种本页没有控件、
+        永不提交的字段也会被写进 session,下次重跑另一个值时被报成「被覆盖」
+        ——而复核区同时说「本次不会携带它」(codex P2 on #471 r5,同一个根因
+        的第三种形态)。
+        """
+        from web.operator_ui.config_forms import PIPELINE_KEYS, WALK_FORWARD_KEYS
+        from web.operator_ui.pages.config_run import (
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        self.assertTrue(_PREFILL_APPLICABLE_KEYS <= _PAGE_EMITTED_KEYS)
+        # 后端 schema 里本页不发的字段一个也不许进来。
+        backend_only = (
+            (set(PIPELINE_KEYS) | set(WALK_FORWARD_KEYS)) - _PAGE_EMITTED_KEYS
+        )
+        self.assertTrue(
+            backend_only, "后端 schema 应当含本页不发的字段，否则这条钉是空的")
+        self.assertEqual(_PREFILL_APPLICABLE_KEYS & backend_only, set())
+
+    def test_run_scoped_keys_are_absent_from_what_the_page_emits(self) -> None:
+        """run-scoped 键**不该出现**在本页发出的字段里。
+
+        此前这里靠 ``_PAGE_EMITTED_KEYS - _RUN_SCOPED_PREFILL_KEYS`` 兜底。
+        重构之后那道减法成了 no-op（三份 ``*_EMITTED`` 常量本就不含
+        ``output_dir``），而变异实测能原样逃逸——no-op 的兜底恰恰会掩盖「有人
+        把 ``output_dir`` 写进 ``_SHARED_EMITTED``」这种错误，让它在别处以
+        「第二次重跑报一条假的被覆盖」的形式冒出来。守卫响亮地钉在这里。
+        """
+        from web.operator_ui.pages._config_run_helpers import (
+            _RUN_SCOPED_PREFILL_KEYS,
+        )
+        from web.operator_ui.pages.config_run import (
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        self.assertEqual(_PAGE_EMITTED_KEYS & _RUN_SCOPED_PREFILL_KEYS, set())
+        self.assertEqual(
+            _PREFILL_APPLICABLE_KEYS & _RUN_SCOPED_PREFILL_KEYS, set())
+
     def test_mode_only_emitted_key_sets_match_what_the_page_emits(
         self,
     ) -> None:
