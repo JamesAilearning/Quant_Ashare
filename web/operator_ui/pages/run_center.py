@@ -312,6 +312,15 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         if isinstance(_live_run, dict) else None,
         exited_at=_late_outcome.exited_at,
         launch_nonce=_kill_nonce)
+    if _late_terminal and not _kill_nonce:
+        # legacy（无 nonce）迟到路径的观测上界留 pid 回收空窗（第三十九
+        # 轮 P2:watcher 观测可晚于真实死亡最长一个轮询周期,回收 pid 的
+        # 接替者在冻结/粗粒度时钟下可写出仍落窗的 finished）——终录归属
+        # 钉在**生存期内观察到的精确戳候选**上（终态记录与 running 记录
+        # 共享同一 started_at,producer 的 base 字典保证）;无候选
+        # fail-closed（与 r12 收养同构:证不出身份就不声称）。
+        _late_terminal = cancelled_run_matches(
+            _late_status.started_at, _own_stamp)
     if _late_evidence:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": _late_status.started_at or "",

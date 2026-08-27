@@ -1435,6 +1435,15 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             "_late_terminal = terminal_status_confirms_the_run(\n"
             "        _late_status", settle,
             "补结算没对已捕获快照做终录检出（或检出被熄火）")
+        # legacy 迟到终录钉生存期候选（第三十九轮 P2:观测上界留 pid 回
+        # 收空窗——回收 pid 的接替者在冻结时钟下可写出仍落窗的
+        # finished;终态记录与 running 共享 started_at,归属钉在生存期内
+        # 观察的精确戳上,无候选 fail-closed）。
+        self.assertIn("if _late_terminal and not _kill_nonce:", settle,
+                      "legacy 迟到终录没收紧到候选")
+        self.assertIn("_late_terminal = cancelled_run_matches(\n"
+                      "            _late_status.started_at, _own_stamp)",
+                      settle, "legacy 迟到终录归属没钉生存期候选")
         self.assertIn('"terminal_after_kill": _late_terminal', settle,
                       "补结算结局没带终录检出")
         # 身份随行 + 渲染帧复验（第三十二轮 P2:标记在快照帧被接受,消息
