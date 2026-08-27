@@ -295,6 +295,21 @@ else:
     # + rerun()ed unconditionally, which made the page unusable for the
     # 1-8 hours a typical pipeline takes. Pattern mirrors the toggle on
     # jobs.py:543-553 so both surfaces behave the same way.
+    # 篮子控件必须排在**自动刷新之前**、且在模式分支之前。
+    #
+    # 位置有两条硬约束，各自对应一次评审：
+    # ① 模式分支之后 ⇒ walk_forward 运行看不到（第二轮修的）；
+    # ② 自动刷新之后 ⇒ **运行中**的作业只要勾了自动刷新，下面那个
+    #    `st.rerun()` 会抛 RerunException 立刻终止本帧，篮子从此一帧都画
+    #    不出来——加入按钮没了，从别的页攒进去的篮子也整个消失，操作人
+    #    会以为篮子丢了。而「运行中」正是这一页最常驻留的状态（典型
+    #    pipeline 跑 1-8 小时）。
+    #
+    # 所以它排在这一页所有早退/重绘路径的**最前面**：选中运行之后第一件事。
+    _basket_catalog = render_add_to_basket(
+        selected_job_id, key_prefix="results")
+    render_basket(_basket_catalog, key_prefix="results")
+
     if str(selected_job.get("status", "")).lower() == "running":
         results_auto_refresh = st.checkbox(
             "作业仍在运行 · 每 5 秒自动刷新",
@@ -330,15 +345,6 @@ else:
         if run_dir is not None
         else {}
     )
-
-    # 篮子控件放在**模式分支之前**的页面级路径上。此前它挂在
-    # `_render_header_actions` 里,而那只有 pipeline 分支会调——于是本页
-    # 接受并展示的 walk_forward 运行既没有加入按钮、连已有的篮子也看不到
-    # (codex P2 on #472)。这一类「守卫只覆盖了一部分入口」本仓踩过多次:
-    # 判据要放在**所有**入口都必经的位置,而不是某一条路径上。
-    _basket_catalog = render_add_to_basket(
-        selected_job_id, key_prefix="results")
-    render_basket(_basket_catalog, key_prefix="results")
 
     if mode == "pipeline" or pipeline_report:
         _render_pipeline_dashboard(

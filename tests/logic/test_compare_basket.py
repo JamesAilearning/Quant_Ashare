@@ -63,19 +63,60 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(admission.resolved_run_id, "ui-9")
         self.assertIn("ui-9", admission.reason)
 
-    def test_a_superseded_run_says_so_instead_of_just_unavailable(self) -> None:
-        # 同目录被更新的运行接管 ⇒ 不再是该目录的当前所有者。这与「目录里
-        # 根本没有这条」对操作人的下一步完全不同。
+    def test_a_superseded_run_names_the_id_that_represents_its_directory(
+        self,
+    ) -> None:
+        # 同一份产物目录上另有一条**可选**记录 ⇒ 目录里由它代表。把那个 id
+        # 说出来，操作人才知道下一步该找谁。
+        #
+        # 这与「目录里根本没有这条」对操作人的下一步完全不同；也与「被一次
+        # 更新的运行接管」不同——最常见的成因其实是同一次运行的 UI 作业与
+        # CLI 目录记录之间镜像证明不成立，那是**同一份产物**的两条记录。
         admission = admit_to_basket(
-            "old-run",
-            selectable_ids=["new-run"],
+            "ui-9",
+            selectable_ids=["cli-1"],
             run_id_alias={},
-            all_rows=[_Row("old-run"), _Row("new-run")],
+            all_rows=[_Row("ui-9"), _Row("cli-1")],
         )
 
         self.assertFalse(admission.admissible)
         self.assertEqual(admission.verdict, ADMIT_SUPERSEDED)
-        self.assertIn("接管", admission.reason)
+        self.assertIn("cli-1", admission.reason)
+        # 而且**不能**把它说成「被更新的运行接管」：最常见的成因是同一次运行
+        # 的 UI 作业与 CLI 目录记录之间镜像证明不成立，那是同一份产物的两条
+        # 记录，不是两次运行。说成后者会让操作人去找一个并不存在的新运行。
+        self.assertNotIn("接管", admission.reason)
+
+    def test_a_row_on_a_different_directory_is_not_offered_as_its_owner(
+        self,
+    ) -> None:
+        # 只有**同一份产物目录**上的记录才代表得了它。拿另一个目录的可选
+        # 记录去顶，会把操作人指向一次毫无关系的运行。
+        admission = admit_to_basket(
+            "ui-9",
+            selectable_ids=["other"],
+            run_id_alias={},
+            all_rows=[_Row("ui-9", run_dir="output/runs/a"),
+                      _Row("other", run_dir="output/runs/b")],
+        )
+
+        self.assertFalse(admission.admissible)
+        self.assertEqual(admission.verdict, ADMIT_UNKNOWN)
+        self.assertNotIn("other", admission.reason)
+
+    def test_an_inconsistent_catalog_is_not_explained_away(self) -> None:
+        # 「我不是所有者」按 `selectable_catalog` 的构造蕴含「同目录另有一个
+        # 所有者」。真走到「同目录找不到代表」这一格，说明输入本身不自洽——
+        # 这时**不猜原因**，说成「被更新的运行接管」是编一个并不知道的因果。
+        admission = admit_to_basket(
+            "ui-9",
+            selectable_ids=[],
+            run_id_alias={},
+            all_rows=[_Row("ui-9")],
+        )
+
+        self.assertEqual(admission.verdict, ADMIT_UNKNOWN)
+        self.assertIn("不自洽", admission.reason)
 
     def test_a_non_comparable_type_names_its_type(self) -> None:
         admission = admit_to_basket(
@@ -293,6 +334,21 @@ class RevalidationTests(unittest.TestCase):
         self.assertEqual(checked.live, ("run-b", "run-a"))
         self.assertEqual(checked.stale, ())
         self.assertEqual(checked.collapsed, ())
+
+    def test_revalidation_survives_one_shot_iterators(self) -> None:
+        # 签名收的是 Iterable，而每个成员都要把它**再交给** admit_to_basket
+        # 消费一遍。传一次性迭代器时，第一个成员就把它抽干，之后每个成员都
+        # 看到空目录、被判成失效。类型标注反而给这个不成立的契约背了书：
+        # mypy 不报，而 list 字面量的用例永远走不到这条路径。
+        checked = revalidate_basket(
+            ("a", "b", "c"),
+            selectable_ids=(i for i in ["a", "b", "c"]),
+            run_id_alias={},
+            all_rows=(_Row(x) for x in "abc"),
+        )
+
+        self.assertEqual(checked.live, ("a", "b", "c"))
+        self.assertEqual(checked.stale, ())
 
     def test_a_stale_member_is_not_silently_dropped_from_the_report(
         self,

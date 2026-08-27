@@ -26,6 +26,7 @@ from web.operator_ui._param_guard import sanitize as _sanitize_qp
 from web.operator_ui.compare_basket_widget import (
     render_add_to_basket,
     render_basket,
+    render_standalone_basket,
 )
 from web.operator_ui.components import (
     render_badge,
@@ -745,9 +746,21 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     except JobManagerError as exc:
                         st.toast(f"停止失败：{exc}", icon="⚠️")
                     st.rerun()
-    # 面板画在动作列**之外**:成员行、每条失效说明、嵌套的移除列、跳转链接
-    # 挤进三分之一列宽会没法读。目录仍是上面那次读的,不重读。
+
+# 篮子面板画在「选中某一行」的**外面**。
+#
+# 两条约束叠在一起：既要在动作列之外（成员行、每条失效说明、嵌套的移除列、
+# 跳转链接挤进三分之一列宽没法读），也要在 `if _selected_row ...` 之外——
+# 这张表 `on_select="rerun"` 且**默认没有选中行**，挂在里面的话，操作人从
+# 别的页攒好篮子切过来，看到的是「篮子不见了」，随便点中任意一行（哪怕与
+# 篮子毫无关系）它才回来。
+#
+# 目录只在选中行时读得到（加入按钮需要它）。没有选中行时不重读目录，改用
+# 一次独立的读取——面板本身要能独立于「有没有选中行」而存在。
+if _selected_row is not None and 0 <= _selected_row < len(items):
     render_basket(_basket_catalog, key_prefix="jobs")
+else:
+    render_standalone_basket(key_prefix="jobs")
 
 # ---------------------------------------------------------------------------
 # Pagination — real prev/next nav over offset-sliced pages (UI review

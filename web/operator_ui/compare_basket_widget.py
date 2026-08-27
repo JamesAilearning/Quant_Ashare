@@ -86,6 +86,30 @@ def render_basket(view: CatalogView, *, key_prefix: str) -> None:
     )
 
 
+def render_standalone_basket(*, key_prefix: str) -> None:
+    """没有「当前运行」可加入时，仍然把篮子画出来。
+
+    作业页的表格默认没有选中行，而加入按钮需要一个选中的运行。篮子面板本身
+    **不**需要——它是会话级的，操作人从别的页攒好切过来就该看得见。挂在
+    「有选中行」里面的话，他看到的是「篮子不见了」，随便点中任意一行（哪怕
+    与篮子毫无关系）它才回来。
+
+    自己读一次目录：这条路径上没有加入按钮先读过。空篮子时面板本身什么都不
+    画，所以这次读取只发生在真的有东西要复核的时候。
+    """
+
+    if not current_basket():
+        return
+    all_rows = tuple(load_all_jobs_read_only())
+    catalog = selectable_catalog(all_rows)
+    render_basket_panel(
+        key_prefix=key_prefix,
+        selectable_ids=tuple(row.run_id for row in catalog.rows),
+        run_id_alias=catalog.run_id_alias,
+        all_rows=all_rows,
+    )
+
+
 def current_basket() -> tuple[str, ...]:
     """本会话的对比篮子。非法残值（不是字符串序列）当作空篮子。"""
     raw = st.session_state.get(BASKET_STATE_KEY)
@@ -121,7 +145,25 @@ def render_add_to_basket_button(
         all_rows=all_rows,
     )
     basket = current_basket()
-    already = admission.resolved_run_id in basket if admission.admissible else False
+    # 「已在篮子里」要在**同一个解析状态**上比。
+    #
+    # 篮子存的是**加入当时**解析出来的 id；目录归属后来变了，同一次运行的
+    # 新解析 id 与旧存的 id 就不是同一个串。直接比 `resolved in basket` 会
+    # 判成「不在」⇒ 按钮可用 ⇒ 同一次运行被加进去两次（一个旧 id、一个新
+    # id）⇒ 复核时两者坍塌成同一所有者 ⇒ 链接被重复检查挡住，而操作人看到
+    # 的是两行不同的 id，无从知道它们是同一次运行。
+    #
+    # 所以把篮子也按当前目录解析一遍再比。
+    resolved_basket = revalidate_basket(
+        basket,
+        selectable_ids=selectable_ids,
+        run_id_alias=run_id_alias,
+        all_rows=all_rows,
+    ).live
+    already = (
+        admission.resolved_run_id in resolved_basket
+        if admission.admissible else False
+    )
     full = len(basket) >= MAX_BASKET_SIZE and not already
     if st.button(
         "＋ 加入对比",
@@ -196,9 +238,14 @@ def render_basket_panel(
         if checked.stale:
             # 不自动踢出:静默丢弃等于替操作人决定「这个不要了」,而他可能
             # 正想知道它去哪了。说清原因,移除交给他。
+            #
+            # 总标题**不替逐条原因下结论**:失效可以是被接管、被删除、类型
+            # 不收、没有产物目录、或 id 带不进 URL——把其中一种（「目录归属
+            # 变了」）写成总标题，对另外四种就是假话，而紧跟的逐条说明会与
+            # 它直接打架。
             st.warning(
-                f"⚠ 篮子里有 {len(checked.stale)} 个运行现在送不到对比页"
-                "（加入之后目录归属变了）。移除它们才能继续："
+                f"⚠ 篮子里有 {len(checked.stale)} 个运行现在送不到对比页。"
+                "各自的原因如下；移除它们才能继续："
             )
             for _stale in checked.stale:
                 st.caption(f"· `{_stale.run_id}`：{_stale.reason}")

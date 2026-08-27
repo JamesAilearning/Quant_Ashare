@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from web.operator_ui._param_guard import sanitize
 from web.operator_ui.pages._research_run_comparison_helpers import (
+    _catalog_dir_key,
     parse_selected_run_ids,
 )
 
@@ -153,11 +154,62 @@ def admit_to_basket(
             run_id, "", ADMIT_NO_ARTIFACTS,
             f"`{run_id}` 没有记录产物目录，没有可对比的工件。",
         )
+    # 同一份产物目录，目录里换了个 id 当所有者——这与「被更新的运行接管」
+    # 不是一回事，说成后者是**假话**。
+    #
+    # 真实成因：UI 作业与它的 CLI 目录记录指向同一个 output_dir，而
+    # `selectable_catalog` 只在 CLI 行**生产者记录**了这个 UI 作业 id、且
+    # 时间线互相包含时才认这层镜像；证明不成立时它让 CLI 行当所有者，于是
+    # 来源页交出的 UI id 既不可选、也不是别名键。把那个 id 说出来，操作人
+    # 才知道下一步该找谁。
+    owner = _same_directory_owner(run_id, selectable_ids, all_rows)
+    if owner:
+        return BasketAdmission(
+            run_id, "", ADMIT_SUPERSEDED,
+            f"该产物目录在对比页的目录里由 `{owner}` 代表（同一份产物的另一条"
+            f"记录），`{run_id}` 本身不可直接对比。",
+        )
+    # 走到这里说明：这条记录在目录输入里、类型可比、有产物目录，却既不可选、
+    # 也不是别名键，而**同目录上也找不到任何可选的替代记录**。
+    #
+    # 按 `selectable_catalog` 的构造这一格不该出现：它给每个 (类型, 目录)
+    # 恰好选一个所有者，所以「我不是所有者」蕴含「同目录上另有一个所有者」，
+    # 而那个所有者就在同一份 `all_rows` 里。真到了这里，说明输入本身不自洽
+    # （例如调用方传了一份被过滤过的 `all_rows`，或两侧的目录键推导不一致）。
+    #
+    # 所以这里**不猜原因**。说成「被更新的运行接管」是编一个我们并不知道的
+    # 因果——而上面那条分支正是为了不编它才加的。
     return BasketAdmission(
-        run_id, "", ADMIT_SUPERSEDED,
-        f"`{run_id}` 的产物目录已被同目录的更新运行接管，它不再是该目录的"
-        "当前所有者，因此不可直接对比。",
+        run_id, "", ADMIT_UNKNOWN,
+        f"`{run_id}` 不在对比页的可选目录中，且同目录上找不到代表它的记录——"
+        "目录数据不自洽，无法判断原因。",
     )
+
+
+def _same_directory_owner(
+    run_id: str, selectable_ids: Iterable[str], all_rows: Iterable[object],
+) -> str:
+    """同一份产物目录上，对比页目录**实际**认的那个 id（没有就空串）。
+
+    目录键的推导直接复用对比页那一份（``_catalog_dir_key``）——在这里另写
+    一套 normcase/锚定规则，就是第二份会漂的推导，而漂的那一份会把两条本
+    该配对的记录说成互不相干。
+    """
+
+    rows = list(all_rows)
+    mine = next((r for r in rows if getattr(r, "run_id", "") == run_id), None)
+    if mine is None or not str(getattr(mine, "run_dir", "")):
+        return ""
+    mine_key = _catalog_dir_key(str(getattr(mine, "run_dir", "")))
+    selectable = set(selectable_ids)
+    for row in rows:
+        other_id = str(getattr(row, "run_id", ""))
+        other_dir = str(getattr(row, "run_dir", ""))
+        if other_id == run_id or other_id not in selectable or not other_dir:
+            continue
+        if _catalog_dir_key(other_dir) == mine_key:
+            return other_id
+    return ""
 
 
 def add_to_basket(
@@ -238,6 +290,13 @@ def revalidate_basket(
     时看不出来:那时它们确实是两个不同的可选运行。
     """
 
+    # 先物化一次再进循环。签名收的是 ``Iterable``，而下面每个成员都要把它
+    # **再交给** ``admit_to_basket`` 消费一遍——传进来一个一次性迭代器时，
+    # 第一个成员就把它抽干，之后每个成员都看到空目录、被判成「已被接管」。
+    # 类型标注反而给这个不成立的契约背了书：mypy 不会报，而 list 字面量的
+    # 测试永远走不到那条路径。
+    selectable = tuple(selectable_ids)
+    rows = tuple(all_rows)
     seen: set[str] = set()
     live: list[str] = []
     stale: list[BasketAdmission] = []
@@ -246,9 +305,9 @@ def revalidate_basket(
     for run_id in basket:
         admission = admit_to_basket(
             run_id,
-            selectable_ids=selectable_ids,
+            selectable_ids=selectable,
             run_id_alias=run_id_alias,
-            all_rows=all_rows,
+            all_rows=rows,
         )
         if not admission.admissible:
             stale.append(admission)

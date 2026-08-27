@@ -146,6 +146,62 @@ class SourcePageWiringTests(unittest.TestCase):
             self.assertEqual(list(call["selectable_ids"]), ["owner-1"])
             self.assertEqual(call["run_id_alias"], catalog.run_id_alias)
 
+    def test_already_in_basket_is_judged_on_the_current_resolution(
+        self,
+    ) -> None:
+        """「已在篮子里」要在**同一个解析状态**上比。
+
+        篮子存的是**加入当时**解析出来的 id。目录归属后来变了（例如同一份
+        产物的 UI/CLI 镜像证明变成成立，所有者从 ``cli-1`` 翻成 ``ui-9``），
+        同一次运行的新解析 id 与旧存的 id 就不是同一个串。直接比
+        ``resolved in basket`` 会判「不在」⇒ 按钮可用 ⇒ **同一次运行被加进
+        去两次** ⇒ 复核时两者坍塌成同一所有者 ⇒ 链接被重复检查挡住，而操作
+        人看到的是两行不同的 id，无从知道它们是同一次运行。
+
+        真跑按钮渲染，断言它认得出「这就是篮子里那一个」。
+        """
+        import web.operator_ui.compare_basket_widget as widget
+
+        owner = _Row("ui-9")
+        seen: dict[str, object] = {}
+
+        def _fake_button(_label: str, **kwargs: Any) -> bool:
+            seen["disabled"] = kwargs.get("disabled")
+            return False
+
+        session = {"research_compare_basket": ["cli-1"]}
+        with mock.patch.object(widget, "st", mock.Mock(
+                session_state=session, button=_fake_button)):
+            widget.render_add_to_basket_button(
+                "ui-9",
+                selectable_ids=["ui-9"],
+                run_id_alias={"cli-1": "ui-9"},
+                all_rows=[owner],
+                key_prefix="t",
+            )
+
+        self.assertTrue(
+            seen["disabled"],
+            "篮子里存的 cli-1 现在解析成 ui-9，按钮该判为「已在篮子里」",
+        )
+
+    def test_the_standalone_panel_reads_nothing_when_the_basket_is_empty(
+        self,
+    ) -> None:
+        # 作业页无选中行时走这条路径。空篮子还去读一遍全量目录，等于给每次
+        # 无选中行的渲染加一次无谓的读盘。
+        import web.operator_ui.compare_basket_widget as widget
+
+        calls: list[int] = []
+
+        with mock.patch.object(widget, "st", mock.Mock(session_state={})), \
+                mock.patch.object(
+                    widget, "load_all_jobs_read_only",
+                    lambda: calls.append(1) or []):
+            widget.render_standalone_basket(key_prefix="t")
+
+        self.assertEqual(calls, [])
+
     def test_the_shared_entry_point_reads_the_catalog_once(self) -> None:
         # 每页自己读一次是这个坑被挖三遍的原因;读两次也说明有人又把加载
         # 复制了一份。
@@ -178,12 +234,20 @@ class SourcePageWiringTests(unittest.TestCase):
             '                selected.run_id, key_prefix="jobs")\n',
             source,
         )
-        # 面板必须画在动作列**之外**:成员行、失效说明、嵌套的移除列、跳转
-        # 链接挤进三分之一列宽会没法读（codex P2 on #472 r2）。
+        # 面板必须画在动作列**之外**（挤进三分之一列宽没法读），**也要在
+        # 「选中某一行」之外**——这张表默认没有选中行，挂在里面的话操作人
+        # 从别的页攒好篮子切过来会看到「篮子不见了」，随便点中任意一行它
+        # 才回来。两个位置的源码串一模一样，所以钉的是**缩进**：模块级的
+        # 那一层（无前导空格）才是选中块之外。
         self.assertIn(
-            '\n    render_basket(_basket_catalog, key_prefix="jobs")\n',
+            '\nif _selected_row is not None and 0 <= _selected_row < len(items):\n'
+            '    render_basket(_basket_catalog, key_prefix="jobs")\n'
+            "else:\n"
+            '    render_standalone_basket(key_prefix="jobs")\n',
             source,
         )
+        # 没有选中行时也要能画——那条路径没有加入按钮先读过目录。
+        self.assertIn("render_standalone_basket", source)
         # 动作栏多了一列。旧的 2/3 列布局会把新按钮挤到别的动作上面。
         self.assertIn(
             "act_open, act_copy, act_compare, act_stop = st.columns(4)",
@@ -191,6 +255,33 @@ class SourcePageWiringTests(unittest.TestCase):
         )
         self.assertIn(
             "act_open, act_copy, act_compare = st.columns(3)", source)
+
+    def test_the_results_basket_renders_before_the_autorefresh_rerun(
+        self,
+    ) -> None:
+        """篮子必须排在自动刷新的 ``st.rerun()`` **之前**。
+
+        运行中的作业勾了「每 5 秒自动刷新」之后，那个 ``st.rerun()`` 会抛
+        ``RerunException`` 立刻终止本帧——挂在它后面的篮子从此一帧都画不出
+        来：加入按钮没了，从别的页攒进去的篮子也整个消失，操作人会以为篮子
+        丢了。而「运行中」正是这一页最常驻留的状态（典型 pipeline 跑
+        1-8 小时，页面自己的注释就这么写）。
+
+        按**源码位置**钉：这一页的早退是 `st.rerun()`，不是 return，源码序
+        就是执行序。
+        """
+        source = _RESULTS_PAGE.read_text(encoding="utf-8")
+
+        basket_at = source.index("_basket_catalog = render_add_to_basket(")
+        panel_at = source.index('render_basket(_basket_catalog, key_prefix="results")')
+        for later in (
+            '        key="results_autorefresh",',
+            "            _time.sleep(5)\n            st.rerun()",
+            '    if mode == "pipeline" or pipeline_report:',
+        ):
+            with self.subTest(later=later.strip()[:40]):
+                self.assertLess(basket_at, source.index(later))
+                self.assertLess(panel_at, source.index(later))
 
     def test_results_page_offers_the_basket_in_both_modes(self) -> None:
         # 挂在 `_render_header_actions` 里只有 pipeline 分支会调,本页接受
@@ -361,6 +452,19 @@ class WidgetJudgesBeforeTheClickTests(unittest.TestCase):
             and node.func.attr == "page_link"
         )
         self.assertLess(revalidate_line, link_line)
+
+    def test_the_stale_header_does_not_pick_one_cause_for_all_of_them(
+        self,
+    ) -> None:
+        # 失效可以是被接管 / 被删除 / 类型不收 / 没有产物目录 / id 带不进
+        # URL。把其中一种写成总标题，对另外四种就是假话——而紧跟的逐条说明
+        # 会与它直接打架。总标题只报数，原因交给逐条。
+        self.assertIn("各自的原因如下", self.source)
+        for single_cause in ("加入之后目录归属变了", "已被接管", "已被删除"):
+            self.assertNotIn(
+                single_cause, self.source,
+                f"总标题不该替所有失效成员断言 {single_cause!r} 这一种原因",
+            )
 
     def test_stale_members_block_the_link_instead_of_being_dropped(
         self,
