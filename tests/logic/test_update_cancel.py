@@ -1334,8 +1334,11 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 检测(走既有终态 oracle)+ 专属如实措辞分支。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertIn("elif terminal_record_confirms_the_run(", page,
-                      "confirm 分支没单独检测硬杀后的本次终录")
+        # 锚随第三十一轮升级为**快照版**（判定作用在本帧已读到的快照,
+        # 不二次读取——重读与快照之间接替可改写工件,检出翻假）。
+        self.assertIn("elif terminal_status_confirms_the_run(\n"
+                      "                            _fresh_status", page,
+                      "confirm 分支没对已捕获快照做终录检出")
         self.assertIn('_lc["terminal_after_kill"] = True', page,
                       "终录检出没入结局标记")
         self.assertIn('elif _last_cancel.get("terminal_after_kill"):', page,
@@ -1352,16 +1355,46 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 补结算帧照样矛盾）:oracle 调用恰好两处（confirm+补结算）,补
         # 结算结局带 terminal_after_kill 键。
         self.assertEqual(
-            2, page.count("terminal_record_confirms_the_run("),
-            "终态 oracle 调用不是恰好两处（confirm + 补结算）")
+            2, page.count("terminal_status_confirms_the_run("),
+            "快照版终态检出不是恰好两处（confirm + 补结算）")
+        self.assertEqual(
+            0, page.count("terminal_record_confirms_the_run("),
+            "页面残留读盘版核实（会引入二次读取竞态,第三十一轮）")
         settle = page.split("迟到死亡补结算（codex")[1].split("句柄退役")[0]
         # 锚带赋值前缀:`False and oracle(...)` 这类熄火变异会破坏该串
-        # （裸函数名锚咬不住,本轮变异实测逃逸过一次）。
+        # （裸函数名锚咬不住,r30 变异实测逃逸过一次）。
         self.assertIn(
-            "_late_terminal = terminal_record_confirms_the_run(", settle,
-            "补结算没做终录检出（或检出被熄火）")
+            "_late_terminal = terminal_status_confirms_the_run(\n"
+            "        _late_status", settle,
+            "补结算没对已捕获快照做终录检出（或检出被熄火）")
         self.assertIn('"terminal_after_kill": _late_terminal', settle,
                       "补结算结局没带终录检出")
+        # 快照回归（第三十一轮场景:第一读见本次终录、盘上随后被接替改
+        # 写）——快照版判定纯作用于快照,与盘无关。
+        from pathlib import Path as _P
+
+        from web.operator_ui.update_runner import (
+            terminal_status_confirms_the_run,
+        )
+        from web.operator_ui.update_status import UpdateRunStatus
+        nn = "ab" * 16
+        snap = UpdateRunStatus(
+            kind="finished", path=_P("irrelevant"), state="finished",
+            provider_dir="x", run_date="2026-08-27",
+            started_at="2026-08-27T09:00:00+08:00",
+            finished_at="2026-08-27T09:01:00+08:00",
+            exit_code=0, failed_stage=None, detail="", pid=77,
+            launch_nonce=nn)
+        self.assertTrue(terminal_status_confirms_the_run(
+            snap, 77,
+            launched_at="2026-08-27T08:59:00+08:00",
+            exited_at="2026-08-27T09:02:00+08:00", launch_nonce=nn),
+            "已捕获的本次终录快照没被认定（接替改写盘面不应影响它）")
+        self.assertFalse(terminal_status_confirms_the_run(
+            snap, 77,
+            launched_at="2026-08-27T08:59:00+08:00",
+            exited_at="2026-08-27T09:02:00+08:00",
+            launch_nonce="cd" * 16))
 
     def test_a_nonce_mismatch_overrides_a_matching_stamp(self) -> None:
         # 身份一票裁决（codex 第二十六轮 P2）：粗粒度/冻结的系统时钟可以

@@ -65,7 +65,7 @@ from web.operator_ui.update_runner import (
     range_problem,
     record_bears_launch_nonce,
     settle_late_cancel,
-    terminal_record_confirms_the_run,
+    terminal_status_confirms_the_run,
 )
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
@@ -303,8 +303,11 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
     # 兜底,与同帧 finished 横幅矛盾）。与 confirm 分支共用同一终态
     # oracle;上界用补结算观测时刻（nonce 身份在场时窗本不参与,legacy
     # 对观测时刻 ≥ 真实死亡亦成立）。
-    _late_terminal = terminal_record_confirms_the_run(
-        _provider_path, _live_proc.pid,
+    # 快照版核实（第三十一轮 P2）：判定作用在**本帧已读到的**
+    # _late_status 上,绝不二次读取——重读与快照之间调度器接替可改写
+    # 工件,第一读见本次终录、第二读见接替,检出翻假、帧自相矛盾。
+    _late_terminal = terminal_status_confirms_the_run(
+        _late_status, _live_proc.pid,
         launched_at=_live_run.get("launched_at")
         if isinstance(_live_run, dict) else None,
         exited_at=_late_outcome.exited_at,
@@ -901,8 +904,8 @@ if _live_proc is not None:
                         }
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["evidence_stored"] = True
-                    elif terminal_record_confirms_the_run(
-                            _provider_path, _live_proc.pid,
+                    elif terminal_status_confirms_the_run(
+                            _fresh_status, _live_proc.pid,
                             launched_at=(_live_run or {}).get("launched_at"),
                             exited_at=_killed_at,
                             launch_nonce=_kn):

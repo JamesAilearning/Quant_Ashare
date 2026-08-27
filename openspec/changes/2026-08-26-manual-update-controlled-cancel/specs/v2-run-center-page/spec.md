@@ -420,7 +420,10 @@ one period.
   instead of claiming the process was killed before writing any record,
   which would contradict the finished banner in the same frame; both the
   immediate-confirmation and the late-settlement paths run the same
-  oracle
+  oracle, applied to the SNAPSHOT each path already read — never through a
+  second artifact read, which a scheduler replacement can overwrite
+  between the snapshot and the recheck, flipping the detection false
+  against the very record the frame displays
 
 #### Scenario: a same-stamp replacement with another identity is not covered
 

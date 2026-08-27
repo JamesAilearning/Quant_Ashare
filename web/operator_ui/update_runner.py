@@ -37,6 +37,7 @@ from uuid import uuid4
 from scripts.child_env import utf8_child_env
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
+    UpdateRunStatus,
     classify_running,
     read_update_status,
     record_matches_provider,
@@ -442,6 +443,30 @@ def terminal_record_confirms_the_run(
         status = read_update_status(status_path_for_provider(provider_dir))
     except ValueError:
         # 文件系统根这类推导不出状态路径的 provider——证不出来。
+        return False
+    return terminal_status_confirms_the_run(
+        status, pid, launched_at=launched_at, exited_at=exited_at,
+        launch_nonce=launch_nonce)
+
+
+def terminal_status_confirms_the_run(
+    status: UpdateRunStatus,
+    pid: int,
+    *,
+    launched_at: str | None,
+    exited_at: str | None,
+    launch_nonce: str | None = None,
+) -> bool:
+    """快照版终态核实——对**已捕获的**状态快照判定,绝不二次读取。
+
+    页面收养/补结算已各自持有本帧读到的快照（codex 第三十一轮 P2:核实
+    若自行重读,快照与重读之间调度器接替可改写共享工件——第一读见到本
+    次终录、第二读见到接替,检出翻假,帧自相矛盾。同一帧的判定必须作用
+    在同一次读取上）。判据与 ``terminal_record_confirms_the_run`` 完全
+    一致,后者=读一次+委托本函数（供 cancel_update 内部这类没有现成
+    快照的调用方用）。
+    """
+    if not (launched_at and exited_at):
         return False
     if status.kind != "finished" or status.pid != pid:
         return False
