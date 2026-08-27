@@ -65,6 +65,7 @@ from web.operator_ui.update_runner import (
     range_problem,
     record_bears_launch_nonce,
     settle_late_cancel,
+    terminal_record_confirms_the_run,
 )
 from web.operator_ui.update_status import (
     RUNNING_FRESH,
@@ -131,7 +132,7 @@ def _read_progress() -> AttributedProgress:
 
 def _status_signature(
     status: object, classification: str | None
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     """状态里「值得触发整页重绘」的部分。
 
     kind/started_at/finished_at **加上新鲜度分类**:前三项在一次运行
@@ -142,12 +143,19 @@ def _status_signature(
     分类由**调用方传入**而非在此重算(codex #442 r4):基线那一侧必须用
     整页渲染时刻算出的那一个值,与闸门判断同源;片段那一侧才用当下时刻
     重算。两侧都在函数内部重算的话,跨线时刻会同时翻面而元组照样相等。
+
+    launch_nonce/pid 也入签名（codex 第二十九轮 P2）:覆盖判定已按身份
+    一票裁决,而同戳接替（粗粒度/冻结时钟可造）恰恰**只有身份字段**在
+    变——不入签名,片段永不重绘,页面停在「已取消」、按钮虚开（launch
+    边界会拒,但操作人看到的是矛盾帧）直到手动交互。
     """
     return (
         str(getattr(status, "kind", "")),
         str(getattr(status, "started_at", "")),
         str(getattr(status, "finished_at", "")),
         str(classification or ""),
+        str(getattr(status, "launch_nonce", None) or ""),
+        str(getattr(status, "pid", None) or ""),
     )
 
 _provider = anchored_to_repo(resolve_default_provider_uri())
@@ -880,6 +888,19 @@ if _live_proc is not None:
                         }
                         _lc = st.session_state[_LAST_CANCEL_KEY]
                         _lc["evidence_stored"] = True
+                    elif terminal_record_confirms_the_run(
+                            _provider_path, _live_proc.pid,
+                            launched_at=(_live_run or {}).get("launched_at"),
+                            exited_at=_killed_at,
+                            launch_nonce=_kn):
+                        # 硬杀撞上「终态已写、台账未完」窗（第二十九轮
+                        # P2,Windows 实际可达:编排器写完终态还要追加台
+                        # 账,操作人恰在其间硬杀）。重读见 finished 且经
+                        # nonce/pid 核实是本次运行自己的终录——不是「写
+                        # 记录前被终止」,把它说成无记录会与上方 finished
+                        # 横幅自相矛盾。单独标记,措辞如实。
+                        _lc = st.session_state[_LAST_CANCEL_KEY]
+                        _lc["terminal_after_kill"] = True
                     elif _kn and _fresh_status.kind in (
                             "missing", "corrupt"):
                         # 重读不确凿 ≠ 无孤儿（第二十五轮 P2,与补结算
@@ -948,6 +969,17 @@ if isinstance(_last_cancel, dict):
                 "但**此刻**状态工件已被一次更新的运行接替（证据按纪律"
                 "退役，绝不覆盖别人的运行）——上方显示的即当前状态，"
                 "启动闸以它为准。"
+            )
+        elif _last_cancel.get("terminal_after_kill"):
+            # 硬杀撞上「终态已写、台账未完」窗（第二十九轮 P2）：记录
+            # 经 nonce/pid 核实是本次运行自己的终录——运行本体已完成落
+            # 账,说「写记录前被终止」会与上方 finished 横幅自相矛盾。
+            st.success(
+                f"强制终止已执行（returncode="
+                f"{_last_cancel.get('returncode')}），但编排器在被终止前"
+                "已写下本次运行的**终态记录**（上方状态即它，身份经核"
+                "实）——运行本体已完成落账，可能仅共享台账的追加被打断；"
+                "页面按状态工件如实展示，单飞锁已自动释放，下次更新照常。"
             )
         else:
             # 进程在写下自己的 running 记录之前就被终止（或记录已是别次

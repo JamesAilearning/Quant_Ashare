@@ -1325,6 +1325,29 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn("evidence_covers_record(", page,
                       "页首覆盖判定没走共享谓词")
 
+    def test_a_matching_finished_record_after_a_hard_kill_is_named(
+            self) -> None:
+        # Windows「终态已写、台账未完」窗（codex 第二十九轮 P2）：编排器
+        # 写完终态还要追加台账,操作人恰在其间硬杀——重读见 finished 且
+        # 经 nonce/pid 核实是本次运行自己的终录,却落进「写记录前被终
+        # 止」分支,与上方 finished 横幅自相矛盾。钉:confirm 分支单独
+        # 检测(走既有终态 oracle)+ 专属如实措辞分支。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("elif terminal_record_confirms_the_run(", page,
+                      "confirm 分支没单独检测硬杀后的本次终录")
+        self.assertIn('_lc["terminal_after_kill"] = True', page,
+                      "终录检出没入结局标记")
+        self.assertIn('elif _last_cancel.get("terminal_after_kill"):', page,
+                      "缺专属措辞分支")
+        self.assertIn("终态记录**（上方状态即它", page,
+                      "措辞没指向上方 finished 横幅")
+        # 源码序:专属分支必须在「无记录」兜底 else 之前。
+        tak_at = page.index('elif _last_cancel.get("terminal_after_kill"):')
+        norec_at = page.index("进程在写下自己的 running 记录之前就被终止")
+        self.assertLess(tak_at, norec_at,
+                        "专属分支在兜底之后——永远渲染不到")
+
     def test_a_nonce_mismatch_overrides_a_matching_stamp(self) -> None:
         # 身份一票裁决（codex 第二十六轮 P2）：粗粒度/冻结的系统时钟可以
         # 让接替记录与被取消记录**同戳**——证据带 nonce 时,记录必须带同

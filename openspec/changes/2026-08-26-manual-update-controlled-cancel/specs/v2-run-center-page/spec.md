@@ -397,6 +397,27 @@ one period.
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
 
+#### Scenario: an identity-only change wakes the watcher
+
+- **GIVEN** persisted cancellation evidence and a same-stamp replacement
+  whose only observable difference is its launch nonce or writer pid
+- **WHEN** the watcher fragment polls the status artifact
+- **THEN** the identity fields — part of the watched signature — differ
+  from the baseline and trigger a full re-render, so the page stops
+  presenting the replacement as cancelled without waiting for an
+  interaction
+
+#### Scenario: a finished record surviving a hard kill is named as such
+
+- **GIVEN** a hard kill landing after the orchestrator wrote its matching
+  terminal record but before it finished appending the ledger
+- **WHEN** the post-kill reread finds that `finished` record and the
+  terminal oracle confirms its identity
+- **THEN** the page reports that the run completed its terminal record
+  before termination — possibly only the ledger append was interrupted —
+  instead of claiming the process was killed before writing any record,
+  which would contradict the finished banner in the same frame
+
 #### Scenario: a same-stamp replacement with another identity is not covered
 
 - **GIVEN** persisted cancellation evidence bearing this launch's nonce,

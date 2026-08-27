@@ -185,7 +185,14 @@ class PageSourceTests(unittest.TestCase):
         # the signature now.
         sig_at = self.src.index("def _status_signature")
         body = self.src[sig_at : sig_at + 1400]
-        self.assertIn("tuple[str, str, str, str]", body)
+        # 锚串随第二十九轮扩展（签名加 launch_nonce/pid 身份字段——同戳
+        # 接替只有身份在变,不入签名片段永不重绘）,断言意图不变:新鲜度
+        # 分类仍在签名元组里。
+        self.assertIn("tuple[str, str, str, str, str, str]", body)
+        self.assertIn('getattr(status, "launch_nonce"', body,
+                      "签名缺 nonce 身份字段")
+        self.assertIn('getattr(status, "pid"', body,
+                      "签名缺 pid 身份字段")
         self.assertIn("classification or", body)
         # codex #442 r4: 分类由调用方传入，函数内部**不得**重算——两侧各自
         # 重算时，跨线时刻会同时翻面而元组照样相等，闸门永久锁死。
