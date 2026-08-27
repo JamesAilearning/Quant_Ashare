@@ -817,6 +817,12 @@ def build_plan(
         "--end-date", end_date,
         "--refresh-current",
         "--snapshot-date", run_date.strftime("%Y%m%d"),
+        # fetch 的进度行带上本次运行的 provider 身份。与 `run_boundary_line`
+        # **同一个** `_norm(provider_dir)`:两处身份必须逐字节相同,读侧才能
+        # 拿边界定位「哪一次运行」、拿标记过滤「谁写的行」。分头规范化就是
+        # 两份会漂的推导——读侧对身份的校验是完整回环,差一个字节就退化成
+        # 「别人的行」,而那看起来只是「归属报不出来」,不像个 bug。
+        "--provider-tag", _norm(config.provider_dir),
     ]
     if config.rate_limit_sleep_ms is not None:
         fetch += ["--rate-limit-sleep-ms", str(config.rate_limit_sleep_ms)]

@@ -308,6 +308,22 @@ class TushareFetcherConfig:
     # pre-P3-7b manifest whose coverage_end_date may over-claim (written by a
     # run that advanced coverage without verifying per-file content).
     verify_all_years: bool = False
+    #: Provider identity stamped on this fetch's progress lines.
+    #:
+    #: Sibling bundles SHARE one ``daily_update.log`` (the log path is derived
+    #: from the provider's PARENT directory) while single-flight is
+    #: per-provider — so two providers CAN run at once and their lines
+    #: interleave. Progress lines carried no identity, so a reader could only
+    #: attribute them by their position relative to run-boundary markers, and
+    #: only when it could see the WHOLE window and every boundary in it was
+    #: the reader's own. Real logs are read tail-first, so in production that
+    #: judgement almost always came out "don't know".
+    #:
+    #: Empty means unstamped — a hand-run fetch, or a dump produced before
+    #: this field existed. Readers MUST NOT treat an unstamped line as
+    #: theirs; they fall back to boundary attribution, which is exactly the
+    #: behaviour that existed before.
+    provider_tag: str = ""
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -472,6 +488,24 @@ class TushareFetcher:
         The CLI turns a non-empty result into a non-zero exit + a hole report,
         so a holey dump is never mistaken for a complete one."""
         return tuple(self._holes)
+
+    def _progress_provider_suffix(self) -> str:
+        """``" provider=<tag>"``，或空串（未配置身份时）。
+
+        无标记时**什么也不加**,而不是加一个 ``provider=`` 空值:读侧必须能
+        分辨「这次运行没有报身份」与「它报了一个空身份」——前者退回边界归属
+        (标记落地之前的行为),后者会诱使读侧把空串当成一个可比对的身份。
+
+        标记本身在写侧就规范化过一次(编排器传的是 ``normcase(resolve())``
+        的产出),读侧按**完整回环**校验。这里只做一件事:含换行的标记一律
+        当作没有标记。一条带换行的进度行会被行式日志切成两半,后半截既不是
+        进度行也不是边界行,而前半截的身份被截断——读侧看到的是一个**不同**
+        的身份串,却完全合法。宁可退回边界归属,也不产出一条能被误读的行。
+        """
+        tag = str(self._config.provider_tag or "")
+        if not tag or "\n" in tag or "\r" in tag:
+            return ""
+        return f" provider={tag}"
 
     # ------------------------------------------------------------------
     # Public orchestrator
@@ -1217,9 +1251,20 @@ class TushareFetcher:
                         still_short.append(unit)
                         short_by_year[year] = short_by_year.get(year, 0) + 1
                 if i % 200 == 0:
+                    # 末尾的 provider 标记让读侧能确定这条进度是**谁**写的。
+                    # 兄弟 bundle 共用同一份 daily_update.log 而单飞锁是
+                    # per-provider 的,所以两个 provider 可以同时在跑、行会
+                    # 交错;进度行不带身份时,读侧只能按它相对运行边界的位置
+                    # 猜,而且只在「看得见整个窗口且其中每条边界都是自己的」
+                    # 时才敢下结论——真实日志按尾部读,于是生产上这个判断几乎
+                    # 总是「不知道」。
+                    # 标记放**行尾**且带前导空格:旧读侧的正则以 `(skipped=…)`
+                    # 收尾,多出来的后缀不影响它匹配,老日志与新日志都照常解析。
                     _logger.info(
-                        "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
+                        "  %s year=%d progress: %d/%d tickers "
+                        "(written=%d, skipped=%d)%s",
                         endpoint, year, i, len(tickers), written, skipped,
+                        self._progress_provider_suffix(),
                     )
         if stale_refetched or verified:
             _logger.info(
