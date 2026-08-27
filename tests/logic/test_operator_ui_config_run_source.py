@@ -226,6 +226,24 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("\n            _PREFILL_APPLICABLE_KEYS,\n", source)
         # 覆盖列表要渲染出来:覆盖不许是静默的。
         self.assertIn("\n    if _prefill_overwritten:\n", source)
+        # 预设选择器必须同步成 Custom,否则**预填会被下一帧撤销**:选择器
+        # widget 粘着操作人上次选的预设,而预填把字段改成源运行的值让
+        # `_detect_preset()` 记 Custom ⇒ 下一次控件触发的重跑里
+        # `preset_choice != current_preset` ⇒ `_apply_preset()` 把源运行的
+        # 值整片覆盖回去,而横幅照说「已按该次运行覆盖」。
+        self.assertIn(
+            '        st.session_state["cr_preset_selector"] = '
+            "CUSTOM_PRESET_NAME\n"
+            '        st.session_state["cr_preset"] = CUSTOM_PRESET_NAME\n',
+            source,
+        )
+        # 摘要必须声明非安全用途:FIPS 受限的构建下不带这个参数会 raise,
+        # 点「用此配置重跑」在预填生效之前就把整页打崩。
+        self.assertIn(
+            "hashlib.md5(str(st.session_state.get('prefill_config_yaml', ''))"
+            ".encode('utf-8'), usedforsecurity=False)",
+            source,
+        )
         # 解析失败要响亮,不许静默返回空 dict 让横幅照说「已预填」。
         self.assertIn('st.session_state["prefill_config_error"] = (', source)
         self.assertIn("\n    except yaml.YAMLError as exc:\n", source)

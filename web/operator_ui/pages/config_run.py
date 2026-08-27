@@ -501,7 +501,11 @@ if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
     prefill_token = (
         f"{source_job}:"
-        f"{hashlib.md5(str(st.session_state.get('prefill_config_yaml', '')).encode('utf-8')).hexdigest()}"
+        # `usedforsecurity=False`:这是个会话内的稳定令牌,不是安全摘要。FIPS
+        # 受限的 Python 构建下,不带这个参数的 `hashlib.md5` 会 raise——点
+        # 「用此配置重跑」会在预填生效之前把配置页整页打崩。同文件的按钮键
+        # 生成早就是这么写的。
+        f"{hashlib.md5(str(st.session_state.get('prefill_config_yaml', '')).encode('utf-8'), usedforsecurity=False).hexdigest()}"
     )
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
         # A rerun prefill is not a preset selection. Clear any prior review
@@ -509,6 +513,20 @@ if PREFILL_CONFIG:
         # it Default or Smoke.
         st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
         st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
+        # 预设选择器同步成 Custom,否则**预填会被下一帧撤销**:预填把字段改
+        # 成源运行的值 ⇒ `_detect_preset()` 记 `Custom` ⇒ 而选择器 widget
+        # 还粘着操作人上次选的预设(通常是 Default)⇒ 下一次任何控件触发的
+        # 重跑里 `preset_choice != current_preset`,于是 `_apply_preset()`
+        # 把源运行的值整片覆盖回去,而横幅照说「已按该次运行覆盖」
+        # (codex P1 on #471 r6)。
+        #
+        # 写 `Custom` 而不是检测结果:检测要等字段控件落定,而这里在它们之
+        # 前。`Custom` 是保守且正确的——预填来自一次运行的归档配置,它不是
+        # 「选了某个预设」这个动作。源配置恰好等于某个预设时,下方的
+        # `_detect_preset()` 仍会如实把 `cr_preset` 记成那个预设名,而选择器
+        # 停在 `Custom` 只会让那条 `_apply_preset` 分支不触发——正是要的。
+        st.session_state["cr_preset_selector"] = CUSTOM_PRESET_NAME
+        st.session_state["cr_preset"] = CUSTOM_PRESET_NAME
         _prefill_overwritten = _apply_prefill_to_session(
             prefill_baseline_with_source_mode(
                 PREFILL_CONFIG,

@@ -164,6 +164,66 @@ def test_mode_survives_the_run_scoped_subtraction() -> None:
     assert "mode" in _page_applicable_keys()
 
 
+def test_a_stale_preset_selector_cannot_undo_the_prefill() -> None:
+    """预填之后，粘着旧预设的选择器不能把源运行的值覆盖回去。
+
+    页面机制（``config_run.py`` 的预设块）：``preset_choice`` 来自 selectbox
+    的 widget 键 ``cr_preset_selector``（**粘住**操作人上次的选择），
+    ``current_preset`` 来自每帧重算的 ``cr_preset``。判据是
+    ``preset_choice != current_preset and preset_choice != Custom`` → 调
+    ``_apply_preset()``。
+
+    预填把字段改成源运行的值 ⇒ ``_detect_preset()`` 记 ``Custom`` ⇒ 选择器
+    仍是 ``Default`` ⇒ 判据成立 ⇒ 源运行的值被整片覆盖回去，而横幅照说
+    「已按该次运行覆盖」（codex P1 on #471 r6）。
+
+    这里真跑页面里那个判据表达式，喂进预填之后的 session 状态。
+    """
+    import ast as _ast
+
+    source = _CONFIG_RUN_PAGE.read_text(encoding="utf-8")
+    branch = next(
+        node
+        for node in _ast.walk(_ast.parse(source))
+        if isinstance(node, _ast.If)
+        and isinstance(node.test, _ast.BoolOp)
+        and any(
+            isinstance(cmp_node, _ast.Compare)
+            and isinstance(cmp_node.left, _ast.Name)
+            and cmp_node.left.id == "preset_choice"
+            for cmp_node in node.test.values
+        )
+    )
+    applied: list[str] = []
+    # 预填块刚跑完的状态：选择器与 cr_preset 都被同步成 Custom。
+    namespace: dict[str, Any] = {
+        "preset_choice": "Custom",
+        "current_preset": "Custom",
+        "CUSTOM_PRESET_NAME": "Custom",
+        "_apply_preset": applied.append,
+    }
+    exec(  # noqa: S102 - 取的是本仓自己的页面源码
+        compile(
+            _ast.Module(body=[branch], type_ignores=[]),
+            str(_CONFIG_RUN_PAGE), "exec",
+        ),
+        namespace,
+    )
+    assert applied == [], "预填之后不该有任何预设被重新应用"
+
+    # 反面：没同步选择器时（缺陷本体），同一段判据会撤销预填。
+    namespace.update(preset_choice="Default", current_preset="Custom")
+    exec(  # noqa: S102
+        compile(
+            _ast.Module(body=[branch], type_ignores=[]),
+            str(_CONFIG_RUN_PAGE), "exec",
+        ),
+        namespace,
+    )
+    assert applied == ["Default"], (
+        "这条测试假定的判据不成立了——它本该在选择器陈旧时触发覆盖")
+
+
 def test_numerically_equal_value_is_not_reported_as_overwritten() -> None:
     # 预填走 yaml.safe_load、生效值走控件,同一个数可以是 50 与 50.0。
     session: dict[str, Any] = {"cr_topk": 50.0}
