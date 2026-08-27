@@ -493,5 +493,113 @@ class WidgetJudgesBeforeTheClickTests(unittest.TestCase):
         )
 
 
+class _FakeColumn:
+    def __init__(self, sink: list[str]) -> None:
+        self._sink = sink
+
+    def markdown(self, body: str, *args: object, **kwargs: object) -> None:
+        self._sink.append(body)
+
+    def button(self, *args: object, **kwargs: object) -> bool:
+        return False
+
+
+class _FakeExpander:
+    def __enter__(self) -> _FakeExpander:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeSt:
+    """够 ``render_basket_panel`` 跑完的最小 streamlit 替身。"""
+
+    def __init__(self) -> None:
+        self.rows: list[str] = []
+        self.captions: list[str] = []
+        self.warnings: list[str] = []
+        self.session_state: dict[str, object] = {}
+
+    def expander(self, *args: object, **kwargs: object) -> _FakeExpander:
+        return _FakeExpander()
+
+    def columns(self, spec: object, *args: object, **kwargs: object):
+        width = len(spec) if isinstance(spec, (list, tuple)) else int(spec)
+        return tuple(_FakeColumn(self.rows) for _ in range(width))
+
+    def markdown(self, body: str, *args: object, **kwargs: object) -> None:
+        self.rows.append(body)
+
+    def caption(self, body: str, *args: object, **kwargs: object) -> None:
+        self.captions.append(body)
+
+    def warning(self, body: str, *args: object, **kwargs: object) -> None:
+        self.warnings.append(body)
+
+    def button(self, *args: object, **kwargs: object) -> bool:
+        return False
+
+    def page_link(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def rerun(self) -> None:  # pragma: no cover - 本用例走不到
+        raise AssertionError("本用例不该触发 rerun")
+
+
+class ReroutedMemberDisclosureTests(unittest.TestCase):
+    """别名改判要标在**操作人读的那一行**上。
+
+    面板底下已经有一句汇总（「以下成员的当前工件已由另一个 ID 持有」）。但
+    操作人读的是成员表：行里写着 `A`，链接却把 `B` 送过去，两个名字都合法，
+    他一眼扫过成员行就点了链接时无从发现（codex P2 on #472）。
+
+    这条**真跑**面板而不是查源码串：要证明的是「那一行渲染出来是什么」，
+    源码串证明不了——把标记写进一个从没被渲染的分支，串守卫照样命中。
+    """
+
+    def _render(self, basket: tuple[str, ...], alias: dict[str, str],
+                rows: tuple[object, ...]) -> _FakeSt:
+        import web.operator_ui.compare_basket_widget as widget
+
+        fake = _FakeSt()
+        with mock.patch.object(widget, "st", fake), \
+                mock.patch.object(widget, "current_basket", lambda: basket):
+            widget.render_basket_panel(
+                selectable_ids=tuple(r.run_id for r in rows),
+                run_id_alias=alias,
+                all_rows=rows,
+                key_prefix="t",
+            )
+        return fake
+
+    def test_a_rerouted_member_says_so_on_its_own_row(self) -> None:
+        owner = _Row("ui-9")
+        other = _Row("ui-8")
+
+        fake = self._render(
+            basket=("cli-1", "ui-8"),
+            alias={"cli-1": "ui-9", "ui-8": "ui-8"},
+            rows=(owner, other),
+        )
+
+        rerouted_row = [r for r in fake.rows if "cli-1" in r]
+        self.assertEqual(len(rerouted_row), 1, fake.rows)
+        self.assertIn("ui-9", rerouted_row[0])
+        # 没改判的那一行不许被同一句话污染——每行只说它自己的事。
+        plain_row = [r for r in fake.rows if "ui-8" in r and "cli-1" not in r]
+        self.assertEqual(len(plain_row), 1, fake.rows)
+        self.assertNotIn("→", plain_row[0])
+
+    def test_an_unchanged_member_row_stays_bare(self) -> None:
+        owner = _Row("ui-9")
+
+        fake = self._render(
+            basket=("ui-9",), alias={"ui-9": "ui-9"}, rows=(owner,))
+
+        self.assertEqual([r for r in fake.rows if "ui-9" in r], ["`ui-9`"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

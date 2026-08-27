@@ -224,9 +224,18 @@ def render_basket_panel(
     with st.expander(
         f"对比篮子（{len(basket)}/{MAX_BASKET_SIZE}）", expanded=False,
     ):
+        # 改判**标在成员行本身**,不只汇总在下方(codex P2 on #472)。操作人
+        # 读的是这张成员表——底下另起一段说「A 其实会以 B 送过去」,他仍然可
+        # 能一眼扫过成员行就点了链接。两处都说,不是重复:行内的是他看的那一
+        # 行,下方那句给的是整批改判的全貌。
+        _rerouted_to = dict(checked.rerouted)
         for run_id in basket:
             row_col, drop_col = st.columns([5, 1])
-            row_col.markdown(f"`{run_id}`")
+            _to = _rerouted_to.get(run_id)
+            row_col.markdown(
+                f"`{run_id}` → `{_to}`（当前工件已由后者持有，对比以后者进行）"
+                if _to else f"`{run_id}`"
+            )
             if drop_col.button(
                 "移除",
                 key=f"{key_prefix}_drop_basket_{run_id}",
