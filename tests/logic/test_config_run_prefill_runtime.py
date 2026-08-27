@@ -74,7 +74,7 @@ def _page_applicable_keys() -> frozenset[str]:
     wanted = {
         "_SHARED_EMITTED", "_PIPELINE_ONLY_EMITTED",
         "_WALK_FORWARD_ONLY_EMITTED", "_PAGE_EMITTED_KEYS",
-        "_PREFILL_APPLICABLE_KEYS",
+        "_EMITTED_WITHOUT_READBACK", "_PREFILL_APPLICABLE_KEYS",
     }
     tree = ast.parse(_CONFIG_RUN_PAGE.read_text(encoding="utf-8"))
     chain = [

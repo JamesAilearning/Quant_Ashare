@@ -855,6 +855,59 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
             backend_only, "后端 schema 应当含本页不发的字段，否则这条钉是空的")
         self.assertEqual(_PREFILL_APPLICABLE_KEYS & backend_only, set())
 
+    def test_prefill_only_writes_fields_the_page_reads_back(self) -> None:
+        """预填写进去的每个字段，都必须被提交它的控件读回。
+
+        这是本 change 的 spec 自己写下的要求，也是同一个根因的**第四种**
+        形态：写一个本页从不读的键，值进得了 session 却到不了发出的配置，
+        而下一次重跑另一份归档配置时它会被如实报成「被覆盖」——一条关于
+        「哪个值会生效」的假消息。
+
+        判据是**构造性**的：从源码算出「本页读回的键」，再与
+        ``_PAGE_EMITTED_KEYS`` 求差；差集必须正好等于
+        ``_EMITTED_WITHOUT_READBACK``。手写第四份名单只会漂——前三次都是
+        这样漂的。
+        """
+        from web.operator_ui.pages.config_run import (
+            _EMITTED_WITHOUT_READBACK,
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        tree = ast.parse(self.source)
+        readback: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # `_cr("<key>", ...)` 与 `_prefilled_trading_day("<key>", ...)`
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in {"_cr", "_prefilled_trading_day"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                readback.add(node.args[0].value)
+            # 直接绑 session 的控件:`key="cr_<key>"`
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "key"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                    and keyword.value.value.startswith("cr_")
+                ):
+                    readback.add(keyword.value.value[len("cr_"):])
+
+        self.assertTrue(readback, "从源码里一个读回键也没解析出来——守卫是空的")
+        self.assertEqual(
+            _PAGE_EMITTED_KEYS - readback, set(_EMITTED_WITHOUT_READBACK),
+            "本页发出却不读回的字段变了：要么给它接上控件，要么写进"
+            " _EMITTED_WITHOUT_READBACK 并说清为什么",
+        )
+        # 预填只写读得回来的那些。
+        self.assertTrue(_PREFILL_APPLICABLE_KEYS <= readback)
+        self.assertNotIn("namechange_path", _PREFILL_APPLICABLE_KEYS)
+
     def test_run_scoped_keys_are_absent_from_what_the_page_emits(self) -> None:
         """run-scoped 键**不该出现**在本页发出的字段里。
 

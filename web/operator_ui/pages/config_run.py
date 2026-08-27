@@ -410,6 +410,24 @@ _PAGE_EMITTED_KEYS = (
     | {"namechange_path", "mode"}
 )
 
+#: 本页**发出但从不读回**的字段——它进得了提交载荷,却不经由任何控件的
+#: session 键。
+#:
+#: `namechange_path` 由 `config_dict.setdefault(..., resolve_namechange_path())`
+#: 无条件补上,本页没有对应控件,也从不读 `cr_namechange_path`。
+#:
+#: 预填这种字段是**有害的无用功**:值写进 session 却到不了发出的配置,而下一
+#: 次重跑另一份归档配置时,它会被如实报成「被覆盖」——一条关于「哪个值会生
+#: 效」的假消息。本 change 的 spec 自己写着「预填写进去的每个字段都必须被提
+#: 交它的控件读回」,这份名单就是那条要求的执行点。
+#:
+#: 守卫用 AST 从源码算出「本页读回的键」(所有 `_cr(...)` 的第一参、
+#: `_prefilled_trading_day(...)` 的第一参、以及带 `key="cr_*"` 的控件),再与
+#: `_PAGE_EMITTED_KEYS` 求差——差集必须**正好**等于这份名单。将来某个字段的
+#: 控件被删掉,守卫会红并要求把它写进来,而不是让它悄悄变成第二个
+#: `namechange_path`。
+_EMITTED_WITHOUT_READBACK = frozenset({"namechange_path"})
+
 #: 预填**一次性覆盖**的键。跨模式取并集:源运行可能是另一个模式,它的键要先
 #: 落进 session,`mode` 切过去时才有值可用。
 #:
@@ -422,7 +440,7 @@ _PAGE_EMITTED_KEYS = (
 #: 不提交它。让它进来的话,同一会话里连着重跑两次作业,第二次会把第一次的目
 #: 录报成「被覆盖」——一个本页同时声明「随运行而生、不会携带」的字段。假警
 #: 告比没有警告更坏:操作人学会忽略整块。
-_PREFILL_APPLICABLE_KEYS = _PAGE_EMITTED_KEYS
+_PREFILL_APPLICABLE_KEYS = _PAGE_EMITTED_KEYS - _EMITTED_WITHOUT_READBACK
 
 
 def _apply_prefill_to_session(
