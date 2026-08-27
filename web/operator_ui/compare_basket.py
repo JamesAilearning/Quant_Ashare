@@ -24,6 +24,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from web.operator_ui._param_guard import sanitize
+from web.operator_ui.pages._research_run_comparison_helpers import (
+    parse_selected_run_ids,
+)
+
 #: 篮子在 session_state 里的键。
 BASKET_STATE_KEY = "research_compare_basket"
 
@@ -44,6 +49,8 @@ ADMIT_WRONG_TYPE = "wrong_type"
 ADMIT_NO_ARTIFACTS = "no_artifacts"
 ADMIT_SUPERSEDED = "superseded"
 ADMIT_UNKNOWN = "unknown"
+#: 目录说它可选，但它的 id 过不了对比页 URL 的白名单。
+ADMIT_UNROUTABLE_ID = "unroutable_id"
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,37 @@ class BasketAdmission:
     @property
     def admissible(self) -> bool:
         return self.verdict in (ADMIT_OK, ADMIT_ALIASED)
+
+
+def _url_safe_or_refused(
+    run_id: str, resolved: str, verdict: str, reason: str,
+) -> BasketAdmission:
+    """目录说它可选，但 URL 守卫收不收它？
+
+    篮子唯一的交接通道是 ``?run_ids=``，而 ``_param_guard._run_ids`` 只收
+    ``[A-Za-z0-9_.-]``。CLI 目录行的 run_id 来自 ``_index.jsonl``，只被**结构**
+    校验过——含 ``:`` 或 ``/`` 的 id 结构合法、``selectable_catalog`` 也照收，
+    于是按钮显示可用；但一旦拼进 URL，``sanitize`` 会把**整条选择**静默换成空
+    默认值。操作人看到的是对比页什么都没选中，而按钮刚刚说这次运行可以加入。
+
+    判据是**完整回环**，不是「过得了 sanitize」：把它单独拼成一次请求、再按
+    对比页的方式解析回来，必须原样得到它自己。只问 sanitize 的话，一个含
+    **逗号**的 id 会通过——逗号是那个参数的分隔符，`run,a` 被守卫读成两个
+    合法 id，对比页于是去找两个并不存在的运行，然后 ``st.stop()``（实测：
+    ``sanitize("run_ids", "run,a")`` 原样返回）。
+
+    这里不自己抄那套字符集——抄的那份会与守卫分叉，而分叉的症状正是这条
+    意见描述的静默丢弃。
+    """
+
+    if parse_selected_run_ids(
+            sanitize("run_ids", resolved, default="")) != (resolved,):
+        return BasketAdmission(
+            run_id, "", ADMIT_UNROUTABLE_ID,
+            f"`{resolved}` 的运行 ID 无法原样通过对比页的 URL 参数，"
+            "带过去会让整组选择被丢弃或被读成别的运行。",
+        )
+    return BasketAdmission(run_id, resolved, verdict, reason)
 
 
 def admit_to_basket(
@@ -88,11 +126,11 @@ def admit_to_basket(
             "", "", ADMIT_UNKNOWN, "该运行没有可用的运行 ID，无法加入对比。")
 
     if run_id in set(selectable_ids):
-        return BasketAdmission(run_id, run_id, ADMIT_OK, "")
+        return _url_safe_or_refused(run_id, run_id, ADMIT_OK, "")
 
     aliased = run_id_alias.get(run_id, "")
     if aliased:
-        return BasketAdmission(
+        return _url_safe_or_refused(
             run_id, aliased, ADMIT_ALIASED,
             f"该运行的当前工件由 `{aliased}` 持有，将以后者加入对比。",
         )

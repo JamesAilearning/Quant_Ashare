@@ -74,6 +74,34 @@ run is no longer wanted, when they may be asking where it went.
 - **THEN** that member is named with its reason and no comparison link is
   offered, rather than a link that the comparison page would refuse
 
+A run whose ID cannot survive the handoff parameter SHALL also be refused at
+the entry point. Catalog membership is not sufficient: catalog IDs are only
+structurally validated, while the handoff parameter has its own whitelist and
+its own separator. The check SHALL be a full round trip — the ID composed into
+a request and parsed back the way the destination parses it must yield exactly
+that ID — because a mere validator call accepts an ID containing the parameter's
+separator, which the destination then reads as two different runs.
+
+The comparison action SHALL be offered at a point every run view reaches,
+before any early exit that skips artifact rendering. A run whose report is
+absent or incomplete — running, partial, or empty — is precisely the one an
+operator most wants to set aside for later comparison; placing the action after
+such an exit removes it from that case and also hides an already-accumulated
+selection.
+
+#### Scenario: an ID the handoff parameter cannot carry is refused
+
+- **GIVEN** a catalogued run whose ID contains a character the handoff
+  parameter does not accept, or its separator
+- **WHEN** the view renders its comparison action
+- **THEN** the action is unavailable and the view says the ID cannot be carried
+
+#### Scenario: a run with no report still offers the comparison action
+
+- **GIVEN** a selected walk-forward run whose report contains no folds
+- **WHEN** the view renders
+- **THEN** the comparison action and any accumulated selection are still shown
+
 #### Scenario: a superseded run is refused where the operator is standing
 
 - **GIVEN** a run whose artifact directory is now owned by a newer run

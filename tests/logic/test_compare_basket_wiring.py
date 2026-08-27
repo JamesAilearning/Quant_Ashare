@@ -234,6 +234,21 @@ class SourcePageWiringTests(unittest.TestCase):
         )
         # 取不到 id 时**不画**按钮:画一个注定被拒的按钮就是把人送进拒绝页。
         self.assertIn("\nif _wf_selected_run_id:\n", source)
+        # 位置必须在读产物的**每一条早退之前**。`if not folds:` 那条早退
+        # （运行中 / 部分完成 / 空运行）会 `st.stop()`——挂在它后面的话,恰恰
+        # 是最想「攒起来待会儿比」的那些运行既没有加入按钮、也看不到已有的
+        # 篮子（codex P2 on #472 r2）。
+        basket_at = source.index("if _wf_selected_run_id:")
+        for early_exit in (
+            "    wf_report = read_walk_forward_report(run_dir)",
+            "if not folds:",
+            '        "暂无单折数据",',
+        ):
+            with self.subTest(early_exit=early_exit):
+                self.assertLess(basket_at, source.index(early_exit))
+        # 也必须在**运行选定之后**——没选中运行时没有 id 可加入。
+        self.assertLess(
+            source.index("run_dir = Path(_dir_display.get("), basket_at)
 
 
 class WidgetJudgesBeforeTheClickTests(unittest.TestCase):

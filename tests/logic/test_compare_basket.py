@@ -9,12 +9,14 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
+from web.operator_ui._param_guard import sanitize
 from web.operator_ui.compare_basket import (
     ADMIT_ALIASED,
     ADMIT_NO_ARTIFACTS,
     ADMIT_OK,
     ADMIT_SUPERSEDED,
     ADMIT_UNKNOWN,
+    ADMIT_UNROUTABLE_ID,
     ADMIT_WRONG_TYPE,
     MAX_BASKET_SIZE,
     MIN_COMPARE_SIZE,
@@ -24,6 +26,9 @@ from web.operator_ui.compare_basket import (
     basket_readiness,
     remove_from_basket,
     revalidate_basket,
+)
+from web.operator_ui.pages._research_run_comparison_helpers import (
+    parse_selected_run_ids,
 )
 
 
@@ -99,6 +104,59 @@ class AdmissionTests(unittest.TestCase):
 
         self.assertEqual(admission.verdict, ADMIT_UNKNOWN)
         self.assertEqual(admission.resolved_run_id, "")
+
+    def test_an_id_the_url_guard_rejects_is_refused_at_the_entry_point(
+        self,
+    ) -> None:
+        # CLI 目录行的 run_id 只被**结构**校验过。含 `:` 或 `/` 的 id 结构
+        # 合法、`selectable_catalog` 也照收,于是按钮显示可用;但拼进 URL 后
+        # `_param_guard._run_ids` 会把**整条选择**静默换成空默认值——对比页
+        # 什么都没选中,而按钮刚刚说这次运行可以加入(codex P2 on #472 r2)。
+        for bad in ("run:a", "run/a", "run a"):
+            with self.subTest(run_id=bad):
+                admission = admit_to_basket(
+                    bad, selectable_ids=[bad], run_id_alias={})
+
+                self.assertFalse(admission.admissible)
+                self.assertEqual(admission.verdict, ADMIT_UNROUTABLE_ID)
+                self.assertEqual(admission.resolved_run_id, "")
+
+    def test_an_alias_target_the_url_guard_rejects_is_refused(self) -> None:
+        # 别名解析出来的那个 id 才是真正会进 URL 的。
+        admission = admit_to_basket(
+            "clean-id",
+            selectable_ids=["cli:9"],
+            run_id_alias={"clean-id": "cli:9"},
+        )
+
+        self.assertFalse(admission.admissible)
+        self.assertEqual(admission.verdict, ADMIT_UNROUTABLE_ID)
+
+    def test_a_comma_in_the_id_is_refused_although_sanitize_accepts_it(
+        self,
+    ) -> None:
+        # 逗号是那个 URL 参数的**分隔符**。`sanitize("run_ids", "run,a")`
+        # 原样返回(实测)——它把这串读成两个合法 id。对比页于是去找两个并不
+        # 存在的运行,然后 st.stop()。所以判据必须是**完整回环**,不是
+        # 「过得了 sanitize」。
+        self.assertEqual(sanitize("run_ids", "run,a", default=""), "run,a")
+
+        admission = admit_to_basket(
+            "run,a", selectable_ids=["run,a"], run_id_alias={})
+
+        self.assertFalse(admission.admissible)
+        self.assertEqual(admission.verdict, ADMIT_UNROUTABLE_ID)
+
+    def test_the_url_check_is_a_full_round_trip(self) -> None:
+        # 抄一份字符集会与守卫分叉,而分叉的症状正是那条静默丢弃。这里钉的
+        # 是「拼进去再解析回来,原样得到它自己」。
+        for run_id in ("run-a", "run_a", "run.a", "RUN-1", "a" * 200):
+            with self.subTest(run_id=run_id):
+                admission = admit_to_basket(
+                    run_id, selectable_ids=[run_id], run_id_alias={})
+                round_trip = parse_selected_run_ids(
+                    sanitize("run_ids", run_id, default="")) == (run_id,)
+                self.assertEqual(admission.admissible, round_trip)
 
     def test_an_empty_run_id_is_refused_without_touching_the_catalog(
         self,
