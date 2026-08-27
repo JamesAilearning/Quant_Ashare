@@ -1435,15 +1435,16 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
             "_late_terminal = terminal_status_confirms_the_run(\n"
             "        _late_status", settle,
             "补结算没对已捕获快照做终录检出（或检出被熄火）")
-        # legacy 迟到终录钉生存期候选（第三十九轮 P2:观测上界留 pid 回
-        # 收空窗——回收 pid 的接替者在冻结时钟下可写出仍落窗的
-        # finished;终态记录与 running 共享 started_at,归属钉在生存期内
-        # 观察的精确戳上,无候选 fail-closed）。
+        # legacy 迟到终录归属 fail-closed（第四十一轮改判 r39:精确戳/
+        # 候选在冻结时钟下同样可被同 pid 同戳接替重放——legacy 路径不存
+        # 在不可重放身份,无 nonce 即不归属。合成回归:同 pid 同戳接替=
+        # 任何 legacy 记录,都不得归属）。
         self.assertIn("if _late_terminal and not _kill_nonce:", settle,
-                      "legacy 迟到终录没收紧到候选")
-        self.assertIn("_late_terminal = cancelled_run_matches(\n"
-                      "            _late_status.started_at, _own_stamp)",
-                      settle, "legacy 迟到终录归属没钉生存期候选")
+                      "legacy 迟到终录没设 fail-closed 闸")
+        self.assertIn("_late_terminal = False", settle,
+                      "legacy 迟到终录归属没 fail-closed")
+        self.assertNotIn("_late_terminal = cancelled_run_matches(", settle,
+                         "legacy 归属仍在用可重放的戳判据（r41 已改判）")
         self.assertIn('"terminal_after_kill": _late_terminal', settle,
                       "补结算结局没带终录检出")
         # 身份随行 + 渲染帧复验（第三十二轮 P2:标记在快照帧被接受,消息

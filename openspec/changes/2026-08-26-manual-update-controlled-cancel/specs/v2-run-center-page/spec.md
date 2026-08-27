@@ -263,6 +263,17 @@ already finished; absent both → classified as a signalled confirmed death,
 whose epilogue (artifact reread, orphan adoption or the honest no-orphan
 presentation) treats even a recordless natural crash correctly.
 
+Late (settlement-time) terminal attribution SHALL be nonce-only: for a
+nonce-less pending cancellation there is NO non-replayable identity — the
+pid is recyclable and every timestamp quantity (windows, exact stamps,
+lifetime-observed candidates) can be replayed by a same-pid successor
+under a frozen or coarse clock — so the late path SHALL fail closed
+instead of attributing a terminal record to the cancelled run: the orphan
+flows through the adoption chain or the staleness threshold, and the page
+presents the artifact as-is without an attribution claim. (The immediate
+confirmation path keeps its legacy conjunction: its bounds are sampled at
+the death-confirmation instant, leaving no reuse window.)
+
 Every render-frame revalidation of a previously verified record (the
 graceful terminal claim, the terminal-after-kill claim) SHALL distinguish
 an INCONCLUSIVE current read from a genuine replacement, exactly as
