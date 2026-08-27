@@ -45,7 +45,15 @@ silence.
 The forcible-cancel presentation SHALL be conditioned on what the post-kill
 reread actually found: only when a matching `running` record was found and
 the evidence persisted may the page claim the artifact stays `running`,
-will remain labelled cancelled, and that the gate unlocked. A kill landing
+will remain labelled cancelled, and that the gate unlocked — and that claim
+SHALL additionally be conditioned on the evidence STILL covering the
+current status record at render time: a scheduler replacement can write a
+new `running` record between evidence persistence and the announcing
+re-render, the page's top logic then retires the evidence and restores the
+running gate, and repeating the historical "will stay labelled cancelled /
+gate unlocked" wording would contradict the same frame's running banner and
+disabled button. In that superseded case the page SHALL say the evidence
+was retired and defer to the current status. A kill landing
 before the child wrote its record finds no orphan — the page SHALL then say
 exactly that and defer to the status artifact as-is. Adoption SHALL be
 IDENTITY-BOUND AND TIME-BOUND to the killed run — both, conjunctively:
@@ -292,6 +300,17 @@ one period.
 - **THEN** the outcome reports the swap hit loudly, instructs an immediate
   re-run (startup repair restores the directory), and does not claim the
   online data was unaffected
+
+#### Scenario: a replacement landing before the announcement is not contradicted
+
+- **GIVEN** a forcible cancel whose evidence persisted, with a scheduler
+  replacement writing a new `running` record before the announcing
+  re-render
+- **WHEN** the page renders the cancel outcome
+- **THEN** it does not claim the record will stay labelled cancelled or
+  that the gate unlocked — it says the evidence was retired and defers to
+  the current status, consistent with the running banner and disabled
+  button in the same frame
 
 #### Scenario: the cancelled record stays cancelled across reruns
 

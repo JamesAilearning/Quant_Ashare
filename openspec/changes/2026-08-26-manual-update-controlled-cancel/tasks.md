@@ -325,6 +325,16 @@
       None=合法 legacy。回归=malformed 集合加 None(json 写出即
       "pid": null);变异退回 .get 咬住(SUBFAILED pid=None)
 
+## codex 第二十二轮（P2：解锁声称以本帧证据覆盖为条件）
+
+- [x] P2 证据落盘后、宣告渲染前被调度器接替——顶部逻辑已退役证据、恢复
+      _running_fresh,而 _LAST_CANCEL_KEY 里历史的 evidence_stored=True
+      仍让文案念「将持续标注/已解锁」,与同一帧上方的「正在运行」+禁用
+      按钮自相矛盾。修=成功文案条件收窄为 `evidence_stored and
+      _cancelled_this_run`（本帧判定）;退役情形新增如实改口分支（证据
+      曾落盘、已按纪律退役、以当前状态为准）。守卫:条件版分支存在 +
+      改口分支存在 + elif 链先窄后宽源码序钉
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

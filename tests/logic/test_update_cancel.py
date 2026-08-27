@@ -1216,6 +1216,27 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('launched_at=_live_run.get("launched_at")', page,
                       "补结算没拿到时间窗下界")
 
+    def test_the_unlocked_claim_is_conditioned_on_live_evidence(self) -> None:
+        # 证据落盘后、rerun 渲染前,调度器接替写下新 running——顶部逻辑
+        # 退役证据、恢复 _running_fresh,而历史 evidence_stored=True 不代
+        # 表此刻仍在覆盖:照念「将持续标注/已解锁」与同一帧上方的「正在
+        # 运行」+禁用按钮自相矛盾（codex 第二十二轮 P2）。钉:成功文案
+        # 以本帧 _cancelled_this_run 为条件;退役情形有如实改口分支。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn(
+            'elif _last_cancel.get("evidence_stored") and _cancelled_this_run:',
+            page, "「将持续标注/已解锁」没有以本帧证据覆盖为条件")
+        self.assertIn('elif _last_cancel.get("evidence_stored"):', page,
+                      "缺退役情形的如实改口分支")
+        self.assertIn("证据按纪律", page, "退役改口文案缺失")
+        # 源码序:条件版分支必须在无条件版之前（elif 链先窄后宽）。
+        strict_at = page.index(
+            'elif _last_cancel.get("evidence_stored") and _cancelled_this_run:')
+        loose_at = page.index('elif _last_cancel.get("evidence_stored"):')
+        self.assertLess(strict_at, loose_at,
+                        "宽分支在前——条件版永远不可达")
+
     def test_a_failed_cancel_keeps_the_handle(self) -> None:
         # cancel_failed 时进程可能还活着——句柄是唯一合法取消凭据，
         # 丢了就只剩任务管理器（codex #470 P2）。

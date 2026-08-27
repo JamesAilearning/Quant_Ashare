@@ -847,13 +847,26 @@ if isinstance(_last_cancel, dict):
                           or _last_cancel.get("swap_state_unknown"))
                    else "在线数据未受影响。")
             )
-        elif _last_cancel.get("evidence_stored"):
+        elif _last_cancel.get("evidence_stored") and _cancelled_this_run:
             st.success(
                 f"已取消（{_mode}，returncode="
                 f"{_last_cancel.get('returncode')}）。"
                 "**状态工件仍标 running**——该进程没有写下终态记录，"
                 "本页将持续按「已取消」如实标注（跨刷新有效），启动按钮"
                 "已解锁；单飞锁已自动释放，下次更新照常。"
+            )
+        elif _last_cancel.get("evidence_stored"):
+            # 证据落盘后、本次渲染前,调度器接替写下了新 running——顶部
+            # 逻辑已按纪律退役证据、恢复 _running_fresh,而历史的
+            # evidence_stored=True 不代表**此刻**仍在覆盖:照念「将持续
+            # 标注/已解锁」会与同一帧上方的「正在运行」+禁用按钮自相矛
+            # 盾（codex 第二十二轮 P2）。以本帧判定为准,如实改口。
+            st.success(
+                f"已取消（{_mode}，returncode="
+                f"{_last_cancel.get('returncode')}）。取消证据曾落盘，"
+                "但**此刻**状态工件已被一次更新的运行接替（证据按纪律"
+                "退役，绝不覆盖别人的运行）——上方显示的即当前状态，"
+                "启动闸以它为准。"
             )
         else:
             # 进程在写下自己的 running 记录之前就被终止（或记录已是别次
