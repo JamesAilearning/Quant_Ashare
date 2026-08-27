@@ -671,6 +671,20 @@ def cancel_update(
             else:
                 signal_issued = True
     if process.poll() is None:
+        # 杀前终态快照（codex 第三十五轮 P2）：此刻进程还活着——若它的
+        # 终态记录**已经**在盘上（终态已写、正在追加台账的收尾窗口）,
+        # 随后 kill() 的静默返回就不再是「无事发生」的证明:预检活着 +
+        # 杀后死亡 + 终录**早已在** = 杀点落在终录之后的收尾上（Windows
+        # TerminateProcess 对活进程即执行）,按已发信号的确认死亡归类,
+        # 页面 terminal_after_kill 链如实呈报「终录已写、台账可能被打
+        # 断」;终录仅在杀后才出现,才是真自然完成（kill 内部 no-op）。
+        pre_kill_terminal = (
+            provider_dir is not None
+            and terminal_record_confirms_the_run(
+                provider_dir, process.pid,
+                launched_at=launched_at,
+                exited_at=datetime.now(tz=_CN_TZ).isoformat(),
+                launch_nonce=launch_nonce))
         try:
             process.kill()
         except OSError as exc:
@@ -739,16 +753,19 @@ def cancel_update(
                         own_running_stamp=(
                             observe_own_running_record(process, provider_dir)
                             if provider_dir is not None else None))
-            elif not signal_issued and terminal_record_confirms_the_run(
-                    provider_dir, process.pid,
-                    launched_at=launched_at,
-                    exited_at=datetime.now(tz=_CN_TZ).isoformat(),
-                    # 第二十八轮 P2:UI 子进程的终录带 nonce,第二十七轮
-                    # 起 nonce 一票裁决——不转发会把合法终录按
-                    # 「nonce vs None」拒掉,自然完成反被报成强制取消。
-                    launch_nonce=launch_nonce):
-                # 无任何信号在先 + 本次运行自己的终态记录在——它在微秒窗
-                # 内自然跑完了,kill() 什么都没发。
+            elif (not signal_issued and not pre_kill_terminal
+                    and terminal_record_confirms_the_run(
+                        provider_dir, process.pid,
+                        launched_at=launched_at,
+                        exited_at=datetime.now(tz=_CN_TZ).isoformat(),
+                        # 第二十八轮 P2:UI 子进程的终录带 nonce,第二十七
+                        # 轮起 nonce 一票裁决——不转发会把合法终录按
+                        # 「nonce vs None」拒掉,自然完成反被报成强制取消。
+                        launch_nonce=launch_nonce)):
+                # 无任何信号在先 + 终录**仅在杀后**才出现——它在微秒窗
+                # 内自然跑完了,kill() 什么都没发（第三十五轮:终录早已
+                # 在的情形不走这里——那是杀点落在终录后收尾上的真取消,
+                # 落到下面的 else 按已发信号归类）。
                 markers_written = _append_cancel_marker(
                     log_path,
                     "cancel outcome: process had already finished with its "

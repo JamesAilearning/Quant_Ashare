@@ -496,6 +496,23 @@
       （写前被杀/被接替改写/暂不可读）+ nonce 复现承诺（不确凿路径已
       留证据,孤儿复现会被盖住）。r29 序钉锚随改述更新（断言意图不动）
 
+## codex 第三十五轮（2×P2：杀前终态快照判别、graceful 渲染帧复验）
+
+- [x] P2 终录先在时 kill 静默返回≠no-op——「终态已写、正在追加台账」窗
+      内进程活着,TerminateProcess 对活进程即执行:r20/28 的 oracle 分支
+      把它报成 already_finished（取消未执行）,绕过页面
+      terminal_after_kill 链。修=杀前先做一次终态快照
+      （pre_kill_terminal）:终录**早已在**+杀后死亡 → 按已发信号的确认
+      死亡归类（页面如实呈报「终录已写、台账可能被打断」）;终录**仅在
+      杀后**才出现 → 才是真自然完成。quiet-kill 测试 A/A' 变体按新语义
+      改判 cancelled,新增变体N（stub 在 kill() 内写录=真 no-op →
+      already_finished）;变异（快照恒假）咬住
+- [x] P2 graceful 的 terminal_recorded 只带布尔——r32 同款渲染帧复验补
+      到 graceful:身份随行（graceful_identity:pid/nonce/launched_at/
+      exited_at）,渲染帧用同一快照 oracle 对本帧 _status 复验,接替情形
+      如实改口（终态以取消当时核实为准）。快照 oracle 页面调用 2→3 处
+      计数钉更新;跨行 needle 教训再犯一次（改短锚）
+
 ## 既有守卫开火一处（处置=改我不削弱守卫）
 
 - 页面源码禁现 spawn 字样的守卫咬了我的注释字面——注释改述（「活进程

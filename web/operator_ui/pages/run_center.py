@@ -818,6 +818,18 @@ if _live_proc is not None:
                     "markers_written": _outcome.markers_written,
                     "swap_state_unknown": _outcome.swap_state_unknown,
                     "terminal_recorded": _outcome.terminal_recorded,
+                    # graceful 终态核实的**身份随行**（第三十五轮 P2:
+                    # 只带布尔的话,核实与 rerun 渲染之间被接替改写时,
+                    # 「状态工件如实可查」会对着接替横幅说——渲染帧要
+                    # 用同一 oracle 对本帧 _status 复验）。
+                    "graceful_identity": ({
+                        "pid": _live_proc.pid,
+                        "launch_nonce":
+                            (_live_run or {}).get("launch_nonce") or "",
+                        "launched_at":
+                            (_live_run or {}).get("launched_at") or "",
+                        "exited_at": _outcome.exited_at or "",
+                    } if _outcome.terminal_recorded else None),
                     "evidence_stored": False,
                 }
                 # 上界由取消边界在**确认死亡当刻**返回（codex 第六轮
@@ -982,14 +994,35 @@ if isinstance(_last_cancel, dict):
             # 只声称核实过的东西（第三十四轮 P2）：terminal_recorded 只
             # 验了**状态工件**;台账追加是 best-effort（写失败被编排器刻
             # 意吞掉照常退出）,本页没核实过,不许说「台账如实可查」。
-            st.success(
-                "已取消（礼貌信号生效）：编排器自己写下了终态记录（已核"
-                "实：finished 且写者 pid 属本次运行）——状态工件如实可"
-                "查（台账为尽力追加，不在本页核实范围）。"
-                + ("" if (_last_cancel.get("swap_interrupted")
-                          or _last_cancel.get("swap_state_unknown"))
-                   else "在线数据未受影响。")
-            )
+            # 「状态工件如实可查」还须在**渲染帧**复验（第三十五轮 P2,
+            # 与 terminal_after_kill 的 r32 同款）:核实与 rerun 之间接
+            # 替可改写工件,本帧横幅可能已是别的记录——用同一 oracle 对
+            # 本帧 _status 复验,不符如实改口。
+            _gid = _last_cancel.get("graceful_identity") or {}
+            _g_current = terminal_status_confirms_the_run(
+                _status, int(_gid.get("pid") or -1),
+                launched_at=_gid.get("launched_at") or None,
+                exited_at=_gid.get("exited_at") or None,
+                launch_nonce=_gid.get("launch_nonce") or None)
+            if _g_current:
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（已核实：finished 且写者 pid 属本次运行）——状态"
+                    "工件如实可查（台账为尽力追加，不在本页核实范围）。"
+                    + ("" if (_last_cancel.get("swap_interrupted")
+                              or _last_cancel.get("swap_state_unknown"))
+                       else "在线数据未受影响。")
+                )
+            else:
+                st.success(
+                    "已取消（礼貌信号生效）：编排器自己写下了终态记录"
+                    "（取消当时经身份核实），但**此刻**状态工件已被随后"
+                    "的记录接替——上方显示的即当前状态；本次终态以取消"
+                    "当时的核实为准（台账为尽力追加，不在本页核实范围）。"
+                    + ("" if (_last_cancel.get("swap_interrupted")
+                              or _last_cancel.get("swap_state_unknown"))
+                       else "在线数据未受影响。")
+                )
         elif _last_cancel.get("evidence_stored") and _cancelled_this_run:
             st.success(
                 f"已取消（{_mode}，returncode="

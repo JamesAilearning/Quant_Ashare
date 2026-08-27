@@ -246,10 +246,17 @@ sends nothing when the process is already terminal. The attempt SHALL
 re-check after the return — still alive proves the signal was sent (the
 internal poll saw a live process); found dead with no prior signal is the
 ambiguous micro-window, resolved by the terminal-record oracle (the same
-pid + launch-to-exit verification): the run's own terminal record present →
-already finished; absent → classified as a signalled confirmed death,
-whose epilogue (artifact reread, orphan adoption or the honest no-orphan
-presentation) treats even a recordless natural crash correctly. With this,
+pid + launch-to-exit verification) COMBINED with a PRE-KILL terminal
+snapshot: a matching terminal record that ALREADY existed before the kill
+call — the child alive past its terminal write, appending the ledger — is
+NOT proof of a no-op, because a kill issued at that point genuinely
+terminates the live process; that ordering SHALL classify as a signalled
+confirmed death (surfacing the terminal-after-kill presentation), and only
+a terminal record that APPEARS after the kill call proves the child
+finished naturally inside the poll-to-kill window → already finished;
+absent both → classified as a signalled confirmed death, whose epilogue
+(artifact reread, orphan adoption or the honest no-orphan presentation)
+treats even a recordless natural crash correctly. With this,
 the kill call's observation space is exhaustively partitioned —
 {raise, return} × {alive, dead} each has an explicit classification and
 none rests on an assumption about the call's semantics. The pending context SHALL also carry the failed

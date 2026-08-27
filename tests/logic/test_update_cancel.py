@@ -1068,11 +1068,8 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 的 now) 恒成立。
         _now = datetime.now(tz=timezone(timedelta(hours=8)))
         launched = (_now - timedelta(hours=2)).isoformat()
-        with tempfile.TemporaryDirectory() as t:
-            provider = Path(t) / "prov"
-            provider.mkdir()
-            # 变体A:本次运行自己的终态记录在(pid+窗内)→ 自然完成。
-            status_path_for_provider(provider).write_text(json.dumps({
+        def _record(provider, nonce=None):
+            rec = {
                 "schema_version": 1, "state": "finished",
                 "provider_dir": _os.path.normcase(str(provider.resolve())),
                 "run_date": _now.date().isoformat(),
@@ -1080,33 +1077,75 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 "finished_at": (_now - timedelta(minutes=1)).isoformat(),
                 "exit_code": 0, "failed_stage": None, "detail": "complete",
                 "pid": _DiesQuietly.pid,
-            }), encoding="utf-8")
-            got, text = _run(provider, launched)
-            self.assertEqual("already_finished", got.kind,
-                             "静默返回被当成送达证据,自然完成被报成取消")
-            self.assertFalse(got.kill_issued)
-            self.assertIn("own terminal record", text)
+            }
+            if nonce:
+                rec["launch_nonce"] = nonce
+            return rec
+
         with tempfile.TemporaryDirectory() as t:
-            # 变体A'（第二十八轮 P2）:会话带 nonce 的 UI launch,子进程
-            # 的终录**带同一 nonce**——oracle 调用必须转发 nonce,否则
-            # 「nonce vs None」拒掉合法终录,自然完成反被报成强制取消
-            # （第二十七轮改动的集成回归）。
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            # 变体A（第三十五轮改判）:终录在 kill **之前**已在盘——预检
+            # 活着 + 终录先在 = 「终态已写、正在追加台账」的收尾窗,杀点
+            # 落在终录之后:这是**真取消**（TerminateProcess 对活进程即
+            # 执行）,不是 no-op;报 already_finished 会谎称取消未执行、
+            # 绕过页面 terminal_after_kill 链。
+            status_path_for_provider(provider).write_text(
+                json.dumps(_record(provider)), encoding="utf-8")
+            got, text = _run(provider, launched)
+            self.assertEqual("cancelled", got.kind,
+                             "终录先在的收尾窗硬杀被谎报成取消未执行")
+            self.assertIn("cancel outcome: process exited", text)
+        with tempfile.TemporaryDirectory() as t:
+            # 变体A'（第二十八轮引入,第三十五轮同步改判）:带 nonce 的
+            # 终录先在——同上归真取消;nonce 转发正确性由「不因
+            # nonce vs None 被拒」间接钉住(拒掉会落 else 也成 cancelled,
+            # 无法区分,故另以变体N 正面钉转发)。
             provider = Path(t) / "prov"
             provider.mkdir()
             _nn = "ab" * 16
-            status_path_for_provider(provider).write_text(json.dumps({
-                "schema_version": 1, "state": "finished",
-                "provider_dir": _os.path.normcase(str(provider.resolve())),
-                "run_date": _now.date().isoformat(),
-                "started_at": (_now - timedelta(hours=1)).isoformat(),
-                "finished_at": (_now - timedelta(minutes=1)).isoformat(),
-                "exit_code": 0, "failed_stage": None, "detail": "complete",
-                "pid": _DiesQuietly.pid, "launch_nonce": _nn,
-            }), encoding="utf-8")
+            status_path_for_provider(provider).write_text(
+                json.dumps(_record(provider, _nn)), encoding="utf-8")
             got, text = _run(provider, launched, nonce=_nn)
+            self.assertEqual("cancelled", got.kind)
+        with tempfile.TemporaryDirectory() as t:
+            # 变体N（第三十五轮）:真 no-op——终录**仅在杀中/杀后**才出现
+            # （子进程在 poll→kill 微秒窗内自然跑完,send_signal 内部
+            # no-op）。杀前快照不在 + 杀后 oracle 在（nonce 转发正确才
+            # 认）→ already_finished。
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            _nn = "ab" * 16
+
+            class _FinishesDuringKill(_DiesQuietly):
+                def kill(self) -> None:
+                    status_path_for_provider(provider).write_text(
+                        json.dumps(_record(provider, _nn)),
+                        encoding="utf-8")
+                    self._killed = True
+
+            proc = _FinishesDuringKill()
+            with tempfile.TemporaryDirectory() as t2:
+                log = Path(t2) / "log.log"
+                if sys.platform != "win32":
+                    def _gone(pid: int, sig: int) -> None:
+                        raise ProcessLookupError("group gone")
+                    with mock.patch.object(_runner.os, "killpg", _gone):
+                        got = cancel_update(
+                            proc, log,  # type: ignore[arg-type]
+                            provider_dir=provider, grace_seconds=0.3,
+                            launched_at=launched, launch_nonce=_nn)
+                else:
+                    got = cancel_update(
+                        proc, log,  # type: ignore[arg-type]
+                        provider_dir=provider, grace_seconds=0.3,
+                        launched_at=launched, launch_nonce=_nn)
+                text = (log.read_text(encoding="utf-8")
+                        if log.exists() else "")
             self.assertEqual("already_finished", got.kind,
-                             "带 nonce 的合法终录被 oracle 拒掉,自然完成"
-                             "被报成强制取消（nonce 没转发）")
+                             "杀中才出现的终录没被判真自然完成"
+                             "（或 nonce 没转发被拒）")
+            self.assertFalse(got.kill_issued)
             self.assertIn("own terminal record", text)
         with tempfile.TemporaryDirectory() as t:
             # 变体B:无终态记录 → 按已发信号的确认死亡走(取消收尾)。
@@ -1357,8 +1396,9 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 补结算帧照样矛盾）:oracle 调用恰好两处（confirm+补结算）,补
         # 结算结局带 terminal_after_kill 键。
         self.assertEqual(
-            2, page.count("terminal_status_confirms_the_run("),
-            "快照版终态检出不是恰好两处（confirm + 补结算）")
+            3, page.count("terminal_status_confirms_the_run("),
+            "快照版终态检出不是恰好三处（confirm + 补结算 + graceful "
+            "渲染帧复验,第三十五轮加第三处）")
         self.assertEqual(
             0, page.count("terminal_record_confirms_the_run("),
             "页面残留读盘版核实（会引入二次读取竞态,第三十一轮）")
@@ -1407,6 +1447,14 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                          "兜底仍把写前被杀当已证事实")
         self.assertIn("也可能其记录已被随后的运行接替或工件暂不可读",
                       page, "兜底缺歧义如实列举")
+        # graceful 的渲染帧复验（第三十五轮 P2,与 terminal_after_kill 的
+        # r32 同款）:核实身份随行 + 本帧用同一 oracle 复验 + 接替改口。
+        self.assertIn('"graceful_identity"', page,
+                      "graceful 核实没随行身份")
+        self.assertIn("_g_current = terminal_status_confirms_the_run(",
+                      page, "graceful 渲染帧没复验")
+        self.assertIn("当时的核实为准", page,
+                      "graceful 接替情形缺如实改口")
         self.assertIn('"exit_code": _late_status.exit_code', page,
                       "补结算身份没随行终态事实")
         self.assertIn('"exit_code": _fresh_status.exit_code', page,
