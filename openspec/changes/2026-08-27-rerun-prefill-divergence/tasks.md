@@ -84,6 +84,21 @@
   `d2a32cc` 修完，源码实地核对在位（其中一条的 AGENTS.md 链接仍指向
   `e39efea`）
 
+## 6c. codex #471 第四轮（r4）
+
+- [x] 6c.1 **P2** `other_mode_keys` 必须是**本页在那个模式下真的会发出**的
+      键,不是后端 schema 全集。像 `run_factor_analysis` 这种「在
+      PIPELINE_KEYS 里、但本页任何模式都不发」的键,用全集会被标成
+      mode_only(「切模式即生效」——假的),而 unsupported 同时说「本页不
+      支持」:上一轮修掉的那个自相矛盾换了个来源又回来了
+- [x] 6c.2 新增 `_PIPELINE_ONLY_EMITTED` / `_WALK_FORWARD_ONLY_EMITTED`,
+      由 AST 守卫钉住与页面两个 `config_dict.update({...})` 字面量同步——
+      两份分叉的后果是**说错话而不报错**,没有任何东西会红
+- [x] 6c.3 反向钉:两个常量 ⊆ 各自后端 schema,且与对面 schema 无交集
+      (混进共享段的键会被说成「属于另一个模式」)
+- [x] 6c.4 变异复验扩到 **36 条全咬住**（新增「other_mode 退回后端全集」
+      「ONLY_EMITTED 漏一个键」「模式专属集合混进共享键」）
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂

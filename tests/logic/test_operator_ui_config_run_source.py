@@ -182,12 +182,13 @@ class ConfigRunPageSourceTests(unittest.TestCase):
             "\n    _review_known_keys = frozenset(known_keys) | {\"mode\"}\n",
             source,
         )
-        # 「另一个模式的键」必须来自对面模式的 schema。只看 known_keys 会
-        # 把已删除的历史键也标成 mode_only,与 unsupported 的报告自相矛盾。
+        # 「另一个模式的键」必须是**本页在那个模式下真的会发出**的键。用后端
+        # schema 全集会把本页压根不发的字段也说成「切模式即生效」,而
+        # unsupported 同时说「本页不支持」——两句自相矛盾。
         self.assertIn(
             "\n    _review_other_mode_keys = (\n"
-            "        frozenset(WALK_FORWARD_KEYS) if mode == \"pipeline\"\n"
-            "        else frozenset(PIPELINE_KEYS)\n"
+            "        _WALK_FORWARD_ONLY_EMITTED if mode == \"pipeline\"\n"
+            "        else _PIPELINE_ONLY_EMITTED\n"
             "    )\n",
             source,
         )
@@ -784,6 +785,89 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
         self.source = Path(
             "web/operator_ui/pages/config_run.py"
         ).read_text(encoding="utf-8")
+
+    def test_mode_only_emitted_key_sets_match_what_the_page_emits(
+        self,
+    ) -> None:
+        """两个 ``*_ONLY_EMITTED`` 常量 == 页面两个模式分支真正 update 的键。
+
+        这两份分叉时的后果是**说错话而不报错**:复核区会宣称某个字段「属于
+        另一个模式、切过去就生效」,而本页在那个模式下压根不发它;或者反过
+        来漏掉一个真该单列的字段,把它混进「值被改了」淹掉真差异。两边都
+        照常提交,没有任何东西会红。
+
+        所以取页面里那两个 ``config_dict.update({...})`` 字面量的键**解析**着
+        比,不在测试里抄一份名单——抄的那份跟着谁漂都不会被发现。
+        """
+        from web.operator_ui.pages.config_run import (
+            _PIPELINE_ONLY_EMITTED,
+            _WALK_FORWARD_ONLY_EMITTED,
+        )
+
+        tree = ast.parse(self.source)
+        branch = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "mode"
+            and any(
+                isinstance(comparator, ast.Constant)
+                and comparator.value == "pipeline"
+                for comparator in node.test.comparators
+            )
+            and any(
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "known_keys"
+                    for target in statement.targets
+                )
+                for statement in node.body
+            )
+        )
+
+        def _updated_keys(body: list[ast.stmt]) -> set[str]:
+            call = next(
+                node
+                for statement in body
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "config_dict"
+            )
+            literal = call.args[0]
+            assert isinstance(literal, ast.Dict)
+            return {
+                key.value
+                for key in literal.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+
+        self.assertEqual(_updated_keys(branch.body), set(_PIPELINE_ONLY_EMITTED))
+        self.assertEqual(
+            _updated_keys(branch.orelse), set(_WALK_FORWARD_ONLY_EMITTED))
+
+    def test_mode_only_sets_hold_no_key_the_page_never_emits(self) -> None:
+        # 反向:两个常量里的每个键都必须真的在后端 schema 里(不然本页发了
+        # 一个后端不收的字段),且**不**在共享段里(共享段两模式都发,不该被
+        # 说成「属于另一个模式」)。
+        from web.operator_ui.config_forms import PIPELINE_KEYS, WALK_FORWARD_KEYS
+        from web.operator_ui.pages.config_run import (
+            _PIPELINE_ONLY_EMITTED,
+            _WALK_FORWARD_ONLY_EMITTED,
+        )
+
+        self.assertTrue(set(_PIPELINE_ONLY_EMITTED) <= set(PIPELINE_KEYS))
+        self.assertTrue(
+            set(_WALK_FORWARD_ONLY_EMITTED) <= set(WALK_FORWARD_KEYS))
+        # 模式专属 ⇒ 不在对面模式的 schema 里。
+        self.assertEqual(
+            set(_PIPELINE_ONLY_EMITTED) & set(WALK_FORWARD_KEYS), set())
+        self.assertEqual(
+            set(_WALK_FORWARD_ONLY_EMITTED) & set(PIPELINE_KEYS), set())
 
     def test_wf_dates_honour_prefill_over_the_live_default(self) -> None:
         # overall_start/overall_end 是滚动验证窗口的两个**定义性**字段。

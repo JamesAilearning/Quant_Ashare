@@ -362,6 +362,25 @@ PREFILL_CONFIG = _prefill_config()
 _PREFILL_ERROR = st.session_state.get("prefill_config_error")
 if _PREFILL_ERROR:
     st.error(f"⚠ {_PREFILL_ERROR}")
+#: 本页在各模式下**额外**发出的键——共享段之外、模式专属的那些。
+#:
+#: 它们不是 PIPELINE_KEYS / WALK_FORWARD_KEYS(那是**后端** schema,含本页
+#: 任何模式下都不发的字段)。复核区判断「这个键属于另一个模式,切过去就生
+#: 效」时必须用这一份:用后端全集会把本页压根不发的字段也说成「切模式即
+#: 生效」,而 `unsupported_prefill_keys` 同时说「本页不支持」——两句自相矛盾。
+#:
+#: 与下方 `config_dict.update({...})` 的两个字面量一一对应,由
+#: `test_operator_ui_config_run_source` 的 AST 守卫钉住同步(两处分叉时,
+#: 复核区会对某个字段说错话,而页面照常提交)。
+_PIPELINE_ONLY_EMITTED = frozenset({
+    "train_start", "train_end", "valid_start", "valid_end",
+    "test_start", "test_end",
+})
+_WALK_FORWARD_ONLY_EMITTED = frozenset({
+    "overall_start", "overall_end", "train_months", "valid_months",
+    "test_months", "step_months", "ensemble_window",
+})
+
 #: 预填**一次性覆盖**的已知键集合。跨模式取并集:源运行可能是另一个模式,
 #: 它的键要先落进 session,`mode` 切过去时才有值可用。
 #:
@@ -1161,9 +1180,14 @@ with form_col:
     # `mode` 是**本次提交**的一部分(`preview_config = {"mode": mode, ...}`)
     # 却不在两个 KEYS 常量里,不加就永远不参与比较。
     _review_known_keys = frozenset(known_keys) | {"mode"}
+    # 「属于另一个模式」必须是**本页在那个模式下真的会发出**的键,不是后端
+    # schema 的全集。用全集的话,像 `run_factor_analysis` 这种「在
+    # PIPELINE_KEYS 里、但本页任何模式下都不发」的键会被标成 mode_only
+    # (「切模式即生效」——假的),而 unsupported 同时说「本页不支持」:同一个
+    # 自相矛盾,只是换了个来源(codex P2 on #471 r4)。
     _review_other_mode_keys = (
-        frozenset(WALK_FORWARD_KEYS) if mode == "pipeline"
-        else frozenset(PIPELINE_KEYS)
+        _WALK_FORWARD_ONLY_EMITTED if mode == "pipeline"
+        else _PIPELINE_ONLY_EMITTED
     )
     # 与**被重跑那次运行**的差异（不是与预设的差异——上面那张表比的是
     # 预设）。预填现在无条件覆盖已知键,但那只保证「预填那一刻」一致:预
