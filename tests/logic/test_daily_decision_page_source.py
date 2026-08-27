@@ -133,15 +133,26 @@ class PageBoundaryTests(unittest.TestCase):
             ")\n",
             self.page,
         )
-        self.assertIn("\nif _baseline.found:\n", self.page)
+        # 三种终局各自有分支，且**互斥**：找到 / 不可知 / 翻完了都没有。
+        self.assertIn(
+            "\nif _baseline.found and not _baseline_unreadable:\n", self.page)
+        self.assertIn("\nelif _baseline_unreadable:\n", self.page)
+        self.assertIn("\nelif _baseline.unknowable:\n", self.page)
         self.assertIn("\nif _baseline.skipped:\n", self.page)
         self.assertIn("\nif _baseline.limit_reached:\n", self.page)
         # 读盘走本页同一道输出目录守卫，不另开一条读路径。
         self.assertIn("read_json_artifact(path, artifact_name=path.name)",
                       self.page)
-        # 「找不到基准」必须自己说话，不能沉默或伪装成「没有持仓」。
-        self.assertIn("找不到可信的名义持仓基准", self.page)
+        # 「不可知」与「确实没有」必须分开说：前者表示回溯**停在**一份回答
+        # 不了自己的工件上，继续翻出来的清单可能已被它取代。
+        self.assertIn("名义持仓基准**不可知**", self.page)
+        self.assertIn("回溯到底也没遇到再平衡日", self.page)
         self.assertIn("不等于「没有持仓」", self.page)
+        # 损坏的名单**不是**空名单：退成 () 会让页面接着说「共 0 只」，
+        # 把一份损坏工件渲染成一个合法的空仓位。
+        self.assertIn("_baseline_unreadable = str(_roster_exc)", self.page)
+        self.assertIn("**不能**当作名义持仓基准", self.page)
+        self.assertNotIn("_baseline_roster = ()\n    st.info", self.page)
 
     def test_banner_warns_and_never_defaults(self) -> None:
         self.assertIn("模型元信息缺失", self.page)

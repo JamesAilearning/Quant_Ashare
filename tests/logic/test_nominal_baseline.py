@@ -25,12 +25,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from web.operator_ui.pages._daily_decision_helpers import (  # noqa: E402
-    BASELINE_SKIP_ENTRY_TIMING,
+    BASELINE_BLOCK_CORRUPT_V2,
+    BASELINE_BLOCK_DATE_MISMATCH,
+    BASELINE_BLOCK_ENTRY_TIMING,
+    BASELINE_BLOCK_MALFORMED_CADENCE,
+    BASELINE_BLOCK_NO_CADENCE,
+    BASELINE_BLOCK_UNREADABLE,
+    BASELINE_BLOCK_UNSUPPORTED_SCHEMA,
     BASELINE_SKIP_HOLD,
-    BASELINE_SKIP_MALFORMED_CADENCE,
-    BASELINE_SKIP_NO_CADENCE,
-    BASELINE_SKIP_UNREADABLE,
-    BASELINE_SKIP_UNSUPPORTED_SCHEMA,
     DEFAULT_BASELINE_SCAN_LIMIT,
     baseline_roster,
     find_nominal_baseline,
@@ -127,8 +129,12 @@ class FindBaselineTests(unittest.TestCase):
         )
 
         self.assertFalse(result.found)
-        self.assertEqual(
-            [s.reason for s in result.skipped], [BASELINE_SKIP_NO_CADENCE])
+        self.assertTrue(result.unknowable)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_NO_CADENCE)
+        # 它也**不**能当 HOLD 继续往回翻：那份工件可能本身就是一次再平衡，
+        # 只是那时还没有这个字段。两种猜测都不做。
+        self.assertEqual(result.skipped, ())
 
     def test_a_non_bool_cadence_field_is_a_shape_violation(self) -> None:
         result = find_nominal_baseline(
@@ -139,9 +145,9 @@ class FindBaselineTests(unittest.TestCase):
         )
 
         self.assertFalse(result.found)
+        assert result.blocked_by is not None
         self.assertEqual(
-            [s.reason for s in result.skipped],
-            [BASELINE_SKIP_MALFORMED_CADENCE])
+            result.blocked_by.reason, BASELINE_BLOCK_MALFORMED_CADENCE)
 
     def test_an_unsupported_schema_is_refused_before_its_fields_are_read(
         self,
@@ -154,9 +160,9 @@ class FindBaselineTests(unittest.TestCase):
             }),
         )
 
+        assert result.blocked_by is not None
         self.assertEqual(
-            [s.reason for s in result.skipped],
-            [BASELINE_SKIP_UNSUPPORTED_SCHEMA])
+            result.blocked_by.reason, BASELINE_BLOCK_UNSUPPORTED_SCHEMA)
 
     def test_a_backwards_entry_date_is_refused(self) -> None:
         result = find_nominal_baseline(
@@ -166,12 +172,14 @@ class FindBaselineTests(unittest.TestCase):
             }),
         )
 
+        assert result.blocked_by is not None
         self.assertEqual(
-            [s.reason for s in result.skipped], [BASELINE_SKIP_ENTRY_TIMING])
+            result.blocked_by.reason, BASELINE_BLOCK_ENTRY_TIMING)
 
-    def test_an_unreadable_artifact_is_recorded_not_silently_skipped(
-        self,
-    ) -> None:
+    def test_an_unreadable_newer_artifact_stops_the_scan(self) -> None:
+        # 读不出来的那一份**本身可能就是一次更近的再平衡**。翻过它去，把更早
+        # 那张单报成当前基准，就是拿一张**可能已被取代**的清单当此刻该持有的。
+        # 只有经过校验的 HOLD 才能证明「那天没换手、更早那张单仍有效」。
         result = find_nominal_baseline(
             _index("2026-08-04", "2026-08-03"),
             read_payload=_reader({
@@ -180,10 +188,62 @@ class FindBaselineTests(unittest.TestCase):
             }),
         )
 
-        self.assertEqual(result.baseline_date, "2026-08-03")
+        self.assertFalse(result.found)
+        self.assertTrue(result.unknowable)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.trade_date, "2026-08-04")
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_UNREADABLE)
+        # 更早那份**没有被读**——回溯就地停下了。
+        self.assertEqual(result.scanned, 1)
+
+    def test_a_filename_payload_date_mismatch_stops_the_scan(self) -> None:
+        # 改名/拷贝过的工件会让「八月三日那一份」其实装着八月十日的截面。
+        # 拿它当基准就是把未来数据当成当日应持有；选中工件流对同一形状是
+        # st.stop()，回溯不能更宽松。
+        result = find_nominal_baseline(
+            _index("2026-08-03"),
+            read_payload=_reader({
+                "2026-08-03": _artifact(as_of="2026-08-10"),
+            }),
+        )
+
+        self.assertFalse(result.found)
+        assert result.blocked_by is not None
         self.assertEqual(
-            [(s.trade_date, s.reason) for s in result.skipped],
-            [("2026-08-04", BASELINE_SKIP_UNREADABLE)])
+            result.blocked_by.reason, BASELINE_BLOCK_DATE_MISMATCH)
+
+    def test_a_corrupt_v2_artifact_stops_the_scan(self) -> None:
+        # 带 v2 标记却没有 dict meta = 损坏（产出器对 v2 恒写 dict meta）。
+        # 选中工件流对同一形状 st.stop()，这里同样不能放行。
+        payload = _artifact(as_of="2026-08-03")
+        payload.pop("meta")
+        result = find_nominal_baseline(
+            _index("2026-08-03"), read_payload=_reader({"2026-08-03": payload}))
+
+        self.assertFalse(result.found)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_CORRUPT_V2)
+
+    def test_only_a_validated_hold_licenses_scanning_further_back(
+        self,
+    ) -> None:
+        # 这条是整段语义的总闸：经过校验的 HOLD 才是「可以继续往回翻」的
+        # 唯一凭据。把任何一种「回答不了」当成 HOLD，都会让回溯翻过一份
+        # 可能取代了更早清单的工件。
+        result = find_nominal_baseline(
+            _index("2026-08-05", "2026-08-04", "2026-08-03"),
+            read_payload=_reader({
+                "2026-08-05": _artifact(as_of="2026-08-05", rebalance=False),
+                "2026-08-04": _artifact(as_of="2026-08-04", schema=1),
+                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
+            }),
+        )
+
+        self.assertFalse(result.found)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.trade_date, "2026-08-04")
+        # 已确认的 HOLD 仍如实记账。
+        self.assertEqual([s.trade_date for s in result.skipped], ["2026-08-05"])
 
     def test_nothing_found_says_it_exhausted_rather_than_hit_a_limit(
         self,
@@ -200,6 +260,10 @@ class FindBaselineTests(unittest.TestCase):
         self.assertFalse(result.found)
         self.assertTrue(result.exhausted)
         self.assertFalse(result.limit_reached)
+        # 「翻完了」只在**全程都是经过校验的 HOLD** 时才说得出口——证据链
+        # 没断，所以确实是「这些工件里没有再平衡日」。
+        self.assertFalse(result.unknowable)
+        self.assertIsNone(result.blocked_by)
 
     def test_the_scan_is_bounded_and_says_so(self) -> None:
         # 无上界回溯既慢，又会把「基准早已过期」说成「找到了」。
@@ -320,15 +384,26 @@ class RealArtifactsOnThisMachineTests(unittest.TestCase):
 
         result = find_nominal_baseline(artifacts, read_payload=read)
 
-        # 不断言「找得到」——本机当下的正确答案很可能就是「没有可信基准」。
-        # 断言的是：每一份被跳过的工件都给出了**具体**原因，而不是沉默。
+        # 不断言「找得到」——本机当下的正确答案很可能是「不可知」。断言的是
+        # **三种终局互斥且自洽**，且每一条记账都给出了具体原因。
+        terminal = [
+            result.found, result.unknowable,
+            (not result.found and not result.unknowable),
+        ]
+        self.assertEqual(sum(1 for t in terminal if t), 1)
         self.assertEqual(
-            result.scanned, len(result.skipped) + (1 if result.found else 0))
+            result.scanned,
+            len(result.skipped) + (1 if result.found or result.unknowable else 0),
+        )
         for candidate in result.skipped:
             with self.subTest(date=candidate.trade_date):
-                self.assertTrue(candidate.reason)
+                # 记账里现在只该有**经过校验的 HOLD**。
+                self.assertEqual(candidate.reason, BASELINE_SKIP_HOLD)
                 self.assertTrue(candidate.detail)
-        if not result.found:
+        if result.unknowable:
+            assert result.blocked_by is not None
+            self.assertTrue(result.blocked_by.detail)
+        elif not result.found:
             self.assertTrue(result.exhausted or result.limit_reached)
 
 

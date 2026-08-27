@@ -683,13 +683,23 @@ def provenance_verdict(
 #   没记录节奏的运行编造语义。
 # ---------------------------------------------------------------------------
 
-#: 一份候选工件被跳过的原因。每一类对操作人的下一步不同，不许合并成「不可用」。
+#: 回溯为什么在某一份工件上**停下**。除了 HOLD 日，其余每一种都表示
+#: 「这一份回答不了它是不是再平衡日」——而那正是不能再往回翻的理由。
 BASELINE_SKIP_HOLD = "hold_day"
-BASELINE_SKIP_NO_CADENCE = "no_cadence"
-BASELINE_SKIP_MALFORMED_CADENCE = "malformed_cadence"
-BASELINE_SKIP_UNSUPPORTED_SCHEMA = "unsupported_schema"
-BASELINE_SKIP_ENTRY_TIMING = "entry_timing"
-BASELINE_SKIP_UNREADABLE = "unreadable"
+BASELINE_BLOCK_NO_CADENCE = "no_cadence"
+BASELINE_BLOCK_MALFORMED_CADENCE = "malformed_cadence"
+BASELINE_BLOCK_UNSUPPORTED_SCHEMA = "unsupported_schema"
+BASELINE_BLOCK_ENTRY_TIMING = "entry_timing"
+BASELINE_BLOCK_DATE_MISMATCH = "date_mismatch"
+BASELINE_BLOCK_CORRUPT_V2 = "corrupt_v2"
+BASELINE_BLOCK_UNREADABLE = "unreadable"
+
+#: 向后兼容的别名（首版把这些都叫 SKIP，语义已改为 BLOCK）。
+BASELINE_SKIP_NO_CADENCE = BASELINE_BLOCK_NO_CADENCE
+BASELINE_SKIP_MALFORMED_CADENCE = BASELINE_BLOCK_MALFORMED_CADENCE
+BASELINE_SKIP_UNSUPPORTED_SCHEMA = BASELINE_BLOCK_UNSUPPORTED_SCHEMA
+BASELINE_SKIP_ENTRY_TIMING = BASELINE_BLOCK_ENTRY_TIMING
+BASELINE_SKIP_UNREADABLE = BASELINE_BLOCK_UNREADABLE
 
 #: 回溯的硬上界。模块的读侧纪律拒绝「无上界地扩大读取直到找到」——一次翻遍
 #: 全部历史工件既慢又会把「基准早已过期」这个事实说成「找到了」。
@@ -698,7 +708,7 @@ DEFAULT_BASELINE_SCAN_LIMIT: Final[int] = 60
 
 @dataclass(frozen=True)
 class SkippedCandidate:
-    """回溯途中被跳过的一份工件，以及**为什么**。"""
+    """回溯途中经过的一份工件，以及它对回溯意味着什么。"""
 
     trade_date: str
     reason: str
@@ -709,9 +719,19 @@ class SkippedCandidate:
 class NominalBaselineSearch:
     """向后找「最近一次再平衡日工件」的结果。
 
-    ``baseline_date`` 为空串表示**没找到**——那不是异常，是一个要如实呈报的
-    状态（本机当下就是这样：磁盘上只有一份 HOLD 日工件和一份没有 cadence 字段
-    的老工件）。
+    三种终局，对操作人的下一步各不相同：
+
+    * ``found``：``baseline_date`` 非空——那一天的清单就是名义持仓；
+    * **不可知**（``blocked_by`` 非 ``None``）：回溯在某一份工件上停下，因为
+      那一份**回答不了**它自己是不是再平衡日。它可能正是一次比更早那份更近
+      的再平衡——所以继续往回翻会把一份**过期**的清单报成当前基准。这不是
+      「没有基准」，是「不知道」；
+    * ``exhausted`` / ``limit_reached``：一路都是**经过校验**的 HOLD 日，翻
+      到底/翻到上限也没遇到再平衡日。
+
+    只有**经过校验的 HOLD** 才许可继续往回翻：它是唯一能证明「那天没换手、
+    所以更早那张单仍然有效」的证据。读不出来、schema 不认、日期对不上、
+    meta 损坏、没有节奏字段——每一种都让这条证据链断在这里。
     """
 
     baseline_date: str
@@ -720,39 +740,70 @@ class NominalBaselineSearch:
     scanned: int
     limit_reached: bool
     exhausted: bool
+    #: 让回溯停下的那一份（``None`` = 证据链没断）。
+    blocked_by: SkippedCandidate | None = None
 
     @property
     def found(self) -> bool:
         return bool(self.baseline_date)
 
+    @property
+    def unknowable(self) -> bool:
+        """证据链断了——既不是「找到了」，也不是「确实没有」。"""
+        return self.blocked_by is not None
 
-def _baseline_rejection(payload: dict[str, Any]) -> SkippedCandidate | None:
-    """这份 payload 能不能当基准；不能就说是哪一种不能。"""
+
+def _baseline_block(
+    payload: dict[str, Any], artifact_date: str,
+) -> SkippedCandidate | None:
+    """这份 payload 能不能被信任到「说得出它是不是再平衡日」。
+
+    这一串闸与**选中工件流**（``daily_decision.py`` 的日期一致性闸与
+    corrupt-v2 闸）逐条对齐。回溯若只做其中一部分，就成了同一份工件的第二条
+    **更弱**的校验路径——那正是「一份页面自己会 stop 的工件，在这里被当成
+    可信基准」的由来。
+    """
+
     if not artifact_schema_is_supported(payload):
         return SkippedCandidate(
-            "", BASELINE_SKIP_UNSUPPORTED_SCHEMA,
+            artifact_date, BASELINE_BLOCK_UNSUPPORTED_SCHEMA,
             "工件 schema 版本不是本页支持的那一版，其字段语义无法确认。",
+        )
+    # 文件名日期 ↔ payload as_of_date：改名/拷贝过的工件会让「八月三日那一
+    # 份」其实装着八月十日的截面——按它当基准就是把未来数据当成当日应持有。
+    payload_as_of = str(payload.get("as_of_date", ""))
+    if payload_as_of != artifact_date:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_DATE_MISMATCH,
+            f"文件名日期与 payload 的 as_of_date 不一致（payload 记的是 "
+            f"{payload_as_of!r}）——文件可能被改名/拷贝或已损坏。",
         )
     if not artifact_entry_timing_is_valid(payload):
         return SkippedCandidate(
-            "", BASELINE_SKIP_ENTRY_TIMING,
-            "工件的 as_of / entry 日期不构成严格向前的建仓时点，不可作为基准。",
+            artifact_date, BASELINE_BLOCK_ENTRY_TIMING,
+            "工件的 as_of / entry 日期不构成严格向前的建仓时点。",
+        )
+    # 带 v2 标记却没有 dict meta = 损坏（产出器对 v2 恒写 dict meta）。选中
+    # 工件流对同一形状是 st.stop()，这里不能更宽松。
+    if artifact_meta_status(payload, None).artifact_is_corrupt_v2:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_CORRUPT_V2,
+            "带 artifact_schema_version 标记但 meta 块缺失/非 object——"
+            "文件可能损坏或非本系统产物。",
         )
     state = hold_state(payload)
     if state.malformed:
         return SkippedCandidate(
-            "", BASELINE_SKIP_MALFORMED_CADENCE, state.malformed)
+            artifact_date, BASELINE_BLOCK_MALFORMED_CADENCE, state.malformed)
     if "rebalance_day" not in payload:
-        # 老工件没有节奏语义。**不**当作再平衡日——那等于替一次没记录节奏的
-        # 运行编造语义（`hold_state` 对它返回 is_hold=False，正是这里不能只看
-        # is_hold 的原因）。
+        # 老工件没有节奏语义。**不**当作再平衡日（那等于替一次没记录节奏的
+        # 运行编造语义），也**不**当作 HOLD 继续往回翻——它可能本身就是一次
+        # 再平衡，只是那时还没有这个字段。两种猜测都不做，停在这里说不知道。
         return SkippedCandidate(
-            "", BASELINE_SKIP_NO_CADENCE,
-            "工件没有记录 rebalance_day（早于节奏语义），无法确认它是不是再平衡日。",
+            artifact_date, BASELINE_BLOCK_NO_CADENCE,
+            "工件没有记录 rebalance_day（早于节奏语义），无法确认它是不是"
+            "再平衡日。",
         )
-    if state.is_hold:
-        return SkippedCandidate(
-            "", BASELINE_SKIP_HOLD, "该日是 HOLD 日，不换手。")
     return None
 
 
@@ -769,9 +820,11 @@ def find_nominal_baseline(
     ``read_payload`` 读一份工件，读不出来返回 ``None``——由调用方注入，因为读盘
     要过页面那一侧的输出目录守卫。``as_of`` 为空表示从最新的一份开始。
 
-    返回的 ``skipped`` 逐条记账，不静默跳过：操作人要能看出「基准是 30 天前那
-    一次」和「一份合格的基准都没有」的区别，也要能看出中间是被 HOLD 日填满的
-    还是被一串损坏工件填满的。
+    **只有经过校验的 HOLD 日才许可继续往回翻。** 任何一份「回答不了自己是不是
+    再平衡日」的工件（读不出来 / schema 不认 / 文件名与 payload 日期对不上 /
+    meta 损坏 / 没有节奏字段 / 节奏字段形状违约）都让回溯**就地停下**并判为
+    不可知——继续翻过去，就可能把一份**已被它取代**的更早清单报成当前基准，
+    而那正是「拿过期的单当此刻该持有的」。
     """
 
     skipped: list[SkippedCandidate] = []
@@ -786,13 +839,22 @@ def find_nominal_baseline(
         scanned += 1
         payload = read_payload(path)
         if payload is None:
-            skipped.append(SkippedCandidate(
-                artifact_date, BASELINE_SKIP_UNREADABLE,
-                "工件读不出来（缺失、损坏、或不在允许的输出目录内）。",
-            ))
-            continue
-        rejection = _baseline_rejection(payload)
-        if rejection is None:
+            blocked = SkippedCandidate(
+                artifact_date, BASELINE_BLOCK_UNREADABLE,
+                "工件读不出来（缺失、损坏、或不在允许的输出目录内）——"
+                "它本身可能就是一次更近的再平衡，所以更早那份不能当基准。",
+            )
+            return NominalBaselineSearch(
+                baseline_date="", baseline_payload={}, skipped=tuple(skipped),
+                scanned=scanned, limit_reached=False, exhausted=False,
+                blocked_by=blocked)
+        block = _baseline_block(payload, artifact_date)
+        if block is not None:
+            return NominalBaselineSearch(
+                baseline_date="", baseline_payload={}, skipped=tuple(skipped),
+                scanned=scanned, limit_reached=False, exhausted=False,
+                blocked_by=block)
+        if not hold_state(payload).is_hold:
             return NominalBaselineSearch(
                 baseline_date=artifact_date,
                 baseline_payload=payload,
@@ -802,7 +864,7 @@ def find_nominal_baseline(
                 exhausted=False,
             )
         skipped.append(SkippedCandidate(
-            artifact_date, rejection.reason, rejection.detail))
+            artifact_date, BASELINE_SKIP_HOLD, "该日是 HOLD 日，不换手。"))
     return NominalBaselineSearch(
         baseline_date="",
         baseline_payload={},
@@ -823,8 +885,7 @@ def baseline_roster(payload: dict[str, Any]) -> tuple[str, ...]:
     代码缺失时**抛**，不静默丢弃那一条。``picks_table_rows`` 对
     ``stock_code`` 不做校验（``pick.get`` 缺失即 ``None``），而静默丢弃会让
     名单比工件的候选数**少一条却不说**——操作人看到「共 49 只」，无从知道
-    第 50 条是被丢了还是本来就没有。这与本模块对 picks 形状违约的既有处置
-    同源：损坏要被看见，不要被渲染成一个良性的空缺。
+    第 50 条是被丢了还是本来就没有。
     """
     roster: list[str] = []
     for index, row in enumerate(picks_table_rows(payload)):

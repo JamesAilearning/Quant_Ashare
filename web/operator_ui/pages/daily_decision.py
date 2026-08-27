@@ -409,14 +409,21 @@ def _read_baseline_payload(path: Path) -> dict[str, Any] | None:
 _baseline = find_nominal_baseline(
     _artifacts, read_payload=_read_baseline_payload, as_of=_selected_date,
 )
+_baseline_roster: tuple[str, ...] = ()
+_baseline_unreadable = ""
 if _baseline.found:
-    _baseline_meta = _baseline.baseline_payload.get("meta")
-    _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
     try:
         _baseline_roster = baseline_roster(_baseline.baseline_payload)
     except ValueError as _roster_exc:
-        st.error(f"⚠ 基准工件形状违约:{_roster_exc}")
-        _baseline_roster = ()
+        # 损坏的名单**不是**空名单。退成 `()` 会让页面接着说「名义上跟的是
+        # X 那次的清单(共 0 只)」——把一份损坏工件渲染成一个合法的空仓位,
+        # 而这一页别处对 picks 形状违约的处置正是「要被看见,不要被渲染成
+        # 良性空缺」。这里改判整段不可用。
+        _baseline_unreadable = str(_roster_exc)
+
+if _baseline.found and not _baseline_unreadable:
+    _baseline_meta = _baseline.baseline_payload.get("meta")
+    _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
     st.info(
         f"截至 **{_selected_date}**,名义上跟的是 **{_baseline.baseline_date}** "
         f"那次再平衡的清单(共 **{len(_baseline_roster)}** 只 · "
@@ -434,18 +441,39 @@ if _baseline.found:
             hide_index=True,
             width="stretch",
         )
-else:
-    st.warning(
-        f"⚠ 截至 **{_selected_date}** 找不到可信的名义持仓基准"
-        f"(已回溯 {_baseline.scanned} 份工件)。"
+elif _baseline_unreadable:
+    st.error(
+        f"⚠ 找到的基准工件（{_baseline.baseline_date}）形状违约，"
+        f"**不能**当作名义持仓基准:{_baseline_unreadable}"
+    )
+elif _baseline.unknowable:
+    # 「不知道」与「确实没有」是两件事。回溯停在一份**回答不了自己是不是
+    # 再平衡日**的工件上——它本身可能就是一次更近的再平衡,所以再往回翻出
+    # 来的那张单可能**已经被它取代**。报成「找不到」会让操作人以为翻遍了,
+    # 报成某张旧单会让他拿过期的清单当此刻该持有的。
+    _blocked = _baseline.blocked_by
+    assert _blocked is not None
+    st.error(
+        f"⚠ 截至 **{_selected_date}** 名义持仓基准**不可知**:回溯在 "
+        f"**{_blocked.trade_date}** 那一份上停下——{_blocked.detail}"
     )
     st.caption(
-        "「找不到基准」不等于「没有持仓」——它表示**这台机器上的工件**回答不了"
-        "「此刻名义上该持有什么」。下方逐条列出每一份被跳过的工件与原因。"
+        "为什么不继续往回翻:只有**经过校验的 HOLD 日**才能证明「那天没换手、"
+        "所以更早那张单仍然有效」。这一份回答不了它自己是不是再平衡日,继续"
+        "翻出来的清单可能**已经被它取代**——那就成了拿过期的单当此刻该持有的。"
+    )
+else:
+    st.warning(
+        f"⚠ 截至 **{_selected_date}** 回溯到底也没遇到再平衡日"
+        f"(已回溯 {_baseline.scanned} 份工件,全部是 HOLD 日)。"
+    )
+    st.caption(
+        "这不等于「没有持仓」——它表示**这台机器上的工件**里，最近一次换手"
+        "早于现有工件的覆盖范围。"
     )
 if _baseline.skipped:
     with st.expander(
-        f"回溯途中跳过的工件({len(_baseline.skipped)} 份)", expanded=False,
+        f"回溯途中经过的 HOLD 日({len(_baseline.skipped)} 份)", expanded=False,
     ):
         st.dataframe(
             [{"日期": _c.trade_date, "原因": _c.detail}
