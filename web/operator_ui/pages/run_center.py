@@ -62,6 +62,7 @@ from web.operator_ui.update_runner import (
     log_window,
     observe_own_running_record,
     range_problem,
+    record_bears_launch_nonce,
     settle_late_cancel,
 )
 from web.operator_ui.update_status import (
@@ -260,11 +261,22 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         _live_run.get("cancel_pending_own_started_at")
         if isinstance(_live_run, dict) else None)
     _late_status = read_update_status(_status_path)
+    # 身份主判据=launch nonce（codex 第二十四轮 P2:子进程把它写进每条
+    # 记录——覆盖生存期内**任意时刻**写出的记录,含「最后一次观察之后、
+    # 死亡之前」尾窗里的;观察式候选在数学上封不住尾窗）。legacy 记录
+    # （无 nonce 的旧产出器在飞运行）保留 pid+精确候选链;带**别人**
+    # nonce 的记录直接拒。
     _late_evidence = (
         _late_status.kind == "running"
         and record_matches_provider(_late_status, _provider_path)
         and _late_status.pid == _live_proc.pid
-        and cancelled_run_matches(_late_status.started_at, _own_stamp))
+        and (record_bears_launch_nonce(
+                _late_status.launch_nonce,
+                _live_run.get("launch_nonce")
+                if isinstance(_live_run, dict) else None)
+             or (_late_status.launch_nonce is None
+                 and cancelled_run_matches(
+                     _late_status.started_at, _own_stamp))))
     if _late_evidence:
         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
             "started_at": _late_status.started_at or "",
@@ -628,6 +640,9 @@ elif _launch_clicked:
             # 证据时间绑定的下界（codex 第五/六轮 P1）：**spawn 之前**
             # 采样——子进程写 running 永远晚于它。
             "launched_at": _pre_launch_at,
+            # 本次 launch 的一次性身份——子进程会把它写进每条状态记录,
+            # 收养凭 nonce 认领,无观察窗（codex 第二十四轮 P2）。
+            "launch_nonce": _launch.launch_nonce,
         }
     st.rerun()
 
@@ -808,15 +823,22 @@ if _live_proc is not None:
                     # 记录 pid == 被杀句柄 pid：launch 之后、子进程拿锁之
                     # 前起跑并夺锁的调度器,started_at 恰好落在窗内,光看
                     # 时间照样误收养（第九轮 P2c）。
+                    # nonce 主判据在此同款生效（第二十四轮）：带本次
+                    # launch nonce 的记录必然是被杀子进程自己写的,无需
+                    # 时间窗;legacy 记录（无 nonce）保留 pid+时间窗链。
                     if (_fresh_status.kind == "running"
                             and record_matches_provider(
                                 _fresh_status, _provider_path)
-                            and evidence_binds_to_killed_run(
-                                _fresh_status.started_at,
-                                (_live_run or {}).get("launched_at"),
-                                _killed_at,
-                                record_pid=_fresh_status.pid,
-                                killed_pid=_live_proc.pid)):
+                            and (record_bears_launch_nonce(
+                                    _fresh_status.launch_nonce,
+                                    (_live_run or {}).get("launch_nonce"))
+                                 or (_fresh_status.launch_nonce is None
+                                     and evidence_binds_to_killed_run(
+                                         _fresh_status.started_at,
+                                         (_live_run or {}).get("launched_at"),
+                                         _killed_at,
+                                         record_pid=_fresh_status.pid,
+                                         killed_pid=_live_proc.pid)))):
                         st.session_state[_CANCELLED_EVIDENCE_KEY] = {
                             "started_at": _fresh_status.started_at or "",
                         }

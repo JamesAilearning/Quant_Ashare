@@ -136,8 +136,18 @@ as pending context — the settlement trigger and audit stamp, NOT the
 evidence bound: a kill can complete AFTER the failed attempt returns, and
 the handle-retire path must then settle the evidence instead of treating
 the late death as an ordinary self-completion that leaves the orphaned
-record blocking launches. The late adoption's identity SHALL be a
-LIFETIME-OBSERVED exact stamp: while the pending process is still provably
+record blocking launches. The adoption's PRIMARY identity SHALL be a
+per-launch NONCE carried by the record itself: the launcher generates a
+one-time nonce before the spawn, passes it to the child through its
+environment, and the orchestrator writes it into EVERY status record it
+produces — an identity that travels with the record covers records written
+at ANY moment of the child's lifetime, including the tail window after the
+last liveness observation that no observation scheme can close, and is
+immune to pid reuse by construction (a recycled-pid successor never holds
+this launch's nonce). A record bearing a DIFFERENT nonce SHALL be refused
+outright; a record bearing NO nonce (a scheduler run, or an in-flight run
+of a pre-upgrade orchestrator) falls back to the legacy chain below. The
+legacy late-adoption identity is a LIFETIME-OBSERVED exact stamp: while the pending process is still provably
 alive (alive-poll → status read → alive-poll — the pid is continuously
 held between the two polls, so it cannot have been recycled), the page
 records the `started_at` of the run's OWN `running` record (matching
@@ -356,6 +366,16 @@ one period.
 - **THEN** it performs the same strict swap-state inspection as an
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: a record written after every observation is still claimed
+
+- **GIVEN** a timed-out kill whose child writes its `running` record after
+  the boundary observation and dies before the cancel call returns — the
+  pre-cancel, boundary, and post-call observations all empty
+- **WHEN** the pending settlement binds the evidence
+- **THEN** the record is claimed by its launch nonce — written into it by
+  the child itself, with no observation window — and the orphan does not
+  block relaunches; a record bearing another launch's nonce is refused
 
 #### Scenario: a record written after the cancel request still settles
 

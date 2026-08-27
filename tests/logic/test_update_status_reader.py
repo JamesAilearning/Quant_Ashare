@@ -211,6 +211,33 @@ class ReadUpdateStatusTests(unittest.TestCase):
                     self.assertEqual(st.kind, "corrupt")
                     self.assertIn("pid", st.error)
 
+    def test_the_launch_nonce_is_parsed_and_optional(self) -> None:
+        # launch_nonce 同 pid 纪律（#470 第二十四轮）:可选键（调度器/旧
+        # 产出器的记录没有）,在场必须是产出器会写的 32 位小写 hex,畸形
+        # 值当损坏不静默当缺省。
+        base = {"schema_version": 1, "state": "running",
+                "provider_dir": _FINISHED_OK["provider_dir"],
+                "run_date": "2026-08-14",
+                "started_at": "2026-08-14T20:43:00+08:00"}
+        good = "ab" * 16
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / STATUS_FILENAME
+            _write(p, {**base, "launch_nonce": good})
+            st = read_update_status(p)
+            self.assertEqual(good, st.launch_nonce)
+            _write(p, base)
+            st = read_update_status(p)
+            self.assertEqual(st.kind, "running", "缺 nonce 被误判截断")
+            self.assertIsNone(st.launch_nonce)
+        for bad in (None, "", "XYZ", "AB" * 16, "ab" * 16 + "0", 123):
+            with self.subTest(nonce=bad):
+                with tempfile.TemporaryDirectory() as t:
+                    p = Path(t) / STATUS_FILENAME
+                    _write(p, {**base, "launch_nonce": bad})
+                    st = read_update_status(p)
+                    self.assertEqual(st.kind, "corrupt")
+                    self.assertIn("launch_nonce", st.error)
+
     def test_corrupt_json_is_loud(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             p = Path(t) / STATUS_FILENAME

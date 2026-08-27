@@ -94,6 +94,10 @@ class UpdateRunStatus:
     #: **进程身份**硬条件）。旧产出器写的记录没有这个键 → ``None``——收养
     #: 侧对 None 一律不绑定（fail-closed:证不出身份就不声称）。
     pid: int | None = None
+    #: UI 启动器为该次 launch 生成的一次性身份,由子进程自己写进每条记录
+    #: （#470 第二十四轮:随记录本体落盘的身份没有观察窗,覆盖生存期内
+    #: 任意时刻写出的记录）。调度器/旧产出器的记录没有这个键 → ``None``。
+    launch_nonce: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -288,6 +292,19 @@ def read_update_status(path: Path) -> UpdateRunStatus:
                       f"不等于缺省）",
             )
         pid_value = pid_raw
+    # launch_nonce 同 pid 纪律:可选键,在场就必须是产出器会写的形状
+    # （32 位小写 hex）——畸形值当损坏,不静默当缺省（#470 第二十四轮）。
+    nonce_value: str | None = None
+    if "launch_nonce" in payload:
+        nonce_raw = payload["launch_nonce"]
+        if not (isinstance(nonce_raw, str) and len(nonce_raw) == 32
+                and all(c in "0123456789abcdef" for c in nonce_raw)):
+            return UpdateRunStatus(
+                kind="corrupt", path=path,
+                error=f"launch_nonce 非法（got {nonce_raw!r}，期望 32 位"
+                      f"小写 hex;显式 null/畸形不等于缺省）",
+            )
+        nonce_value = nonce_raw
     exit_code = payload.get("exit_code")
     if state == "finished" and (
         isinstance(exit_code, bool) or not isinstance(exit_code, int)
@@ -350,4 +367,5 @@ def read_update_status(path: Path) -> UpdateRunStatus:
         ),
         detail=str(payload.get("detail") or ""),
         pid=pid_value,
+        launch_nonce=nonce_value,
     )

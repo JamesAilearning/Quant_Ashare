@@ -515,9 +515,16 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 相等;无候选 fail-closed。
         self.assertIn("cancel_pending_own_started_at", settle,
                       "补结算没用生存期内观察的身份候选")
-        self.assertIn("cancelled_run_matches(_late_status.started_at, "
-                      "_own_stamp)", settle,
+        # 锚串随第二十四轮更新（收养主判据升级为 launch nonce,精确候选
+        # 降为 legacy 无 nonce 记录的回退——断言意图:候选链仍在且仍按
+        # 精确相等）。
+        self.assertIn("cancelled_run_matches(", settle,
                       "候选没按精确相等收养")
+        self.assertIn("_own_stamp)", settle, "候选回退链缺失")
+        self.assertIn("record_bears_launch_nonce(", settle,
+                      "补结算收养缺 nonce 主判据")
+        self.assertIn("_late_status.launch_nonce is None", settle,
+                      "候选回退没限定在无 nonce 的 legacy 记录")
         self.assertIn("_late_status.pid == _live_proc.pid", settle,
                       "补结算收养缺直接 pid 相等")
         self.assertNotIn("_pending_at,", settle,
@@ -1216,6 +1223,45 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertIn('launched_at=_live_run.get("launched_at")', page,
                       "补结算没拿到时间窗下界")
 
+    def test_a_record_written_after_all_observations_is_still_claimed(
+            self) -> None:
+        # 合成回归（codex 第二十四轮 P2 的场景:观察→写记录→死亡→返回）
+        # ——记录写在边界观察**之后**、死亡在返回**之前**:取消前/边界内/
+        # 事后三级观察全部落空,候选=None,观察式路径必拒;launch nonce
+        # 随记录本体落盘,无观察窗,仍能认领。
+        from web.operator_ui.update_runner import (
+            record_bears_launch_nonce,
+        )
+        nonce = "ab" * 16
+        # 观察式候选路径:候选 None → 拒（这正是尾窗的数学极限）。
+        self.assertFalse(cancelled_run_matches(
+            "2026-08-27T09:01:30+08:00", None))
+        # nonce 路径:同一 launch 的记录 → 认领。
+        self.assertTrue(record_bears_launch_nonce(nonce, nonce))
+        # 别人的 launch / 调度器（无 nonce）/ 会话缺 nonce:全拒。
+        self.assertFalse(record_bears_launch_nonce("cd" * 16, nonce))
+        self.assertFalse(record_bears_launch_nonce(None, nonce))
+        self.assertFalse(record_bears_launch_nonce(nonce, None))
+        self.assertFalse(record_bears_launch_nonce("", ""))
+        # 接线:launcher 在 spawn 之前注入环境;页面把 nonce 存进会话;
+        # 环境变量名与产出器镜像（两模块互不 import）。
+        src = (_ROOT / "web" / "operator_ui" / "update_runner.py"
+               ).read_text(encoding="utf-8")
+        inject_at = src.index("child_env[LAUNCH_NONCE_ENV] = launch_nonce")
+        spawn_at = src.index("proc = subprocess.Popen(")
+        self.assertLess(inject_at, spawn_at, "nonce 没在 spawn 之前注入")
+        from web.operator_ui.update_runner import LAUNCH_NONCE_ENV
+        producer = (_ROOT / "src" / "data_pipeline" / "daily_update.py"
+                    ).read_text(encoding="utf-8")
+        self.assertIn(f'"{LAUNCH_NONCE_ENV}"', producer,
+                      "产出器没镜像同名环境变量")
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn('"launch_nonce": _launch.launch_nonce', page,
+                      "会话没存 launch nonce")
+        self.assertEqual(2, page.count("record_bears_launch_nonce("),
+                         "两处收养（confirm+补结算）没都上 nonce 主判据")
+
     def test_evidence_survives_inconclusive_status_reads(self) -> None:
         # corrupt/missing 是**读取失败**不是接替证明（codex 第二十三轮
         # P2）：瞬时卷/权限失效借它把证据永久清掉,访问恢复后同一条孤儿
@@ -1337,7 +1383,10 @@ class TheCancelChannelIsTheHandleNotThePid(unittest.TestCase):
         self.assertIn("process", UpdateLaunch.__dataclass_fields__)
         src = (_ROOT / "web" / "operator_ui" / "update_runner.py"
                ).read_text(encoding="utf-8")
-        self.assertIn("process=proc)", src, "launched 分支没带活句柄")
+        # 锚串随第二十四轮更新（launched 分支多带 launch_nonce）,断言
+        # 意图不动:活句柄仍随 launch 返回。
+        self.assertIn("process=proc, launch_nonce=launch_nonce)", src,
+                      "launched 分支没带活句柄与 nonce")
 
     def test_the_page_flow_is_two_step_and_session_scoped(self) -> None:
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"

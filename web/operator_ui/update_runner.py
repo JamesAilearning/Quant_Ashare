@@ -32,6 +32,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from scripts.child_env import utf8_child_env
 from web.operator_ui.update_status import (
@@ -56,6 +57,14 @@ REFERENCE_CASES = PROJECT_ROOT / "tests" / "pit" / "reference_cases.yaml"
 START_DATE = "20180101"
 
 TOKEN_ENV_VAR = "TUSHARE_TOKEN"
+
+#: 每次 launch 的一次性身份经它传给子进程,编排器写进自己的每条状态记录
+#: （#470 第二十四轮:随记录落盘的身份没有观察窗——观察式候选只能覆盖到
+#: 最后一次观察,「最后观察→死亡」尾窗数学上封不住;nonce 覆盖生存期内
+#: 任意时刻写出的记录,且天然免疫 pid 复用）。变量名与
+#: src/data_pipeline/daily_update.py 镜像（两模块互不 import,logic 测试
+#: 钉两侧一致）。
+LAUNCH_NONCE_ENV = "QUANT_DAILY_UPDATE_LAUNCH_NONCE"
 
 _LOG_TAIL_CHARS = 4000
 
@@ -245,6 +254,10 @@ class UpdateLaunch:
     #: UI 重启后旧运行不可取消（如实降级，不是缺陷）。frozen dataclass
     #: 携带可变句柄仅作传递，不参与相等性比较。
     process: subprocess.Popen[bytes] | None = None
+    #: 本次 launch 的一次性身份（uuid4().hex）——已注入子进程环境,编排
+    #: 器会把它写进每条状态记录;收养侧凭 nonce 相等认领记录,无观察窗
+    #: （#470 第二十四轮）。仅 launched 时非 None。
+    launch_nonce: str | None = None
 
 
 @dataclass(frozen=True)
@@ -466,6 +479,22 @@ def observe_own_running_record(
             and process.poll() is None):
         return status.started_at or None
     return None
+
+
+def record_bears_launch_nonce(
+    record_nonce: str | None, launch_nonce: str | None,
+) -> bool:
+    """记录是否带着**本次 launch 的专属 nonce**。
+
+    身份由子进程自己写进它的每条状态记录（launcher 生成、经环境变量传
+    入）——覆盖生存期内**任意时刻**写出的记录（codex 第二十四轮 P2:
+    观察式候选只能覆盖到最后一次观察,「最后观察→死亡」的尾窗在数学上
+    无法用观察封闭;随记录本体落盘的身份没有观察窗）,且天然免疫 pid
+    复用（nonce 每次 launch 唯一,回收 pid 的接替进程拿不到它）。双方都
+    在场且相等才认;任一缺失=不认（fail-closed:调度器运行/旧产出器的
+    记录没有 nonce,legacy 记录走既有的 pid+候选链）。
+    """
+    return bool(record_nonce) and record_nonce == launch_nonce
 
 
 def evidence_retires(
@@ -968,6 +997,12 @@ def launch_daily_update(
     if blocking is not None:
         return UpdateLaunch(kind="already_running", error=blocking)
 
+    # 本次 launch 的一次性身份——经环境传给子进程,编排器写进每条状态
+    # 记录;收养凭 nonce 认领,无观察窗（#470 第二十四轮）。在 spawn 之前
+    # 生成并注入,保证子进程从第一条记录起就带着它。
+    launch_nonce = uuid4().hex
+    child_env[LAUNCH_NONCE_ENV] = launch_nonce
+
     log_path = default_log_path(provider_dir)
     cmd = build_update_argv(
         provider_dir, tushare_dir, registry_path, python=python,
@@ -1040,7 +1075,7 @@ def launch_daily_update(
         # into the (long-lived) UI process.
         log_fh.close()
     return UpdateLaunch(kind="launched", pid=proc.pid, log_path=log_path,
-                        process=proc)
+                        process=proc, launch_nonce=launch_nonce)
 
 
 #: 可能不是 UTF-8 的那些行所用的旧编码。**别把它当纯历史包袱**:本模块经

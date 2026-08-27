@@ -983,6 +983,17 @@ def run_daily_update(
         # 的调度器接替运行会被误收养成「已取消」——把活着的运行标成死的。
         "pid": os.getpid(),
     }
+    # launch nonce——UI 启动器为**这一次** launch 生成的一次性身份,经环境
+    # 变量传入,随本运行的每条状态记录落盘（#470 第二十四轮:观察式收养候
+    # 选在数学上只能覆盖到最后一次观察,「最后观察→死亡」尾窗封不住;身份
+    # 随记录本体写出则覆盖生存期内任意时刻的记录,且天然免疫 pid 复用）。
+    # 只收 32 位小写 hex（启动器 uuid4().hex 的形状）,环境垃圾不落盘;
+    # 调度器运行没有这个环境变量,键整个不出现。环境变量名与
+    # web/operator_ui/update_runner.LAUNCH_NONCE_ENV 镜像（两模块互不
+    # import 的既有纪律,logic 测试钉两侧一致）。
+    _nonce = os.environ.get("QUANT_DAILY_UPDATE_LAUNCH_NONCE", "")
+    if len(_nonce) == 32 and all(c in "0123456789abcdef" for c in _nonce):
+        base["launch_nonce"] = _nonce
     # 边界要在**任何阶段输出之前**落下 —— 它之后的每一行才属于本次运行。
     # 走 `_logger.info` 而不是直接写文件:日志流由调用方(调度器 .bat / UI 启动器)
     # 重定向,这里不该知道它落在哪儿。
