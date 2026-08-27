@@ -655,12 +655,22 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         # 句柄;片段内句柄一死就整页 rerun。
         page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
                 ).read_text(encoding="utf-8")
-        self.assertIn("_pending_cancel_proc is not None", page,
-                      "watching 条件没纳入未决取消句柄")
+        # 第四十五轮 P2:watcher 盯的从「未决取消句柄」扩到**任何**在飞
+        # 句柄——普通运行被外部杀死、或终态已写而子进程仍在收尾时死亡,
+        # 签名与日志同样纹丝不动,只盯未决取消会让退役块等手动交互。
+        self.assertIn("_watched_live_proc is not None", page,
+                      "watching 条件没纳入在飞句柄")
+        # 钉**无条件赋值**本身:只钉名字的话,把它改回「仅未决取消」的条
+        # 件表达式仍能过（本轮变异实测逃逸一次）。
+        self.assertIn("_watched_live_proc = _session_live_proc" + chr(10),
+                      page,
+                      "watcher 盯的不是全部在飞句柄（被条件收窄了）")
+        self.assertNotIn("_pending_cancel_proc", page,
+                         "watcher 仍只盯未决取消句柄（第四十五轮已扩面）")
         fragment_at = page.index("def _watch_update_completion()")
         body = page[fragment_at:fragment_at + 2400]
-        self.assertIn("_pending_cancel_proc.poll() is not None", body,
-                      "片段没盯未决句柄的死亡")
+        self.assertIn("_watched_live_proc.poll() is not None", body,
+                      "片段没盯在飞句柄的死亡")
 
     def test_evidence_adoption_is_pid_bound_at_both_sites(self) -> None:
         # 两处收养（confirm 当场 / 迟到补结算）都必须带 pid 身份——漏一

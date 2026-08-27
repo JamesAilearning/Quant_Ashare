@@ -118,7 +118,7 @@ class PageSourceTests(unittest.TestCase):
         # 双冻结，等它死只能盯句柄），断言意图一字未动：原两个触发源仍在。
         self.assertIn(
             "_running_fresh or _awaiting_launch"
-            " or _pending_cancel_proc is not None",
+            " or _watched_live_proc is not None",
             self.src)
         self.assertIn("if _watching:", self.src)
         # The marker must be bounded, or a failed launch polls forever.

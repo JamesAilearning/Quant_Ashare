@@ -383,14 +383,14 @@ if _live_proc is not None and _live_proc.poll() is not None:
     _session_live_proc = None
 _session_run_alive = (
     _session_live_proc is not None and _session_live_proc.poll() is None)
-# 未决取消的句柄（codex 第九轮 P2a）：cancel_failed 之后 kill 已发、进程
-# 还没死——它的迟到死亡不改状态签名也不推日志进度，watcher 只比那两样
-# 的话补结算块要等操作人手动交互才被重新执行。把句柄交给 watcher 盯。
-_pending_cancel_proc = (
-    _session_live_proc
-    if isinstance(_session_live, dict)
-    and _session_live.get("cancel_pending_at")
-    else None)
+# 交给 watcher 盯的**任何**在飞句柄（codex 第九轮 P2a 引入未决取消侧,
+# 第四十五轮 P2 扩到全部）：句柄死亡可以完全不改状态签名、不推日志进度
+# ——未决取消的迟到死亡是一种（硬杀后签名冻结）,普通在飞运行被外部杀死
+# 而没写终态是另一种,终态已写、子进程仍在收尾台账时死亡是第三种。只盯
+# 未决取消的话,后两种下顶部退役块要等操作人手动交互才执行,取消控件与
+# 被禁的启动按钮一直挂到六小时陈旧线。顶部退役块已把死句柄清成 None,
+# 所以这里拿到的必是活句柄或 None。
+_watched_live_proc = _session_live_proc
 
 if _status.kind not in ("missing", "corrupt") and not record_matches_provider(
     _status, _provider_path
@@ -519,7 +519,7 @@ elif not _awaiting_launch:
 # 未决取消也要看着：等它死的期间状态签名/进度可能全程不动（硬杀后两者
 # 都冻结），没有 watcher 它的补结算永远等不来（codex 第九轮 P2a）。
 _watching = (
-    _running_fresh or _awaiting_launch or _pending_cancel_proc is not None)
+    _running_fresh or _awaiting_launch or _watched_live_proc is not None)
 
 # 「我刚点的刷新到底生效了没」——状态没变时整页重绘长得一模一样,读取
 # 时刻是唯一能证明重读发生过的痕迹(#440 后续:操作人反馈按钮像坏的)。
@@ -565,11 +565,12 @@ if _watching:
         # 进度都可能不再变化——没有这一支,主脚本里的补结算块要等操作人
         # 手动交互才会重新执行,死进程的取消控件与孤儿 running 会一直
         # 挂着。句柄一死就把整页拉起来,让补结算当场跑。
-        # 未决取消的句柄一死就把整页拉起来,让补结算当场跑。生存期候
-        # 选观察（r12/17/23）已随第四十二轮的 nonce-only 收养删除——
-        # legacy 路径无不可重放身份,候选无消费者。
-        if (_pending_cancel_proc is not None
-                and _pending_cancel_proc.poll() is not None):
+        # 在飞句柄一死就把整页拉起来,让顶部退役/补结算当场跑（第四十
+        # 五轮 P2:不限未决取消——普通运行被外部杀死、或终态已写而子进
+        # 程仍在收尾时死亡,签名与日志同样可以纹丝不动）。生存期候选观
+        # 察（r12/17/23）已随第四十二轮的 nonce-only 收养删除。
+        if (_watched_live_proc is not None
+                and _watched_live_proc.poll() is not None):
             st.rerun(scope="app")
             return
         # 等待窗到期同样要把整页拉起来。片段计时**只重跑片段**,主脚本不再

@@ -339,12 +339,15 @@ flow through the same orphan-adoption presentation as a forcible kill
 because such an exit can leave the same orphaned `running` record a hard
 kill leaves.
 
-While a cancellation is pending, the page SHALL watch the retained handle
-itself and settle AUTOMATICALLY when it exits: after a hard kill the status
-signature and the log progress can both stay frozen, so a watcher comparing
-only those never fires and the settlement would wait for a manual
-interaction — leaving dead-process cancel controls and an orphaned
-`running` record standing indefinitely. Settling SHALL immediately re-render
+While ANY session-launched handle is retained, the page SHALL watch the
+handle itself and retire (or settle) AUTOMATICALLY when it exits: a
+handle's death can leave the status signature and the log progress both
+unchanged — after a hard kill they freeze; an ordinary run killed
+externally never writes a terminal record; a run that already wrote its
+terminal record can still be finishing its ledger append — so a watcher
+comparing only those never fires and the retirement would wait for a
+manual interaction, leaving dead-process cancel controls and a disabled
+launch button standing until the staleness threshold. Settling SHALL immediately re-render
 the page so the corrected state (not the pre-settlement banner) is what the
 operator sees.
 
