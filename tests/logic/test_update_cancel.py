@@ -1259,10 +1259,71 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
                 ).read_text(encoding="utf-8")
         self.assertIn('"launch_nonce": _launch.launch_nonce', page,
                       "会话没存 launch nonce")
-        # 三处:confirm 收养 + 补结算收养 + 页首覆盖判定（第二十五轮把
-        # 覆盖判定也升为 nonce 优先）。
-        self.assertEqual(3, page.count("record_bears_launch_nonce("),
-                         "收养/覆盖的 nonce 主判据不是恰好三处")
+        # 两处收养仍用 record_bears_launch_nonce;页首覆盖/退役/启动闸
+        # 统一走共享谓词 evidence_covers_record（第二十六轮:身份在场
+        # 一票裁决,不许各抄一份会分叉的）。
+        self.assertEqual(2, page.count("record_bears_launch_nonce("),
+                         "收养的 nonce 主判据不是恰好两处")
+        self.assertIn("evidence_covers_record(", page,
+                      "页首覆盖判定没走共享谓词")
+
+    def test_a_nonce_mismatch_overrides_a_matching_stamp(self) -> None:
+        # 身份一票裁决（codex 第二十六轮 P2）：粗粒度/冻结的系统时钟可以
+        # 让接替记录与被取消记录**同戳**——证据带 nonce 时,记录必须带同
+        # 一个 nonce 才算覆盖;or 语义会把活着的同戳接替（异 nonce 或无
+        # nonce 调度器运行）标成已取消并解锁双闸。戳只留给双方都无
+        # nonce 的 legacy 对。
+        import json
+        import os as _os
+
+        from web.operator_ui.update_runner import (
+            _blocking_run_status,
+            evidence_covers_record,
+        )
+        from web.operator_ui.update_status import status_path_for_provider
+        stamp = "2026-08-27T09:00:00+08:00"
+        nonce = "ab" * 16
+        # 真值:证据带 nonce → 同戳异/无 nonce 全不覆盖;同 nonce 覆盖。
+        self.assertTrue(evidence_covers_record(stamp, nonce, stamp, nonce))
+        self.assertTrue(evidence_covers_record("x", nonce, "", nonce),
+                        "nonce 同则戳不同也覆盖（nonce-only 证据）")
+        self.assertFalse(evidence_covers_record(stamp, "cd" * 16,
+                                                stamp, nonce),
+                         "同戳异 nonce 的接替被判覆盖")
+        self.assertFalse(evidence_covers_record(stamp, None, stamp, nonce),
+                         "同戳无 nonce 的接替被判覆盖")
+        # 反向:记录带 nonce 而证据无（legacy 证据认不了新产出器记录）。
+        self.assertFalse(evidence_covers_record(stamp, nonce, stamp, None))
+        # 双方都无 nonce 的 legacy 对:戳精确相等仍是判据。
+        self.assertTrue(evidence_covers_record(stamp, None, stamp, None))
+        self.assertFalse(evidence_covers_record(stamp, None, "y", None))
+        # 启动闸同语义:同戳异 nonce 的接替记录**不放行**。
+        with tempfile.TemporaryDirectory() as t:
+            provider = Path(t) / "prov"
+            provider.mkdir()
+            from datetime import datetime, timedelta, timezone
+            _now = datetime.now(tz=timezone(timedelta(hours=8)))
+            live_stamp = _now.isoformat()
+            status_path_for_provider(provider).write_text(json.dumps({
+                "schema_version": 1, "state": "running",
+                "provider_dir": _os.path.normcase(str(provider.resolve())),
+                "run_date": _now.date().isoformat(),
+                "started_at": live_stamp,
+                "launch_nonce": "cd" * 16,
+            }), encoding="utf-8")
+            self.assertIsNotNone(
+                _blocking_run_status(
+                    provider, cancelled_started_at=live_stamp,
+                    cancelled_launch_nonce=nonce),
+                "同戳异 nonce 的接替被启动闸放行")
+        # 收养处 legacy 回退收紧到「双方都无 nonce」:本会话有 kill
+        # nonce 时,子进程必然写 nonce——无 nonce 记录不可能是它。
+        page = (_ROOT / "web" / "operator_ui" / "pages" / "run_center.py"
+                ).read_text(encoding="utf-8")
+        self.assertIn("not _kill_nonce", page,
+                      "补结算 legacy 回退没被 kill nonce 关掉")
+        self.assertIn("not _kn", page,
+                      "confirm legacy 回退没被 kill nonce 关掉")
 
     def test_nonce_evidence_survives_an_inconclusive_settlement_read(
             self) -> None:
@@ -1330,8 +1391,17 @@ class HardCancelEvidenceIsDurable(unittest.TestCase):
         self.assertTrue(evidence_retires(
             "running", "2026-08-27T10:00:00+08:00", "cd" * 16, ev, nonce),
             "两种身份都对不上的 running 接替没退役")
-        self.assertFalse(evidence_retires("running", ev, None, ev, nonce),
-                         "戳仍覆盖当前记录却被退役")
+        # 双方都无 nonce 的 legacy 对:戳仍是覆盖判据。
+        self.assertFalse(evidence_retires("running", ev, None, ev, None),
+                         "legacy 对戳仍覆盖当前记录却被退役")
+        # 身份一票裁决（第二十六轮）:证据带 nonce 而记录无 nonce（或不
+        # 同 nonce）——即便**同戳**也是确凿接替,必须退役（粗粒度时钟可
+        # 造同戳,or 语义会把活着的接替标成已取消）。
+        self.assertTrue(evidence_retires("running", ev, None, ev, nonce),
+                        "nonce 证据认领了无 nonce 的同戳接替")
+        self.assertTrue(evidence_retires(
+            "running", ev, "cd" * 16, ev, nonce),
+            "nonce 证据认领了异 nonce 的同戳接替")
         # nonce 覆盖优先（第二十五轮）:nonce-only 证据（戳空）撞上带同
         # nonce 的孤儿——戳对不上也不许退役。
         self.assertFalse(evidence_retires(

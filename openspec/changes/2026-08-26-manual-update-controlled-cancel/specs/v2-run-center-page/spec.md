@@ -177,10 +177,21 @@ succeeding. When the settlement or immediate-cancel reread returns missing
 or corrupt, the page SHALL persist nonce-only evidence (empty stamp)
 before retiring the handle context; the orphan is then covered by nonce
 the moment it becomes readable again, instead of blocking relaunches to
-the staleness threshold. Evidence coverage and the launch gate's release
-SHALL both honour the nonce identity alongside the exact stamp — releasing
-by stamp alone would recreate the fake-unlock the gate bypass exists to
-prevent. The conclusive-read wording (evidence found and persisted) SHALL
+the staleness threshold. Evidence coverage, evidence retirement, and the launch gate's release
+SHALL share ONE predicate in which the nonce identity, when present on
+EITHER side, decides ALONE: a record whose `started_at` equals the
+evidence stamp but whose nonce differs or is absent (a coarse or frozen
+system clock can produce equal stamps) is NOT covered — treating it as
+covered would label a live replacement as cancelled and release the gate
+for it — and conversely a nonce-bearing record is never claimed by
+nonce-less legacy evidence. The exact-stamp comparison survives only for
+pairs where NEITHER side carries a nonce (a pre-upgrade in-flight
+session). The adoption fallbacks obey the same rule: when this session
+holds a launch nonce, its child provably writes that nonce, so a
+nonce-less record is never adopted through the legacy pid/stamp path.
+Releasing or covering by stamp alone would recreate the fake-unlock the
+gate bypass exists to prevent — in the opposite direction, unlocking for
+a live replacement. The conclusive-read wording (evidence found and persisted) SHALL
 remain conditioned on a conclusive read; nonce-only evidence stays silent
 until a matching record appears, and is inert when none ever does.
 
@@ -380,6 +391,16 @@ one period.
 - **THEN** it performs the same strict swap-state inspection as an
   immediate cancel, reports the swap hit loudly with the immediate re-run
   instruction, and writes the late-exit outcome marker to the log
+
+#### Scenario: a same-stamp replacement with another identity is not covered
+
+- **GIVEN** persisted cancellation evidence bearing this launch's nonce,
+  and a replacement `running` record whose `started_at` happens to equal
+  the evidence stamp under a coarse system clock but whose nonce differs
+  or is absent
+- **WHEN** the page evaluates coverage, retirement, and the launch gate
+- **THEN** the replacement is not covered — it renders as live, the
+  evidence retires as conclusively superseded, and the gate stays closed
 
 #### Scenario: an unreadable artifact at settlement does not orphan the proof
 

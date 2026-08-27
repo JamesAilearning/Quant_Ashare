@@ -497,6 +497,29 @@ def record_bears_launch_nonce(
     return bool(record_nonce) and record_nonce == launch_nonce
 
 
+def evidence_covers_record(
+    record_started_at: str | None,
+    record_launch_nonce: str | None,
+    evidence_started_at: str | None,
+    evidence_launch_nonce: str | None,
+) -> bool:
+    """取消证据是否覆盖这条 ``running`` 记录——nonce 身份在场时一票裁决。
+
+    任一侧带 nonce 时,覆盖成立的唯一方式是**双方带同一个** nonce:戳相等
+    不再够格——粗粒度/冻结的系统时钟可以让接替记录与被取消记录同戳,而
+    nonce 不同（或没有,如调度器运行）证明它是别人;反向同理,带 nonce 的
+    记录必然出自新产出器,legacy（无 nonce）证据也认不了它（codex 第二十
+    六轮 P2:``or`` 语义会把活着的同戳接替标成已取消并解锁双闸）。只有
+    **双方都没有** nonce（旧产出器在飞会话的 legacy 对）才回退到戳的精确
+    相等。三处消费（页首覆盖判定/证据退役/启动闸放行）共用本谓词,不许
+    各抄一份会分叉的。
+    """
+    if evidence_launch_nonce or record_launch_nonce:
+        return record_bears_launch_nonce(
+            record_launch_nonce, evidence_launch_nonce)
+    return cancelled_run_matches(record_started_at, evidence_started_at)
+
+
 def evidence_retires(
     status_kind: str,
     status_started_at: str | None,
@@ -515,17 +538,16 @@ def evidence_retires(
 
     nonce 覆盖优先于戳（codex 第二十五轮 P2）:补结算的死后读取不确凿时
     证据只带 nonce 不带戳——带着**本次 launch nonce** 的 running 记录是
-    被杀孤儿本人,绝不因戳对不上被误判成接替者而退役。
+    被杀孤儿本人,绝不因戳对不上被误判成接替者而退役。覆盖判定走
+    ``evidence_covers_record``（第二十六轮:身份在场时一票裁决,同戳但
+    nonce 不同/缺失的接替是**确凿**接替,必须退役）。
     """
     if status_kind == "finished":
         return True
     if status_kind == "running":
-        covered = (
-            record_bears_launch_nonce(
-                status_launch_nonce, evidence_launch_nonce)
-            or cancelled_run_matches(
-                status_started_at, evidence_started_at))
-        return not covered
+        return not evidence_covers_record(
+            status_started_at, status_launch_nonce,
+            evidence_started_at, evidence_launch_nonce)
     return False
 
 
@@ -933,13 +955,14 @@ def _blocking_run_status(
         return None
     if classify_running(status) != RUNNING_FRESH:
         return None
-    if cancelled_run_matches(status.started_at, cancelled_started_at):
-        return None
-    # nonce 放行（codex 第二十五轮 P2）:补结算读取不确凿时证据只带
-    # nonce 不带戳——带本次 launch nonce 的 running 记录就是被杀孤儿,
-    # 只放行戳会造成「页面按钮解锁、闸仍拒绝」的假解锁（第二轮同款）。
-    if record_bears_launch_nonce(
-            status.launch_nonce, cancelled_launch_nonce):
+    # 放行判据=证据覆盖（第二十五/二十六轮）:与页首覆盖判定、证据退役
+    # 共用同一谓词——nonce 身份在场时一票裁决（同戳但 nonce 不同/缺失
+    # 的接替记录不放行:粗粒度时钟可造同戳）,戳只留给双方都无 nonce 的
+    # legacy 对;nonce-only 证据（无戳）凭 nonce 放行,防「按钮解锁、闸
+    # 仍拒绝」的假解锁（第二轮同款）。
+    if evidence_covers_record(
+            status.started_at, status.launch_nonce,
+            cancelled_started_at, cancelled_launch_nonce):
         return None
     return (
         f"状态工件显示一次更新正在进行(始于 {status.started_at})。"

@@ -55,6 +55,7 @@ from web.operator_ui.update_runner import (
     cancelled_run_matches,
     default_log_path,
     evidence_binds_to_killed_run,
+    evidence_covers_record,
     evidence_retires,
     gate_today,
     launch_daily_update,
@@ -195,16 +196,16 @@ _running_fresh = (
 # 六小时陈旧线。证据按状态戳精确相等绑定到**被取消的那一次**;戳变了
 # （新运行/终态）即退役。
 _cancel_evidence = st.session_state.get(_CANCELLED_EVIDENCE_KEY)
-# 覆盖判定双身份（第二十五轮 P2）：nonce 优先——补结算的死后读取不确凿
-# 时证据只带 nonce 不带戳,带本次 launch nonce 的 running 记录就是被杀
-# 孤儿本人;戳匹配保留给 legacy（无 nonce）证据。
+# 覆盖判定（第二十五/二十六轮 P2）：nonce 身份在场时**一票裁决**——同戳
+# 但 nonce 不同/缺失的接替记录（粗粒度时钟可造同戳）不算覆盖;戳只留给
+# 双方都无 nonce 的 legacy 对。与证据退役、启动闸共用同一谓词。
 _cancelled_this_run = (
     isinstance(_cancel_evidence, dict)
     and _status.kind == "running"
-    and (record_bears_launch_nonce(
-            _status.launch_nonce, _cancel_evidence.get("launch_nonce"))
-         or cancelled_run_matches(
-             _status.started_at, _cancel_evidence.get("started_at")))
+    and evidence_covers_record(
+        _status.started_at, _status.launch_nonce,
+        _cancel_evidence.get("started_at"),
+        _cancel_evidence.get("launch_nonce"))
 )
 if isinstance(_cancel_evidence, dict) and evidence_retires(
         _status.kind, _status.started_at, _status.launch_nonce,
@@ -281,7 +282,11 @@ def _settle_late_pending(_live_run: Any, _live_proc: Any) -> None:
         and _late_status.pid == _live_proc.pid
         and (record_bears_launch_nonce(
                 _late_status.launch_nonce, _kill_nonce)
-             or (_late_status.launch_nonce is None
+             # legacy 回退只对「双方都无 nonce」的旧对开放（第二十六轮:
+             # 本会话有 kill nonce 时,我们的子进程必然写 nonce——无
+             # nonce 记录不可能是它,即便 pid+戳恰好都对上也不收养）。
+             or (not _kill_nonce
+                 and _late_status.launch_nonce is None
                  and cancelled_run_matches(
                      _late_status.started_at, _own_stamp))))
     if _late_evidence:
@@ -855,7 +860,10 @@ if _live_proc is not None:
                                 _fresh_status, _provider_path)
                             and (record_bears_launch_nonce(
                                     _fresh_status.launch_nonce, _kn)
-                                 or (_fresh_status.launch_nonce is None
+                                 # legacy 回退只对双方都无 nonce 的旧对
+                                 # 开放（第二十六轮,同补结算）。
+                                 or (not _kn
+                                     and _fresh_status.launch_nonce is None
                                      and evidence_binds_to_killed_run(
                                          _fresh_status.started_at,
                                          (_live_run or {}).get("launched_at"),
