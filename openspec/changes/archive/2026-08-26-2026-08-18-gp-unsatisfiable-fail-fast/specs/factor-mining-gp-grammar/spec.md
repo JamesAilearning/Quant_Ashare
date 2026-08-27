@@ -6,8 +6,19 @@
 
 `random_expression` SHALL determine, before drawing from the RNG, whether
 the requested target type can be produced at all under the supplied
-terminal whitelist, operator pool and depth budget. When it provably
-cannot, the call SHALL raise `GrammarError` immediately.
+terminal whitelist and operator pool. When it provably cannot, the call
+SHALL raise `GrammarError` immediately.
+
+The determination SHALL ignore the depth budget: reachability is computed
+as an **unbounded** fixed point over type signatures, and `max_depth` is
+NOT an input to it. This is normative, not an implementation detail.
+Depth-bounded reachability produces **false refusals** — the leafless-CSF
+case at `max_depth=0` is genuinely generable (`cs_winsorize($circ_mv)`,
+because the operator's child draws at `max_depth - 1` and reaches a leaf)
+yet a depth-capped analysis calls it unsatisfiable. A conformance change
+that reintroduced a depth budget here would reintroduce exactly the
+governance-grade bug this requirement exists to prevent (see the
+conservativeness clause below).
 
 The current generator instead retries `MAX_OP_RETRIES` at **every** depth
 level with subtree generation inside the retry, so an unsatisfiable

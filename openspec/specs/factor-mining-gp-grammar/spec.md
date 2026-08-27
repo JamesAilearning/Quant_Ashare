@@ -1,0 +1,110 @@
+# factor-mining-gp-grammar Specification
+
+## Purpose
+
+GP 生成器在**抽第一个随机数之前**，凭什么判定一份配置根本产不出任何
+表达式，以及这个判定必须偏向哪一侧。
+
+本 spec 管的是**可满足性预检**，不管表达式好坏，也不管搜索空间该怎么
+定（那属 `v2-factor-mining-foundations` 的算子/终端白名单条款）。
+
+核心是一条**不对称**的红线：预检允许"拒得太少"（放行一个其实无解的
+配置，代价是退回原来的重试路径），**不允许"拒得太多"**（拒掉一个其实
+可生成的配置 = 静默缩小已签署的搜索空间，是治理级错误）。所有判据因此
+只在"可证明无解"时才拒；证不出来就放行。
+
+同一条不对称也划出了本 spec 的**边界**：预检只看类型签名的可达性，不
+建模构造器层的语义规则（如"两操作数结构相同的 ts_corr 被否"）。把那些
+规则抄进来会让本判据成为 `expression.py` 那套判断的第二份拷贝 —— 两处
+不同步就漂，而漂的方向恰好是危险的那一侧。
+## Requirements
+### Requirement: An unsatisfiable generator configuration SHALL be refused before sampling
+
+`random_expression` SHALL determine, before drawing from the RNG, whether
+the requested target type can be produced at all under the supplied
+terminal whitelist and operator pool. When it provably cannot, the call
+SHALL raise `GrammarError` immediately.
+
+The determination SHALL ignore the depth budget: reachability is computed
+as an **unbounded** fixed point over type signatures, and `max_depth` is
+NOT an input to it. This is normative, not an implementation detail.
+Depth-bounded reachability produces **false refusals** — the leafless-CSF
+case at `max_depth=0` is genuinely generable (`cs_winsorize($circ_mv)`,
+because the operator's child draws at `max_depth - 1` and reaches a leaf)
+yet a depth-capped analysis calls it unsatisfiable. A conformance change
+that reintroduced a depth budget here would reintroduce exactly the
+governance-grade bug this requirement exists to prevent (see the
+conservativeness clause below).
+
+The current generator instead retries `MAX_OP_RETRIES` at **every** depth
+level with subtree generation inside the retry, so an unsatisfiable
+configuration costs `MAX_OP_RETRIES ** max_depth` generator calls — 10⁶ at
+the default `max_depth=6`. Measured: one such call takes ~11.6 s, and a
+single regression test that exercises this path takes **38.8 minutes**.
+
+The check SHALL be **conservative**: it refuses only configurations it can
+prove admit no expression, and otherwise defers to the existing sampling
+path unchanged. A false refusal would silently narrow a campaign's search
+space — strictly worse than being slow, because the resulting pool would
+misrepresent the pre-registered experiment.
+
+The check SHALL NOT consume randomness. On every satisfiable
+configuration the RNG draw sequence SHALL be byte-identical to the
+current implementation, because seeded reproducibility is a pinned
+invariant of this subsystem.
+
+Refusal SHALL remain a `GrammarError` naming what the whitelist excludes,
+so the failure stays as loud as it is today — only faster.
+
+The check covers **type-level** unsatisfiability only. Constructor-level
+exclusions — the AST post-validation in `expression.py`, such as
+`_ts_corr_is_trivial` rejecting a correlation whose two operands are
+structurally identical — are NOT modelled, and such configurations SHALL
+keep taking the ordinary sampling path.
+
+That limit is deliberate, not an oversight. Mirroring constructor rules
+inside the reachability model would make the check a second copy of a
+judgement that already lives in `expression.py`: every future validation
+rule would have to be added in both places or the copy silently drifts.
+Worse, the failure mode inverts — today the check errs by **refusing too
+little** (safe: the caller falls back to sampling), whereas a mis-modelled
+constructor rule would refuse **too much**, silently narrowing a
+campaign's search space. Buying completeness at the price of that risk is
+a bad trade for this subsystem.
+
+Measured cost of the residual case, at the default `max_depth=6`:
+`allowed_terminals={"$close"}` with `allowed_operators={"ts_corr",
+"cs_rank"}` raises after 188,525 generator calls in **5.05 s** — against
+0.0001 s when the type-level check does fire, and against the 38.8-minute
+pathology this change removes. Slow-but-correct, on the conservative side.
+
+#### Scenario: a constructor-level dead end is not pre-refused
+
+- **GIVEN** a whitelist that type-checks but whose only expressions are
+  rejected by the AST constructor (e.g. a single feature making every
+  `ts_corr` trivially self-correlated)
+- **WHEN** generation runs
+- **THEN** the precheck does NOT refuse it; the ordinary sampling path
+  raises as before
+
+#### Scenario: a whitelist admitting no registered terminal is refused at once
+
+- **GIVEN** a terminal whitelist whose intersection with the registry is empty
+- **WHEN** `random_expression` is called for the canonical CSF target
+- **THEN** it raises `GrammarError` without exhausting the retry budget
+
+#### Scenario: a satisfiable campaign is untouched
+
+- **GIVEN** a whitelist that admits at least one registered terminal
+- **WHEN** expressions are generated from a fixed seed
+- **THEN** the produced expressions are identical to those the previous
+  implementation produced from that seed
+
+#### Scenario: a partially restrictive whitelist still generates
+
+- **GIVEN** a whitelist admitting terminals of only one taint, so some
+  operator candidates have an empty input pool
+- **WHEN** generation runs
+- **THEN** it still succeeds by retrying other candidates — the check
+  SHALL NOT refuse this case
+

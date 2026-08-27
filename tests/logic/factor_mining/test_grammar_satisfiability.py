@@ -164,3 +164,52 @@ class DoesNotDisturbTheRngSequence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_the_precheck_never_takes_a_depth_budget():
+    """预检**不得**把 `max_depth` 纳入判据 —— 实现与归档 spec 双向钉。
+
+    深度封顶的可达性会产生**假拒绝**：`max_depth=0` 且目标类型无叶时，
+    算子的子节点按 `max_depth - 1` 取叶，`cs_winsorize($circ_mv)` 是真
+    生成得出来的，而按深度封顶的分析会判它无解。假拒绝 = 静默缩小已签署
+    的搜索空间，是治理级错误（#452 的 codex r1 就坐实过这一格）。
+
+    归档后的 spec 是**权威件**，它一旦写回 "depth budget"，未来的一致性
+    改动就会照着把那个 bug 装回来（codex #469 P1）。所以两侧都钉：
+    实现的签名里不许出现 max_depth，spec 的规范条款里不许要求它。
+    """
+    import inspect
+    import pathlib
+
+    from src.factor_mining import grammar
+
+    params = inspect.signature(grammar._provably_unsatisfiable).parameters
+    assert "max_depth" not in params, (
+        f"预检收了 max_depth（参数：{list(params)}）—— 深度封顶会产生假拒绝。")
+
+    # **扫描全部**带该条款的文件，不写死路径：权威 spec 与归档 delta 各
+    # 有一份，我第一版只钉了前者，归档件里那句旧说法照样留着 —— 审计
+    # 归档的人看到的是相反的合同，而守卫全绿（codex #469 r2 P2）。
+    # 写死路径与手写入口表是同一个病：新增一份携带该条款的文件就漏。
+    root = pathlib.Path(__file__).resolve().parents[3]
+    marker = "### Requirement: An unsatisfiable generator"
+    carriers = [
+        f for f in root.glob("openspec/**/*.md")
+        if marker in f.read_text(encoding="utf-8")
+    ]
+    assert len(carriers) >= 2, (
+        f"只找到 {len(carriers)} 份带该条款的文件 —— 权威 spec 与归档 "
+        "delta 至少各一份；扫描口径可能坏了。")
+    for spec in carriers:
+        text = spec.read_text(encoding="utf-8")
+        # 只看规范条款本体（Requirement 到成本/动机段之间）；成本段提
+        # max_depth 是陈述旧生成器的开销，不具规范性。
+        head = text.index(marker)
+        body = text[head:text.index("\nThe current generator instead", head)]
+        rel = spec.relative_to(root)
+        assert "SHALL ignore the depth budget" in body, (
+            f"{rel} 没有显式声明预检忽略深度 —— 只是'没提'不够，未来的"
+            "读者会把它当成疏漏而补上。")
+        assert "operator pool and depth budget" not in body, (
+            f"{rel} 的规范条款要求按 depth budget 判定 —— 与实现相反，且"
+            "会指引未来的一致性改动装回假拒绝那个 bug。")
