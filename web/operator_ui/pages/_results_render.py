@@ -263,6 +263,54 @@ def _render_status_header(
         )
 
 
+def _render_rerun_action(
+    *, job: Mapping[str, Any], config_bytes: bytes,
+) -> None:
+    """「用此配置重跑」——**两种引擎的结果页共用同一个实现**。
+
+    此前它只长在 `_render_header_actions` 里，而那个函数只被
+    `_render_pipeline_dashboard` 调用。一份正常的滚动验证结果（有
+    `walk_forward_report.json`、没有根级 `pipeline_report.json`）走的是
+    `_render_walk_forward_summary` 那一支，**根本产不出**预填状态——
+    本 change 为「源运行是 walk_forward」写下的窗口恢复与跨模式重跑
+    场景，在那一侧全都不可达（codex P1 on #471）。
+
+    抽成函数而不是在滚动验证那支再写一遍：两份实现里只要有一份忘了铸
+    动作 nonce、或忘了写 `prefill_config_source_mode`，症状都是「预填
+    看起来没生效」，而那不像个 bug。
+    """
+    if st.button("用此配置重跑", disabled=not config_bytes):
+        # 严格解码,不再 errors="replace"。替换字符会把坏字节变成
+        # U+FFFD 后原样交给 YAML:运气好是解析报错,运气不好是解析成功
+        # 但某个值被悄悄改写,而横幅照说「已预填」。宁可就地报错、不
+        # 跳页,也不带一份被污染的配置进配置页。
+        try:
+            _prefill_yaml = config_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            st.error(
+                f"⚠ 该运行的 config.yaml 不是合法 UTF-8（{exc}）——**未**"
+                "预填任何字段，也未跳转。可用右侧「下载 config.yaml」"
+                "取原始字节自行检查。"
+            )
+        else:
+            st.session_state["prefill_config_yaml"] = _prefill_yaml
+            st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
+            # 每一次**按下**都是一次新的预填事件（codex P1 on #471）。
+            # 没有它,令牌只由「源运行 + 配置内容」构成:操作人预填之后
+            # 改了几个字段、回到结果页对**同一个运行**再点一次「用此配置
+            # 重跑」,令牌不变 ⇒ 应用分支被跳过 ⇒ 他的改动原样留着,而
+            # 横幅照说「已按该次运行覆盖」——启动的实验与他明确重选的
+            # 那次运行不一致。
+            #
+            # 只在**按钮回调里**换,不在每帧换:普通的 Streamlit 重绘
+            # (任何控件交互)不经过这里,令牌因此仍然稳定,幂等性保住。
+            st.session_state["prefill_config_action"] = uuid4().hex
+            # 源运行的模式。归档 config.yaml 未必带 `mode`（CLI 跑出的
+            # 就没有）,而配置页要靠它决定预填哪一套字段 schema。
+            st.session_state["prefill_config_source_mode"] = str(job.get("mode") or "")
+            st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
+
+
 def _render_header_actions(
     *,
     job: Mapping[str, Any],
@@ -273,36 +321,7 @@ def _render_header_actions(
 ) -> None:
     action_cols = st.columns([1, 1, 1, 1])
     with action_cols[0]:
-        if st.button("用此配置重跑", disabled=not config_bytes):
-            # 严格解码,不再 errors="replace"。替换字符会把坏字节变成
-            # U+FFFD 后原样交给 YAML:运气好是解析报错,运气不好是解析成功
-            # 但某个值被悄悄改写,而横幅照说「已预填」。宁可就地报错、不
-            # 跳页,也不带一份被污染的配置进配置页。
-            try:
-                _prefill_yaml = config_bytes.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                st.error(
-                    f"⚠ 该运行的 config.yaml 不是合法 UTF-8（{exc}）——**未**"
-                    "预填任何字段，也未跳转。可用右侧「下载 config.yaml」"
-                    "取原始字节自行检查。"
-                )
-            else:
-                st.session_state["prefill_config_yaml"] = _prefill_yaml
-                st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
-                # 每一次**按下**都是一次新的预填事件（codex P1 on #471）。
-                # 没有它,令牌只由「源运行 + 配置内容」构成:操作人预填之后
-                # 改了几个字段、回到结果页对**同一个运行**再点一次「用此配置
-                # 重跑」,令牌不变 ⇒ 应用分支被跳过 ⇒ 他的改动原样留着,而
-                # 横幅照说「已按该次运行覆盖」——启动的实验与他明确重选的
-                # 那次运行不一致。
-                #
-                # 只在**按钮回调里**换,不在每帧换:普通的 Streamlit 重绘
-                # (任何控件交互)不经过这里,令牌因此仍然稳定,幂等性保住。
-                st.session_state["prefill_config_action"] = uuid4().hex
-                # 源运行的模式。归档 config.yaml 未必带 `mode`（CLI 跑出的
-                # 就没有）,而配置页要靠它决定预填哪一套字段 schema。
-                st.session_state["prefill_config_source_mode"] = str(job.get("mode") or "")
-                st.switch_page(str(Path(__file__).resolve().parent / "config_run.py"))
+        _render_rerun_action(job=job, config_bytes=config_bytes)
     with action_cols[1]:
         st.download_button(
             "导出指标 CSV",

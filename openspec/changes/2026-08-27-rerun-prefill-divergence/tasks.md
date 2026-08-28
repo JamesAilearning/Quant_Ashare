@@ -202,6 +202,30 @@
 - [x] 变异复验 3 条全咬（令牌里去掉 nonce / nonce 换成固定值 / nonce 挪到
       按钮分支之外）
 
+## 6h. codex #471 第八轮：一条 P1——滚动验证结果页根本产不出预填状态
+
+- [x] 「用此配置重跑」原来只长在 `_render_header_actions` 里，而那个函数只被
+      `_render_pipeline_dashboard` 调用。一份**正常的**滚动验证结果（有
+      `walk_forward_report.json`、没有根级 `pipeline_report.json`）走的是
+      `_render_walk_forward_summary` 那一支 ⇒ **本 change 为「源运行是
+      walk_forward」写下的窗口恢复与跨模式重跑场景，在那一侧全都不可达**
+- [x] 抽出 `_render_rerun_action(job, config_bytes)`，pipeline 侧的动作条
+      **委派**给它，滚动验证分支直接调它——**一份实现，两条路径**。两份实现
+      里只要有一份忘了铸动作 nonce 或忘了写 `prefill_config_source_mode`，
+      症状都是「预填看起来没生效」，而那不像个 bug
+- [x] 入口放在滚动验证分支的 `if wf_report:` **之前**：没有报告的那一支恰恰
+      是「这次跑挂了，想改改参数重跑」最常见的时刻
+- [x] **路由级覆盖**（codex 点名要）：用 AST 找结果页模块级的引擎分派链，
+      逐支确认调用；并钉住按钮实现全仓只有一处
+- [x] 顺手修掉一条**钉排版**的旧守卫：`test_rerun_prefill_decodes_strictly_
+      and_carries_the_source_mode` 把 `except` 与 session_state 写入连同
+      **缩进**一起钉进串里，抽函数（缩进少一层）当场失配——而它从来没钉住
+      「解码严格 / 失败不跳页 / 带上源模式」这三件事本身。改成在
+      `_render_rerun_action` 的 AST 上问（#474 同款教训）
+- [x] 变异复验 6 条全咬:路由三条（滚动验证分支删调用 / 动作条不再委派 /
+      调用挪进 `if wf_report` 内）+ 守卫三条（解码加 `errors="replace"` /
+      不写 source_mode / 解码失败也跳页）
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂

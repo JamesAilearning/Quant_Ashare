@@ -187,3 +187,32 @@ operator must be able to tell "verified identical" from "nobody checked".
 - **WHEN** the pre-launch review renders
 - **THEN** the page affirms the configuration matches that run field for field,
   rather than showing nothing
+
+### Requirement: The rerun action SHALL be reachable from every result engine
+
+The rerun entry point SHALL be rendered for walk-forward results as well as
+pipeline results, through ONE shared implementation.
+
+It previously lived only inside the pipeline dashboard's action bar, which the
+walk-forward dispatch branch never calls. A normal walk-forward result — one
+carrying `walk_forward_report.json` and no root `pipeline_report.json` — could
+therefore never produce the prefill state at all, so every requirement written
+here about a walk-forward source run was unreachable from that side.
+
+Two copies of the action are FORBIDDEN. Either copy that forgot to mint the
+action identity, or to record the source run's mode, would present as "the
+prefill did not seem to apply" — a symptom that does not look like a defect.
+
+#### Scenario: a walk-forward result offers the rerun action
+
+- **GIVEN** a result whose run directory holds `walk_forward_report.json` and
+  no root `pipeline_report.json`
+- **WHEN** the results page renders it
+- **THEN** the rerun action is available
+
+#### Scenario: a walk-forward run without its report still offers it
+
+- **GIVEN** a walk-forward result whose report is not present yet
+- **WHEN** the results page renders it
+- **THEN** the rerun action is still available, because that is exactly when an
+  operator wants to adjust parameters and run again

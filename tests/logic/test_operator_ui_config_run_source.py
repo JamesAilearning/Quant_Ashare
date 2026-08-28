@@ -1407,5 +1407,110 @@ class RepeatedRerunActionRearmsPrefillTests(unittest.TestCase):
 
 
 
+class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
+    """预填状态得先**产得出来**，规格里的场景才谈得上可达。
+
+    「用此配置重跑」原来只长在 `_render_header_actions` 里，而那个函数只被
+    `_render_pipeline_dashboard` 调用。一份正常的滚动验证结果（有
+    `walk_forward_report.json`、没有根级 `pipeline_report.json`）走的是
+    `_render_walk_forward_summary` 那一支——于是本 change 为「源运行是
+    walk_forward」写下的窗口恢复与跨模式重跑场景，在那一侧**全都不可达**
+    （codex P1 on #471）。
+
+    这里钉的是**路由**：按钮的实现只有一份，两条分派路径都调它。
+    """
+
+    def setUp(self) -> None:
+        self.render = Path(
+            "web/operator_ui/pages/_results_render.py").read_text(
+                encoding="utf-8")
+        self.page = Path("web/operator_ui/pages/results.py").read_text(
+            encoding="utf-8")
+
+    def test_the_rerun_button_has_exactly_one_implementation(self) -> None:
+        # 两份实现里只要有一份忘了铸动作 nonce、或忘了写
+        # `prefill_config_source_mode`，症状都是「预填看起来没生效」。
+        self.assertEqual(
+            self.render.count('st.button("用此配置重跑"'), 1,
+            "按钮只该有一处实现",
+        )
+        for other in ("web/operator_ui/pages/results.py",):
+            self.assertNotIn(
+                '用此配置重跑', Path(other).read_text(encoding="utf-8"),
+                f"{other} 不该自己再画一个按钮",
+            )
+
+    def test_both_dispatch_branches_render_the_rerun_action(self) -> None:
+        # 用 AST 找模块级分派的那条 if/elif 链，逐支确认调用。
+        tree = ast.parse(self.page)
+        chains = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            # ast.unparse 会把字符串统一成单引号——按引号写死的匹配会静默
+            # 找不到，测试于是变成「零覆盖但绿」。这里去掉引号再比。
+            and "mode == 'pipeline'" in ast.unparse(node.test)
+        ]
+        self.assertEqual(len(chains), 1, "结果页的引擎分派应当只有一处")
+        chain = chains[0]
+
+        def calls(nodes: list[ast.stmt]) -> set[str]:
+            found: set[str] = set()
+            for stmt in nodes:
+                for node in ast.walk(stmt):
+                    if isinstance(node, ast.Call) and isinstance(
+                            node.func, ast.Name):
+                        found.add(node.func.id)
+            return found
+
+        pipeline_calls = calls(chain.body)
+        self.assertIn("_render_pipeline_dashboard", pipeline_calls)
+
+        wf_branch = chain.orelse
+        self.assertTrue(wf_branch, "应当有 walk_forward 分支")
+        wf_calls = calls(wf_branch)
+        self.assertIn(
+            "_render_rerun_action", wf_calls,
+            "滚动验证分支必须画出重跑入口——否则本 change 的跨模式场景不可达",
+        )
+
+    def test_the_pipeline_path_reaches_it_through_the_action_bar(self) -> None:
+        # pipeline 那一侧仍然走 `_render_header_actions`（它还带三个导出
+        # 按钮）；钉住那个函数**委派**给同一个实现，而不是自己再写一遍。
+        tree = ast.parse(self.render)
+        header = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_header_actions"
+        )
+        delegates = {
+            node.func.id for node in ast.walk(header)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("_render_rerun_action", delegates)
+
+        dashboard = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_pipeline_dashboard"
+        )
+        dash_calls = {
+            node.func.id for node in ast.walk(dashboard)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("_render_header_actions", dash_calls)
+
+    def test_the_walk_forward_branch_renders_it_before_the_report_split(
+        self,
+    ) -> None:
+        # 有报告与没报告两种滚动验证结果**都**要有入口:没有报告的那一支
+        # 恰恰是「这次跑挂了，想改改参数重跑」最常见的时刻。
+        self.assertIn(
+            "        _render_rerun_action(job=selected_job, "
+            "config_bytes=config_bytes)\n        if wf_report:\n",
+            self.page,
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

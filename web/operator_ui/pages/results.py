@@ -99,6 +99,7 @@ from web.operator_ui.pages._results_render import (  # noqa: F401
     _render_monthly_returns,
     _render_pipeline_dashboard,
     _render_raw_tab,
+    _render_rerun_action,
     _render_run_not_found,
     _render_status_header,
     _render_timings_tab,
@@ -338,12 +339,16 @@ else:
             issues=artifact_issues,
         )
     elif mode == "walk_forward" or wf_report:
+        _render_artifact_issues(artifact_issues)
+        # 重跑入口对**两种引擎**都要有（codex P1 on #471）。它此前只长在
+        # pipeline 仪表盘里，于是一份正常的滚动验证结果根本产不出预填状态,
+        # 本 change 为跨模式重跑写下的场景在这一侧不可达。
+        # 与 pipeline 那一侧调**同一个**函数,不在这里再写一遍。
+        _render_rerun_action(job=selected_job, config_bytes=config_bytes)
         if wf_report:
-            _render_artifact_issues(artifact_issues)
             _render_walk_forward_summary(wf_report)
             _render_charts(run_dir)
         else:
-            _render_artifact_issues(artifact_issues)
             st.warning("此运行目录里还没有 walk_forward_report.json。")
             _render_config_tab(config_path, config_bytes, config)
             _render_logs_tab(selected_job, artifact_issues)
