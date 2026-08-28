@@ -237,7 +237,13 @@ a provider change no longer recomputes the window. That failure was already
 shipped once and rolled back.
 
 The binding SHALL therefore write the widget's state exactly when the wanted
-value changes or a new prefill action arrives, and at no other time. These
+value changes or a new prefill action arrives, and at no other time.
+
+A new action SHALL force a widget only for fields the CURRENT payload actually
+supplied. A source run whose archived config is validly empty, fails to parse,
+or predates a date field still mints a fresh action, and forcing every date
+widget on that action silently discards the operator's existing date edit — while
+the page is saying that nothing, or only the recorded fields, was prefilled. These
 properties SHALL be verified by driving the real widget through a sequence of
 interactions, not by calling the pure default-resolving helper: that helper
 never instantiates a widget, so the defect is invisible beneath it.
@@ -253,6 +259,13 @@ never instantiates a widget, so the defect is invisible beneath it.
 - **GIVEN** a prefill has been applied
 - **WHEN** the operator edits the date and the script reruns
 - **THEN** the edit survives
+
+#### Scenario: an action that supplied nothing leaves the edit alone
+
+- **GIVEN** an operator who edited a date, and a rerun whose payload does not
+  carry that field
+- **WHEN** the action arrives
+- **THEN** the widget keeps the operator's date
 
 #### Scenario: the live default still recomputes without a prefill
 

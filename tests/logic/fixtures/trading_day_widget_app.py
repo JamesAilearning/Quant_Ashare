@@ -55,11 +55,16 @@ _prefilled = st.session_state.get("cr_overall_start")
 _wanted = (
     _prefilled if isinstance(_prefilled, str) and _prefilled else _live_default)
 
+# 这次载荷**带没带**这个字段。生产里由 `_PREFILL_SUPPLIED` 算出来;宿主让
+# 用例直接注入，用来覆盖「动作是新的、但这个字段压根没被预填」那条路。
+_supplied = bool(st.session_state.get("_probe_supplied", _prefilled))
+
 _picked = _select_trading_day(
     "overall_start",
     default=_wanted,
     metadata=_METADATA,
     state_key="cr_dt_overall_start",
+    prefill_supplied=_supplied,
 )
 st.text(f"wanted={_wanted}")
 st.text(f"picked={_picked}")

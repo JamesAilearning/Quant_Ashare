@@ -1515,5 +1515,83 @@ class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
 
 
 
+class PrefillSuppliedWiringTests(unittest.TestCase):
+    """「这次载荷带了哪些日期字段」——推导正确，且每个控件都拿对了自己的那个。
+
+    AppTest 那一组证的是**绑定函数**在拿到 `supplied=False` 时不改写控件；
+    它注入自己的旗标，所以页面这一侧的接线不在它的覆盖里（变异实测:把
+    `prefill_supplied` 写死成 True、或把推导算成整个 applicable 集合，
+    AppTest 全绿）。这一组补的就是那一段。
+    """
+
+    def _page(self) -> str:
+        return Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+
+    def test_the_supplied_set_is_the_payload_intersected_with_known_keys(
+        self,
+    ) -> None:
+        # **真求值**那个赋值:算成「整个 applicable 集合」会让每个日期控件都
+        # 以为自己被预填了，于是空载荷/解析失败时照样改写控件。
+        import ast
+
+        tree = ast.parse(self._page())
+        node = next(
+            n for n in tree.body
+            if isinstance(n, ast.AnnAssign)
+            and isinstance(n.target, ast.Name)
+            and n.target.id == "_PREFILL_SUPPLIED"
+        )
+        code = compile(ast.Expression(node.value), "<supplied>", "eval")
+
+        applicable = frozenset({"overall_start", "overall_end", "train_start"})
+        cases = (
+            ({"overall_start": "2020-01-02", "not_a_field": 1},
+             {"overall_start"}),
+            ({}, set()),
+            ({"overall_start": "x", "overall_end": "y"},
+             {"overall_start", "overall_end"}),
+        )
+        for payload, expected in cases:
+            with self.subTest(payload=payload):
+                got = eval(  # noqa: S307 - 求值的是本页自己的表达式
+                    code,
+                    {"PREFILL_CONFIG": payload,
+                     "_PREFILL_APPLICABLE_KEYS": applicable},
+                )
+                self.assertEqual(set(got), expected)
+
+    def test_every_date_widget_asks_about_its_own_field(self) -> None:
+        # 每个调用点的 `prefill_supplied` 问的必须是**它自己那个字段**。
+        # 写死成 True（或抄错字段名）会让空载荷时那个控件被强行改写。
+        import ast
+
+        tree = ast.parse(self._page())
+        seen: list[tuple[str, str]] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_select_trading_day"):
+                continue
+            kw = {k.arg: k.value for k in node.keywords}
+            self.assertIn("state_key", kw)
+            self.assertIn(
+                "prefill_supplied", kw,
+                "每个日期控件都要说明这次载荷带没带它自己那个字段",
+            )
+            state_key = ast.literal_eval(kw["state_key"])
+            field = str(state_key).removeprefix("cr_dt_")
+            self.assertEqual(
+                ast.unparse(kw["prefill_supplied"]),
+                f"'{field}' in _PREFILL_SUPPLIED",
+                f"{state_key} 问错了字段",
+            )
+            seen.append((state_key, field))
+
+        self.assertEqual(len(seen), 8, f"日期控件应当有八个,实际 {seen}")
+        self.assertEqual(len(set(seen)), 8, "有重复的 state_key")
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -135,6 +135,34 @@ class TradingDayWidgetBindingTests(unittest.TestCase):
             "live default 被冻结了——#300 的病根复现",
         )
 
+    def test_an_action_that_supplied_nothing_does_not_clobber_the_edit(
+        self,
+    ) -> None:
+        """动作是新的，但这次载荷**没带这个字段**——不许改写控件。
+
+        源运行的归档 config 是一份合法空 YAML、或解析失败、或旧 schema 里
+        压根没有这个日期字段时，``_apply_prefill_to_session`` 一个字节也没
+        写，而动作 nonce 照样是新的。不加「这次真的带了」这个前提，控件会
+        被强行改写成 live default，**默默丢掉操作人已经改好的日期**——而页面
+        那一刻正说着「本次没有任何字段可预填」（codex P1 on #471）。
+
+        此前的用例每次都先写 ``cr_overall_start`` 再推进 nonce，所以这条路
+        整个没被走到（评审点名指出，属实）。
+        """
+        app = self._app()
+        app.selectbox[0].select("2023-01-03").run()
+        self.assertEqual(self._picked(app), "2023-01-03")
+
+        # 新动作，但这次载荷没有带 overall_start。
+        app.session_state["_probe_supplied"] = False
+        app.session_state["prefill_config_action"] = "action-empty"
+        app.run()
+
+        self.assertEqual(
+            self._picked(app), "2023-01-03",
+            "载荷没带这个字段，控件却被改写了——操作人的编辑被默默丢掉",
+        )
+
     def test_an_edit_survives_without_a_prefill(self) -> None:
         app = self._app()
         app.selectbox[0].select("2023-01-03").run()

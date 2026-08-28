@@ -251,6 +251,27 @@
       控件不带 key = 回到原缺陷）
 - [x] `tests/logic` + `tests/governance` **5092 passed**
 
+## 6j. codex #471 第十轮：一条 P1——强制改写作用到了「这次没被预填的」字段上
+
+- [x] 动作 nonce 让 `fresh_action` 对**每一个**日期控件都为真。而源运行的
+      归档 config 是合法空 YAML / 解析失败 / 旧 schema 缺这个字段时，
+      `_apply_prefill_to_session` **一个字节也没写**——控件却被强行改写成
+      live default，**默默丢掉操作人已经改好的日期**，而页面那一刻正说着
+      「本次没有任何字段可预填」
+- [x] `_PREFILL_SUPPLIED = PREFILL_CONFIG ∩ _PREFILL_APPLICABLE_KEYS`；
+      每个控件传 `prefill_supplied="<自己那个字段>" in _PREFILL_SUPPLIED`，
+      `fresh_action` 只在 `supplied` 时成立
+- [x] **评审点名的测试盲区属实**:此前的 AppTest 每次都先写
+      `cr_overall_start` 再推进 nonce，所以这条路整个没被走到。补一条
+      「新动作 + 这次没带这个字段 ⇒ 编辑必须留着」
+- [x] 首轮变异 3 条只咬住 1 条:AppTest 宿主自己注入旗标，**页面那一侧的
+      接线不在它的覆盖里**（写死 `prefill_supplied=True`、或把推导算成整个
+      applicable 集合，AppTest 全绿）。补两条页面级守卫——**真求值**
+      `_PREFILL_SUPPLIED` 的表达式（三组载荷），并逐个 AST 核对八个调用点
+      「问的是它自己那个字段」
+- [x] 变异复验 3/3（去掉 supplied 前提 / 写死 True / 推导算错）
+- [x] `tests/logic` + `tests/governance` **5095 passed**
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂
