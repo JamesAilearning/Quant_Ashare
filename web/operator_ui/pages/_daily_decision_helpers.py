@@ -657,6 +657,17 @@ def producer_shape_violation(
         return (
             f"工件 meta.topk 缺失或非法（实际 {raw_topk!r}）——产出器无条件"
             "写非负 int；需核查。")
+    # `meta.instruments` 与 `topk` 同罪同治:产出器在同一个 dict 字面量里
+    # **无条件**写这两个（`_assemble_run_meta`）。此前只验了 topk——缺失或
+    # 非串的 instruments 会让基准卡渲染成「universe=—」,把一份损坏工件当成
+    # 可信基准端出去,而那个「—」读起来像「这次运行没记录宇宙」而不是「这
+    # 份工件坏了」（codex P2 on #475；本仓自查审计也独立命中同一条）。
+    raw_universe = (meta_for_topk.get("instruments")
+                    if isinstance(meta_for_topk, dict) else None)
+    if not (isinstance(raw_universe, str) and raw_universe.strip()):
+        return (
+            f"工件 meta.instruments 缺失或非法（实际 {raw_universe!r}）——"
+            "产出器与 topk 在同一处无条件写它；需核查。")
     if len(payload["picks"]) > raw_topk:
         return (
             f"工件候选 {len(payload['picks'])} 条超出 meta.topk"

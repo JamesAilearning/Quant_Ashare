@@ -611,6 +611,15 @@ class ProducerShapeContractTests(unittest.TestCase):
              {**_artifact(as_of="2026-08-03"), "meta": {"topk": 1}}),
             ("meta.topk 缺失",
              {**_artifact(as_of="2026-08-03"), "meta": {"instruments": "csi800"}}),
+            # —— meta.instruments 与 topk 同罪同治(codex P2 第七轮)——
+            ("meta.instruments 缺失",
+             {**_artifact(as_of="2026-08-03"), "meta": {"topk": 50}}),
+            ("meta.instruments 非字符串",
+             {**_artifact(as_of="2026-08-03"),
+              "meta": {"topk": 50, "instruments": 123}}),
+            ("meta.instruments 空串",
+             {**_artifact(as_of="2026-08-03"),
+              "meta": {"topk": 50, "instruments": "  "}}),
             ("picks 不是列表",
              {**_artifact(as_of="2026-08-03"), "picks": {}}),
         )

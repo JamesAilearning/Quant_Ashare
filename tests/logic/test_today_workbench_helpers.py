@@ -58,7 +58,10 @@ def _ensemble_payload(
         "rebalance_day": rebalance_day,
         # 再平衡日 next 必为 as_of（跨字段不变式）；HOLD 侧才是未来锚。
         "next_rebalance_date": "2026-08-18" if rebalance_day else "2026-08-25",
-        "meta": {"ensemble": {"manifest_sha256": manifest}, "topk": 50},
+        "meta": {"ensemble": {"manifest_sha256": manifest}, "topk": 50,
+                 # 产出器与 topk 在同一处无条件写 instruments——夹具
+                 # 少写它就又是一份产出器产不出的工件。
+                 "instruments": "csi800"},
         "picks": [],
         # 产出器恒写的三个计数。`n_scored` 还是清单长度那条恒等式的一端
         # （len(picks) == min(n_scored, topk)），所以改 picks 的用例必须走

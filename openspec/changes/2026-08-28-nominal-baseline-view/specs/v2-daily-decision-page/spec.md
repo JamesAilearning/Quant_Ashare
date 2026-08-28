@@ -288,3 +288,19 @@ contradicts the bound notice rendered below it.
 - **WHEN** the page renders
 - **THEN** it says the scan stopped at its bound and that older artifacts were
   not read, rather than that the history was exhausted
+
+### Requirement: The universe metadata SHALL be validated, not defaulted for display
+
+The reader SHALL refuse an artifact whose `meta.instruments` is missing or not a
+non-empty string, on the same footing as `meta.topk`.
+
+The producer writes both in one unconditional block, so either being absent
+means the file is corrupt rather than terse. Rendering the baseline card with
+`universe=—` presents a corrupt artifact as a trustworthy baseline, and that dash
+reads as "this run did not record a universe" rather than "this file is broken".
+
+#### Scenario: an artifact without universe metadata is not a baseline
+
+- **GIVEN** a schema-v2 artifact whose `meta` block omits `instruments`
+- **WHEN** the page validates it
+- **THEN** it is refused, rather than shown with a placeholder universe
