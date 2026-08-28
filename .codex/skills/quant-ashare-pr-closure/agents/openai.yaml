@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quant Ashare PR Closure"
+  short_description: "Verify, publish, review, and close a pull request"
