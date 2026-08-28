@@ -310,6 +310,24 @@
       定义一处、恰好三处引用、且预设初始化那一处是**取反**用它
 - [x] `tests/logic` + `tests/governance` **5103 passed**
 
+## 6m. codex #471 第十三轮：一条 P2——零字节归档把按钮永久禁掉且不说话
+
+- [x] 存在但**零字节**的 `config.yaml` 让 `_read_config` 返回 `b""`。按钮
+      用 `disabled=not config_bytes` 当判据 ⇒ 永久禁用、一个字不说;而空
+      YAML 文档的顶层不是映射，本页早已承诺这种形态要被**响亮报出**
+- [x] 判据改成「归档 config **在不在**」（`config_present`），让它走进验证
+- [x] `_prefill_config` 补上「键在场但内容为空」那一格:此前 `if not raw:`
+      把它与「压根没点重跑」混成同一格、静默返回空 dict
+- [x] `_HAS_PREFILL_PAYLOAD` 改成**键在不在**——这一行原本就有一段注释写着
+      「载荷在场与否只看那个 session 键在不在」，而代码在测真值。**代码与
+      自己的注释对不上**，零字节归档正是那个差异的兑现处
+- [x] 变异复验 3/3。首轮逃 1 条（按钮判据）→ 补一条 AST 守卫:按钮的
+      `disabled=` 必须是 `not config_present`
+- [x] 顺带把一条钉**调用字面拼写**的守卫换成 AST 位置关系（给
+      `_render_rerun_action` 加参数当场把它打红，而它要钉的「在报告分叉之前
+      渲染」根本没变）
+- [x] `tests/logic` + `tests/governance` **5107 passed**
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂

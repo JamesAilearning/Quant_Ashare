@@ -319,3 +319,25 @@ selection is replaced.
 - **GIVEN** an operator who edited a date after a prefill
 - **WHEN** another prefill replaces it
 - **THEN** the ledger reports the edited value as the prior one
+
+### Requirement: A present-but-empty archive SHALL reach validation
+
+The rerun action SHALL be enabled on whether the archived config EXISTS, not on
+whether it has content, and the prefill parser SHALL report a present-but-empty
+payload rather than treating it as no request at all.
+
+A zero-byte `config.yaml` reads back as empty bytes, indistinguishable from a
+missing artifact under a content test. Gating on content therefore disables the
+action permanently with no explanation — while an empty YAML document's top
+level is not a mapping, a shape this page already promises to report.
+
+Presence SHALL be decided by the session key existing, not by its value being
+truthy: the value of a zero-byte archive IS empty, so a truthiness test collapses
+"the operator asked for a rerun" into "they did not".
+
+#### Scenario: a zero-byte archive explains itself
+
+- **GIVEN** a source run whose archived config exists and is zero bytes
+- **WHEN** the operator reruns from it
+- **THEN** the action is available and the page reports that the archive is
+  empty, rather than silently doing nothing

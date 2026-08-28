@@ -309,3 +309,36 @@ def test_a_field_without_a_date_widget_still_uses_its_backing_key() -> None:
     apply_prefill = _load("_apply_prefill_to_session", session)
 
     assert apply_prefill({"topk": 50}, _APPLICABLE) == [("topk", 30, 50)]
+
+
+def test_a_zero_byte_archive_is_reported_not_silently_empty() -> None:
+    """零字节的归档 config 要**响亮**报出，不是静默当没预填。
+
+    存在但零字节的 `config.yaml` 让 `_read_config` 返回 `b""`。用内容当判据
+    的话:重跑按钮被永久禁掉且一个字不说，或者页面把它与「压根没点重跑」混
+    成一格。而空 YAML 文档的顶层不是映射——本页早已承诺这种形态要被报出
+    （codex P2 on #471）。
+    """
+    session: dict[str, Any] = {"prefill_config_yaml": ""}
+    prefill_config = _load("_prefill_config", session)
+
+    assert prefill_config() == {}
+    assert "空文件" in session["prefill_config_error"]
+
+
+def test_whitespace_only_archive_is_reported_too() -> None:
+    session: dict[str, Any] = {"prefill_config_yaml": "   \n  "}
+    prefill_config = _load("_prefill_config", session)
+
+    assert prefill_config() == {}
+    assert "prefill_config_error" in session
+
+
+def test_no_rerun_requested_stays_silent() -> None:
+    # 键**不在** = 压根没点重跑。这一格必须继续安静,否则每次打开配置页都
+    # 会挂一条红字。
+    session: dict[str, Any] = {}
+    prefill_config = _load("_prefill_config", session)
+
+    assert prefill_config() == {}
+    assert "prefill_config_error" not in session

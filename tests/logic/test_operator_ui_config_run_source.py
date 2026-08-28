@@ -204,7 +204,14 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         )
         # 一份合法但为空的归档配置必须说话:与「没点按钮」不可分辨是最坏的
         # 一种沉默——操作人有理由怀疑是不是按钮坏了。
-        self.assertIn("\n_HAS_PREFILL_PAYLOAD = bool(\n", source)
+        # 判据是**键在不在**，不是它的内容真不真:零字节的归档 config 会让
+        # 内容判据把「点了重跑」与「没点」混成一格（codex P2）。这一行原本
+        # 就有一段注释写着「只看那个 session 键在不在」，代码却在测真值。
+        self.assertIn(
+            '\n_HAS_PREFILL_PAYLOAD = "prefill_config_yaml" '
+            'in st.session_state\n',
+            source,
+        )
         self.assertIn(
             "\nif _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG "
             "and not _PREFILL_ERROR:\n",
@@ -1479,6 +1486,37 @@ class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
             "滚动验证分支必须画出重跑入口——否则本 change 的跨模式场景不可达",
         )
 
+    def test_the_button_is_gated_on_the_file_existing_not_its_size(
+        self,
+    ) -> None:
+        """按钮的禁用判据是「归档 config **在不在**」，不是「它有没有内容」。
+
+        一份存在但**零字节**的归档会让 `_read_config` 返回 `b""`;用内容当
+        判据就把按钮永久禁掉、且一个字也不说——而空 YAML 的顶层不是映射，
+        本页早已承诺这种形态要被响亮报出（codex P2 on #471）。
+        """
+        import ast
+
+        source = Path(
+            "web/operator_ui/pages/_results_render.py").read_text(
+                encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_rerun_action"
+        )
+        buttons = [
+            node for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "button"
+        ]
+        self.assertEqual(len(buttons), 1)
+        disabled = {k.arg: k.value for k in buttons[0].keywords}.get("disabled")
+        self.assertIsNotNone(disabled, "按钮必须有禁用判据")
+        self.assertEqual(ast.unparse(disabled), "not config_present")
+
     def test_the_pipeline_path_reaches_it_through_the_action_bar(self) -> None:
         # pipeline 那一侧仍然走 `_render_header_actions`（它还带三个导出
         # 按钮）；钉住那个函数**委派**给同一个实现，而不是自己再写一遍。
@@ -1510,10 +1548,42 @@ class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
     ) -> None:
         # 有报告与没报告两种滚动验证结果**都**要有入口:没有报告的那一支
         # 恰恰是「这次跑挂了，想改改参数重跑」最常见的时刻。
-        self.assertIn(
-            "        _render_rerun_action(job=selected_job, "
-            "config_bytes=config_bytes)\n        if wf_report:\n",
-            self.page,
+        #
+        # 用 AST 钉**位置关系**，不钉调用的字面拼写:上一版把整行连同参数
+        # 一起钉进串里，给 `_render_rerun_action` 加一个参数就当场失配——
+        # 而它要钉的「在报告分叉之前渲染」这件事根本没变（#474 同款教训）。
+        import ast
+
+        tree = ast.parse(self.page)
+        chain = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "mode == 'pipeline'" in ast.unparse(node.test)
+        )
+        wf_branch = chain.orelse
+        self.assertTrue(wf_branch, "应当有 walk_forward 分支")
+
+        call_lines = [
+            node.lineno
+            for stmt in wf_branch for node in ast.walk(stmt)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_render_rerun_action"
+        ]
+        self.assertEqual(len(call_lines), 1, "滚动验证分支应当只画一次入口")
+
+        split_lines = [
+            node.lineno
+            for stmt in wf_branch for node in ast.walk(stmt)
+            # 只要**内层**那个 `if wf_report:`——外层 elif 的判据里也含
+            # `wf_report`(`mode == 'walk_forward' or wf_report`),按子串匹配
+            # 会把它一起收进来，比较就成了「在自己之前」这种恒假命题。
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "wf_report"
+        ]
+        self.assertTrue(split_lines, "找不到 `if wf_report:` 分叉")
+        self.assertLess(
+            call_lines[0], min(split_lines),
+            "入口必须在报告分叉**之前**——否则没有报告的那一支就没有入口",
         )
 
 

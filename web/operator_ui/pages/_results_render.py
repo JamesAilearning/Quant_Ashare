@@ -264,7 +264,7 @@ def _render_status_header(
 
 
 def _render_rerun_action(
-    *, job: Mapping[str, Any], config_bytes: bytes,
+    *, job: Mapping[str, Any], config_bytes: bytes, config_present: bool,
 ) -> None:
     """「用此配置重跑」——**两种引擎的结果页共用同一个实现**。
 
@@ -279,7 +279,11 @@ def _render_rerun_action(
     动作 nonce、或忘了写 `prefill_config_source_mode`，症状都是「预填
     看起来没生效」，而那不像个 bug。
     """
-    if st.button("用此配置重跑", disabled=not config_bytes):
+    # 判据是「归档 config.yaml **在不在**」，不是「它有没有内容」
+    # （codex P2）。一份存在但**零字节**的归档会让 `_read_config` 返回
+    # `b""`，用内容当判据就把按钮永久禁掉、且一个字也不说——而空 YAML 的
+    # 顶层不是映射，本页早已承诺这种形态要被**响亮报出**。让它走进验证里。
+    if st.button("用此配置重跑", disabled=not config_present):
         # 严格解码,不再 errors="replace"。替换字符会把坏字节变成
         # U+FFFD 后原样交给 YAML:运气好是解析报错,运气不好是解析成功
         # 但某个值被悄悄改写,而横幅照说「已预填」。宁可就地报错、不
@@ -316,12 +320,15 @@ def _render_header_actions(
     job: Mapping[str, Any],
     run_dir: Path | None,
     config_bytes: bytes,
+    config_present: bool,
     metrics: Mapping[str, Any],
     metadata: Mapping[str, Any],
 ) -> None:
     action_cols = st.columns([1, 1, 1, 1])
     with action_cols[0]:
-        _render_rerun_action(job=job, config_bytes=config_bytes)
+        _render_rerun_action(
+            job=job, config_bytes=config_bytes,
+            config_present=config_present)
     with action_cols[1]:
         st.download_button(
             "导出指标 CSV",
@@ -1167,6 +1174,7 @@ def _render_pipeline_dashboard(
         job=job,
         run_dir=run_dir,
         config_bytes=config_bytes,
+        config_present=config_path is not None and config_path.is_file(),
         metrics=metrics,
         metadata=metadata,
     )

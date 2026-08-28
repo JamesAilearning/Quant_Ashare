@@ -344,7 +344,9 @@ else:
         # pipeline 仪表盘里，于是一份正常的滚动验证结果根本产不出预填状态,
         # 本 change 为跨模式重跑写下的场景在这一侧不可达。
         # 与 pipeline 那一侧调**同一个**函数,不在这里再写一遍。
-        _render_rerun_action(job=selected_job, config_bytes=config_bytes)
+        _render_rerun_action(
+            job=selected_job, config_bytes=config_bytes,
+            config_present=config_path is not None and config_path.is_file())
         if wf_report:
             _render_walk_forward_summary(wf_report)
             _render_charts(run_dir)

@@ -382,8 +382,17 @@ def _prefill_config() -> dict[str, Any]:
     失败原因写进 session,由页面响亮报出（fail-loud 纪律）。
     """
     st.session_state.pop("prefill_config_error", None)
-    raw = st.session_state.get("prefill_config_yaml")
-    if not raw:
+    if "prefill_config_yaml" not in st.session_state:
+        return {}
+    raw = st.session_state["prefill_config_yaml"]
+    if not str(raw).strip():
+        # 键在场但内容为空 = 源运行的归档 config.yaml 是**零字节**（或只有
+        # 空白）。空 YAML 文档的顶层不是映射，与下面那条「顶层不是映射」
+        # 同罪同治——静默返回空 dict 会让操作人以为没点中按钮（codex P2）。
+        st.session_state["prefill_config_error"] = (
+            "源运行的 config.yaml 是**空文件**（零字节或只有空白）——空 YAML "
+            "文档的顶层不是映射，本次**未预填任何字段**。"
+        )
         return {}
     try:
         loaded = yaml.safe_load(str(raw))
@@ -572,8 +581,10 @@ def _prefilled_trading_day(field: str, live_default: str) -> str:
 #:
 #: 载荷在场与否只看那个 session 键在不在，不看它的解析结果；解析失败另有
 #: `prefill_config_error` 响亮报出，两条路不合并。
-_HAS_PREFILL_PAYLOAD = bool(
-    str(st.session_state.get("prefill_config_yaml", "")).strip())
+#: **键在不在**,不是「它的内容真不真」——零字节的归档 config 会让内容判据
+#: 把「点了重跑」与「没点」混成一格,而这个常量的注释本来就写着「只看那个
+#: session 键在不在」。代码与注释此前对不上（codex P2）。
+_HAS_PREFILL_PAYLOAD = "prefill_config_yaml" in st.session_state
 
 #: **有一份成功解析的重跑载荷**——本页对「这次重跑算不算数」的唯一判据。
 #:
