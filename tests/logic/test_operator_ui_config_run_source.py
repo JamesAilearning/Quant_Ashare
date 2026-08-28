@@ -1593,5 +1593,51 @@ class PrefillSuppliedWiringTests(unittest.TestCase):
 
 
 
+class ValidEmptyPayloadStillCarriesTheModeTests(unittest.TestCase):
+    """合法空 YAML 也是一份**成功解析**的载荷。
+
+    源运行的 `mode` 写在 `job.json` 而**不是**归档 config.yaml 里
+    （`JobManager.start(config_dict, mode)` 把两者分开收），所以结果页单独
+    把它带过来。用 `if PREFILL_CONFIG:` 当应用判据，重跑一次空归档的
+    walk_forward 运行时页面会停在当前的 pipeline 上，模式对比也整个不出
+    ——而模式正是本次提交与那次运行最大的一处不同（codex P2 on #471）。
+    """
+
+    def test_the_apply_branch_keys_off_a_parsed_payload_not_its_size(
+        self,
+    ) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        # 钉**条件整行**。
+        self.assertIn(
+            "if _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR:\n", source)
+        self.assertNotIn("\nif PREFILL_CONFIG:\n", source)
+
+    def test_an_empty_mapping_still_yields_the_source_mode(self) -> None:
+        # 真跑那个合成函数:空映射 + 台账带来的模式 ⇒ 基线里有 mode，
+        # 于是 `_apply_prefill_to_session` 会把引擎切过去。
+        from web.operator_ui.pages._config_run_helpers import (
+            prefill_baseline_with_source_mode,
+        )
+
+        self.assertEqual(
+            prefill_baseline_with_source_mode({}, "walk_forward"),
+            {"mode": "walk_forward"},
+        )
+        # 台账也没记模式时不凭空合成。
+        self.assertEqual(prefill_baseline_with_source_mode({}, ""), {})
+
+    def test_the_empty_config_notice_does_not_deny_the_carried_mode(
+        self,
+    ) -> None:
+        # 提示语原本说「本次没有任何字段可预填」——模式被带过来之后那句就
+        # 不准了。改成「归档里没有任何字段」，并在有模式时明说它仍会带过来。
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        self.assertIn("归档里", source)
+        self.assertIn("仍会被带过来", source)
+
+
+
 if __name__ == "__main__":
     unittest.main()

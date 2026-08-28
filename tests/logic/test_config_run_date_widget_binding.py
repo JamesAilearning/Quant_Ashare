@@ -163,6 +163,32 @@ class TradingDayWidgetBindingTests(unittest.TestCase):
             "载荷没带这个字段，控件却被改写了——操作人的编辑被默默丢掉",
         )
 
+    def test_an_out_of_calendar_default_does_not_overwrite_every_frame(
+        self,
+    ) -> None:
+        """默认值落在日历外时，只许绑**解析之后**的那个值，且只绑一次。
+
+        绑两次——一次拿日历外的 ``default``、一次拿 ``options[0]``——会让
+        ``__last_wanted`` 在两个值之间**每帧来回摆**，于是「wanted 变了」
+        永远成立，控件被每帧改写:操作人选的任何合法日期都会被打回日历的
+        第一天（codex P1 on #471）。
+        """
+        app = self._app()
+        app.session_state["_probe_live_default"] = "1999-01-01"  # 日历外
+        app.run()
+        # 回退到日历第一天,并给出警告。
+        self.assertEqual(self._picked(app), "2020-01-02")
+        self.assertTrue(app.warning, "落到日历外时必须有可见警告")
+
+        app.selectbox[0].select("2022-01-04").run()
+        self.assertEqual(self._picked(app), "2022-01-04")
+
+        app.run()  # 一次什么也没发生的重绘
+        self.assertEqual(
+            self._picked(app), "2022-01-04",
+            "日历外默认值下控件被每帧改写——操作人的选择被打回第一天",
+        )
+
     def test_an_edit_survives_without_a_prefill(self) -> None:
         app = self._app()
         app.selectbox[0].select("2023-01-03").run()

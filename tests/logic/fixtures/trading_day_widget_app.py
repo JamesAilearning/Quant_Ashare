@@ -50,6 +50,7 @@ _METADATA = types.SimpleNamespace(
     calendar_dates=tuple(date.fromisoformat(v) for v in OPTIONS))
 
 # live default 由用例注入，模拟「换 provider 之后按新日历重算」。
+# 用例可以把 live default 设成一个**日历外**的日期,复现「回退 + 绑定」那条路。
 _live_default = st.session_state.get("_probe_live_default", "2021-01-04")
 _prefilled = st.session_state.get("cr_overall_start")
 _wanted = (

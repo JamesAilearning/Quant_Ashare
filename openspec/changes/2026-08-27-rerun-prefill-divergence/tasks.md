@@ -272,6 +272,26 @@
 - [x] 变异复验 3/3（去掉 supplied 前提 / 写死 True / 推导算错）
 - [x] `tests/logic` + `tests/governance` **5095 passed**
 
+## 6k. codex #471 第十一轮：两条（一条是我上一轮引入的回归）
+
+- [x] **P1（我上一轮引入的）**:默认值落在日历外时，`_bind_trading_day_state`
+      被调用**两次**——一次拿日历外的 `default`、一次拿 `options[0]`。于是
+      `__last_wanted` 在两个值之间**每帧来回摆**，「wanted 变了」永远成立，
+      控件被每帧改写:操作人在预填之后选的任何合法日期都会被打回日历的第一天。
+      修法:**先解析回退，再只绑一次**（绑 `options[resolved_index]`）
+- [x] AppTest 补一条:日历外默认值 → 有可见警告 → 操作人改成合法日期 →
+      一次空重绘后**编辑必须还在**。变异（退回绑两次）当场红
+- [x] **P2**:合法空 YAML（`{}`）也是一份**成功解析**的载荷。源运行的 `mode`
+      写在 `job.json` 而不是归档 config.yaml，结果页单独带过来——用
+      `if PREFILL_CONFIG:` 当应用判据，重跑一次空归档的 walk_forward 运行时
+      页面会停在当前的 pipeline 上，模式对比也整个不出。判据改成
+      `if _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR:`
+- [x] 空配置的提示语跟着改:原来说「本次没有任何字段可预填」，模式被带过来
+      之后那句就不准了 → 改成「**归档里**没有任何字段」，并在台账记了模式时
+      明说它仍会被带过来
+- [x] 变异复验 2/2（绑两次 / 判据退回 `if PREFILL_CONFIG:`）
+- [x] `tests/logic` + `tests/governance` **5099 passed**
+
 ## 7. 划界（本 change 不做）
 
 - 不做「预填后再改字段就把它标成脏」的持续追踪：那要给每个控件挂

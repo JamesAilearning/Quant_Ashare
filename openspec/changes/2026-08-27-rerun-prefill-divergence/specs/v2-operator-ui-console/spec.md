@@ -260,6 +260,20 @@ never instantiates a widget, so the defect is invisible beneath it.
 - **WHEN** the operator edits the date and the script reruns
 - **THEN** the edit survives
 
+#### Scenario: an out-of-calendar default does not overwrite every frame
+
+- **GIVEN** a configured date outside the active provider's calendar, snapped to
+  the calendar's first entry with a visible warning
+- **WHEN** the operator then selects a valid date and the script reruns
+- **THEN** their selection survives
+
+#### Scenario: a validly empty archive still carries the source run's engine
+
+- **GIVEN** a source run whose archived config parses to an empty mapping, and
+  whose mode is recorded in the job ledger
+- **WHEN** the operator reruns from it
+- **THEN** the page switches to that engine and says so
+
 #### Scenario: an action that supplied nothing leaves the edit alone
 
 - **GIVEN** an operator who edited a date, and a rerun whose payload does not

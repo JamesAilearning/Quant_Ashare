@@ -264,8 +264,9 @@ def _select_trading_day(
     # the return as ``Any`` (CI's older stubs → no-any-return), newer
     # stubs declare it as ``str`` (so a cast would be redundant). A
     # narrow ignore that covers both:
-    _bind_trading_day_state(state_key, default, supplied=prefill_supplied)
     if not metadata.calendar_dates:
+        _bind_trading_day_state(
+            state_key, default, supplied=prefill_supplied)
         return st.text_input(  # type: ignore[no-any-return,unused-ignore]
             label, value=default, key=state_key)
     options = _trading_day_options(metadata.calendar_dates)
@@ -281,10 +282,12 @@ def _select_trading_day(
             "请确认时间窗，或重建覆盖更长区间的生产 bundle（scripts/data_pipeline/）。"
         )
         resolved_index = 0
-        # 落到日历外时绑的是**替换后**的那个值,不是配置里那个不存在的日期
-        # ——否则控件显示 options[0] 而 session 里躺着一个日历外的值。
-        _bind_trading_day_state(
-            state_key, options[0], supplied=prefill_supplied)
+    # **先解析回退，再只绑一次**（codex P1）。绑两次——一次拿日历外的
+    # `default`、一次拿 `options[0]`——会让 `__last_wanted` 在两个值之间
+    # 每帧来回摆，于是「wanted 变了」永远成立，控件被**每帧**改写:操作人
+    # 在预填之后选的任何合法日期都会被打回日历的第一天。
+    _bind_trading_day_state(
+        state_key, options[resolved_index], supplied=prefill_supplied)
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
         label,
         options=options,
@@ -568,8 +571,14 @@ if _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG and not _PREFILL_ERROR:
     # 错误——所以不走 `st.error`；但它必须说话，否则与「没点按钮」不可分辨。
     st.warning(
         f"⚠ 运行 {st.session_state.get('prefill_config_source_job', '')} 的 "
-        "config.yaml 是一份**空配置**（合法 YAML，但没有任何字段）——本次"
+        "config.yaml 是一份**空配置**（合法 YAML，但没有任何字段）——归档里"
         "**没有任何字段可预填**，下方仍是本页当前的值。"
+        + (
+            f"（该次运行的模式 **{st.session_state.get('prefill_config_source_mode', '')}** "
+            "写在作业台账而非归档 config 里，仍会被带过来。）"
+            if str(st.session_state.get("prefill_config_source_mode", ""))
+            else ""
+        )
     )
 #: 这次载荷**真的带了**哪些日期字段。日期控件的强制改写只对它们算数——
 #: 空配置 / 解析失败 / 旧 schema 缺字段时，动作 nonce 照样是新的，但一个
@@ -580,7 +589,13 @@ _PREFILL_SUPPLIED: frozenset[str] = frozenset(
     k for k in PREFILL_CONFIG if k in _PREFILL_APPLICABLE_KEYS
 ) if PREFILL_CONFIG else frozenset()
 
-if PREFILL_CONFIG:
+# 判据是「**有一份成功解析的载荷**」，不是「那份载荷至少解析出一个字段」
+# （codex P2）。合法空 YAML（`{}`）下 `PREFILL_CONFIG` 为假，但结果页仍然
+# 单独带过来了源运行的 `mode`（它写在 job.json 而不是归档 config.yaml 里）。
+# 用 `if PREFILL_CONFIG:` 当判据，重跑一次空归档的 walk_forward 运行时页面
+# 会停在当前的 pipeline 上，模式对比也整个不出——而模式正是本次提交与那次
+# 运行最大的一处不同。
+if _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR:
     source_job = st.session_state.get("prefill_config_source_job", "")
     prefill_token = (
         f"{source_job}:"
