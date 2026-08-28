@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import streamlit as st
 
@@ -33,6 +34,7 @@ from web.operator_ui.job_io import (
     load_all_jobs,
 )
 from web.operator_ui.job_manager import JobManager
+from web.operator_ui.jobs_jump import running_run_jobs_link
 from web.operator_ui.page_header import render_page_header
 
 # Re-export pure helpers for the test surface. ``noqa: F401`` because
@@ -284,6 +286,25 @@ else:
         provider_uri=str(config.get("provider_uri") or "") or None,
         st=st,
     )
+
+    # 还在跑的运行:操作人下一步想知道的是「它现在到哪一步了」,而活体状态
+    # (阶段进度 / 停止按钮 / 自动刷新)只在作业页有。带上这一次的 id 与
+    # 「运行中」筛选一步跳过去。拿不到 id 或状态不是运行中时**不画**这个入口
+    # ——一个注定跳到空筛选的链接看起来像答案,比没有入口更坏(判定见
+    # web/operator_ui/jobs_jump.py)。
+    _jobs_jump = running_run_jobs_link(
+        run_id=selected_job.get("job_id"),
+        status=selected_job.get("status"),
+        # 每次渲染铸一个新令牌。作业页只有靠这个一次性标记,才能把「本次导航
+        # 请求的筛选」压过它自己页面上残留的陈旧控件状态恰好一次。
+        handoff_token=uuid4().hex,
+    )
+    if _jobs_jump is not None:
+        st.page_link(
+            _jobs_jump.page,
+            label=_jobs_jump.label,
+            query_params=dict(_jobs_jump.query_params),
+        )
 
     # Auto-refresh for running jobs — default OFF so the operator can
     # read logs / scroll charts / copy IDs without being interrupted by
