@@ -154,6 +154,26 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("**不能**当作名义持仓基准", self.page)
         self.assertNotIn("_baseline_roster = ()\n    st.info", self.page)
 
+    def test_the_stop_explanation_does_not_pick_one_cause_for_both(
+        self,
+    ) -> None:
+        # 「这一份回答不了它自己是不是再平衡日」对**缺口**那一种是假话——缺口
+        # 停下时那一份恰恰是一个**经过校验的 HOLD**，问题在它与更早那份之间
+        # 那几天。一句话盖住两种成因，就是对其中一种撒谎（#472 学到的同一课，
+        # #475 第三轮再次适用）。
+        #
+        # 钉**条件整行**：钉分支里的字面量会被「条件熄火」变异逃走。
+        self.assertIn(
+            "    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:\n",
+            self.page,
+        )
+        # 缺口那一支说的是「那一天 vs 那一段」，不是「这一份回答不了自己」。
+        gap_at = self.page.index("BASELINE_BLOCK_HISTORY_GAP:")
+        else_at = self.page.index("    else:\n", gap_at)
+        gap_branch = self.page[gap_at:else_at]
+        self.assertIn("只证明了**那一天**没换手", gap_branch)
+        self.assertNotIn("回答不了它自己是不是再平衡日", gap_branch)
+
     def test_banner_warns_and_never_defaults(self) -> None:
         self.assertIn("模型元信息缺失", self.page)
         self.assertIn("绝不用默认值", self.page)

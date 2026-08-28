@@ -38,6 +38,7 @@ from web.operator_ui.decision_journal import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    BASELINE_BLOCK_HISTORY_GAP,
     CERTIFIED_SLIPPAGE_BPS,
     COST_REFERENCE_COLUMN,
     VERDICT_ENSEMBLE_SHA_MISSING,
@@ -457,11 +458,22 @@ elif _baseline.unknowable:
         f"⚠ 截至 **{_selected_date}** 名义持仓基准**不可知**:回溯在 "
         f"**{_blocked.trade_date}** 那一份上停下——{_blocked.detail}"
     )
-    st.caption(
-        "为什么不继续往回翻:只有**经过校验的 HOLD 日**才能证明「那天没换手、"
-        "所以更早那张单仍然有效」。这一份回答不了它自己是不是再平衡日,继续"
-        "翻出来的清单可能**已经被它取代**——那就成了拿过期的单当此刻该持有的。"
-    )
+    # 总说明**不替两种成因下同一个结论**（codex #472 上学到的同一课）:
+    # 「这一份回答不了它自己是不是再平衡日」对**缺口**那一种是假话——缺口停
+    # 下时那一份恰恰是一个经过校验的 HOLD,问题在它与更早那份之间那几天。
+    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:
+        st.caption(
+            "为什么不继续往回翻:经过校验的 HOLD 只证明了**那一天**没换手,"
+            "证明不了**那一段**。中间那些没有工件的交易日各自都可能是一次"
+            "再平衡,而没有任何记录能排除它们——翻过去报出来的清单可能"
+            "**早已被取代**。"
+        )
+    else:
+        st.caption(
+            "为什么不继续往回翻:只有**经过校验的 HOLD 日**才能证明「那天没换手、"
+            "所以更早那张单仍然有效」。这一份回答不了它自己是不是再平衡日,继续"
+            "翻出来的清单可能**已经被它取代**——那就成了拿过期的单当此刻该持有的。"
+        )
 else:
     st.warning(
         f"⚠ 截至 **{_selected_date}** 回溯到底也没遇到再平衡日"

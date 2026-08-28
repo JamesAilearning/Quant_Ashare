@@ -156,3 +156,44 @@ toward weaker disclaimers.
 - **WHEN** the boundary tests run
 - **THEN** they fail if it gains a holdings input, a download, or a clipboard
   copy of the roster
+
+### Requirement: A validated hold SHALL license only the day it covers
+
+A validated hold SHALL license the scan to cross only the session it covers.
+It proves that ONE session did not trade, and proves nothing about sessions
+that produced no artifact at all — the artifact list enumerates only files that
+exist.
+
+Before the scan crosses from one artifact to the next older one, the interval
+between them SHALL be shown to contain no unaccounted trading session.
+Otherwise the scan SHALL stop and report the baseline as unknowable. A run that
+left no artifact may have been a rebalance, and reporting the older roster as
+current would present a list that has already been superseded.
+
+The interval between the selected date and the newest artifact examined SHALL
+be checked the same way; it is the same interval question, not a separate one.
+
+Absent a trading calendar, the reader SHALL treat as proven-empty only those
+intervals whose every day falls on a weekend. A market holiday is therefore
+reported as unknowable. This is the honest degradation: the alternative is
+presenting a possibly-superseded roster as the current one, which is precisely
+what this view exists to prevent.
+
+Where the scan stops on a gap, the explanation SHALL NOT state that the artifact
+it stopped at could not answer whether it was a rebalance — that artifact is a
+validated hold, and the doubt lies in the interval beyond it. One sentence
+covering both causes is false for one of them.
+
+#### Scenario: a missing weekday between two artifacts stops the scan
+
+- **GIVEN** a validated hold, no artifact for the preceding weekday, and an
+  older rebalance artifact
+- **WHEN** the page renders
+- **THEN** it reports the baseline as unknowable and names the unaccounted
+  sessions, rather than presenting the older roster
+
+#### Scenario: a weekend-only gap is crossed
+
+- **GIVEN** a validated hold on a Monday and an artifact on the preceding Friday
+- **WHEN** the page renders
+- **THEN** the scan continues, because no trading session lies between them

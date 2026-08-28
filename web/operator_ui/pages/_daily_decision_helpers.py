@@ -10,7 +10,7 @@ import json
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -875,6 +875,8 @@ BASELINE_BLOCK_CORRUPT_V2 = "corrupt_v2"
 BASELINE_BLOCK_UNREADABLE = "unreadable"
 #: 工件形状违约（清单或节奏字段不是产出器产得出的形态）。
 BASELINE_BLOCK_SHAPE = "shape_violation"
+#: 两份相邻工件之间有**没有工件**的交易日——那几天里可能发生过再平衡。
+BASELINE_BLOCK_HISTORY_GAP = "history_gap"
 
 #: 向后兼容的别名（首版把这些都叫 SKIP，语义已改为 BLOCK）。
 BASELINE_SKIP_NO_CADENCE = BASELINE_BLOCK_NO_CADENCE
@@ -1004,6 +1006,37 @@ def _baseline_block(
     return None
 
 
+def unaccounted_weekdays_between(older: str, newer: str) -> tuple[str, ...]:
+    """``(older, newer)`` 开区间里的**工作日**——空元组 = 这段确实跨不出事。
+
+    一份经过校验的 HOLD 工件只证明了**那一天**没换手。它对「没有工件的那些
+    天」一无所知——而 ``list_recommendation_artifacts`` 枚举的只是**存在的
+    文件**。生产是每个交易日出一次单，所以两份相邻工件之间夹着工作日，就是
+    夹着一次**没有记录**的运行；那一天完全可能是再平衡日，而它会让更早那张
+    单当场作废（codex P1 on #475）。
+
+    这里刻意只做**证得出来**的那一半：周六周日不是交易日，所以只隔着周末的
+    两份工件之间证明得了没有交易日。节假日无从分辨（本模块没有交易日历，与
+    ``artifact_entry_timing_is_valid`` 同一条限制），于是节假日会让回溯判
+    「不可知」。宁可如此——反过来是拿一张**可能已被取代**的清单当此刻该持有
+    的，而那正是这一页存在的理由。
+
+    日期读不出来时返回一个非空结果（`("?",)`）:证不出「没有缺口」就当有缺口。
+    """
+    try:
+        start = date.fromisoformat(older)
+        end = date.fromisoformat(newer)
+    except ValueError:
+        return ("?",)
+    missing: list[str] = []
+    day = start + timedelta(days=1)
+    while day < end:
+        if day.weekday() < 5:
+            missing.append(day.isoformat())
+        day += timedelta(days=1)
+    return tuple(missing)
+
+
 def find_nominal_baseline(
     artifacts: Sequence[tuple[str, Path]],
     *,
@@ -1027,12 +1060,37 @@ def find_nominal_baseline(
     skipped: list[SkippedCandidate] = []
     scanned = 0
     limit_reached = False
+    #: 上一份（更新的）已校验工件的日期。跨到下一份之前，这两份之间不许夹着
+    #: 没有工件的交易日——见 ``unaccounted_weekdays_between``。
+    #:
+    #: 从 ``as_of`` 起算而不是从第一份工件起算:两者之间同样可能夹着缺失的
+    #: 运行。选中日自己就有工件时这一步恒为空缺口（区间是空的），所以不是
+    #: 多余的一道闸,是同一道闸的第一格。
+    previous_date = as_of
     for artifact_date, path in artifacts:
         if as_of and artifact_date > as_of:
             continue
         if scanned >= limit:
             limit_reached = True
             break
+        if previous_date:
+            gap = unaccounted_weekdays_between(artifact_date, previous_date)
+            if gap:
+                # 多于三天时报**区间端点**而不是前三天:操作人要判断的是
+                # 「缺的这一段跨没跨过一个再平衡锚」,只看开头三天答不了。
+                shown = ("、".join(gap) if len(gap) <= 3
+                         else f"{gap[0]} … {gap[-1]}")
+                return NominalBaselineSearch(
+                    baseline_date="", baseline_payload={},
+                    skipped=tuple(skipped), scanned=scanned,
+                    limit_reached=False, exhausted=False,
+                    blocked_by=SkippedCandidate(
+                        previous_date, BASELINE_BLOCK_HISTORY_GAP,
+                        f"它与更早那份（{artifact_date}）之间有 {len(gap)} 个"
+                        f"工作日没有工件（{shown}）——那几天里可能发生过一次"
+                        "再平衡，而没有任何记录能排除它。",
+                    ))
+        previous_date = artifact_date
         scanned += 1
         payload = read_payload(path)
         if payload is None:

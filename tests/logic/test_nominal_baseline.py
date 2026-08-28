@@ -28,6 +28,7 @@ from web.operator_ui.pages._daily_decision_helpers import (  # noqa: E402
     BASELINE_BLOCK_CORRUPT_V2,
     BASELINE_BLOCK_DATE_MISMATCH,
     BASELINE_BLOCK_ENTRY_TIMING,
+    BASELINE_BLOCK_HISTORY_GAP,
     BASELINE_BLOCK_MALFORMED_CADENCE,
     BASELINE_BLOCK_NO_CADENCE,
     BASELINE_BLOCK_SHAPE,
@@ -37,6 +38,7 @@ from web.operator_ui.pages._daily_decision_helpers import (  # noqa: E402
     DEFAULT_BASELINE_SCAN_LIMIT,
     baseline_roster,
     find_nominal_baseline,
+    unaccounted_weekdays_between,
 )
 
 _UNSET = object()
@@ -330,17 +332,22 @@ class FindBaselineTests(unittest.TestCase):
         self,
     ) -> None:
         # 操作人在看历史某一天时，问的是「**那时**名义上跟的是哪一张单」。
+        #
+        # 日期取**生产真会产出的**序列:每个交易日一份。07-31 是周五、08-03
+        # 是周一,中间只隔周末——那段证明得了没有交易日。原来的夹具从 08-03
+        # 直接跳到 07-27,中间四个工作日没有工件,而那正是「缺口闸」要拦的
+        # 形态(codex P1 第三轮)。一份生产产不出的夹具证明不了任何读侧行为。
         result = find_nominal_baseline(
-            _index("2026-08-10", "2026-08-03", "2026-07-27"),
+            _index("2026-08-04", "2026-08-03", "2026-07-31"),
             read_payload=_reader({
-                "2026-08-10": _artifact(as_of="2026-08-10", rebalance=True),
+                "2026-08-04": _artifact(as_of="2026-08-04", rebalance=True),
                 "2026-08-03": _artifact(as_of="2026-08-03", rebalance=False),
-                "2026-07-27": _artifact(as_of="2026-07-27", rebalance=True),
+                "2026-07-31": _artifact(as_of="2026-07-31", rebalance=True),
             }),
             as_of="2026-08-03",
         )
 
-        self.assertEqual(result.baseline_date, "2026-07-27")
+        self.assertEqual(result.baseline_date, "2026-07-31")
         # 比 as_of 更新的那一份根本不该被读。
         self.assertEqual(result.scanned, 2)
 
@@ -610,6 +617,109 @@ class RosterDuplicateTests(unittest.TestCase):
 
         self.assertIn("重复代码", str(caught.exception))
         self.assertIn("SH600584", str(caught.exception))
+
+
+
+class HistoryGapTests(unittest.TestCase):
+    """一份经过校验的 HOLD 只证明了**那一天**没换手。
+
+    它对「没有工件的那些天」一无所知——而工件清单枚举的只是**存在的文件**。
+    生产每个交易日出一次单，所以两份相邻工件之间夹着工作日，就是夹着一次
+    没有记录的运行；那一天完全可能是再平衡日，会让更早那张单当场作废
+    （codex P1 on #475 第三轮）。
+
+    这是「只有正面证实的安全信号才许可继续」再深一层：HOLD 证实的是**那
+    一天**，不是**那一段**。
+    """
+
+    def test_a_missing_weekday_between_two_artifacts_stops_the_scan(
+        self,
+    ) -> None:
+        # 08-11(二) HOLD → 缺 08-10(一) → 08-03(一) 再平衡。照原样翻过去，
+        # 页面会把 8 月 3 日那张单报成当前基准，而缺掉的 8 月 10 日那次运行
+        # 完全可能已经取代了它。
+        result = find_nominal_baseline(
+            _index("2026-08-11", "2026-08-03"),
+            read_payload=_reader({
+                "2026-08-11": _artifact(as_of="2026-08-11", rebalance=False),
+                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
+            }),
+        )
+
+        self.assertFalse(result.found)
+        self.assertTrue(result.unknowable)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_HISTORY_GAP)
+        self.assertEqual(result.blocked_by.trade_date, "2026-08-11")
+        self.assertIn("2026-08-10", result.blocked_by.detail)
+
+    def test_a_weekend_only_gap_is_provably_empty(self) -> None:
+        # 周五 → 周一之间只隔周六周日。没有交易日历也证得了那两天不是交易日，
+        # 所以这不是缺口——否则这道闸会把**每一个周末**都判成不可知。
+        result = find_nominal_baseline(
+            _index("2026-08-03", "2026-07-31"),
+            read_payload=_reader({
+                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=False),
+                "2026-07-31": _artifact(as_of="2026-07-31", rebalance=True),
+            }),
+        )
+
+        self.assertEqual(result.baseline_date, "2026-07-31")
+
+    def test_the_gap_between_the_selected_date_and_the_first_artifact_counts(
+        self,
+    ) -> None:
+        # 同一道闸的第一格：选中日与最新那份工件之间同样可能夹着缺失的运行。
+        result = find_nominal_baseline(
+            _index("2026-08-03"),
+            read_payload=_reader({
+                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
+            }),
+            as_of="2026-08-05",
+        )
+
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_HISTORY_GAP)
+        self.assertIn("2026-08-04", result.blocked_by.detail)
+
+    def test_the_selected_date_itself_is_not_a_gap(self) -> None:
+        # 选中日自己就有工件时，区间是空的——第一格恒为空缺口，不是多余的闸。
+        result = find_nominal_baseline(
+            _index("2026-08-03"),
+            read_payload=_reader({
+                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
+            }),
+            as_of="2026-08-03",
+        )
+
+        self.assertEqual(result.baseline_date, "2026-08-03")
+
+
+class UnaccountedWeekdaysTests(unittest.TestCase):
+    def test_it_lists_only_weekdays(self) -> None:
+        # 2026-08-07 周五 → 2026-08-11 周二：缺 08-10(一)，周末不算。
+        self.assertEqual(
+            unaccounted_weekdays_between("2026-08-07", "2026-08-11"),
+            ("2026-08-10",),
+        )
+
+    def test_adjacent_days_have_no_interval(self) -> None:
+        self.assertEqual(
+            unaccounted_weekdays_between("2026-08-03", "2026-08-04"), ())
+
+    def test_the_same_day_has_no_interval(self) -> None:
+        self.assertEqual(
+            unaccounted_weekdays_between("2026-08-03", "2026-08-03"), ())
+
+    def test_an_unreadable_date_is_treated_as_a_gap(self) -> None:
+        # 证不出「没有缺口」就当有缺口。返回空元组会让一对读不出来的日期
+        # 静默放行——那正是这道闸要拦的形态。
+        for older, newer in (
+            ("not-a-date", "2026-08-11"),
+            ("2026-08-03", "not-a-date"),
+        ):
+            with self.subTest(older=older, newer=newer):
+                self.assertTrue(unaccounted_weekdays_between(older, newer))
 
 
 
