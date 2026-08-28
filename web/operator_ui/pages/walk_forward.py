@@ -31,6 +31,10 @@ import streamlit as st
 from src.core.canonical_backtest_contract import OFFICIAL_METRIC_STATUS
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.chart_reader import discover_charts
+from web.operator_ui.compare_basket_widget import (
+    render_add_to_basket,
+    render_basket,
+)
 from web.operator_ui.components import (
     render_empty_state,
     render_error_state,
@@ -281,6 +285,25 @@ else:
 # 拿它去读虽然能撞对(FS 大小写不敏感),但展示与日志里全是小写路径,而在
 # 大小写敏感的文件系统上会直接读不到(codex #444 r10 引入规范键后的必要一步)。
 run_dir = Path(_dir_display.get(str(selected), str(selected)))
+
+# 本页此前没有任何 run-level 动作:看完一次滚动验证想跟另一次比,只能记下
+# 运行 ID 再手工去对比页的下拉框里找。准入在按下之前判好——对比页的可选目录
+# 每个产物目录只留一个当前所有者,把被接管的 id 送过去会让整页停在
+# st.error + st.stop()。
+#
+# 位置紧跟**运行选定**之后、在读产物的每一条早退路径**之前**。下面那条
+# 「暂无单折数据」早退(运行中 / 部分完成 / 空运行)会 st.stop(),挂在它后面
+# 的话,恰恰是最想「攒起来待会儿比」的那些运行既没有加入按钮、也看不到已有
+# 的篮子(codex P2 on #472 r2)。这一类「守卫只覆盖了一部分入口」本仓踩过
+# 多次:要放在**所有**路径都必经的位置。
+_wf_selected_run_id = str(run_options.get(str(selected), "") or "")
+if _wf_selected_run_id:
+    _wf_basket_col, _ = st.columns([1, 3])
+    with _wf_basket_col:
+        _basket_catalog = render_add_to_basket(
+            _wf_selected_run_id, key_prefix="wf")
+    # 面板画在 1:3 动作列**之外**——挤进那四分之一宽会没法读。
+    render_basket(_basket_catalog, key_prefix="wf")
 
 # ---------------------------------------------------------------------------
 # Read report (guarded for bare-Python import where selected may be None)

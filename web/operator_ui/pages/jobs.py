@@ -23,6 +23,11 @@ import pandas as pd
 import streamlit as st
 
 from web.operator_ui._param_guard import sanitize as _sanitize_qp
+from web.operator_ui.compare_basket_widget import (
+    render_add_to_basket,
+    render_basket,
+    render_standalone_basket,
+)
 from web.operator_ui.components import (
     render_badge,
     render_empty_state,
@@ -654,9 +659,9 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
         # button just calls it and reruns to reflect the new status.
         _stoppable = selected.status in ("running", "stop_failed")
         if _stoppable:
-            act_open, act_copy, act_stop = st.columns(3)
+            act_open, act_copy, act_compare, act_stop = st.columns(4)
         else:
-            act_open, act_copy = st.columns(2)
+            act_open, act_copy, act_compare = st.columns(3)
         with act_open:
             # 只有 pipeline / walk_forward 有详情视图(数据源作业的检视视图在
             # U3 已下线)。按钮照旧渲染却路由过去,得到的是「运行未找到,可能
@@ -714,6 +719,15 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                 width="content",
                 unsafe_allow_javascript=True,
             )
+        with act_compare:
+            # 对比页的可选目录不是「所有运行」:每个 (类型, 产物目录) 只留
+            # 一个当前所有者。把一个已被接管的 run_id 塞进 URL,对比页会
+            # st.error + st.stop() ——整页停在拒绝信息上。准入判定、目录读取
+            # 与篮子渲染都在 `render_compare_basket_controls` 里,三个来源页
+            # 共用同一份:各写一份的话「传全量行还是只传当前所有者」这种坑
+            # 要挖三遍。
+            _basket_catalog = render_add_to_basket(
+                selected.run_id, key_prefix="jobs")
         if _stoppable:
             with act_stop:
                 _stop_label = (
@@ -732,6 +746,21 @@ if _selected_row is not None and 0 <= _selected_row < len(items):
                     except JobManagerError as exc:
                         st.toast(f"停止失败：{exc}", icon="⚠️")
                     st.rerun()
+
+# 篮子面板画在「选中某一行」的**外面**。
+#
+# 两条约束叠在一起：既要在动作列之外（成员行、每条失效说明、嵌套的移除列、
+# 跳转链接挤进三分之一列宽没法读），也要在 `if _selected_row ...` 之外——
+# 这张表 `on_select="rerun"` 且**默认没有选中行**，挂在里面的话，操作人从
+# 别的页攒好篮子切过来，看到的是「篮子不见了」，随便点中任意一行（哪怕与
+# 篮子毫无关系）它才回来。
+#
+# 目录只在选中行时读得到（加入按钮需要它）。没有选中行时不重读目录，改用
+# 一次独立的读取——面板本身要能独立于「有没有选中行」而存在。
+if _selected_row is not None and 0 <= _selected_row < len(items):
+    render_basket(_basket_catalog, key_prefix="jobs")
+else:
+    render_standalone_basket(key_prefix="jobs")
 
 # ---------------------------------------------------------------------------
 # Pagination — real prev/next nav over offset-sliced pages (UI review

@@ -119,6 +119,10 @@ render_page_header("结果", "查看流水线、滚动验证运行的产物。")
 from web.operator_ui.bundle_health import (  # noqa: E402, PLC0415
     render_bundle_health_banner,
 )
+from web.operator_ui.compare_basket_widget import (  # noqa: E402, PLC0415
+    render_add_to_basket,
+    render_basket,
+)
 
 # Detect current theme for Plotly charts
 theme_detect_script = """
@@ -291,6 +295,21 @@ else:
     # + rerun()ed unconditionally, which made the page unusable for the
     # 1-8 hours a typical pipeline takes. Pattern mirrors the toggle on
     # jobs.py:543-553 so both surfaces behave the same way.
+    # 篮子控件必须排在**自动刷新之前**、且在模式分支之前。
+    #
+    # 位置有两条硬约束，各自对应一次评审：
+    # ① 模式分支之后 ⇒ walk_forward 运行看不到（第二轮修的）；
+    # ② 自动刷新之后 ⇒ **运行中**的作业只要勾了自动刷新，下面那个
+    #    `st.rerun()` 会抛 RerunException 立刻终止本帧，篮子从此一帧都画
+    #    不出来——加入按钮没了，从别的页攒进去的篮子也整个消失，操作人
+    #    会以为篮子丢了。而「运行中」正是这一页最常驻留的状态（典型
+    #    pipeline 跑 1-8 小时）。
+    #
+    # 所以它排在这一页所有早退/重绘路径的**最前面**：选中运行之后第一件事。
+    _basket_catalog = render_add_to_basket(
+        selected_job_id, key_prefix="results")
+    render_basket(_basket_catalog, key_prefix="results")
+
     if str(selected_job.get("status", "")).lower() == "running":
         results_auto_refresh = st.checkbox(
             "作业仍在运行 · 每 5 秒自动刷新",
