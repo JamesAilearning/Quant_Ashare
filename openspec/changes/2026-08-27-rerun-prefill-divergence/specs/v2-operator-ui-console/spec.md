@@ -286,3 +286,36 @@ never instantiates a widget, so the defect is invisible beneath it.
 - **GIVEN** no prefill payload
 - **WHEN** the provider changes and the calendar-derived default changes with it
 - **THEN** the widget follows the new default
+
+### Requirement: One predicate SHALL govern every prefill decision
+
+Whether a rerun counts SHALL be decided by a single named predicate — a payload
+is present AND it parsed — and every decision that depends on it SHALL read that
+one predicate: applying the values, initialising the preset, and rendering the
+source-run review.
+
+Restating the condition at each site is how it drifts. A validly empty archive
+still carries the source run's engine from the job ledger, so a site still keyed
+on "how many fields parsed" will fight the others: preset initialisation reapplies
+the default config and puts the engine back, or the review section renders nothing
+while the banner promises a comparison.
+
+The overwrite ledger SHALL report the value the operator could actually see. A
+date field's visible value lives under the widget's own key once edited, while
+the backing key still holds what the prefill or default wrote; reading only the
+backing key reports a prior value that was never on screen, and — when the new
+value happens to equal it — reports no overwrite at all even though the visible
+selection is replaced.
+
+#### Scenario: a validly empty archive keeps its engine through initialisation
+
+- **GIVEN** a fresh session and a rerun from a walk-forward run whose archived
+  config parses to an empty mapping
+- **WHEN** the page initialises
+- **THEN** the engine is walk-forward, not the default preset's
+
+#### Scenario: the overwrite ledger names the visible prior value
+
+- **GIVEN** an operator who edited a date after a prefill
+- **WHEN** another prefill replaces it
+- **THEN** the ledger reports the edited value as the prior one

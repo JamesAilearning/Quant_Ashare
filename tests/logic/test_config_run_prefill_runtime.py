@@ -264,3 +264,48 @@ def test_walk_forward_window_ignores_unusable_prefill_values() -> None:
 
     assert prefilled_day("overall_start", "2023-06-12") == "2023-06-12"
     assert prefilled_day("overall_end", "2026-08-27") == "2026-08-27"
+
+
+def test_the_overwrite_ledger_reports_what_the_operator_actually_saw() -> None:
+    """日期字段的旧值要读**控件那个 key**，不是它背后的那个。
+
+    日期控件有自己的 key（``cr_dt_<field>``）:操作人改过之后，他看到的那个
+    值在那里，而 ``cr_<field>`` 还停在预填/默认写进去的旧值。只读后者的话，
+    账本会报「2020 → 2022」而屏幕上明明是 2021（codex P2 on #471）。
+    """
+    session: dict[str, Any] = {
+        "cr_overall_start": "2020-01-02",       # 背后那个键还停在旧值
+        "cr_dt_overall_start": "2021-01-04",    # 操作人看到并改成的值
+    }
+    apply_prefill = _load("_apply_prefill_to_session", session)
+
+    overwritten = apply_prefill({"overall_start": "2022-01-04"}, _APPLICABLE)
+
+    assert overwritten == [("overall_start", "2021-01-04", "2022-01-04")], (
+        "账本报的旧值不是操作人屏幕上那个"
+    )
+
+
+def test_a_new_value_equal_to_the_backing_key_is_still_an_overwrite() -> None:
+    """最坏的那一格:新值恰好等于背后那个旧值。
+
+    只读 ``cr_<field>`` 的话 ``_values_agree`` 成立 ⇒ **一条覆盖都不报**，
+    而操作人可见的选择照样被重置。
+    """
+    session: dict[str, Any] = {
+        "cr_overall_start": "2020-01-02",
+        "cr_dt_overall_start": "2021-01-04",
+    }
+    apply_prefill = _load("_apply_prefill_to_session", session)
+
+    overwritten = apply_prefill({"overall_start": "2020-01-02"}, _APPLICABLE)
+
+    assert overwritten == [("overall_start", "2021-01-04", "2020-01-02")]
+
+
+def test_a_field_without_a_date_widget_still_uses_its_backing_key() -> None:
+    # 非日期字段没有 `cr_dt_*`,行为不许变。
+    session: dict[str, Any] = {"cr_topk": 30}
+    apply_prefill = _load("_apply_prefill_to_session", session)
+
+    assert apply_prefill({"topk": 50}, _APPLICABLE) == [("topk", 30, 50)]

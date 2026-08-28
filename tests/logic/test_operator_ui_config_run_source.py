@@ -219,7 +219,10 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         self.assertIn("DIVERGENCE_SOURCE_MISSING)\n", source)
         self.assertIn("DIVERGENCE_MODE_INAPPLICABLE)\n", source)
         self.assertIn("DIVERGENCE_RUN_SCOPED)\n", source)
-        self.assertIn("\n    if PREFILL_CONFIG:\n", source)
+        # 判据是「**有一份成功解析的载荷**」而不是「解析出几个字段」——
+        # 合法空归档下 `_prefill_baseline` 里仍有台账带来的 `mode`，而横幅
+        # 已经承诺复核区会逐项列出（codex P2 on #471）。
+        self.assertIn("\n    if _HAS_PARSED_PREFILL:\n", source)
         self.assertIn("\n        if _changed:\n", source)
         self.assertIn("\n        else:\n            st.caption(\n", source)
         self.assertIn("逐项一致", source)
@@ -1609,9 +1612,42 @@ class ValidEmptyPayloadStillCarriesTheModeTests(unittest.TestCase):
         source = Path("web/operator_ui/pages/config_run.py").read_text(
             encoding="utf-8")
         # 钉**条件整行**。
-        self.assertIn(
-            "if _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR:\n", source)
+        self.assertIn("\nif _HAS_PARSED_PREFILL:\n", source)
         self.assertNotIn("\nif PREFILL_CONFIG:\n", source)
+
+    def test_one_predicate_governs_all_three_prefill_decisions(self) -> None:
+        """应用分支 / 预设初始化 / 复核区必须由**同一个**判据管。
+
+        在三处各写一遍 ``_HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR`` 就会
+        漏——本 PR 上已经漏过两次:先是应用分支还在用「解析出几个字段」，改对
+        之后预设初始化那一处又把台账带来的模式打回 pipeline（codex P2 ×2）。
+        抽成一个具名常量，三处都引用它，这条钉住那件事。
+        """
+        import ast
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+
+        assigns = [
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(x, ast.Name) and x.id == "_HAS_PARSED_PREFILL"
+                    for x in node.targets)
+        ]
+        self.assertEqual(len(assigns), 1, "共享判据应当只定义一处")
+        self.assertEqual(
+            ast.unparse(assigns[0].value),
+            "_HAS_PREFILL_PAYLOAD and (not _PREFILL_ERROR)",
+        )
+
+        uses = sum(
+            1 for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "_HAS_PARSED_PREFILL"
+        )
+        self.assertEqual(uses, 4, "定义 1 次 + 三处引用")
+        # 预设初始化那一处**取反**用它——漏掉它就是 codex 第二次点的那格。
+        self.assertIn("    if not _HAS_PARSED_PREFILL:\n", source)
 
     def test_an_empty_mapping_still_yields_the_source_mode(self) -> None:
         # 真跑那个合成函数:空映射 + 台账带来的模式 ⇒ 基线里有 mode，

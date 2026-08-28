@@ -525,9 +525,19 @@ def _apply_prefill_to_session(
         if key not in applicable_keys:
             continue
         session_key = f"cr_{key}"
-        previous = st.session_state.get(session_key)
-        if session_key in st.session_state and not _values_agree(
-                previous, value):
+        # 日期控件有**自己的** key（`cr_dt_<field>`）:操作人改过之后，
+        # 他看到的那个值在那里，而 `cr_<field>` 还停在预填/默认写进去的
+        # 旧值。只读后者的话，账本会报「2020 → 2022」而屏幕上明明是 2021;
+        # 更坏的一格是新值恰好等于那个旧值时**一条覆盖都不报**，而可见的
+        # 2021 选择照样被重置（codex P2）。
+        widget_key = f"cr_dt_{key}"
+        if widget_key in st.session_state:
+            previous = st.session_state[widget_key]
+            present = True
+        else:
+            previous = st.session_state.get(session_key)
+            present = session_key in st.session_state
+        if present and not _values_agree(previous, value):
             overwritten.append((key, previous, value))
         st.session_state[session_key] = value
     return overwritten
@@ -565,6 +575,15 @@ def _prefilled_trading_day(field: str, live_default: str) -> str:
 _HAS_PREFILL_PAYLOAD = bool(
     str(st.session_state.get("prefill_config_yaml", "")).strip())
 
+#: **有一份成功解析的重跑载荷**——本页对「这次重跑算不算数」的唯一判据。
+#:
+#: 命名成一个常量而不是在三处各写一遍 `_HAS_PREFILL_PAYLOAD and not
+#: _PREFILL_ERROR`:这三处（应用分支 / 预设初始化 / 复核区）必须同时成立或
+#: 同时不成立。写三遍就会漏——本 PR 上已经漏过两次:先是应用分支还在用
+#: 「解析出几个字段」，改对之后预设初始化那一处又把模式打回 pipeline
+#: （codex P2 ×2）。
+_HAS_PARSED_PREFILL = _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR
+
 _prefill_overwritten: list[tuple[str, Any, Any]] = []
 if _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG and not _PREFILL_ERROR:
     # 解析成功、顶层是映射、但一个键都没有。这是**合法**的归档配置，不是
@@ -595,7 +614,7 @@ _PREFILL_SUPPLIED: frozenset[str] = frozenset(
 # 用 `if PREFILL_CONFIG:` 当判据，重跑一次空归档的 walk_forward 运行时页面
 # 会停在当前的 pipeline 上，模式对比也整个不出——而模式正是本次提交与那次
 # 运行最大的一处不同。
-if _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR:
+if _HAS_PARSED_PREFILL:
     source_job = st.session_state.get("prefill_config_source_job", "")
     prefill_token = (
         f"{source_job}:"
@@ -673,7 +692,12 @@ def _cr(key: str, default: Any = None) -> Any:
 
 
 if "cr_preset_initialized" not in st.session_state:
-    if not PREFILL_CONFIG:
+    # 判据与上面的应用分支**同一个**（codex P2）。用 `not PREFILL_CONFIG`
+    # 的话:新会话里打开一份合法空归档的 walk_forward 重跑，应用分支刚把
+    # 台账带来的 `mode` 写进 session，这里就因为「解析出的字段数为 0」而
+    # 套上 `default.yaml`，把模式打回 pipeline。上一轮加的那个判据于是只
+    # 对「此前打开过配置页」的操作人生效。
+    if not _HAS_PARSED_PREFILL:
         _apply_preset("Default")
     st.session_state["cr_preset_initialized"] = True
 
@@ -1447,7 +1471,10 @@ with form_col:
                 width="stretch",
             )
 
-    if PREFILL_CONFIG:
+    # 同一判据（codex P2）。合法空归档下 `_prefill_baseline` 里仍然有台账
+    # 带来的 `mode`，横幅也承诺了「复核区会逐项列出」——用字段数当判据会让
+    # 整块复核区不出，`source_missing` 与模式对比一条都看不到。
+    if _HAS_PARSED_PREFILL:
         _source_job = st.session_state.get("prefill_config_source_job", "")
         # 四类分开说。混成一句的话,一次老运行重跑会被十几行 schema 演进
         # 噪音淹掉真正需要确认的值改动,操作人会学会忽略整块。
