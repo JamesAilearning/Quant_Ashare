@@ -121,6 +121,70 @@ class ResultsPageSourceTests(unittest.TestCase):
         self.assertIn("_cached_bundle_zip(str(run_dir)", source)
         self.assertNotIn("bundle_zip_bytes(run_dir)", source)
 
+    def test_rerun_prefill_decodes_strictly_and_carries_the_source_mode(
+        self,
+    ) -> None:
+        # 钉的是**性质**，不是排版。上一版把 `except` 与 session_state 写入
+        # 连同**缩进**一起钉进串里；重跑入口抽成独立函数（缩进少一层）时
+        # 当场失配——而它从来没钉住「解码严格 / 失败不跳页 / 带上源模式」这
+        # 三件事本身（#474 同款教训:守卫钉排版还是钉性质）。改用 AST 在
+        # `_render_rerun_action` 这个函数体内问。
+        import ast
+
+        source = Path(
+            "web/operator_ui/pages/_results_render.py").read_text(
+                encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_rerun_action"
+        )
+        body = ast.unparse(fn)
+
+        # 严格解码。`errors="replace"` 把坏字节变成 U+FFFD 后原样交给
+        # YAML:运气好是解析报错,运气不好是解析成功但某个值被悄悄改写,
+        # 而配置页横幅照说「已预填」。
+        decodes = [
+            node for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+        ]
+        self.assertEqual(len(decodes), 1, "只该有一处解码")
+        self.assertEqual(
+            [ast.unparse(a) for a in decodes[0].args], ["'utf-8'"])
+        self.assertEqual(
+            decodes[0].keywords, [],
+            "不许传 errors=；`errors=\"replace\"` 会把坏字节洗成 U+FFFD",
+        )
+
+        # 解码失败要被**接住**并就地报错，不跳页——不带一份被污染的配置
+        # 进配置页。
+        handlers = [
+            h for node in ast.walk(fn)
+            if isinstance(node, ast.Try) for h in node.handlers
+        ]
+        self.assertTrue(
+            any(isinstance(h.type, ast.Name)
+                and h.type.id == "UnicodeDecodeError" for h in handlers),
+            "解码必须接住 UnicodeDecodeError",
+        )
+        failed = next(h for h in handlers
+                      if isinstance(h.type, ast.Name)
+                      and h.type.id == "UnicodeDecodeError")
+        failed_src = ast.unparse(failed)
+        self.assertIn("不是合法 UTF-8", failed_src)
+        self.assertNotIn("switch_page", failed_src, "解码失败不许跳页")
+
+        # 源运行的模式必须随载荷带过去:归档 config.yaml 未必有 `mode`
+        # （CLI 跑出的就没有）,配置页要靠它决定预填哪一套字段 schema。
+        self.assertIn(
+            "st.session_state['prefill_config_source_mode'] = "
+            "str(job.get('mode') or '')",
+            body,
+        )
+
     def test_results_page_exposes_holdings_and_trades_filters(self) -> None:
         source = _results_combined_source()
 

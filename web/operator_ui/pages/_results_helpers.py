@@ -112,17 +112,42 @@ def _read_text_artifact(
     return str(value or "")
 
 
+def _read_bytes_artifact_checked(
+    path: Path | None,
+    issues: list[ArtifactReadIssue],
+    *,
+    artifact_name: str | None = None,
+) -> tuple[bytes, bool]:
+    """``(内容, 这次读取是否真的拿到了这份工件)``。
+
+    第二个值**不能**由内容推:读成功的**零字节**文件、被守卫拒绝的路径、
+    压根不存在的文件——三者的内容都是 ``b""``。调用方拿内容当判据，就会把
+    「读失败」讲成「空文件」（codex P2 on #471）。
+
+    也**不能**只看 ``path.is_file()``:那会绕开守卫，一份存在但落在允许的
+    输出根之外的归档会被当成可读，而真正的失败原因（已记进 ``issues``）被
+    丢掉。判据是**两者都成立**——没有记下读取问题，且那个文件确实在。
+    """
+    result = artifact_reader.read_bytes_artifact(
+        path, artifact_name=artifact_name)
+    value = _record_issue(issues, result)
+    ok = (
+        result.issue is None
+        and path is not None
+        and path.is_file()
+        and isinstance(value, bytes)
+    )
+    return (value if isinstance(value, bytes) else b""), ok
+
+
 def _read_bytes_artifact(
     path: Path | None,
     issues: list[ArtifactReadIssue],
     *,
     artifact_name: str | None = None,
 ) -> bytes:
-    value = _record_issue(
-        issues,
-        artifact_reader.read_bytes_artifact(path, artifact_name=artifact_name),
-    )
-    return value if isinstance(value, bytes) else b""
+    return _read_bytes_artifact_checked(
+        path, issues, artifact_name=artifact_name)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +177,21 @@ def _job_dir(job: Mapping[str, Any]) -> Path | None:
 def _read_config(
     job: Mapping[str, Any],
     issues: list[ArtifactReadIssue],
-) -> tuple[dict[str, Any], Path | None, bytes]:
+) -> tuple[dict[str, Any], Path | None, bytes, bool]:
+    """``(解析结果, 路径, 原始字节, 这次守卫式读取成没成功)``。
+
+    第四个值是**读取结果**，不是「文件在不在」:调用方拿 ``config_path.is_file()``
+    自己重查一遍会绕开守卫——一份存在但被守卫拒绝的归档会被当成可读，随后
+    被讲成「零字节空文件」，而真正的读失败原因被丢掉（codex P2 on #471）。
+    """
     config_path = _path_or_none(job.get("config_path"))
     if config_path is None:
         candidate = _job_dir(job)
         config_path = candidate / "config.yaml" if candidate is not None else None
-    config_bytes = _read_bytes_artifact(config_path, issues, artifact_name="config.yaml")
+    config_bytes, config_readable = _read_bytes_artifact_checked(
+        config_path, issues, artifact_name="config.yaml")
     if not config_bytes:
-        return {}, config_path, b""
+        return {}, config_path, b"", config_readable
     try:
         loaded = yaml.safe_load(config_bytes.decode("utf-8"))
     except (UnicodeDecodeError, yaml.YAMLError) as exc:
@@ -171,8 +203,11 @@ def _read_config(
                 message=str(exc),
             )
         )
-        return {}, config_path, config_bytes
-    return loaded if isinstance(loaded, dict) else {}, config_path, config_bytes
+        return {}, config_path, config_bytes, config_readable
+    return (
+        loaded if isinstance(loaded, dict) else {},
+        config_path, config_bytes, config_readable,
+    )
 
 
 def _resolve_run_dir(job: Mapping[str, Any], config: Mapping[str, Any]) -> Path | None:

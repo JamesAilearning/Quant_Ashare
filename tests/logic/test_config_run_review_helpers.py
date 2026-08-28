@@ -5,11 +5,18 @@ from __future__ import annotations
 import unittest
 
 from web.operator_ui.pages._config_run_helpers import (
+    DIVERGENCE_CHANGED,
+    DIVERGENCE_MODE_INAPPLICABLE,
+    DIVERGENCE_RUN_SCOPED,
+    DIVERGENCE_SOURCE_MISSING,
     build_config_review_sections,
     config_preset_differences,
+    divergences_of,
     effective_preset_for_review,
     explicitly_applied_preset_name,
     portable_config_for_preset_review,
+    prefill_baseline_with_source_mode,
+    prefill_divergences_from_source_run,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
@@ -164,6 +171,244 @@ class ConfigRunReviewHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(unsupported, ("legacy_toggle",))
+
+    def test_run_scoped_output_dir_is_not_an_unsupported_field(self) -> None:
+        # output_dir 由 JobManager 在每次启动时强制注入,所以它在**每份**
+        # 归档配置里都有、在**每份**待提交配置里都没有。把它报成「本页
+        # schema 不支持」等于给每次重跑挂一句常驻假警告——操作人正是这样
+        # 学会忽略整块提示的。
+        self.assertEqual(
+            unsupported_prefill_keys(
+                {"mode": "pipeline", "topk": 50, "output_dir": "runs/x"},
+                {"mode": "pipeline", "topk": 50},
+            ),
+            (),
+        )
+
+    def test_values_changed_since_prefill_are_named(self) -> None:
+        # 预填之后操作人还能改任何字段,提交出去的可以不是被重跑的那份配
+        # 置。两侧都有、值不同 = 唯一需要操作人逐项确认的那类。
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "pipeline", "topk": 50, "n_drop": 5,
+             "model_type": "LGBModel"},
+            {"mode": "pipeline", "topk": 30, "n_drop": 5,
+             "model_type": "LGBModel"},
+            known_keys=("mode", "topk", "n_drop", "model_type"),
+        )
+
+        self.assertEqual(len(divergences), 1)
+        self.assertEqual(divergences[0].key, "topk")
+        self.assertEqual(divergences[0].classification, DIVERGENCE_CHANGED)
+        self.assertEqual(divergences[0].source_value, 50)
+        self.assertEqual(divergences[0].emitted_value, 30)
+        self.assertTrue(divergences[0].source_present)
+        self.assertTrue(divergences[0].emitted_present)
+
+    def test_identical_prefill_reports_no_divergence(self) -> None:
+        self.assertEqual(
+            prefill_divergences_from_source_run(
+                {"mode": "pipeline", "topk": 50},
+                {"mode": "pipeline", "topk": 50},
+                known_keys=("mode", "topk"),
+            ),
+            (),
+        )
+
+    def test_numeric_equivalence_is_not_reported_as_a_change(self) -> None:
+        # 预填走 yaml.safe_load,生效值走表单控件——同一个数可以是 50 与
+        # 50.0。报成差异只会制造噪音、把真差异淹掉。
+        self.assertEqual(
+            prefill_divergences_from_source_run(
+                {"topk": 50, "learning_rate": 0.05},
+                {"topk": 50.0, "learning_rate": 0.05},
+                known_keys=("topk", "learning_rate"),
+            ),
+            (),
+        )
+
+    def test_bool_is_not_compared_as_a_number(self) -> None:
+        # isinstance(True, int) 为真——按数值比会把 True 与 1 判成相同,
+        # 而它们在配置语义里不是一回事（risk_constraints_enabled 尤其）。
+        divergences = prefill_divergences_from_source_run(
+            {"risk_constraints_enabled": True},
+            {"risk_constraints_enabled": 1},
+            known_keys=("risk_constraints_enabled",),
+        )
+
+        self.assertEqual(len(divergences), 1)
+        self.assertEqual(divergences[0].key, "risk_constraints_enabled")
+        self.assertEqual(divergences[0].classification, DIVERGENCE_CHANGED)
+
+    def test_machine_local_keys_never_count_as_divergence(self) -> None:
+        # provider_uri / namechange_path 由本机强制覆写,差异无意义——与
+        # 预设比较用的是同一套排除。
+        self.assertEqual(
+            prefill_divergences_from_source_run(
+                {"provider_uri": "D:/old", "namechange_path": "old.csv"},
+                {"provider_uri": "D:/new", "namechange_path": "new.csv"},
+                known_keys=("provider_uri", "namechange_path"),
+            ),
+            (),
+        )
+
+    def test_key_missing_from_the_source_run_is_never_defaulted(self) -> None:
+        # 老运行的 schema 更窄。「源运行没记这个键」**不等于**「它当时用的
+        # 是本页默认值」——那是替一次没记录的运行编造基线。单列成自己一类,
+        # 且 source_value 留空,不许拿 emitted 值反填。
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "pipeline", "topk": 50},
+            {"mode": "pipeline", "topk": 50, "risk_constraints_enabled": True},
+            known_keys=("mode", "topk", "risk_constraints_enabled"),
+        )
+
+        self.assertEqual(len(divergences), 1)
+        self.assertEqual(divergences[0].key, "risk_constraints_enabled")
+        self.assertEqual(
+            divergences[0].classification, DIVERGENCE_SOURCE_MISSING)
+        self.assertFalse(divergences[0].source_present)
+        self.assertIsNone(divergences[0].source_value)
+        self.assertEqual(divergences[0].emitted_value, True)
+
+    def test_other_mode_keys_are_separated_from_real_value_changes(self) -> None:
+        # 源运行是 walk_forward、本次跑 pipeline:overall_start 属于另一个
+        # 模式的 schema,本次压根不提交。和「topk 被改了」混在一起会把后者
+        # 淹掉——操作人对两者的下一步完全不同。
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "walk_forward", "topk": 50, "overall_start": "2020-01-01"},
+            {"mode": "pipeline", "topk": 30},
+            known_keys=("mode", "topk"),
+            other_mode_keys=("overall_start", "overall_end"),
+        )
+
+        self.assertEqual(
+            [d.key
+             for d in divergences_of(
+                 divergences, DIVERGENCE_MODE_INAPPLICABLE)],
+            ["overall_start"],
+        )
+        # mode 与 topk 两侧都有且值不同 → 真正的值改动,不被那条噪音混入。
+        self.assertEqual(
+            {d.key for d in divergences_of(divergences, DIVERGENCE_CHANGED)},
+            {"mode", "topk"},
+        )
+
+    def test_run_scoped_keys_are_their_own_class(self) -> None:
+        # output_dir 随那一次运行而生,既不是「值被改了」也不是 schema 缺口。
+        divergences = prefill_divergences_from_source_run(
+            {"topk": 50, "output_dir": "runs/2026-01-01_abc"},
+            {"topk": 50},
+            known_keys=("topk",),
+        )
+
+        self.assertEqual(len(divergences), 1)
+        self.assertEqual(divergences[0].key, "output_dir")
+        self.assertEqual(
+            divergences[0].classification, DIVERGENCE_RUN_SCOPED)
+
+    def test_divergences_of_filters_by_class(self) -> None:
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "pipeline", "topk": 50, "overall_start": "2020-01-01"},
+            {"mode": "pipeline", "topk": 30, "n_drop": 5},
+            known_keys=("mode", "topk", "n_drop"),
+            other_mode_keys=("overall_start",),
+        )
+
+        self.assertEqual(
+            [d.key for d in divergences_of(divergences, DIVERGENCE_CHANGED)],
+            ["topk"],
+        )
+        self.assertEqual(
+            [d.key
+             for d in divergences_of(divergences, DIVERGENCE_SOURCE_MISSING)],
+            ["n_drop"],
+        )
+        self.assertEqual(
+            [d.key
+             for d in divergences_of(
+                 divergences, DIVERGENCE_MODE_INAPPLICABLE)],
+            ["overall_start"],
+        )
+
+    def test_an_other_mode_key_is_not_also_called_unsupported(self) -> None:
+        # 属于另一模式的键按定义就不在本次的 emitted 里，所以每一个 mode_only
+        # 键都会**同时**落进「本页不支持」名单——同一个 overall_start 于是在
+        # 展开区被说成「切模式即生效」，又在黄色警告里被说成「本页不支持」。
+        # 一个键只能有一种归属。
+        prefill = {"mode": "walk_forward", "topk": 50,
+                   "overall_start": "2020-01-01", "legacy_toggle": True}
+        emitted = {"mode": "pipeline", "topk": 50}
+        other_mode = ("overall_start", "overall_end")
+
+        divergences = prefill_divergences_from_source_run(
+            prefill, emitted, known_keys=("mode", "topk"),
+            other_mode_keys=other_mode)
+        unsupported = unsupported_prefill_keys(
+            prefill, emitted, other_mode_keys=other_mode)
+
+        mode_only = {
+            d.key
+            for d in divergences_of(divergences, DIVERGENCE_MODE_INAPPLICABLE)
+        }
+        self.assertEqual(mode_only, {"overall_start"})
+        # 两份报告的交集必须为空——这才是「一个键一种归属」。
+        self.assertEqual(mode_only & set(unsupported), set())
+        # 而本页两个模式都不认识的键仍然只归 unsupported。
+        self.assertEqual(unsupported, ("legacy_toggle",))
+
+    def test_legacy_key_is_left_to_the_unsupported_reporter_alone(self) -> None:
+        # 一个已删除的历史键既不在本模式 schema、也不在对面模式 schema。
+        # 只看 known_keys 会把它标成「属于另一个模式」,而
+        # `unsupported_prefill_keys` 同时说它「本页不支持」——操作人拿到
+        # 两句自相矛盾的结论。本函数不认领它。
+        divergences = prefill_divergences_from_source_run(
+            {"mode": "pipeline", "topk": 50, "legacy_toggle": True},
+            {"mode": "pipeline", "topk": 50},
+            known_keys=("mode", "topk"),
+            other_mode_keys=("overall_start", "overall_end"),
+        )
+
+        self.assertEqual(divergences, ())
+        self.assertEqual(
+            unsupported_prefill_keys(
+                {"mode": "pipeline", "topk": 50, "legacy_toggle": True},
+                {"mode": "pipeline", "topk": 50},
+            ),
+            ("legacy_toggle",),
+        )
+
+    def test_source_mode_joins_the_comparison_baseline(self) -> None:
+        # UI 启动的运行把 mode 写进 job.json 而**不是**归档 config.yaml
+        # （JobManager.start(config_dict, mode) 分开收）。不折进来的话,把
+        # 一次 walk_forward 重跑改成 pipeline 会被说成「逐项一致」。
+        baseline = prefill_baseline_with_source_mode(
+            {"topk": 50}, "walk_forward")
+
+        self.assertEqual(baseline, {"topk": 50, "mode": "walk_forward"})
+        divergences = prefill_divergences_from_source_run(
+            baseline, {"mode": "pipeline", "topk": 50},
+            known_keys=("mode", "topk"),
+        )
+        self.assertEqual(
+            [(d.key, d.source_value, d.emitted_value)
+             for d in divergences_of(divergences, DIVERGENCE_CHANGED)],
+            [("mode", "walk_forward", "pipeline")],
+        )
+
+    def test_source_yaml_mode_outranks_the_job_ledger(self) -> None:
+        # 源 YAML 自带 mode 时以它为准:那是源运行自己记下的,比作业台账的
+        # 转述更近一层。
+        self.assertEqual(
+            prefill_baseline_with_source_mode(
+                {"mode": "pipeline"}, "walk_forward"),
+            {"mode": "pipeline"},
+        )
+
+    def test_absent_source_mode_is_never_invented(self) -> None:
+        # 凭空写一个模式 = 替一次没记录模式的运行编造基线。
+        self.assertEqual(
+            prefill_baseline_with_source_mode({"topk": 50}, ""),
+            {"topk": 50},
+        )
 
 
 if __name__ == "__main__":

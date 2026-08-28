@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
 
@@ -159,6 +160,117 @@ class ConfigRunPageSourceTests(unittest.TestCase):
         )
         self.assertIn("复核基线", source)
         self.assertIn("unsupported_prefill_keys(", source)
+        # 与被重跑运行的差异必须在提交前摊开,且**四类分开**——把 schema
+        # 演进噪音和真实的值改动堆成一句,操作人只会学会忽略整块。钉:调用
+        # 带 known_keys（少了它,另一模式的键会被误报成「值被改了」）、四个
+        # 分桶取子集、以及「有改动 / 无改动」两条渲染分支都不沉默。
+        self.assertIn(
+            "prefill_divergences_from_source_run(\n"
+            "        _prefill_baseline, preview_config,\n"
+            "        known_keys=_review_known_keys,\n"
+            "        other_mode_keys=_review_other_mode_keys,\n"
+            "    )",
+            source,
+        )
+        # 比较基线含源模式（UI 运行的 mode 只在 job.json 里）,且 `mode`
+        # 参与比较,否则切模式后复核区说「逐项一致」。
+        self.assertIn(
+            "\n    _prefill_baseline = prefill_baseline_with_source_mode(\n",
+            source,
+        )
+        self.assertIn(
+            "\n    _review_known_keys = frozenset(known_keys) | {\"mode\"}\n",
+            source,
+        )
+        # 「另一个模式的键」必须是**本页在那个模式下真的会发出**的键。用后端
+        # schema 全集会把本页压根不发的字段也说成「切模式即生效」,而
+        # unsupported 同时说「本页不支持」——两句自相矛盾。
+        self.assertIn(
+            "\n    _review_other_mode_keys = (\n"
+            "        _WALK_FORWARD_ONLY_EMITTED if mode == \"pipeline\"\n"
+            "        else _PIPELINE_ONLY_EMITTED\n"
+            "    )\n",
+            source,
+        )
+        # unsupported 也要看合成后的基线,否则 mode 会被它当成不支持的键;
+        # 并且必须减掉 other_mode——否则同一个键会同时拿到「切模式即生效」
+        # 与「本页不支持」两句互相打架的结论。
+        self.assertIn(
+            "\n    _unsupported_prefill = unsupported_prefill_keys(\n"
+            "        _prefill_baseline, preview_config,\n"
+            "        other_mode_keys=_review_other_mode_keys,\n"
+            "    )\n",
+            source,
+        )
+        # 一份合法但为空的归档配置必须说话:与「没点按钮」不可分辨是最坏的
+        # 一种沉默——操作人有理由怀疑是不是按钮坏了。
+        # 判据是**键在不在**，不是它的内容真不真:零字节的归档 config 会让
+        # 内容判据把「点了重跑」与「没点」混成一格（codex P2）。这一行原本
+        # 就有一段注释写着「只看那个 session 键在不在」，代码却在测真值。
+        self.assertIn(
+            '\n_HAS_PREFILL_PAYLOAD = "prefill_config_yaml" '
+            'in st.session_state\n',
+            source,
+        )
+        self.assertIn(
+            "\nif _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG "
+            "and not _PREFILL_ERROR:\n",
+            source,
+        )
+        self.assertIn("是一份**空配置**", source)
+        self.assertIn(
+            "_changed = divergences_of(_prefill_divergences, "
+            "DIVERGENCE_CHANGED)\n",
+            source,
+        )
+        self.assertIn("DIVERGENCE_SOURCE_MISSING)\n", source)
+        self.assertIn("DIVERGENCE_MODE_INAPPLICABLE)\n", source)
+        self.assertIn("DIVERGENCE_RUN_SCOPED)\n", source)
+        # 判据是「**有一份成功解析的载荷**」而不是「解析出几个字段」——
+        # 合法空归档下 `_prefill_baseline` 里仍有台账带来的 `mode`，而横幅
+        # 已经承诺复核区会逐项列出（codex P2 on #471）。
+        self.assertIn("\n    if _HAS_PARSED_PREFILL:\n", source)
+        self.assertIn("\n        if _changed:\n", source)
+        self.assertIn("\n        else:\n            st.caption(\n", source)
+        self.assertIn("逐项一致", source)
+        self.assertIn("\n        if _source_missing:\n", source)
+        self.assertIn("\n        if _mode_only:\n", source)
+        self.assertIn("\n        if _run_scoped:\n", source)
+        # 预填的写入**行为**（覆盖而非跳过、只写已知键、只把值不同的记成
+        # 覆盖）由运行时测试保证——源码串看不见 session 状态,拿它去钉状态
+        # 只会钉出一条随缩进漂移的假守卫。这里只钉接线:页面确实走那个被
+        # 真跑过的函数,而且基线含源模式。
+        self.assertIn(
+            "\n        _prefill_overwritten = _apply_prefill_to_session(\n"
+            "            prefill_baseline_with_source_mode(\n",
+            source,
+        )
+        self.assertIn("\n            _PREFILL_APPLICABLE_KEYS,\n", source)
+        # 覆盖列表要渲染出来:覆盖不许是静默的。
+        self.assertIn("\n    if _prefill_overwritten:\n", source)
+        # 预设选择器必须同步成 Custom,否则**预填会被下一帧撤销**:选择器
+        # widget 粘着操作人上次选的预设,而预填把字段改成源运行的值让
+        # `_detect_preset()` 记 Custom ⇒ 下一次控件触发的重跑里
+        # `preset_choice != current_preset` ⇒ `_apply_preset()` 把源运行的
+        # 值整片覆盖回去,而横幅照说「已按该次运行覆盖」。
+        self.assertIn(
+            '        st.session_state["cr_preset_selector"] = '
+            "CUSTOM_PRESET_NAME\n"
+            '        st.session_state["cr_preset"] = CUSTOM_PRESET_NAME\n',
+            source,
+        )
+        # 摘要必须声明非安全用途:FIPS 受限的构建下不带这个参数会 raise,
+        # 点「用此配置重跑」在预填生效之前就把整页打崩。
+        self.assertIn(
+            "hashlib.md5(str(st.session_state.get('prefill_config_yaml', ''))"
+            ".encode('utf-8'), usedforsecurity=False)",
+            source,
+        )
+        # 解析失败要响亮,不许静默返回空 dict 让横幅照说「已预填」。
+        self.assertIn('st.session_state["prefill_config_error"] = (', source)
+        self.assertIn("\n    except yaml.YAMLError as exc:\n", source)
+        self.assertIn("\n    if not isinstance(loaded, dict):\n", source)
+        self.assertIn("\nif _PREFILL_ERROR:\n", source)
         self.assertIn("启动研究运行", source)
         self.assertIn("不会发布模型、修改 production serving", source)
         # The review is read-only: it consumes preview_config, while the page
@@ -440,6 +552,7 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
                 "train_start",
                 default="2022-01-01",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         # Snapped to calendar[0].
@@ -477,6 +590,7 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
                 "train_start",
                 default="2023-06-13",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         self.assertEqual(result, "2023-06-13")
@@ -501,12 +615,13 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
             side_effect=lambda msg, *_a, **_kw: captured_warnings.append(msg),
         ), patch(
             "streamlit.text_input",
-            side_effect=lambda label, value: value,
+            side_effect=lambda label, value, **_kw: value,
         ):
             result = config_run._select_trading_day(
                 "train_start",
                 default="2022-01-01",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         self.assertEqual(result, "2022-01-01")
@@ -699,9 +814,14 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
     warning the pipeline path runs (instruments=all vs a major index inflates
     "excess vs benchmark"). UI-audit follow-up.
 
-    (The sibling WF-date preset/prefill fix was reverted: routing the dates
-    through _cr regressed provider-calendar tracking — codex P2 on #300 — and a
-    correct fix needs runtime verification. The dates stay on the live default.)
+    (WF-date prefill history: routing the dates through ``_cr`` regressed
+    provider-calendar tracking — codex P2 on #300 — because ``_cr`` SEEDS the
+    provider-derived default into session and then sticks to it, freezing a
+    first-render no-calendar fallback. #471 restores prefill through
+    ``_prefilled_trading_day``, which only READS: with no prefill present it
+    writes nothing, so the live default keeps recomputing every rerun. Runtime
+    coverage for both directions lives in
+    ``tests/logic/test_config_run_prefill_runtime.py``.)
     """
 
     def setUp(self) -> None:
@@ -709,13 +829,298 @@ class WalkForwardLaunchParityTests(unittest.TestCase):
             "web/operator_ui/pages/config_run.py"
         ).read_text(encoding="utf-8")
 
-    def test_wf_dates_stay_on_live_provider_default(self) -> None:
-        # Provider-tracking raw default (NOT _cr) — reverted per codex P2.
+    def test_shared_emitted_matches_the_shared_config_literal(self) -> None:
+        """``_SHARED_EMITTED`` == 页面 ``config_dict = {...}`` 字面量的键。
+
+        这份分叉的后果与两个 ``*_ONLY_EMITTED`` 一样是**说错话而不报错**:
+        漏一个键,那个字段的预填就再也进不来(而横幅照说「已预填」);多一个
+        键,一个本页从不提交的字段会被写进 session,下次重跑再被报成「被覆
+        盖」——而复核区同时说「本次不会携带它」。
+        """
+        from web.operator_ui.pages.config_run import _SHARED_EMITTED
+
+        tree = ast.parse(self.source)
+        literal = next(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "config_dict"
+            and isinstance(node.value, ast.Dict)
+        )
+        declared = {
+            key.value
+            for key in literal.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+
+        self.assertEqual(declared, set(_SHARED_EMITTED))
+
+    def test_page_emitted_keys_cover_the_setdefault_fields(self) -> None:
+        # `namechange_path` 没有控件,靠 setdefault 补上——但它**确实**随配置
+        # 发出。漏掉它,重跑一次归档配置时它的值就进不了本页状态。
+        from web.operator_ui.pages.config_run import _PAGE_EMITTED_KEYS
+
+        self.assertIn("namechange_path", _PAGE_EMITTED_KEYS)
+        self.assertIn("mode", _PAGE_EMITTED_KEYS)
+        for node in ast.walk(ast.parse(self.source)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "setdefault"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "config_dict"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                self.assertIn(node.args[0].value, _PAGE_EMITTED_KEYS)
+
+    def test_prefill_applies_only_to_fields_the_page_emits(self) -> None:
+        """预填写入的键集合 ⊆ 本页真会提交的字段。
+
+        用后端 schema 全集的话,``cr_run_factor_analysis`` 这种本页没有控件、
+        永不提交的字段也会被写进 session,下次重跑另一个值时被报成「被覆盖」
+        ——而复核区同时说「本次不会携带它」(codex P2 on #471 r5,同一个根因
+        的第三种形态)。
+        """
+        from web.operator_ui.config_forms import PIPELINE_KEYS, WALK_FORWARD_KEYS
+        from web.operator_ui.pages.config_run import (
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        self.assertTrue(_PREFILL_APPLICABLE_KEYS <= _PAGE_EMITTED_KEYS)
+        # 后端 schema 里本页不发的字段一个也不许进来。
+        backend_only = (
+            (set(PIPELINE_KEYS) | set(WALK_FORWARD_KEYS)) - _PAGE_EMITTED_KEYS
+        )
+        self.assertTrue(
+            backend_only, "后端 schema 应当含本页不发的字段，否则这条钉是空的")
+        self.assertEqual(_PREFILL_APPLICABLE_KEYS & backend_only, set())
+
+    def test_prefill_only_writes_fields_the_page_reads_back(self) -> None:
+        """预填写进去的每个字段，都必须被提交它的控件读回。
+
+        这是本 change 的 spec 自己写下的要求，也是同一个根因的**第四种**
+        形态：写一个本页从不读的键，值进得了 session 却到不了发出的配置，
+        而下一次重跑另一份归档配置时它会被如实报成「被覆盖」——一条关于
+        「哪个值会生效」的假消息。
+
+        判据是**构造性**的：从源码算出「本页读回的键」，再与
+        ``_PAGE_EMITTED_KEYS`` 求差；差集必须正好等于
+        ``_EMITTED_WITHOUT_READBACK``。手写第四份名单只会漂——前三次都是
+        这样漂的。
+        """
+        from web.operator_ui.pages.config_run import (
+            _EMITTED_WITHOUT_READBACK,
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        tree = ast.parse(self.source)
+        readback: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # `_cr("<key>", ...)` 与 `_prefilled_trading_day("<key>", ...)`
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id in {"_cr", "_prefilled_trading_day"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                readback.add(node.args[0].value)
+            # 直接绑 session 的控件:`key="cr_<key>"`
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "key"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                    and keyword.value.value.startswith("cr_")
+                ):
+                    readback.add(keyword.value.value[len("cr_"):])
+
+        self.assertTrue(readback, "从源码里一个读回键也没解析出来——守卫是空的")
+        self.assertEqual(
+            _PAGE_EMITTED_KEYS - readback, set(_EMITTED_WITHOUT_READBACK),
+            "本页发出却不读回的字段变了：要么给它接上控件，要么写进"
+            " _EMITTED_WITHOUT_READBACK 并说清为什么",
+        )
+        # 预填只写读得回来的那些。
+        self.assertTrue(_PREFILL_APPLICABLE_KEYS <= readback)
+        self.assertNotIn("namechange_path", _PREFILL_APPLICABLE_KEYS)
+
+    def test_run_scoped_keys_are_absent_from_what_the_page_emits(self) -> None:
+        """run-scoped 键**不该出现**在本页发出的字段里。
+
+        此前这里靠 ``_PAGE_EMITTED_KEYS - _RUN_SCOPED_PREFILL_KEYS`` 兜底。
+        重构之后那道减法成了 no-op（三份 ``*_EMITTED`` 常量本就不含
+        ``output_dir``），而变异实测能原样逃逸——no-op 的兜底恰恰会掩盖「有人
+        把 ``output_dir`` 写进 ``_SHARED_EMITTED``」这种错误，让它在别处以
+        「第二次重跑报一条假的被覆盖」的形式冒出来。守卫响亮地钉在这里。
+        """
+        from web.operator_ui.pages._config_run_helpers import (
+            _RUN_SCOPED_PREFILL_KEYS,
+        )
+        from web.operator_ui.pages.config_run import (
+            _PAGE_EMITTED_KEYS,
+            _PREFILL_APPLICABLE_KEYS,
+        )
+
+        self.assertEqual(_PAGE_EMITTED_KEYS & _RUN_SCOPED_PREFILL_KEYS, set())
+        self.assertEqual(
+            _PREFILL_APPLICABLE_KEYS & _RUN_SCOPED_PREFILL_KEYS, set())
+
+    def test_mode_only_emitted_key_sets_match_what_the_page_emits(
+        self,
+    ) -> None:
+        """两个 ``*_ONLY_EMITTED`` 常量 == 页面两个模式分支真正 update 的键。
+
+        这两份分叉时的后果是**说错话而不报错**:复核区会宣称某个字段「属于
+        另一个模式、切过去就生效」,而本页在那个模式下压根不发它;或者反过
+        来漏掉一个真该单列的字段,把它混进「值被改了」淹掉真差异。两边都
+        照常提交,没有任何东西会红。
+
+        所以取页面里那两个 ``config_dict.update({...})`` 字面量的键**解析**着
+        比,不在测试里抄一份名单——抄的那份跟着谁漂都不会被发现。
+        """
+        from web.operator_ui.pages.config_run import (
+            _PIPELINE_ONLY_EMITTED,
+            _WALK_FORWARD_ONLY_EMITTED,
+        )
+
+        tree = ast.parse(self.source)
+        branch = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "mode"
+            and any(
+                isinstance(comparator, ast.Constant)
+                and comparator.value == "pipeline"
+                for comparator in node.test.comparators
+            )
+            and any(
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "known_keys"
+                    for target in statement.targets
+                )
+                for statement in node.body
+            )
+        )
+
+        def _updated_keys(body: list[ast.stmt]) -> set[str]:
+            call = next(
+                node
+                for statement in body
+                for node in ast.walk(statement)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "config_dict"
+            )
+            literal = call.args[0]
+            assert isinstance(literal, ast.Dict)
+            return {
+                key.value
+                for key in literal.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+
+        self.assertEqual(_updated_keys(branch.body), set(_PIPELINE_ONLY_EMITTED))
+        self.assertEqual(
+            _updated_keys(branch.orelse), set(_WALK_FORWARD_ONLY_EMITTED))
+
+    def test_mode_only_sets_hold_no_key_the_page_never_emits(self) -> None:
+        # 反向:两个常量里的每个键都必须真的在后端 schema 里(不然本页发了
+        # 一个后端不收的字段),且**不**在共享段里(共享段两模式都发,不该被
+        # 说成「属于另一个模式」)。
+        from web.operator_ui.config_forms import PIPELINE_KEYS, WALK_FORWARD_KEYS
+        from web.operator_ui.pages.config_run import (
+            _PIPELINE_ONLY_EMITTED,
+            _WALK_FORWARD_ONLY_EMITTED,
+        )
+
+        self.assertTrue(set(_PIPELINE_ONLY_EMITTED) <= set(PIPELINE_KEYS))
+        self.assertTrue(
+            set(_WALK_FORWARD_ONLY_EMITTED) <= set(WALK_FORWARD_KEYS))
+        # 模式专属 ⇒ 不在对面模式的 schema 里。
+        self.assertEqual(
+            set(_PIPELINE_ONLY_EMITTED) & set(WALK_FORWARD_KEYS), set())
+        self.assertEqual(
+            set(_WALK_FORWARD_ONLY_EMITTED) & set(PIPELINE_KEYS), set())
+
+    def test_wf_dates_honour_prefill_over_the_live_default(self) -> None:
+        # overall_start/overall_end 是滚动验证窗口的两个**定义性**字段。
+        # 预填把它们写进 session,控件不读的话,重跑跑的区间与源运行不同,
+        # 而复核区看不出来(两侧都是控件产出的 live default)——codex P1
+        # on #471。钉调用形态整行:只钉函数名的话,把 default= 换回裸的
+        # live default 能原样逃逸。
         self.assertIn(
-            'default=walk_forward_date_defaults["overall_start"]', self.source
+            '                default=_prefilled_trading_day(\n'
+            '                    "overall_start",\n'
+            '                    walk_forward_date_defaults["overall_start"]),'
+            '\n',
+            self.source,
         )
         self.assertIn(
-            'default=walk_forward_date_defaults["overall_end"]', self.source
+            '                default=_prefilled_trading_day(\n'
+            '                    "overall_end",\n'
+            '                    walk_forward_date_defaults["overall_end"]),\n',
+            self.source,
+        )
+
+    def test_wf_dates_still_do_not_seed_the_live_default(self) -> None:
+        # #300 的病根是 `_cr` **写**:它把 provider 相关的 default 种进
+        # session 并从此粘住。`_prefilled_trading_day` 只读。
+        self.assertNotIn('_cr("overall_start"', self.source)
+        self.assertNotIn('_cr("overall_end"', self.source)
+        # 「函数体里没有写 session」要**解析**着问,不是按文本切:按
+        # `\ndef ` 切会一路切到文件末尾的模块级代码(那里当然有赋值),
+        # 守卫于是恒红或恒绿地失去意义。
+        function = next(
+            node
+            for node in ast.parse(self.source).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_prefilled_trading_day"
+        )
+        def _is_session_state(node: ast.expr) -> bool:
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "session_state"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "st"
+            )
+
+        writes: list[str] = []
+        for node in ast.walk(function):
+            # `st.session_state[...] = ...`（含增量与带注解赋值）
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and _is_session_state(
+                        target.value):
+                    writes.append(f"assign@{node.lineno}")
+            # `st.session_state.pop(...)` 之类的原地修改
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"pop", "update", "setdefault", "clear"}
+                and _is_session_state(node.func.value)
+            ):
+                writes.append(f"{node.func.attr}@{node.lineno}")
+        self.assertEqual(
+            writes, [],
+            "_prefilled_trading_day 必须只读 session:任何写入都会把 provider"
+            " 相关的 live default 种住,复现 #300 的回滚原因",
         )
 
     def test_wf_branch_runs_universe_benchmark_alignment(self) -> None:
@@ -907,6 +1312,477 @@ class CostModelFieldsTests(unittest.TestCase):
         self.assertGreaterEqual(
             self.source.count("adjust_mode not in SUPPORTED_ADJUST_MODES"), 2
         )
+
+
+class RepeatedRerunActionRearmsPrefillTests(unittest.TestCase):
+    """对**同一个运行**再点一次「用此配置重跑」，预填必须重新生效。
+
+    令牌原来只由「源运行 + 配置内容」构成。操作人预填之后改了几个字段、
+    回结果页对同一个运行再点一次，令牌不变 ⇒ 应用分支被跳过 ⇒ 他的改动
+    原样留着，而横幅照说「已按该次运行覆盖」——启动的实验与他明确重选的
+    那次运行不一致（codex P1 on #471）。
+
+    这里**真跑**令牌表达式（从页面 AST 抽出来求值），不查源码串：要证明的
+    是「令牌随动作变、不随重绘变」，源码串证明不了——把 nonce 拼进一个从
+    没被求值的分支，串守卫照样命中。
+    """
+
+    def setUp(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        assigns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "prefill_token"
+                    for t in node.targets)
+        ]
+        self.assertEqual(len(assigns), 1, "令牌应当只在一处构造")
+        self.expr = assigns[0].value
+
+    def _token(self, *, job: str, yaml_text: str, action: str) -> str:
+        import hashlib as _hashlib
+        from types import SimpleNamespace
+
+        state = {
+            "prefill_config_yaml": yaml_text,
+            "prefill_config_action": action,
+        }
+        namespace = {
+            "source_job": job,
+            "hashlib": _hashlib,
+            "st": SimpleNamespace(session_state=state),
+        }
+        code = compile(ast.Expression(self.expr), "<token>", "eval")
+        return str(eval(code, namespace))  # noqa: S307 - 求值的是本仓页面自己的表达式
+
+    def test_a_second_press_on_the_same_run_produces_a_new_token(self) -> None:
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        second = self._token(job="job-1", yaml_text="topk: 50", action="bbb")
+
+        self.assertNotEqual(
+            first, second,
+            "同一个运行、同一份配置，再按一次必须换令牌——否则预填不会重新生效",
+        )
+
+    def test_an_ordinary_rerender_keeps_the_token_stable(self) -> None:
+        # 幂等性：普通重绘不经过按钮回调，nonce 不变 ⇒ 同一次预填只应用一次。
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        again = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+
+        self.assertEqual(first, again)
+
+    def test_the_payload_still_participates(self) -> None:
+        # nonce 之外仍然带上配置内容:万一将来有第二个写入方忘了铸 nonce,
+        # 内容变了照样能重新武装。
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        other = self._token(job="job-1", yaml_text="topk: 20", action="aaa")
+
+        self.assertNotEqual(first, other)
+
+    def test_the_button_branch_mints_a_fresh_action_nonce(self) -> None:
+        # 另一端:nonce 必须在**按钮分支内**铸，不是每帧铸（每帧铸会让每一次
+        # 重绘都重新覆盖操作人的编辑）。
+        source = Path("web/operator_ui/pages/_results_render.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+
+        branches = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and any(isinstance(c, ast.Constant) and c.value == "用此配置重跑"
+                    for c in ast.walk(node.test))
+        ]
+        self.assertEqual(len(branches), 1, "「用此配置重跑」应当只有一处")
+
+        assigned = {
+            ast.unparse(target)
+            for node in ast.walk(branches[0])
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+        }
+        self.assertIn("st.session_state['prefill_config_action']", assigned)
+
+        minted = {
+            node.func.id for node in ast.walk(branches[0])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("uuid4", minted, "动作身份必须是新铸的,不是复用的值")
+
+        # 分支**之外**不许再有第二处写它——每帧写就毁掉幂等性。
+        outside = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(ast.unparse(t) == "st.session_state['prefill_config_action']"
+                    for t in node.targets)
+        ]
+        self.assertEqual(len(outside), 1, "动作身份只该在按钮分支里写一次")
+
+
+
+class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
+    """预填状态得先**产得出来**，规格里的场景才谈得上可达。
+
+    「用此配置重跑」原来只长在 `_render_header_actions` 里，而那个函数只被
+    `_render_pipeline_dashboard` 调用。一份正常的滚动验证结果（有
+    `walk_forward_report.json`、没有根级 `pipeline_report.json`）走的是
+    `_render_walk_forward_summary` 那一支——于是本 change 为「源运行是
+    walk_forward」写下的窗口恢复与跨模式重跑场景，在那一侧**全都不可达**
+    （codex P1 on #471）。
+
+    这里钉的是**路由**：按钮的实现只有一份，两条分派路径都调它。
+    """
+
+    def setUp(self) -> None:
+        self.render = Path(
+            "web/operator_ui/pages/_results_render.py").read_text(
+                encoding="utf-8")
+        self.page = Path("web/operator_ui/pages/results.py").read_text(
+            encoding="utf-8")
+
+    def test_the_rerun_button_has_exactly_one_implementation(self) -> None:
+        # 两份实现里只要有一份忘了铸动作 nonce、或忘了写
+        # `prefill_config_source_mode`，症状都是「预填看起来没生效」。
+        self.assertEqual(
+            self.render.count('st.button("用此配置重跑"'), 1,
+            "按钮只该有一处实现",
+        )
+        for other in ("web/operator_ui/pages/results.py",):
+            self.assertNotIn(
+                '用此配置重跑', Path(other).read_text(encoding="utf-8"),
+                f"{other} 不该自己再画一个按钮",
+            )
+
+    def test_both_dispatch_branches_render_the_rerun_action(self) -> None:
+        # 用 AST 找模块级分派的那条 if/elif 链，逐支确认调用。
+        tree = ast.parse(self.page)
+        chains = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            # ast.unparse 会把字符串统一成单引号——按引号写死的匹配会静默
+            # 找不到，测试于是变成「零覆盖但绿」。这里去掉引号再比。
+            and "mode == 'pipeline'" in ast.unparse(node.test)
+        ]
+        self.assertEqual(len(chains), 1, "结果页的引擎分派应当只有一处")
+        chain = chains[0]
+
+        def calls(nodes: list[ast.stmt]) -> set[str]:
+            found: set[str] = set()
+            for stmt in nodes:
+                for node in ast.walk(stmt):
+                    if isinstance(node, ast.Call) and isinstance(
+                            node.func, ast.Name):
+                        found.add(node.func.id)
+            return found
+
+        pipeline_calls = calls(chain.body)
+        self.assertIn("_render_pipeline_dashboard", pipeline_calls)
+
+        wf_branch = chain.orelse
+        self.assertTrue(wf_branch, "应当有 walk_forward 分支")
+        wf_calls = calls(wf_branch)
+        self.assertIn(
+            "_render_rerun_action", wf_calls,
+            "滚动验证分支必须画出重跑入口——否则本 change 的跨模式场景不可达",
+        )
+
+    def test_the_button_is_gated_on_the_file_existing_not_its_size(
+        self,
+    ) -> None:
+        """按钮的禁用判据是「归档 config **在不在**」，不是「它有没有内容」。
+
+        一份存在但**零字节**的归档会让 `_read_config` 返回 `b""`;用内容当
+        判据就把按钮永久禁掉、且一个字也不说——而空 YAML 的顶层不是映射，
+        本页早已承诺这种形态要被响亮报出（codex P2 on #471）。
+        """
+        import ast
+
+        source = Path(
+            "web/operator_ui/pages/_results_render.py").read_text(
+                encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_rerun_action"
+        )
+        buttons = [
+            node for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "button"
+        ]
+        self.assertEqual(len(buttons), 1)
+        disabled = {k.arg: k.value for k in buttons[0].keywords}.get("disabled")
+        self.assertIsNotNone(disabled, "按钮必须有禁用判据")
+        self.assertEqual(ast.unparse(disabled), "not config_present")
+
+    def test_every_call_site_passes_the_guarded_read_outcome(self) -> None:
+        """两个调用点都必须传**守卫式读取的结果**，不许自己 `is_file()` 重查。
+
+        重查会绕开守卫:一份存在但落在允许的输出根之外(或读不出来)的归档会被
+        当成可读,随后被讲成「零字节空文件」,而真正的失败原因被丢掉
+        （codex P2 on #471）。
+        """
+        import ast
+
+        for rel in ("web/operator_ui/pages/results.py",
+                    "web/operator_ui/pages/_results_render.py"):
+            tree = ast.parse(Path(rel).read_text(encoding="utf-8"))
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_render_rerun_action"
+            ]
+            for call in calls:
+                with self.subTest(file=rel):
+                    kw = {k.arg: k.value for k in call.keywords}
+                    self.assertIn("config_present", kw)
+                    # 必须是一个**已经算好的名字**（`config_readable`，或
+                    # 转发同名参数），不许是就地拼的表达式——就地拼的那种
+                    # 正是绕开守卫自己 `is_file()` 的写法。
+                    self.assertIsInstance(
+                        kw["config_present"], ast.Name,
+                        f"{rel}: 判据必须是算好的名字,不是就地表达式:"
+                        f"{ast.unparse(kw['config_present'])}",
+                    )
+                    self.assertIn(
+                        ast.unparse(kw["config_present"]),
+                        {"config_readable", "config_present"},
+                    )
+        # 全仓不许再有第二处自己重查的写法。
+        for rel in ("web/operator_ui/pages/results.py",
+                    "web/operator_ui/pages/_results_render.py"):
+            self.assertNotIn(
+                "config_path.is_file()", Path(rel).read_text(encoding="utf-8"))
+
+    def test_the_pipeline_path_reaches_it_through_the_action_bar(self) -> None:
+        # pipeline 那一侧仍然走 `_render_header_actions`（它还带三个导出
+        # 按钮）；钉住那个函数**委派**给同一个实现，而不是自己再写一遍。
+        tree = ast.parse(self.render)
+        header = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_header_actions"
+        )
+        delegates = {
+            node.func.id for node in ast.walk(header)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("_render_rerun_action", delegates)
+
+        dashboard = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_render_pipeline_dashboard"
+        )
+        dash_calls = {
+            node.func.id for node in ast.walk(dashboard)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("_render_header_actions", dash_calls)
+
+    def test_the_walk_forward_branch_renders_it_before_the_report_split(
+        self,
+    ) -> None:
+        # 有报告与没报告两种滚动验证结果**都**要有入口:没有报告的那一支
+        # 恰恰是「这次跑挂了，想改改参数重跑」最常见的时刻。
+        #
+        # 用 AST 钉**位置关系**，不钉调用的字面拼写:上一版把整行连同参数
+        # 一起钉进串里，给 `_render_rerun_action` 加一个参数就当场失配——
+        # 而它要钉的「在报告分叉之前渲染」这件事根本没变（#474 同款教训）。
+        import ast
+
+        tree = ast.parse(self.page)
+        chain = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "mode == 'pipeline'" in ast.unparse(node.test)
+        )
+        wf_branch = chain.orelse
+        self.assertTrue(wf_branch, "应当有 walk_forward 分支")
+
+        call_lines = [
+            node.lineno
+            for stmt in wf_branch for node in ast.walk(stmt)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_render_rerun_action"
+        ]
+        self.assertEqual(len(call_lines), 1, "滚动验证分支应当只画一次入口")
+
+        split_lines = [
+            node.lineno
+            for stmt in wf_branch for node in ast.walk(stmt)
+            # 只要**内层**那个 `if wf_report:`——外层 elif 的判据里也含
+            # `wf_report`(`mode == 'walk_forward' or wf_report`),按子串匹配
+            # 会把它一起收进来，比较就成了「在自己之前」这种恒假命题。
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "wf_report"
+        ]
+        self.assertTrue(split_lines, "找不到 `if wf_report:` 分叉")
+        self.assertLess(
+            call_lines[0], min(split_lines),
+            "入口必须在报告分叉**之前**——否则没有报告的那一支就没有入口",
+        )
+
+
+
+class PrefillSuppliedWiringTests(unittest.TestCase):
+    """「这次载荷带了哪些日期字段」——推导正确，且每个控件都拿对了自己的那个。
+
+    AppTest 那一组证的是**绑定函数**在拿到 `supplied=False` 时不改写控件；
+    它注入自己的旗标，所以页面这一侧的接线不在它的覆盖里（变异实测:把
+    `prefill_supplied` 写死成 True、或把推导算成整个 applicable 集合，
+    AppTest 全绿）。这一组补的就是那一段。
+    """
+
+    def _page(self) -> str:
+        return Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+
+    def test_the_supplied_set_is_the_payload_intersected_with_known_keys(
+        self,
+    ) -> None:
+        # **真求值**那个赋值:算成「整个 applicable 集合」会让每个日期控件都
+        # 以为自己被预填了，于是空载荷/解析失败时照样改写控件。
+        import ast
+
+        tree = ast.parse(self._page())
+        node = next(
+            n for n in tree.body
+            if isinstance(n, ast.AnnAssign)
+            and isinstance(n.target, ast.Name)
+            and n.target.id == "_PREFILL_SUPPLIED"
+        )
+        code = compile(ast.Expression(node.value), "<supplied>", "eval")
+
+        applicable = frozenset({"overall_start", "overall_end", "train_start"})
+        cases = (
+            ({"overall_start": "2020-01-02", "not_a_field": 1},
+             {"overall_start"}),
+            ({}, set()),
+            ({"overall_start": "x", "overall_end": "y"},
+             {"overall_start", "overall_end"}),
+        )
+        for payload, expected in cases:
+            with self.subTest(payload=payload):
+                got = eval(  # noqa: S307 - 求值的是本页自己的表达式
+                    code,
+                    {"PREFILL_CONFIG": payload,
+                     "_PREFILL_APPLICABLE_KEYS": applicable},
+                )
+                self.assertEqual(set(got), expected)
+
+    def test_every_date_widget_asks_about_its_own_field(self) -> None:
+        # 每个调用点的 `prefill_supplied` 问的必须是**它自己那个字段**。
+        # 写死成 True（或抄错字段名）会让空载荷时那个控件被强行改写。
+        import ast
+
+        tree = ast.parse(self._page())
+        seen: list[tuple[str, str]] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_select_trading_day"):
+                continue
+            kw = {k.arg: k.value for k in node.keywords}
+            self.assertIn("state_key", kw)
+            self.assertIn(
+                "prefill_supplied", kw,
+                "每个日期控件都要说明这次载荷带没带它自己那个字段",
+            )
+            state_key = ast.literal_eval(kw["state_key"])
+            field = str(state_key).removeprefix("cr_dt_")
+            self.assertEqual(
+                ast.unparse(kw["prefill_supplied"]),
+                f"'{field}' in _PREFILL_SUPPLIED",
+                f"{state_key} 问错了字段",
+            )
+            seen.append((state_key, field))
+
+        self.assertEqual(len(seen), 8, f"日期控件应当有八个,实际 {seen}")
+        self.assertEqual(len(set(seen)), 8, "有重复的 state_key")
+
+
+
+class ValidEmptyPayloadStillCarriesTheModeTests(unittest.TestCase):
+    """合法空 YAML 也是一份**成功解析**的载荷。
+
+    源运行的 `mode` 写在 `job.json` 而**不是**归档 config.yaml 里
+    （`JobManager.start(config_dict, mode)` 把两者分开收），所以结果页单独
+    把它带过来。用 `if PREFILL_CONFIG:` 当应用判据，重跑一次空归档的
+    walk_forward 运行时页面会停在当前的 pipeline 上，模式对比也整个不出
+    ——而模式正是本次提交与那次运行最大的一处不同（codex P2 on #471）。
+    """
+
+    def test_the_apply_branch_keys_off_a_parsed_payload_not_its_size(
+        self,
+    ) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        # 钉**条件整行**。
+        self.assertIn("\nif _HAS_PARSED_PREFILL:\n", source)
+        self.assertNotIn("\nif PREFILL_CONFIG:\n", source)
+
+    def test_one_predicate_governs_all_three_prefill_decisions(self) -> None:
+        """应用分支 / 预设初始化 / 复核区必须由**同一个**判据管。
+
+        在三处各写一遍 ``_HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR`` 就会
+        漏——本 PR 上已经漏过两次:先是应用分支还在用「解析出几个字段」，改对
+        之后预设初始化那一处又把台账带来的模式打回 pipeline（codex P2 ×2）。
+        抽成一个具名常量，三处都引用它，这条钉住那件事。
+        """
+        import ast
+
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+
+        assigns = [
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(x, ast.Name) and x.id == "_HAS_PARSED_PREFILL"
+                    for x in node.targets)
+        ]
+        self.assertEqual(len(assigns), 1, "共享判据应当只定义一处")
+        self.assertEqual(
+            ast.unparse(assigns[0].value),
+            "_HAS_PREFILL_PAYLOAD and (not _PREFILL_ERROR)",
+        )
+
+        uses = sum(
+            1 for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id == "_HAS_PARSED_PREFILL"
+        )
+        self.assertEqual(uses, 4, "定义 1 次 + 三处引用")
+        # 预设初始化那一处**取反**用它——漏掉它就是 codex 第二次点的那格。
+        self.assertIn("    if not _HAS_PARSED_PREFILL:\n", source)
+
+    def test_an_empty_mapping_still_yields_the_source_mode(self) -> None:
+        # 真跑那个合成函数:空映射 + 台账带来的模式 ⇒ 基线里有 mode，
+        # 于是 `_apply_prefill_to_session` 会把引擎切过去。
+        from web.operator_ui.pages._config_run_helpers import (
+            prefill_baseline_with_source_mode,
+        )
+
+        self.assertEqual(
+            prefill_baseline_with_source_mode({}, "walk_forward"),
+            {"mode": "walk_forward"},
+        )
+        # 台账也没记模式时不凭空合成。
+        self.assertEqual(prefill_baseline_with_source_mode({}, ""), {})
+
+    def test_the_empty_config_notice_does_not_deny_the_carried_mode(
+        self,
+    ) -> None:
+        # 提示语原本说「本次没有任何字段可预填」——模式被带过来之后那句就
+        # 不准了。改成「归档里没有任何字段」，并在有模式时明说它仍会带过来。
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        self.assertIn("归档里", source)
+        self.assertIn("仍会被带过来", source)
+
 
 
 if __name__ == "__main__":

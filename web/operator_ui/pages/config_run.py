@@ -47,6 +47,11 @@ from web.operator_ui.page_header import render_page_header
 # "Module level import not at top of file" — Codex P2 on PR #202.
 from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _PIPELINE_DATE_FALLBACK,
+    _RUN_SCOPED_PREFILL_KEYS,
+    DIVERGENCE_CHANGED,
+    DIVERGENCE_MODE_INAPPLICABLE,
+    DIVERGENCE_RUN_SCOPED,
+    DIVERGENCE_SOURCE_MISSING,
     _calibration_seconds_per_unit,
     _estimate_duration,
     _last_n_days_split,
@@ -56,11 +61,15 @@ from web.operator_ui.pages._config_run_helpers import (  # noqa: F401
     _safe_pipeline_last_index,
     _six_increasing_indices,
     _trading_day_options,
+    _values_agree,
     _walk_forward_date_defaults,
     build_config_review_sections,
     config_preset_differences,
+    divergences_of,
     explicitly_applied_preset_name,
     portable_config_for_preset_review,
+    prefill_baseline_with_source_mode,
+    prefill_divergences_from_source_run,
     snapshot_preset_for_review,
     unsupported_prefill_keys,
 )
@@ -200,8 +209,55 @@ def _gather_calibration_seconds_per_unit() -> float | None:
     return _calibration_seconds_per_unit(samples)
 
 
+def _bind_trading_day_state(
+    state_key: str, wanted: str, *, supplied: bool = False,
+) -> None:
+    """把 ``wanted`` 绑到日期控件的 session 键上——只在**该绑的时候**写。
+
+    不带 ``key`` 的 streamlit 控件按「参数变了就是另一个控件」来认身份:
+    ``index``/``value`` 一变，控件重置成新 default（操作人的编辑随之作废）;
+    没变则粘住上一次的值。这套语义有一格是错的——**预填值恰好等于 live
+    default 时** ``index`` 不变、控件不动，于是操作人先前的编辑留着，而横幅
+    照说「已按该次运行覆盖」。启动的窗口与源运行不同，页面上没有任何迹象
+    （codex P1 on #471；用 ``AppTest`` 实测复现）。
+
+    带 ``key`` 的控件则相反:一旦写过就由 session 说了算，``index`` 参数被
+    忽略——那正是 #300 回滚的病根（live default 冻结，换 provider 之后窗口
+    不再按新日历重算）。实测确认这两种失效都真实存在。
+
+    所以这里显式复刻**正确的那部分**语义，并补上错的那一格:
+
+    * ``wanted`` 与上一帧不同 → 写（等价于无 key 版本的「ID 变了」）;
+    * 来了一次**新的预填动作** → 写（无 key 版本漏掉的那一格）;
+    * 其余情况一个字节也不写 → 操作人的编辑粘住。
+
+    五个场景都用 ``AppTest`` 实测过（含 #300 的 provider 切换那一格）。
+    """
+    action = str(st.session_state.get("prefill_config_action", ""))
+    seen_key = f"{state_key}__applied_action"
+    last_key = f"{state_key}__last_wanted"
+    # 动作只对**这次载荷真的带了这个字段**的控件算数（codex P1）。
+    #
+    # 不加这个前提的话:源运行的归档 config 是一份合法空 YAML、或解析失败、
+    # 或旧 schema 里压根没有这个日期字段——`_apply_prefill_to_session` 一个
+    # 字节也没写，而动作 nonce 照样是新的,于是这里把控件强行改写成 live
+    # default，**默默丢掉操作人已经改好的日期**;而页面那一刻正说着「本次
+    # 没有任何字段可预填」。
+    fresh_action = (
+        supplied
+        and bool(action)
+        and st.session_state.get(seen_key) != action
+    )
+    if fresh_action or st.session_state.get(last_key) != wanted:
+        st.session_state[state_key] = wanted
+    if fresh_action:
+        st.session_state[seen_key] = action
+    st.session_state[last_key] = wanted
+
+
 def _select_trading_day(
-    label: str, *, default: str, metadata: ProviderMetadata,
+    label: str, *, default: str, metadata: ProviderMetadata, state_key: str,
+    prefill_supplied: bool = False,
 ) -> str:
     # ``st.text_input`` / ``st.selectbox`` return ``str`` at runtime
     # but the streamlit stubs across versions disagree: some declare
@@ -209,7 +265,10 @@ def _select_trading_day(
     # stubs declare it as ``str`` (so a cast would be redundant). A
     # narrow ignore that covers both:
     if not metadata.calendar_dates:
-        return st.text_input(label, value=default)  # type: ignore[no-any-return,unused-ignore]
+        _bind_trading_day_state(
+            state_key, default, supplied=prefill_supplied)
+        return st.text_input(  # type: ignore[no-any-return,unused-ignore]
+            label, value=default, key=state_key)
     options = _trading_day_options(metadata.calendar_dates)
     resolved_index = _option_index(options, default)
     if resolved_index < 0:
@@ -223,11 +282,18 @@ def _select_trading_day(
             "请确认时间窗，或重建覆盖更长区间的生产 bundle（scripts/data_pipeline/）。"
         )
         resolved_index = 0
+    # **先解析回退，再只绑一次**（codex P1）。绑两次——一次拿日历外的
+    # `default`、一次拿 `options[0]`——会让 `__last_wanted` 在两个值之间
+    # 每帧来回摆，于是「wanted 变了」永远成立，控件被**每帧**改写:操作人
+    # 在预填之后选的任何合法日期都会被打回日历的第一天。
+    _bind_trading_day_state(
+        state_key, options[resolved_index], supplied=prefill_supplied)
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
         label,
         options=options,
         index=resolved_index,
         help="仅可在所选数据源日历内的交易日中选择。",
+        key=state_key,
     )
 
 
@@ -309,14 +375,40 @@ def _detect_preset() -> str:
 
 
 def _prefill_config() -> dict[str, Any]:
-    raw = st.session_state.get("prefill_config_yaml")
-    if not raw:
+    """被重跑那次运行的配置,或空 dict。
+
+    解析失败**不静默**:此前 YAMLError 与「顶层不是 dict」都直接返回空
+    dict,页面于是一个字都不说——操作人以为没点中按钮,或以为预填成功了。
+    失败原因写进 session,由页面响亮报出（fail-loud 纪律）。
+    """
+    st.session_state.pop("prefill_config_error", None)
+    if "prefill_config_yaml" not in st.session_state:
+        return {}
+    raw = st.session_state["prefill_config_yaml"]
+    if not str(raw).strip():
+        # 键在场但内容为空 = 源运行的归档 config.yaml 是**零字节**（或只有
+        # 空白）。空 YAML 文档的顶层不是映射，与下面那条「顶层不是映射」
+        # 同罪同治——静默返回空 dict 会让操作人以为没点中按钮（codex P2）。
+        st.session_state["prefill_config_error"] = (
+            "源运行的 config.yaml 是**空文件**（零字节或只有空白）——空 YAML "
+            "文档的顶层不是映射，本次**未预填任何字段**。"
+        )
         return {}
     try:
         loaded = yaml.safe_load(str(raw))
-    except yaml.YAMLError:
+    except yaml.YAMLError as exc:
+        st.session_state["prefill_config_error"] = (
+            f"源运行的 config.yaml 解析失败（{type(exc).__name__}）——本次"
+            f"**未预填任何字段**:{exc}"
+        )
         return {}
-    return loaded if isinstance(loaded, dict) else {}
+    if not isinstance(loaded, dict):
+        st.session_state["prefill_config_error"] = (
+            f"源运行的 config.yaml 顶层不是映射（读到 "
+            f"{type(loaded).__name__}）——本次**未预填任何字段**。"
+        )
+        return {}
+    return loaded
 
 
 # ---------------------------------------------------------------------------
@@ -330,23 +422,274 @@ render_page_header(
 # ---------------------------------------------------------------------------
 # Prefill from previous run
 # ---------------------------------------------------------------------------
+# `_prefill_config()` 每帧都从同一份 `prefill_config_yaml` 重新解析,所以
+# 失败是幂等重现的——不需要跨帧保存错误,读当帧这一次即可。
 PREFILL_CONFIG = _prefill_config()
-if PREFILL_CONFIG:
+_PREFILL_ERROR = st.session_state.get("prefill_config_error")
+if _PREFILL_ERROR:
+    st.error(f"⚠ {_PREFILL_ERROR}")
+# ---------------------------------------------------------------------------
+# 本页**真正会提交**的键
+#
+# 这不是 PIPELINE_KEYS / WALK_FORWARD_KEYS。那两个是**后端** schema,含本页
+# 任何模式下都不发的字段（`run_factor_analysis` 等）。把后端全集当成「本页
+# 的字段」用,同一个错误已经在这个 change 里出现过三种形态:
+#
+#   * `output_dir` 被预填写进 session ⇒ 第二次重跑报一条假的「被覆盖」;
+#   * 后端独有字段被复核区标成 mode_only ⇒「切模式即生效」是假的,而
+#     `unsupported_prefill_keys` 同时说「本页不支持」,两句自相矛盾;
+#   * 同一个字段被预填写进 session ⇒ 下次重跑又报一条假的「被覆盖」,而复核
+#     区同时说「本次不会携带它」。
+#
+# 所以「本页发出什么」只有这一处定义,三个消费者（预填写入、复核区的
+# mode_only 判定、提交前的对比基线）都从它派生。
+#
+# 三份常量与页面下方 `config_dict` 的字面量一一对应,由
+# `test_operator_ui_config_run_source` 的 AST 守卫钉住同步——分叉的后果是
+# **说错话而不报错**:某个字段被说成会生效/被覆盖,而页面照常提交,没有任何
+# 东西会红。
+# ---------------------------------------------------------------------------
+
+#: 两个模式共享的提交字段（`config_dict = {...}` 字面量）。
+_SHARED_EMITTED = frozenset({
+    "adjust_mode", "attribution_sleeve_grouping", "benchmark_code",
+    "commission_rate", "compute_device", "early_stopping_rounds",
+    "feature_handler", "init_cash", "instruments", "learning_rate",
+    "limit_threshold", "min_cost", "model_type", "n_drop",
+    "num_boost_round", "provider_uri", "risk_constraints_calibration",
+    "risk_constraints_enabled", "seed", "signal_to_execution_lag",
+    "slippage_bps", "topk",
+})
+#: 各模式**额外**发出的字段（两个 `config_dict.update({...})` 字面量）。
+_PIPELINE_ONLY_EMITTED = frozenset({
+    "train_start", "train_end", "valid_start", "valid_end",
+    "test_start", "test_end",
+})
+_WALK_FORWARD_ONLY_EMITTED = frozenset({
+    "overall_start", "overall_end", "train_months", "valid_months",
+    "test_months", "step_months", "ensemble_window",
+})
+#: 本页在**某个**模式下会提交的全部字段。`namechange_path` 由 setdefault 补
+#: 上（本页无控件但确实随配置发出）;`mode` 是提交载荷的一部分。
+_PAGE_EMITTED_KEYS = (
+    _SHARED_EMITTED | _PIPELINE_ONLY_EMITTED | _WALK_FORWARD_ONLY_EMITTED
+    | {"namechange_path", "mode"}
+)
+
+#: 本页**发出但从不读回**的字段——它进得了提交载荷,却不经由任何控件的
+#: session 键。
+#:
+#: `namechange_path` 由 `config_dict.setdefault(..., resolve_namechange_path())`
+#: 无条件补上,本页没有对应控件,也从不读 `cr_namechange_path`。
+#:
+#: 预填这种字段是**有害的无用功**:值写进 session 却到不了发出的配置,而下一
+#: 次重跑另一份归档配置时,它会被如实报成「被覆盖」——一条关于「哪个值会生
+#: 效」的假消息。本 change 的 spec 自己写着「预填写进去的每个字段都必须被提
+#: 交它的控件读回」,这份名单就是那条要求的执行点。
+#:
+#: 守卫用 AST 从源码算出「本页读回的键」(所有 `_cr(...)` 的第一参、
+#: `_prefilled_trading_day(...)` 的第一参、以及带 `key="cr_*"` 的控件),再与
+#: `_PAGE_EMITTED_KEYS` 求差——差集必须**正好**等于这份名单。将来某个字段的
+#: 控件被删掉,守卫会红并要求把它写进来,而不是让它悄悄变成第二个
+#: `namechange_path`。
+_EMITTED_WITHOUT_READBACK = frozenset({"namechange_path"})
+
+#: 预填**一次性覆盖**的键。跨模式取并集:源运行可能是另一个模式,它的键要先
+#: 落进 session,`mode` 切过去时才有值可用。
+#:
+#: run-scoped 键（`output_dir`）**不在**上面三份常量里,所以这里不需要再减
+#: 一次。刻意不加那道减法:它是 no-op,而 no-op 的兜底恰恰会掩盖「有人把
+#: `output_dir` 写进 `_SHARED_EMITTED`」这种错误——那才是要修的地方。守卫在
+#: 测试里响亮地钉住两者无交集（fail-loud 优于静默兜底）。
+#:
+#: 为什么 run-scoped 键必须缺席:`output_dir` 由 JobManager 每次注入,本页从
+#: 不提交它。让它进来的话,同一会话里连着重跑两次作业,第二次会把第一次的目
+#: 录报成「被覆盖」——一个本页同时声明「随运行而生、不会携带」的字段。假警
+#: 告比没有警告更坏:操作人学会忽略整块。
+_PREFILL_APPLICABLE_KEYS = _PAGE_EMITTED_KEYS - _EMITTED_WITHOUT_READBACK
+
+
+def _apply_prefill_to_session(
+    incoming: dict[str, Any], applicable_keys: frozenset[str],
+) -> list[tuple[str, Any, Any]]:
+    """把预填值写进本页的字段状态,返回被覆盖的 ``(键, 旧值, 新值)``。
+
+    顶层函数而非模块级散代码,是为了让它能被**真跑**:源码串断言看不见
+    session 状态,而这里的每一条规则（覆盖而非跳过、只写已知键、只把值
+    不同的记成覆盖）都只在运行时才成立或失败。
+
+    预填**即权威**,无条件覆盖已知键。此前是条件写入（只在该字段的 session
+    键尚不存在时才写）,在最常见路径上 100% 失效:``_cr()`` 只要被调用过就把
+    ``cr_*`` 种满,所以操作人只要打开过一次本页,之后点「用此配置重跑」就一
+    个字段也预填不进来,而横幅照说「已预填」。覆盖是安全的:点重跑本身就是
+    显式指令,且时序上晚于本会话此前的任何编辑;调用方的 token 保证每份源
+    载荷只应用一次,预填之后的编辑照常生效。
+
+    只覆盖**已知键**:源 YAML 的任意键都写 ``cr_<key>`` 会撞上控件键
+    （``cr_preset_selector`` / ``cr_show_diff_toggle`` 等）。
+    """
+
+    overwritten: list[tuple[str, Any, Any]] = []
+    for key, value in incoming.items():
+        if key not in applicable_keys:
+            continue
+        session_key = f"cr_{key}"
+        # 日期控件有**自己的** key（`cr_dt_<field>`）:操作人改过之后，
+        # 他看到的那个值在那里，而 `cr_<field>` 还停在预填/默认写进去的
+        # 旧值。只读后者的话，账本会报「2020 → 2022」而屏幕上明明是 2021;
+        # 更坏的一格是新值恰好等于那个旧值时**一条覆盖都不报**，而可见的
+        # 2021 选择照样被重置（codex P2）。
+        widget_key = f"cr_dt_{key}"
+        if widget_key in st.session_state:
+            previous = st.session_state[widget_key]
+            present = True
+        else:
+            previous = st.session_state.get(session_key)
+            present = session_key in st.session_state
+        if present and not _values_agree(previous, value):
+            overwritten.append((key, previous, value))
+        st.session_state[session_key] = value
+    return overwritten
+
+
+def _prefilled_trading_day(field: str, live_default: str) -> str:
+    """滚动验证窗口端点:预填过就用预填值,否则用日历重算的 live default。
+
+    刻意**只读不写**,也刻意不走 ``_cr``。``_cr`` 会把 live default **种进**
+    session 并从此粘住,于是第一帧的 no-calendar 回退被冻结、后续按 provider
+    日历重算的窗口被无视（codex P2 on #300,那次改动因此被回滚）。这里没有
+    预填时一个字节也不写,live default 每帧照常重算,#300 的病根不复现。
+
+    修的是另一个缺陷:``overall_start`` / ``overall_end`` 是滚动验证窗口的
+    两个**定义性**字段,预填把它们写进了 session,而控件此前从不读——于是
+    「用此配置重跑」一次滚动验证运行,跑的日期区间与源运行不同,而复核区
+    看不出来（它比的是控件产出的值,两侧都是 live default）。
+    """
+
+    value = st.session_state.get(f"cr_{field}")
+    if isinstance(value, str) and value:
+        return value
+    return live_default
+
+
+#: 这一帧**有没有一份重跑载荷**——与「那份载荷解析出几个字段」是两回事。
+#:
+#: 用 `if PREFILL_CONFIG:` 当判据，会把一份合法但为空的归档配置（YAML 里就是
+#: `{}`）与「压根没点重跑」混成同一格：预填不跑、横幅不出、复核区也不出，
+#: 点「用此配置重跑」看起来**什么都没发生**。而那恰恰是最该说话的时刻——
+#: 操作人有理由怀疑是不是按钮坏了。
+#:
+#: 载荷在场与否只看那个 session 键在不在，不看它的解析结果；解析失败另有
+#: `prefill_config_error` 响亮报出，两条路不合并。
+#: **键在不在**,不是「它的内容真不真」——零字节的归档 config 会让内容判据
+#: 把「点了重跑」与「没点」混成一格,而这个常量的注释本来就写着「只看那个
+#: session 键在不在」。代码与注释此前对不上（codex P2）。
+_HAS_PREFILL_PAYLOAD = "prefill_config_yaml" in st.session_state
+
+#: **有一份成功解析的重跑载荷**——本页对「这次重跑算不算数」的唯一判据。
+#:
+#: 命名成一个常量而不是在三处各写一遍 `_HAS_PREFILL_PAYLOAD and not
+#: _PREFILL_ERROR`:这三处（应用分支 / 预设初始化 / 复核区）必须同时成立或
+#: 同时不成立。写三遍就会漏——本 PR 上已经漏过两次:先是应用分支还在用
+#: 「解析出几个字段」，改对之后预设初始化那一处又把模式打回 pipeline
+#: （codex P2 ×2）。
+_HAS_PARSED_PREFILL = _HAS_PREFILL_PAYLOAD and not _PREFILL_ERROR
+
+_prefill_overwritten: list[tuple[str, Any, Any]] = []
+if _HAS_PREFILL_PAYLOAD and not PREFILL_CONFIG and not _PREFILL_ERROR:
+    # 解析成功、顶层是映射、但一个键都没有。这是**合法**的归档配置，不是
+    # 错误——所以不走 `st.error`；但它必须说话，否则与「没点按钮」不可分辨。
+    st.warning(
+        f"⚠ 运行 {st.session_state.get('prefill_config_source_job', '')} 的 "
+        "config.yaml 是一份**空配置**（合法 YAML，但没有任何字段）——归档里"
+        "**没有任何字段可预填**，下方仍是本页当前的值。"
+        + (
+            f"（该次运行的模式 **{st.session_state.get('prefill_config_source_mode', '')}** "
+            "写在作业台账而非归档 config 里，仍会被带过来。）"
+            if str(st.session_state.get("prefill_config_source_mode", ""))
+            else ""
+        )
+    )
+#: 这次载荷**真的带了**哪些日期字段。日期控件的强制改写只对它们算数——
+#: 空配置 / 解析失败 / 旧 schema 缺字段时，动作 nonce 照样是新的，但一个
+#: 字节也没预填，此时改写控件就是默默丢掉操作人的编辑（codex P1 on #471）。
+#:
+#: 模块级变量就够:控件在同一次脚本运行里、在这一段之后渲染，不必过 session。
+_PREFILL_SUPPLIED: frozenset[str] = frozenset(
+    k for k in PREFILL_CONFIG if k in _PREFILL_APPLICABLE_KEYS
+) if PREFILL_CONFIG else frozenset()
+
+# 判据是「**有一份成功解析的载荷**」，不是「那份载荷至少解析出一个字段」
+# （codex P2）。合法空 YAML（`{}`）下 `PREFILL_CONFIG` 为假，但结果页仍然
+# 单独带过来了源运行的 `mode`（它写在 job.json 而不是归档 config.yaml 里）。
+# 用 `if PREFILL_CONFIG:` 当判据，重跑一次空归档的 walk_forward 运行时页面
+# 会停在当前的 pipeline 上，模式对比也整个不出——而模式正是本次提交与那次
+# 运行最大的一处不同。
+if _HAS_PARSED_PREFILL:
     source_job = st.session_state.get("prefill_config_source_job", "")
-    st.info(f"已从上一次运行 {source_job} 预填配置。启动前请核对参数。")
-    prefill_token = f"{source_job}:{hash(str(st.session_state.get('prefill_config_yaml', '')))}"
+    prefill_token = (
+        f"{source_job}:"
+        # 结果页每一次**按下**「用此配置重跑」铸的一次性动作身份（codex P1
+        # on #471）。只有源运行 + 配置内容的话,对**同一个运行**再点一次不会
+        # 改变令牌:应用分支被跳过、操作人这期间的改动原样留着,而横幅照说
+        # 「已按该次运行覆盖」——启动的实验与他明确重选的那次不一致。
+        #
+        # 幂等性靠「nonce 只在按钮回调里换」保住:普通的 Streamlit 重绘不
+        # 经过那个回调,同一次预填在整个会话里只应用一次。
+        f"{st.session_state.get('prefill_config_action', '')}:"
+        # `usedforsecurity=False`:这是个会话内的稳定令牌,不是安全摘要。FIPS
+        # 受限的 Python 构建下,不带这个参数的 `hashlib.md5` 会 raise——点
+        # 「用此配置重跑」会在预填生效之前把配置页整页打崩。同文件的按钮键
+        # 生成早就是这么写的。
+        f"{hashlib.md5(str(st.session_state.get('prefill_config_yaml', '')).encode('utf-8'), usedforsecurity=False).hexdigest()}"
+    )
     if st.session_state.get("prefill_config_applied_token") != prefill_token:
         # A rerun prefill is not a preset selection. Clear any prior review
         # identity/snapshot before the automatic field matching below may label
         # it Default or Smoke.
         st.session_state.pop(_REVIEW_PRESET_NAME_STATE, None)
         st.session_state.pop(_REVIEW_PRESET_SNAPSHOT_STATE, None)
-        if PREFILL_CONFIG.get("provider_uri"):
-            st.session_state["cr_provider_uri"] = str(PREFILL_CONFIG["provider_uri"])
-        for k, v in PREFILL_CONFIG.items():
-            if k != "provider_uri" and f"cr_{k}" not in st.session_state:
-                st.session_state[f"cr_{k}"] = v
+        # 预设选择器同步成 Custom,否则**预填会被下一帧撤销**:预填把字段改
+        # 成源运行的值 ⇒ `_detect_preset()` 记 `Custom` ⇒ 而选择器 widget
+        # 还粘着操作人上次选的预设(通常是 Default)⇒ 下一次任何控件触发的
+        # 重跑里 `preset_choice != current_preset`,于是 `_apply_preset()`
+        # 把源运行的值整片覆盖回去,而横幅照说「已按该次运行覆盖」
+        # (codex P1 on #471 r6)。
+        #
+        # 写 `Custom` 而不是检测结果:检测要等字段控件落定,而这里在它们之
+        # 前。`Custom` 是保守且正确的——预填来自一次运行的归档配置,它不是
+        # 「选了某个预设」这个动作。源配置恰好等于某个预设时,下方的
+        # `_detect_preset()` 仍会如实把 `cr_preset` 记成那个预设名,而选择器
+        # 停在 `Custom` 只会让那条 `_apply_preset` 分支不触发——正是要的。
+        st.session_state["cr_preset_selector"] = CUSTOM_PRESET_NAME
+        st.session_state["cr_preset"] = CUSTOM_PRESET_NAME
+        _prefill_overwritten = _apply_prefill_to_session(
+            prefill_baseline_with_source_mode(
+                PREFILL_CONFIG,
+                str(st.session_state.get("prefill_config_source_mode", "")),
+            ),
+            _PREFILL_APPLICABLE_KEYS,
+        )
         st.session_state["prefill_config_applied_token"] = prefill_token
+        st.session_state["prefill_overwritten_fields"] = list(
+            _prefill_overwritten)
+    else:
+        _prefill_overwritten = list(
+            st.session_state.get("prefill_overwritten_fields") or [])
+    st.info(
+        f"已从上一次运行 {source_job} 预填配置——本页已按该次运行**覆盖**"
+        "相应字段。启动前请核对参数；页面底部的复核区会逐项列出即将提交"
+        "的配置与该次运行的差异。"
+    )
+    if _prefill_overwritten:
+        st.warning(
+            f"⚠ 预填覆盖了本会话此前的 {len(_prefill_overwritten)} 个字段"
+            "（点「用此配置重跑」即以源运行为准）：\n"
+            + "\n".join(
+                f"- `{_k}`：`{_old}` → `{_new}`"
+                for _k, _old, _new in _prefill_overwritten
+            )
+        )
 
 
 def _cr(key: str, default: Any = None) -> Any:
@@ -360,7 +703,12 @@ def _cr(key: str, default: Any = None) -> Any:
 
 
 if "cr_preset_initialized" not in st.session_state:
-    if not PREFILL_CONFIG:
+    # 判据与上面的应用分支**同一个**（codex P2）。用 `not PREFILL_CONFIG`
+    # 的话:新会话里打开一份合法空归档的 walk_forward 重跑，应用分支刚把
+    # 台账带来的 `mode` 写进 session，这里就因为「解析出的字段数为 0」而
+    # 套上 `default.yaml`，把模式打回 pipeline。上一轮加的那个判据于是只
+    # 对「此前打开过配置页」的操作人生效。
+    if not _HAS_PARSED_PREFILL:
         _apply_preset("Default")
     st.session_state["cr_preset_initialized"] = True
 
@@ -576,48 +924,68 @@ with form_col:
                     "train_start",
                     default=_cr("train_start", pipeline_date_defaults["train_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_train_start",
+                prefill_supplied="train_start" in _PREFILL_SUPPLIED,
+            )
                 valid_start = _select_trading_day(
                     "valid_start",
                     default=_cr("valid_start", pipeline_date_defaults["valid_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_valid_start",
+                prefill_supplied="valid_start" in _PREFILL_SUPPLIED,
+            )
                 test_start = _select_trading_day(
                     "test_start",
                     default=_cr("test_start", pipeline_date_defaults["test_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_test_start",
+                prefill_supplied="test_start" in _PREFILL_SUPPLIED,
+            )
             with dc2:
                 train_end = _select_trading_day(
                     "train_end",
                     default=_cr("train_end", pipeline_date_defaults["train_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_train_end",
+                prefill_supplied="train_end" in _PREFILL_SUPPLIED,
+            )
                 valid_end = _select_trading_day(
                     "valid_end",
                     default=_cr("valid_end", pipeline_date_defaults["valid_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_valid_end",
+                prefill_supplied="valid_end" in _PREFILL_SUPPLIED,
+            )
                 test_end = _select_trading_day(
                     "test_end",
                     default=_cr("test_end", pipeline_date_defaults["test_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_test_end",
+                prefill_supplied="test_end" in _PREFILL_SUPPLIED,
+            )
         else:
-            # NOTE: these read the LIVE default recomputed from the current
-            # provider's calendar each rerun (NOT via _cr). Routing them through
-            # _cr to honour preset/rerun prefill regressed provider-tracking —
-            # _cr seed-and-sticks the (provider-dependent) default, freezing a
-            # first-render no-calendar fallback and ignoring the recomputed
-            # window (codex P2 on #300). Honouring preset/prefill here without
-            # losing provider-tracking needs a separate, runtime-verified fix.
+            # 预填过就用预填值,否则用 provider 日历每帧重算的 live default
+            # ——`_prefilled_trading_day` 只读不写,所以 #300 那次回滚的病根
+            # (`_cr` 把 live default 种住并冻结 no-calendar 回退) 不复现。
+            # 不接线的后果是:重跑一次滚动验证运行,窗口的两个定义性字段仍
+            # 是本机 live default,跑的区间与源运行不同(codex P1 on #471)。
             overall_start = _select_trading_day(
-                "overall_start", default=walk_forward_date_defaults["overall_start"],
+                "overall_start",
+                default=_prefilled_trading_day(
+                    "overall_start",
+                    walk_forward_date_defaults["overall_start"]),
                 metadata=provider_metadata,
+                state_key="cr_dt_overall_start",
+                prefill_supplied="overall_start" in _PREFILL_SUPPLIED,
             )
             overall_end = _select_trading_day(
-                "overall_end", default=walk_forward_date_defaults["overall_end"],
+                "overall_end",
+                default=_prefilled_trading_day(
+                    "overall_end",
+                    walk_forward_date_defaults["overall_end"]),
                 metadata=provider_metadata,
+                state_key="cr_dt_overall_end",
+                prefill_supplied="overall_end" in _PREFILL_SUPPLIED,
             )
             wf1, wf2 = st.columns(2)
             with wf1:
@@ -1023,8 +1391,39 @@ with form_col:
     _preset_differences = config_preset_differences(
         preview_config, _review_preset,
     )
+    # 比较基线要含源模式:UI 启动的运行把 mode 写进 job.json 而不是归档
+    # config.yaml,只比 YAML 的话,把一次 walk_forward 重跑改成 pipeline
+    # 会被说成「共有字段逐项一致」(codex P2 on #471)。
+    _prefill_baseline = prefill_baseline_with_source_mode(
+        PREFILL_CONFIG,
+        str(st.session_state.get("prefill_config_source_mode", "")),
+    )
+    # `mode` 是**本次提交**的一部分(`preview_config = {"mode": mode, ...}`)
+    # 却不在两个 KEYS 常量里,不加就永远不参与比较。
+    _review_known_keys = frozenset(known_keys) | {"mode"}
+    # 「属于另一个模式」必须是**本页在那个模式下真的会发出**的键,不是后端
+    # schema 的全集。用全集的话,像 `run_factor_analysis` 这种「在
+    # PIPELINE_KEYS 里、但本页任何模式下都不发」的键会被标成 mode_only
+    # (「切模式即生效」——假的),而 unsupported 同时说「本页不支持」:同一个
+    # 自相矛盾,只是换了个来源(codex P2 on #471 r4)。
+    _review_other_mode_keys = (
+        _WALK_FORWARD_ONLY_EMITTED if mode == "pipeline"
+        else _PIPELINE_ONLY_EMITTED
+    )
+    # 「本页不支持」的名单要先减掉「属于另一模式」的那些,否则同一个键会同时
+    # 拿到两句互相打架的结论（展开区说切模式即生效，黄色警告说本页不支持）。
     _unsupported_prefill = unsupported_prefill_keys(
-        PREFILL_CONFIG, preview_config,
+        _prefill_baseline, preview_config,
+        other_mode_keys=_review_other_mode_keys,
+    )
+    # 与**被重跑那次运行**的差异（不是与预设的差异——上面那张表比的是
+    # 预设）。预填现在无条件覆盖已知键,但那只保证「预填那一刻」一致:预
+    # 填之后操作人还能改任何字段。提交前把差异摊开,让「我重跑的到底是不
+    # 是那次运行」有一处可核对的答案。
+    _prefill_divergences = prefill_divergences_from_source_run(
+        _prefill_baseline, preview_config,
+        known_keys=_review_known_keys,
+        other_mode_keys=_review_other_mode_keys,
     )
 
     with st.expander("完整提交配置（只读）", expanded=True):
@@ -1081,6 +1480,90 @@ with form_col:
                 ],
                 hide_index=True,
                 width="stretch",
+            )
+
+    # 同一判据（codex P2）。合法空归档下 `_prefill_baseline` 里仍然有台账
+    # 带来的 `mode`，横幅也承诺了「复核区会逐项列出」——用字段数当判据会让
+    # 整块复核区不出，`source_missing` 与模式对比一条都看不到。
+    if _HAS_PARSED_PREFILL:
+        _source_job = st.session_state.get("prefill_config_source_job", "")
+        # 四类分开说。混成一句的话,一次老运行重跑会被十几行 schema 演进
+        # 噪音淹掉真正需要确认的值改动,操作人会学会忽略整块。
+        _changed = divergences_of(_prefill_divergences, DIVERGENCE_CHANGED)
+        _source_missing = divergences_of(
+            _prefill_divergences, DIVERGENCE_SOURCE_MISSING)
+        _mode_only = divergences_of(
+            _prefill_divergences, DIVERGENCE_MODE_INAPPLICABLE)
+        _run_scoped = divergences_of(
+            _prefill_divergences, DIVERGENCE_RUN_SCOPED)
+        if _changed:
+            st.warning(
+                f"⚠ 即将提交的配置与被重跑的运行 `{_source_job}` **有 "
+                f"{len(_changed)} 项值不同**——预填之后这些字段被改过。"
+                "这不是错误，但请确认差异是你要的："
+            )
+            st.dataframe(
+                [
+                    {
+                        "配置项": _d.key,
+                        f"源运行（{_source_job}）": str(_d.source_value),
+                        "即将提交": str(_d.emitted_value),
+                    }
+                    for _d in _changed
+                ],
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.caption(
+                f"✓ 即将提交的配置与运行 `{_source_job}` 在两侧共有的字段上"
+                "逐项一致。"
+            )
+        if _source_missing:
+            with st.expander(
+                f"源运行未记录的字段（{len(_source_missing)} 项，"
+                "本次按本页当前值提交）",
+                expanded=False,
+            ):
+                st.caption(
+                    "这些键在那次运行的 config.yaml 里**不存在**——多半是它"
+                    "早于该字段进入 schema。本页不推断「它当时用的是默认"
+                    "值」：那等于替一次没记录的运行编造基线。"
+                )
+                st.dataframe(
+                    [
+                        {"配置项": _d.key, "即将提交": str(_d.emitted_value)}
+                        for _d in _source_missing
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+        if _mode_only:
+            with st.expander(
+                f"属于另一个模式的字段（{len(_mode_only)} 项，本次不提交）",
+                expanded=False,
+            ):
+                st.caption(
+                    f"当前模式是 `{mode}`，这些键属于另一模式的 schema——它们"
+                    "已随预填落入本页状态，切换模式后即生效，但本次提交不含"
+                    "它们。"
+                )
+                st.dataframe(
+                    [
+                        {
+                            "配置项": _d.key,
+                            f"源运行（{_source_job}）": str(_d.source_value),
+                        }
+                        for _d in _mode_only
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+        if _run_scoped:
+            st.caption(
+                "· 源运行的 `"
+                + "`、`".join(_d.key for _d in _run_scoped)
+                + "` 随那一次运行而生（由作业管理器注入），不随配置携带。"
             )
 
     if _unsupported_prefill:
