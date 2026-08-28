@@ -209,16 +209,51 @@ def _gather_calibration_seconds_per_unit() -> float | None:
     return _calibration_seconds_per_unit(samples)
 
 
+def _bind_trading_day_state(state_key: str, wanted: str) -> None:
+    """把 ``wanted`` 绑到日期控件的 session 键上——只在**该绑的时候**写。
+
+    不带 ``key`` 的 streamlit 控件按「参数变了就是另一个控件」来认身份:
+    ``index``/``value`` 一变，控件重置成新 default（操作人的编辑随之作废）;
+    没变则粘住上一次的值。这套语义有一格是错的——**预填值恰好等于 live
+    default 时** ``index`` 不变、控件不动，于是操作人先前的编辑留着，而横幅
+    照说「已按该次运行覆盖」。启动的窗口与源运行不同，页面上没有任何迹象
+    （codex P1 on #471；用 ``AppTest`` 实测复现）。
+
+    带 ``key`` 的控件则相反:一旦写过就由 session 说了算，``index`` 参数被
+    忽略——那正是 #300 回滚的病根（live default 冻结，换 provider 之后窗口
+    不再按新日历重算）。实测确认这两种失效都真实存在。
+
+    所以这里显式复刻**正确的那部分**语义，并补上错的那一格:
+
+    * ``wanted`` 与上一帧不同 → 写（等价于无 key 版本的「ID 变了」）;
+    * 来了一次**新的预填动作** → 写（无 key 版本漏掉的那一格）;
+    * 其余情况一个字节也不写 → 操作人的编辑粘住。
+
+    五个场景都用 ``AppTest`` 实测过（含 #300 的 provider 切换那一格）。
+    """
+    action = str(st.session_state.get("prefill_config_action", ""))
+    seen_key = f"{state_key}__applied_action"
+    last_key = f"{state_key}__last_wanted"
+    fresh_action = bool(action) and st.session_state.get(seen_key) != action
+    if fresh_action or st.session_state.get(last_key) != wanted:
+        st.session_state[state_key] = wanted
+    if fresh_action:
+        st.session_state[seen_key] = action
+    st.session_state[last_key] = wanted
+
+
 def _select_trading_day(
-    label: str, *, default: str, metadata: ProviderMetadata,
+    label: str, *, default: str, metadata: ProviderMetadata, state_key: str,
 ) -> str:
     # ``st.text_input`` / ``st.selectbox`` return ``str`` at runtime
     # but the streamlit stubs across versions disagree: some declare
     # the return as ``Any`` (CI's older stubs → no-any-return), newer
     # stubs declare it as ``str`` (so a cast would be redundant). A
     # narrow ignore that covers both:
+    _bind_trading_day_state(state_key, default)
     if not metadata.calendar_dates:
-        return st.text_input(label, value=default)  # type: ignore[no-any-return,unused-ignore]
+        return st.text_input(  # type: ignore[no-any-return,unused-ignore]
+            label, value=default, key=state_key)
     options = _trading_day_options(metadata.calendar_dates)
     resolved_index = _option_index(options, default)
     if resolved_index < 0:
@@ -232,11 +267,15 @@ def _select_trading_day(
             "请确认时间窗，或重建覆盖更长区间的生产 bundle（scripts/data_pipeline/）。"
         )
         resolved_index = 0
+        # 落到日历外时绑的是**替换后**的那个值,不是配置里那个不存在的日期
+        # ——否则控件显示 options[0] 而 session 里躺着一个日历外的值。
+        _bind_trading_day_state(state_key, options[0])
     return st.selectbox(  # type: ignore[no-any-return,unused-ignore]
         label,
         options=options,
         index=resolved_index,
         help="仅可在所选数据源日历内的交易日中选择。",
+        key=state_key,
     )
 
 
@@ -811,33 +850,39 @@ with form_col:
                     "train_start",
                     default=_cr("train_start", pipeline_date_defaults["train_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_train_start",
+            )
                 valid_start = _select_trading_day(
                     "valid_start",
                     default=_cr("valid_start", pipeline_date_defaults["valid_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_valid_start",
+            )
                 test_start = _select_trading_day(
                     "test_start",
                     default=_cr("test_start", pipeline_date_defaults["test_start"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_test_start",
+            )
             with dc2:
                 train_end = _select_trading_day(
                     "train_end",
                     default=_cr("train_end", pipeline_date_defaults["train_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_train_end",
+            )
                 valid_end = _select_trading_day(
                     "valid_end",
                     default=_cr("valid_end", pipeline_date_defaults["valid_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_valid_end",
+            )
                 test_end = _select_trading_day(
                     "test_end",
                     default=_cr("test_end", pipeline_date_defaults["test_end"]),
                     metadata=provider_metadata,
-                )
+                state_key="cr_dt_test_end",
+            )
         else:
             # 预填过就用预填值,否则用 provider 日历每帧重算的 live default
             # ——`_prefilled_trading_day` 只读不写,所以 #300 那次回滚的病根
@@ -850,6 +895,7 @@ with form_col:
                     "overall_start",
                     walk_forward_date_defaults["overall_start"]),
                 metadata=provider_metadata,
+                state_key="cr_dt_overall_start",
             )
             overall_end = _select_trading_day(
                 "overall_end",
@@ -857,6 +903,7 @@ with form_col:
                     "overall_end",
                     walk_forward_date_defaults["overall_end"]),
                 metadata=provider_metadata,
+                state_key="cr_dt_overall_end",
             )
             wf1, wf2 = st.columns(2)
             with wf1:

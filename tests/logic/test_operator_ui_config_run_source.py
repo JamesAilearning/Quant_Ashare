@@ -542,6 +542,7 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
                 "train_start",
                 default="2022-01-01",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         # Snapped to calendar[0].
@@ -579,6 +580,7 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
                 "train_start",
                 default="2023-06-13",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         self.assertEqual(result, "2023-06-13")
@@ -603,12 +605,13 @@ class SelectTradingDayFallbackTests(unittest.TestCase):
             side_effect=lambda msg, *_a, **_kw: captured_warnings.append(msg),
         ), patch(
             "streamlit.text_input",
-            side_effect=lambda label, value: value,
+            side_effect=lambda label, value, **_kw: value,
         ):
             result = config_run._select_trading_day(
                 "train_start",
                 default="2022-01-01",
                 metadata=metadata,
+                state_key="cr_dt_train_start",
             )
 
         self.assertEqual(result, "2022-01-01")

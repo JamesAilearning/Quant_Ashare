@@ -216,3 +216,46 @@ prefill did not seem to apply" — a symptom that does not look like a defect.
 - **WHEN** the results page renders it
 - **THEN** the rerun action is still available, because that is exactly when an
   operator wants to adjust parameters and run again
+
+### Requirement: A prefilled date SHALL bind to the widget, not merely to its default
+
+Prefilled date fields SHALL be bound to the widget's own state, so that applying
+a prefill replaces what the operator sees and what a launch submits — including
+when the prefilled value equals the value the page would have defaulted to.
+
+Passing the value only as the widget's default is not binding. An unkeyed
+Streamlit widget is identified by its parameters: change the index and it
+resets, leave the index unchanged and it retains whatever the operator last
+chose. So the one case where the prefilled value coincides with the calendar
+default silently keeps the operator's earlier date while the banner states that
+the source run overwrote the fields — the launched window differs from the
+reselected run with nothing on screen to show it.
+
+Keying the widget alone is equally wrong in the opposite direction: session
+state then wins and the index argument is ignored, freezing the live default so
+a provider change no longer recomputes the window. That failure was already
+shipped once and rolled back.
+
+The binding SHALL therefore write the widget's state exactly when the wanted
+value changes or a new prefill action arrives, and at no other time. These
+properties SHALL be verified by driving the real widget through a sequence of
+interactions, not by calling the pure default-resolving helper: that helper
+never instantiates a widget, so the defect is invisible beneath it.
+
+#### Scenario: a prefill equal to the calendar default still applies
+
+- **GIVEN** an operator who edited the walk-forward window after it rendered
+- **WHEN** they rerun from a source run whose date equals the calendar default
+- **THEN** the widget shows the source run's date
+
+#### Scenario: an edit made after the prefill is not undone
+
+- **GIVEN** a prefill has been applied
+- **WHEN** the operator edits the date and the script reruns
+- **THEN** the edit survives
+
+#### Scenario: the live default still recomputes without a prefill
+
+- **GIVEN** no prefill payload
+- **WHEN** the provider changes and the calendar-derived default changes with it
+- **THEN** the widget follows the new default
