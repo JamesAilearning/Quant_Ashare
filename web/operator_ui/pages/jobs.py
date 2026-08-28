@@ -98,42 +98,143 @@ def _handoff_token() -> str:
     return _sanitize_qp("handoff", raw, default="")
 
 
+def _iso_to_date(value: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+#: 筛选键 → **遮挡它的那个控件键**。
+#:
+#: 大多数筛选控件直接用 `key="jobs_<k>"`——控件与筛选状态是同一个键，交接写
+#: 一次就够。但 `st.date_input` 用的是**另一个** key（`jobs_date_from_widget`
+#: 等），而紧随其后的那行又把控件的值写回 `jobs_date_from`。于是只重置筛选
+#: 状态毫无用处:控件在同一帧把陈旧日期原样写回去，链接照样落到一个空列表上
+#: （codex P2 on #473）。
+#:
+#: 值要按控件自己的类型写:`date_input` 的 session 值是 `date | None`，不是
+#: ISO 串。
+_HANDOFF_WIDGET_MIRRORS: dict[str, str] = {
+    "date_from": "jobs_date_from_widget",
+    "date_to": "jobs_date_to_widget",
+}
+
+
 def _seed_session_from_url(
     keys: list[str],
     *,
     handoff_token: str = "",
     handoff_keys: frozenset[str] = frozenset(),
+    handoff_preserve: frozenset[str] = frozenset(),
 ) -> None:
-    """Consume URL filters once, including a distinct cross-page handoff."""
+    """Consume URL filters once, including a distinct cross-page handoff.
+
+    ``handoff_preserve``:一次交接里**整个不动**的键（呈现偏好）。
+
+    把它们「排除在 ``handoff_keys`` 之外」是不够的——那只是让它们改走普通
+    分支，而普通分支会把它们重置:操作人把 ``sort_by`` 选成 ``duration``、
+    页面把它回镜进 URL（于是 ``jobs_last_url_sort_by`` 也是 ``duration``）,
+    随后一条不带 ``sort_by`` 的链接到达，``_qp_read`` 给出默认
+    ``created_at``，普通分支看到「URL 值变了」就照写不误。**settled 态下
+    偏好照样丢**（codex P2 on #473；实测:``sort_by=created_at``、
+    ``autorefresh=0``）。
+
+    所以交接的那一帧对这些键**直接跳过**，并把「上次消费值」对齐成当前值
+    ——否则下一帧的普通分支会接着把它重置掉。
+    """
     for k in keys:
         sk = f"jobs_{k}"
         url_state_key = f"jobs_last_url_{k}"
         handoff_state_key = f"jobs_last_handoff_{k}"
         url_value = _qp_read(k)
+        fresh_handoff = bool(handoff_token) and (
+            st.session_state.get(handoff_state_key) != handoff_token)
+        if k in handoff_preserve and fresh_handoff and sk in st.session_state:
+            # 呈现偏好在交接的那一帧**整个不动**——连行尾那句
+            # 「记下这次消费的 URL 值」也不执行(`continue` 跳过它)。
+            #
+            # 不需要额外把「上次消费值」对齐成当前值:页面每帧会把 session
+            # 回镜进 URL(`_qp_write`),所以下一帧 `_qp_read` 读到的就是被
+            # 保住的那个值,普通分支要么看到相等、要么写回同一个值。加那一
+            # 行是恒等操作(变异实测:去掉它行为不变),留着只会让人以为多了
+            # 一层保障。
+            st.session_state[handoff_state_key] = handoff_token
+            continue
         # Streamlit preserves this page's widget state when navigating away and
         # back.  Remembering the last consumed URL value lets a queue link
         # replace stale page-local state, while a user changing the selectbox
         # on this page is not overwritten before _qp_write mirrors it to URL.
-        if (
-            k in handoff_keys
-            and handoff_token
-            and st.session_state.get(handoff_state_key) != handoff_token
-        ):
+        if k in handoff_keys and fresh_handoff:
             # A queue link can request the same status as the URL left by an
             # earlier visit.  The token identifies this navigation, so it
             # must supersede stale widget state exactly once; later reruns
             # retain any on-page widget choice until that is mirrored to URL.
+            #
+            # 交接键**不区分**这条链接带没带它:URL 是这次导航的完整筛选状态,
+            # 没带的键 `_qp_read` 就给默认值,于是被一次性重置——这正是队列
+            # 链接（只带 status）能显示「该状态的全部作业」的原因。
+            #
+            # 曾经在这里加过 `k in st.query_params` 前提,想让「没带就别动」。
+            # 实测四个真实场景（详情页链接 / 队列链接 settled 态 / 队列链接
+            # 非典型残值态 / 重复跟随同一运行）证明它更差:settled 态与非典型
+            # 残值态下同一条队列链接会给出**不同**行为,取决于 `jobs_last_url_*`
+            # 这种内部残值。评审建议的「交接键没带就整段跳过重播种」更差——
+            # 队列链接会保留一个无关的搜索词,操作人看到空列表、以为那条队列
+            # 项消失了。
             st.session_state[sk] = url_value
+            mirror = _HANDOFF_WIDGET_MIRRORS.get(k)
+            if mirror is not None:
+                # 遮挡它的那个控件也要跟着走,否则它在同一帧把陈旧值写回来。
+                st.session_state[mirror] = _iso_to_date(url_value)
             st.session_state[handoff_state_key] = handoff_token
         elif sk not in st.session_state or st.session_state.get(url_state_key) != url_value:
             st.session_state[sk] = url_value
         st.session_state[url_state_key] = url_value
 
 
+#: 交接里**整个不动**的键：它们只改呈现方式，不改「看得见哪些行、那一行在
+#: 第几页」。排序只换顺序不换成员（而交接把 `page` 重置成 1，单行结果下顺序
+#: 无关），`autorefresh` 是操作人的偏好——跟着一条链接过来就把它关掉，是替他
+#: 做了一个链接没有请求的决定。
+#:
+#: 注意这不是「排除在 `_HANDOFF_KEYS` 之外」就完事了:那只是让它们改走普通
+#: 分支，而普通分支照样会重置它们（settled 态下 `_qp_read` 给的是默认值，
+#: 「URL 值变了」成立）。所以它们要作为 `handoff_preserve` 传下去，在交接的
+#: 那一帧被**跳过**（codex P2 on #473）。
+_HANDOFF_EXEMPT: frozenset[str] = frozenset({"sort_by", "sort_dir", "autorefresh"})
+
+#: 允许被一次性交接覆盖的键 = **决定成员与位置的全部键**。
+#:
+#: 用 `_DEFAULTS` **减出来**而不是手写一份清单（本仓在 #471 上学到的同一课）:
+#: 将来有人加一个新筛选键，它自动进入交接集合；手写清单会让新键成为下一个
+#: 「跟着链接过来却被陈旧值挡住」的入口，而症状只是「链接显示不出那一行」，
+#: 不像个 bug。
+#:
+#: 为什么必须是全部而不是 `{"status", "search"}`（codex P2 on #473）:普通
+#: 分支的条件是「URL 值与**上次消费的** URL 值不同」。操作人在离开前把
+#: `jobs_type` 改成 `provider`，而 `jobs_last_url_type` 仍是进来时的默认
+#: `all`——跟着新链接回来时 URL 里没有 `type`，`_qp_read` 给出 `all`，
+#: `all != all` 为假，于是**保留了 `provider`**。被请求的那个 pipeline /
+#: walk_forward 运行当场被筛掉，说好的「精确落到那一行」落到一个空列表上。
+#: 同理 `page`:停在第 3 页时，单行结果在第 1 页——照样什么也看不见。
+#:
+#: 这与本 change 写进 OpenSpec 的语义是同一句话:**到达的 URL 就是这次导航
+#: 的完整筛选状态**，没带的键回默认值。只覆盖其中两个，等于把那句话只兑现
+#: 一部分。
+#:
+#: 扩这个集合**不会**误伤只带 status 的队列链接:那条链接的 URL 里没有
+#: `search`/`type`/`page`，`_qp_read` 一律给默认值，于是它们被一次性重置
+#: ——这正是它能显示「该状态的全部作业」所需要的。
+_HANDOFF_KEYS: frozenset[str] = frozenset(_DEFAULTS) - _HANDOFF_EXEMPT
+
 _seed_session_from_url(
     list(_DEFAULTS.keys()),
     handoff_token=_handoff_token(),
-    handoff_keys=frozenset({"status"}),
+    handoff_keys=_HANDOFF_KEYS,
+    handoff_preserve=_HANDOFF_EXEMPT,
 )
 
 
@@ -236,15 +337,6 @@ with fcol4:
 # Filter row 2: date range + sort
 # ---------------------------------------------------------------------------
 dcol1, dcol2, dcol3, dcol4 = st.columns([2, 2, 2, 2])
-
-
-def _iso_to_date(value: str) -> date | None:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return None
 
 
 with dcol1:
