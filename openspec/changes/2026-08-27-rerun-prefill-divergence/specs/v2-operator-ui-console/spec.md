@@ -11,8 +11,18 @@ the field's session key is unset) is FORBIDDEN: the page seeds every `cr_*`
 key on its first render, so the condition is false on the most common path and
 the prefill applies to nothing while the banner claims it applied.
 
-Each source payload SHALL be applied at most once, so edits made AFTER the
-prefill are not undone by later reruns of the Streamlit script.
+Each source payload SHALL be applied at most once PER REQUESTING ACTION, so
+edits made AFTER the prefill are not undone by later reruns of the Streamlit
+script, while an operator who explicitly asks for the same run again gets that
+run's values again.
+
+Identity SHALL therefore be minted where the action happens, not derived from
+the payload alone. Deriving it from the source run and its archived config
+makes a second, explicit request for the SAME run indistinguishable from an
+ordinary rerender: the application is skipped, the operator's intervening edits
+survive, and the banner nonetheless states that the source run overwrote the
+fields — so the launched experiment differs from the run the operator
+deliberately reselected.
 
 The overwrite SHALL NOT be silent. Every field whose prior session value
 differed from the prefilled value SHALL be listed with both values, so an

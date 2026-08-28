@@ -18,6 +18,7 @@ import html
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import streamlit as st
 
@@ -288,6 +289,16 @@ def _render_header_actions(
             else:
                 st.session_state["prefill_config_yaml"] = _prefill_yaml
                 st.session_state["prefill_config_source_job"] = str(job.get("job_id") or "")
+                # 每一次**按下**都是一次新的预填事件（codex P1 on #471）。
+                # 没有它,令牌只由「源运行 + 配置内容」构成:操作人预填之后
+                # 改了几个字段、回到结果页对**同一个运行**再点一次「用此配置
+                # 重跑」,令牌不变 ⇒ 应用分支被跳过 ⇒ 他的改动原样留着,而
+                # 横幅照说「已按该次运行覆盖」——启动的实验与他明确重选的
+                # 那次运行不一致。
+                #
+                # 只在**按钮回调里**换,不在每帧换:普通的 Streamlit 重绘
+                # (任何控件交互)不经过这里,令牌因此仍然稳定,幂等性保住。
+                st.session_state["prefill_config_action"] = uuid4().hex
                 # 源运行的模式。归档 config.yaml 未必带 `mode`（CLI 跑出的
                 # 就没有）,而配置页要靠它决定预填哪一套字段 schema。
                 st.session_state["prefill_config_source_mode"] = str(job.get("mode") or "")

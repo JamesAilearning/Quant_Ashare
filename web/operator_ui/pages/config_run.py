@@ -521,6 +521,14 @@ if PREFILL_CONFIG:
     source_job = st.session_state.get("prefill_config_source_job", "")
     prefill_token = (
         f"{source_job}:"
+        # 结果页每一次**按下**「用此配置重跑」铸的一次性动作身份（codex P1
+        # on #471）。只有源运行 + 配置内容的话,对**同一个运行**再点一次不会
+        # 改变令牌:应用分支被跳过、操作人这期间的改动原样留着,而横幅照说
+        # 「已按该次运行覆盖」——启动的实验与他明确重选的那次不一致。
+        #
+        # 幂等性靠「nonce 只在按钮回调里换」保住:普通的 Streamlit 重绘不
+        # 经过那个回调,同一次预填在整个会话里只应用一次。
+        f"{st.session_state.get('prefill_config_action', '')}:"
         # `usedforsecurity=False`:这是个会话内的稳定令牌,不是安全摘要。FIPS
         # 受限的 Python 构建下,不带这个参数的 `hashlib.md5` 会 raise——点
         # 「用此配置重跑」会在预填生效之前把配置页整页打崩。同文件的按钮键

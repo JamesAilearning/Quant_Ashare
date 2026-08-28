@@ -1301,5 +1301,111 @@ class CostModelFieldsTests(unittest.TestCase):
         )
 
 
+class RepeatedRerunActionRearmsPrefillTests(unittest.TestCase):
+    """对**同一个运行**再点一次「用此配置重跑」，预填必须重新生效。
+
+    令牌原来只由「源运行 + 配置内容」构成。操作人预填之后改了几个字段、
+    回结果页对同一个运行再点一次，令牌不变 ⇒ 应用分支被跳过 ⇒ 他的改动
+    原样留着，而横幅照说「已按该次运行覆盖」——启动的实验与他明确重选的
+    那次运行不一致（codex P1 on #471）。
+
+    这里**真跑**令牌表达式（从页面 AST 抽出来求值），不查源码串：要证明的
+    是「令牌随动作变、不随重绘变」，源码串证明不了——把 nonce 拼进一个从
+    没被求值的分支，串守卫照样命中。
+    """
+
+    def setUp(self) -> None:
+        source = Path("web/operator_ui/pages/config_run.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        assigns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "prefill_token"
+                    for t in node.targets)
+        ]
+        self.assertEqual(len(assigns), 1, "令牌应当只在一处构造")
+        self.expr = assigns[0].value
+
+    def _token(self, *, job: str, yaml_text: str, action: str) -> str:
+        import hashlib as _hashlib
+        from types import SimpleNamespace
+
+        state = {
+            "prefill_config_yaml": yaml_text,
+            "prefill_config_action": action,
+        }
+        namespace = {
+            "source_job": job,
+            "hashlib": _hashlib,
+            "st": SimpleNamespace(session_state=state),
+        }
+        code = compile(ast.Expression(self.expr), "<token>", "eval")
+        return str(eval(code, namespace))  # noqa: S307 - 求值的是本仓页面自己的表达式
+
+    def test_a_second_press_on_the_same_run_produces_a_new_token(self) -> None:
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        second = self._token(job="job-1", yaml_text="topk: 50", action="bbb")
+
+        self.assertNotEqual(
+            first, second,
+            "同一个运行、同一份配置，再按一次必须换令牌——否则预填不会重新生效",
+        )
+
+    def test_an_ordinary_rerender_keeps_the_token_stable(self) -> None:
+        # 幂等性：普通重绘不经过按钮回调，nonce 不变 ⇒ 同一次预填只应用一次。
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        again = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+
+        self.assertEqual(first, again)
+
+    def test_the_payload_still_participates(self) -> None:
+        # nonce 之外仍然带上配置内容:万一将来有第二个写入方忘了铸 nonce,
+        # 内容变了照样能重新武装。
+        first = self._token(job="job-1", yaml_text="topk: 50", action="aaa")
+        other = self._token(job="job-1", yaml_text="topk: 20", action="aaa")
+
+        self.assertNotEqual(first, other)
+
+    def test_the_button_branch_mints_a_fresh_action_nonce(self) -> None:
+        # 另一端:nonce 必须在**按钮分支内**铸，不是每帧铸（每帧铸会让每一次
+        # 重绘都重新覆盖操作人的编辑）。
+        source = Path("web/operator_ui/pages/_results_render.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+
+        branches = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and any(isinstance(c, ast.Constant) and c.value == "用此配置重跑"
+                    for c in ast.walk(node.test))
+        ]
+        self.assertEqual(len(branches), 1, "「用此配置重跑」应当只有一处")
+
+        assigned = {
+            ast.unparse(target)
+            for node in ast.walk(branches[0])
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+        }
+        self.assertIn("st.session_state['prefill_config_action']", assigned)
+
+        minted = {
+            node.func.id for node in ast.walk(branches[0])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("uuid4", minted, "动作身份必须是新铸的,不是复用的值")
+
+        # 分支**之外**不许再有第二处写它——每帧写就毁掉幂等性。
+        outside = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(ast.unparse(t) == "st.session_state['prefill_config_action']"
+                    for t in node.targets)
+        ]
+        self.assertEqual(len(outside), 1, "动作身份只该在按钮分支里写一次")
+
+
+
 if __name__ == "__main__":
     unittest.main()
