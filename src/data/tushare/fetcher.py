@@ -308,6 +308,34 @@ class TushareFetcherConfig:
     # pre-P3-7b manifest whose coverage_end_date may over-claim (written by a
     # run that advanced coverage without verifying per-file content).
     verify_all_years: bool = False
+    #: Provider identity stamped on this fetch's progress lines.
+    #:
+    #: Sibling bundles SHARE one ``daily_update.log`` (the log path is derived
+    #: from the provider's PARENT directory) while single-flight is
+    #: per-provider — so two providers CAN run at once and their lines
+    #: interleave. Progress lines carried no identity, so a reader could only
+    #: attribute them by their position relative to run-boundary markers, and
+    #: only when it could see the WHOLE window and every boundary in it was
+    #: the reader's own. Real logs are read tail-first, so in production that
+    #: judgement almost always came out "don't know".
+    #:
+    #: Empty means unstamped — a hand-run fetch, or a dump produced before
+    #: this field existed. Readers MUST NOT treat an unstamped line as
+    #: theirs; they fall back to boundary attribution, which is exactly the
+    #: behaviour that existed before.
+    provider_tag: str = ""
+
+    #: 本次编排运行的一次性身份,盖在**每一条**进度行上。
+    #:
+    #: provider 标记回答「谁写的这行」;它回答不了「哪一次运行写的」——那要
+    #: 靠日志里那条运行边界。而边界在生产上读不到:读侧只取日志尾部几千
+    #: 字符,一次多年 fetch 每 200 支票写一行,边界在运行开始不久就被挤出
+    #: 窗口(codex P2 on #474)。run_id 让归属不经过窗口:行自己带运行身份,
+    #: 对照物在状态工件里。
+    #:
+    #: 空 = 没有运行身份(手工跑的 fetch,或本字段之前的产出)。读侧退回边界
+    #: 归属,与本字段落地之前的行为一致。
+    run_id: str = ""
 
     def __post_init__(self) -> None:
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
@@ -472,6 +500,42 @@ class TushareFetcher:
         The CLI turns a non-empty result into a non-zero exit + a hole report,
         so a holey dump is never mistaken for a complete one."""
         return tuple(self._holes)
+
+    def _progress_run_suffix(self) -> str:
+        """``" run=<id>"``，或空串（未配置运行身份时）。
+
+        与 ``_progress_provider_suffix`` 同一纪律:没有身份就**什么也不加**,
+        而不是加一个空值——读侧必须能分辨「这次运行没报身份」与「它报了一个
+        空身份」。含空白的 id 一律当作没有 id:进度行是空白分隔的,一个带
+        空格的 id 会让读侧读到一个**不同**却完全合法的串。
+
+        本函数不校验形状(32 位小写 hex),只挡住产不出可解析行的字符。形状
+        由读侧按写侧契约验:写侧盖的是编排器的 ``uuid4().hex``,而读侧的
+        对照物是同一次运行写进状态工件的那一个——两边逐字节相等才算数,
+        「看起来像 hex」不是判据。
+        """
+        run = str(self._config.run_id or "")
+        if not run or any(c.isspace() for c in run):
+            return ""
+        return f" run={run}"
+
+    def _progress_provider_suffix(self) -> str:
+        """``" provider=<tag>"``，或空串（未配置身份时）。
+
+        无标记时**什么也不加**,而不是加一个 ``provider=`` 空值:读侧必须能
+        分辨「这次运行没有报身份」与「它报了一个空身份」——前者退回边界归属
+        (标记落地之前的行为),后者会诱使读侧把空串当成一个可比对的身份。
+
+        标记本身在写侧就规范化过一次(编排器传的是 ``normcase(resolve())``
+        的产出),读侧按**完整回环**校验。这里只做一件事:含换行的标记一律
+        当作没有标记。一条带换行的进度行会被行式日志切成两半,后半截既不是
+        进度行也不是边界行,而前半截的身份被截断——读侧看到的是一个**不同**
+        的身份串,却完全合法。宁可退回边界归属,也不产出一条能被误读的行。
+        """
+        tag = str(self._config.provider_tag or "")
+        if not tag or "\n" in tag or "\r" in tag:
+            return ""
+        return f" provider={tag}"
 
     # ------------------------------------------------------------------
     # Public orchestrator
@@ -1217,9 +1281,21 @@ class TushareFetcher:
                         still_short.append(unit)
                         short_by_year[year] = short_by_year.get(year, 0) + 1
                 if i % 200 == 0:
+                    # 末尾的 provider 标记让读侧能确定这条进度是**谁**写的。
+                    # 兄弟 bundle 共用同一份 daily_update.log 而单飞锁是
+                    # per-provider 的,所以两个 provider 可以同时在跑、行会
+                    # 交错;进度行不带身份时,读侧只能按它相对运行边界的位置
+                    # 猜,而且只在「看得见整个窗口且其中每条边界都是自己的」
+                    # 时才敢下结论——真实日志按尾部读,于是生产上这个判断几乎
+                    # 总是「不知道」。
+                    # 标记放**行尾**且带前导空格:旧读侧的正则以 `(skipped=…)`
+                    # 收尾,多出来的后缀不影响它匹配,老日志与新日志都照常解析。
                     _logger.info(
-                        "  %s year=%d progress: %d/%d tickers (written=%d, skipped=%d)",
+                        "  %s year=%d progress: %d/%d tickers "
+                        "(written=%d, skipped=%d)%s",
                         endpoint, year, i, len(tickers), written, skipped,
+                        self._progress_run_suffix()
+                        + self._progress_provider_suffix(),
                     )
         if stale_refetched or verified:
             _logger.info(

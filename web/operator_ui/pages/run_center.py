@@ -112,19 +112,25 @@ _CANCELLED_EVIDENCE_KEY = "run_center::cancelled_evidence"
 _SESSION_STATE = cast(MutableMapping[str, object], st.session_state)
 
 
-def _read_progress() -> AttributedProgress:
+def _read_progress(run_id: str = "") -> AttributedProgress:
     """日志尾部最后一条 fetch 进度 + **它属不属于**最近一次运行。
 
     整页与片段**共用这一个读取器**——两处各写一份正是它们会分叉的方式
     (#442 r1/r3/r4 在这一页上连栽三次)。
 
-    归属现在由**运行边界**判定,不再靠推断:写入侧每次运行都会落一行带日期的
-    边界(2026-08-24-daily-update-run-ledger)。读到的窗口里找不到边界、或窗口
-    没盖住整份日志时,如实说不知道——那正是边界落地之前的行为,不是退步。
+    归属的**主**路径是行自带的运行身份(``run_id``):写入侧给每条进度行盖
+    本次运行的 id,同一个 id 也写进状态工件——两端都在日志窗口之外,所以
+    窗口截不截断都不影响归属。
+
+    退路仍是**运行边界**。但边界必须落在读到的窗口里,而生产上它落不进来:
+    窗口只有几千字符,一次多年 fetch 每 200 支票写一行,边界在运行开始不久
+    就被挤出去。边界法因此在它唯一要服务的那个工作负载上答不出来
+    (codex P2 on #474)——它留着是为了老日志与手工跑的 fetch。
     """
     text, complete = log_window(default_log_path(_provider_path))
     return last_fetch_progress_for_run(
-        text, provider_dir=_provider_path, window_complete=complete)
+        text, provider_dir=_provider_path, window_complete=complete,
+        run_id=run_id)
 
 
 def _status_signature(
@@ -191,6 +197,9 @@ _read_at = datetime.now(tz=_CN_TZ)
 # 6 小时线,闸门会认为「新鲜」而基线已是「陈旧」——此后片段每次读到的也
 # 都是陈旧、恒等于基线,永不 rerun,闸门就永久锁死(codex #442 r4)。
 _status_class = classify_running(_status)
+# 本次运行的身份,整页只取一次。片段里的重读也用**这一个**:两侧过滤口径
+# 不同的话,那个「进度变了没有」的比较就不是同一个问题的两次回答。
+_run_id = _status.run_id or ""
 _running_fresh = (
     _status.kind == "running"
     and record_matches_provider(_status, _provider_path)
@@ -460,12 +469,25 @@ elif _status.kind == "running":
     # 仍留在文件尾。在非 running 时显示它,等于把**上一次**运行的进度当成
     # 当前进度——那是撒谎。陈旧/不可核实的 running 反而最该显示:昨晚那次
     # 断在 fetch 2400/5883,这一行正是唯一能说清「断在哪」的东西。
-    _attributed = _read_progress()
+    _attributed = _read_progress(_run_id)
     _progress = _attributed.progress
     _scope = (
         "分母是该端点该年的票数,不是整轮进度(fetch 只是六个阶段中的一个)。")
     if _progress is None:
         st.caption("⏳ 日志尾部没有 fetch 进度行(可能尚未进入 fetch 阶段)。")
+    elif _attributed.attribution == "run_stamp":
+        # 归属由**进度行自带的运行身份**确定。对照物是上面那条状态记录
+        # 自己写下的 run_id,所以「这条属于本次运行」是逐字节证明的,
+        # 不需要边界、不依赖窗口完整。
+        #
+        # 这一支必须排在边界戳比较**之前**:run 戳路径根本没有边界戳
+        # (它没读边界),拿空串去比工件的起跑时刻会落进下面那支「边界与
+        # 状态记录对不上」,把一次归属确定的运行说成对不上。
+        st.caption(
+            f"⏳ 本次运行的最后一条进度:{_progress.describe()}。"
+            f"归属由**进度行自带的本次运行身份**确定(与状态记录同一个 "
+            f"run_id),不依赖日志窗口是否完整。{_scope}"
+        )
     elif _attributed.attributed and (
             _attributed.boundary_stamp == (_status.started_at or "")):
         # 归属确定,且边界与**上面显示的那条状态记录**是同一次运行:写入侧在
@@ -495,6 +517,9 @@ elif _status.kind == "running":
             "foreign_boundary": "窗口里有别的 provider 的运行边界,行可能交错",
             "no_boundary": "读到的日志窗口里没有运行边界",
             "corrupt_boundary": "窗口里的运行边界戳读不出来(日志可能损坏)",
+            "no_own_run_stamp":
+                "窗口里的进度行带的是**别的**运行的身份,没有一条是本次的"
+                "(本次运行可能还没进到 fetch 阶段)",
         }.get(_attributed.unattributed_reason, "归属条件未满足")
         st.caption(
             f"⏳ 日志尾部最后一条进度:{_progress.describe()}。"
@@ -567,7 +592,7 @@ _baseline_signature = _status_signature(_status, _status_class)
 # 签名(kind/started_at/分类都不动)。只比签名的话,页面会一直冻在旧的那一行
 # 直到运行结束(codex #450 r1)。基线同样在整页渲染时刻定格——两侧都在片段里
 # 重算,正是 #442 r2 证伪过的那个错法。
-_baseline_progress = _read_progress()
+_baseline_progress = _read_progress(_run_id)
 
 if _watching:
     @st.fragment(run_every=_POLL_SECONDS)
@@ -583,7 +608,7 @@ if _watching:
         if _status_signature(_latest, classify_running(_latest)) != _baseline_signature:
             st.rerun(scope="app")
             return
-        if _read_progress() != _baseline_progress:
+        if _read_progress(_run_id) != _baseline_progress:
             # fetch 又推进了一格 —— 整页重绘,让上面那句进度跟上。
             st.rerun(scope="app")
             return

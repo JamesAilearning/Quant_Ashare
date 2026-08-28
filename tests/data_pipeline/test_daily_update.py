@@ -815,7 +815,7 @@ class StatusPathGuardTests(unittest.TestCase):
             cfg = _config(tmp, now=None)
             seen: list[object] = []
 
-            def spy(config, runners=None, run_date=None):
+            def spy(config, runners=None, run_date=None, run_id=""):
                 seen.append(run_date)
                 return (0, None, "ok")
 

@@ -192,6 +192,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "spanning midnight stamps the planned date, not the rollover "
              "date (P3-6a).",
     )
+    p.add_argument(
+        "--provider-tag", default="",
+        help="Provider identity to stamp on this fetch's progress lines. "
+             "Sibling bundles SHARE one daily_update.log while single-flight "
+             "is per-provider, so their lines interleave and a reader cannot "
+             "tell whose progress it is looking at. The orchestrator passes "
+             "the normalised provider directory here; readers match it "
+             "against their own. Empty (a hand-run fetch) leaves the lines "
+             "unstamped, and readers fall back to boundary attribution.",
+    )
+    p.add_argument(
+        "--run-id", default="",
+        help="One-time identity of THIS orchestrated run, stamped on every "
+             "progress line. The provider tag says WHO wrote a line; it "
+             "cannot say WHICH RUN wrote it, and the run boundary that could "
+             "is not readable in production: readers take only the log's "
+             "trailing window, which a multi-year fetch overruns long before "
+             "it finishes. The orchestrator writes the same id into the run "
+             "status artifact, so both ends of the comparison live outside "
+             "the log window. Empty (a hand-run fetch) leaves the lines "
+             "without a run id, and readers fall back to boundary "
+             "attribution.",
+    )
     return p
 
 
@@ -284,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             force_retry_units=force_retry_units,
             assume_verified_ranges=assume_verified_ranges,
             verify_all_years=args.verify_all_years,
+            provider_tag=args.provider_tag,
+            run_id=args.run_id,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)
