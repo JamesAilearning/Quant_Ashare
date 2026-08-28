@@ -197,3 +197,56 @@ covering both causes is false for one of them.
 - **GIVEN** a validated hold on a Monday and an artifact on the preceding Friday
 - **WHEN** the page renders
 - **THEN** the scan continues, because no trading session lies between them
+
+### Requirement: The candidate count SHALL be checked against the producer's identity
+
+The reader SHALL enforce `len(picks) == min(n_scored, meta.topk)`, and SHALL
+first validate that `n_scored`, `n_masked`, and `n_st_excluded` are each a
+non-negative integer.
+
+The producer emits the candidate list as the tradable pool sorted by score and
+truncated to `topk`, and `n_scored` IS that pool's size, so the equality holds
+by construction. Enforcing only the upper half (`len(picks) <= topk`) admits a
+TRUNCATED or EMPTIED list: delete rows from a valid artifact and the ranks stay
+contiguous, the scores stay descending, the codes stay unique and the row dates
+still match — every other gate passes, while the headline reports the shortened
+list as today's rebalance. Emptied entirely, it reports "no action needed" on a
+session that really did rebalance.
+
+The three counts SHALL be validated before the equality is evaluated: the
+equality reads one of them, so an unvalidated count lets a string or a negative
+number walk through the new gate. They are also what the detail page prints as
+"how much of the universe was dropped", so a negative value would be handed to
+the operator as a statistic.
+
+A candidate code carrying leading or trailing whitespace SHALL be refused, not
+normalised. The duplicate-code gate compares bytes while the human-review helper
+on the same page compares stripped codes; admitting a padded spelling lets two
+rows naming the SAME stock pass as two candidates, so one artifact yields two
+contradictory conclusions on one page. Normalising a spelling the producer
+cannot emit launders it into a legitimate value.
+
+Where the list exceeds `topk`, the reported cause SHALL name that bound rather
+than the general count identity: "the configured topk is smaller than the list"
+and "the list was truncated or altered" send the operator to different places.
+
+#### Scenario: a truncated candidate list is refused
+
+- **GIVEN** an artifact whose `n_scored` exceeds `topk` but whose `picks` hold
+  fewer than `topk` rows
+- **WHEN** the page validates it
+- **THEN** it is refused as needing verification
+
+#### Scenario: a pool smaller than topk is legitimate
+
+- **GIVEN** an artifact whose `n_scored` is below `topk` and whose `picks` hold
+  exactly `n_scored` rows
+- **WHEN** the page validates it
+- **THEN** it is accepted
+
+#### Scenario: two rows differing only in padding are not two candidates
+
+- **GIVEN** an artifact whose candidate list names the same code twice, once
+  with leading whitespace
+- **WHEN** the page validates it
+- **THEN** it is refused, rather than counted as two stocks

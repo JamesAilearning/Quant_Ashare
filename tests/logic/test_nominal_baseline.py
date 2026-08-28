@@ -38,16 +38,33 @@ from web.operator_ui.pages._daily_decision_helpers import (  # noqa: E402
     DEFAULT_BASELINE_SCAN_LIMIT,
     baseline_roster,
     find_nominal_baseline,
+    pick_row_violation,
+    producer_shape_violation,
     unaccounted_weekdays_between,
 )
 
 _UNSET = object()
 
+#: 显式传 `picks=` 的用例都建在 2026-08-03 那份工件上;行日期默认跟它一致。
+_AS_OF = "2026-08-03"
+_ENTRY = "2026-08-04"
 
-def _pick(code: str, rank: int, score: float) -> dict[str, Any]:
-    """产出器 ``RecommendationPick`` 的**全部**六键——少写一个就不是产出器
-    产得出的行，而一份产出器产不出的 fixture 证明不了任何读侧行为。"""
+
+def _pick(
+    code: str, rank: int, score: float, *,
+    as_of: str = "", entry: str = "",
+) -> dict[str, Any]:
+    """产出器写在一行上的**全部八键**。
+
+    上一版只写了 ``RecommendationPick`` 那个 dataclass 的六个字段，漏掉了
+    ``write_outputs`` 给每一行补的 ``as_of_date`` / ``entry_date``
+    （``_BUY_LIST_COLUMNS``，JSON 的 ``picks`` 就是 ``buy_rows``）。**那个
+    缺口正是让「行日期没被验」这道漏洞看不见的原因**——闸一加，夹具立刻红，
+    于是闸就没被加上（codex P1 on #475，本 PR 第二次栽在同一形状上）。
+    """
     return {
+        "as_of_date": as_of or _AS_OF,
+        "entry_date": entry or _ENTRY,
         "stock_code": code,
         "stock_name": f"名称{rank}",
         "rank": rank,
@@ -80,11 +97,21 @@ def _artifact(
         "as_of_date": as_of,
         "entry_date": entry_date,
         "picks": picks if picks is not None else [
-            _pick("SH600584", 1, 0.26),
-            _pick("SZ000001", 2, 0.19),
+            _pick("SH600584", 1, 0.26, as_of=as_of, entry=entry_date),
+            _pick("SZ000001", 2, 0.19, as_of=as_of, entry=entry_date),
         ],
         "meta": {"topk": 50, "instruments": "csi800"},
+        # 产出器恒写的三个计数。`n_scored` 拨到让清单长度的恒等式成立的值
+        # ——len(picks) == min(n_scored, topk) 是构造上定死的（picks 就是
+        # 可交易池按分降序的 head(topk)，池子大小即 n_scored）。夹具不满足
+        # 它就又是一份产出器产不出的工件。
+        "n_scored": 0,
+        "n_masked": 0,
+        "n_st_excluded": 0,
     }
+    _rows = payload["picks"]
+    _count = len(_rows) if isinstance(_rows, list) else 0
+    payload["n_scored"] = _count if _count < 50 else max(_count, 800)
     if not drop_cadence:
         payload["rebalance_day"] = rebalance
         if not drop_next:
@@ -385,8 +412,9 @@ class RosterTests(unittest.TestCase):
         # 会让名单比工件的候选数**少一条却不说**——操作人看到「共 1 只」，
         # 无从知道另一条是被丢了还是本来就没有。
         payload = _artifact(as_of="2026-08-03", picks=[
-            {"stock_code": "SH600584", "rank": 1, "predicted_score": 0.26},
-            {"rank": 2, "predicted_score": 0.19},
+            _pick("SH600584", 1, 0.26),
+            {k: v for k, v in _pick("SZ000001", 2, 0.19).items()
+             if k != "stock_code"},
         ])
 
         with self.assertRaises(ValueError):
@@ -394,7 +422,7 @@ class RosterTests(unittest.TestCase):
 
     def test_a_blank_code_is_also_refused(self) -> None:
         payload = _artifact(as_of="2026-08-03", picks=[
-            {"stock_code": "", "rank": 1, "predicted_score": 0.26},
+            {**_pick("SH600584", 1, 0.26), "stock_code": ""},
         ])
 
         with self.assertRaises(ValueError):
@@ -517,6 +545,26 @@ class ProducerShapeContractTests(unittest.TestCase):
              _artifact(as_of="2026-08-03", picks=[
                  {**_pick("SH600584", 1, 0.26),
                   "unavailable_reason": "停牌"}])),
+            # —— 行日期组（codex P1 第五轮：未来数据从行载荷绕回来）——
+            ("行的 as_of_date 来自另一个截面",
+             _artifact(as_of="2026-08-03", picks=[
+                 {**_pick("SH600584", 1, 0.26),
+                  "as_of_date": "2026-08-10"}])),
+            ("行的 entry_date 来自另一个截面",
+             _artifact(as_of="2026-08-03", picks=[
+                 {**_pick("SH600584", 1, 0.26),
+                  "entry_date": "2026-08-11"}])),
+            ("行缺 as_of_date",
+             _artifact(as_of="2026-08-03", picks=[
+                 {k: v for k, v in _pick("SH600584", 1, 0.26).items()
+                  if k != "as_of_date"}])),
+            ("行缺 entry_date",
+             _artifact(as_of="2026-08-03", picks=[
+                 {k: v for k, v in _pick("SH600584", 1, 0.26).items()
+                  if k != "entry_date"}])),
+            ("行的 as_of_date 非字符串",
+             _artifact(as_of="2026-08-03", picks=[
+                 {**_pick("SH600584", 1, 0.26), "as_of_date": 20260803}])),
             ("predicted_score 是 NaN",
              _artifact(as_of="2026-08-03", picks=[
                  {**_pick("SH600584", 1, 0.26),
@@ -720,6 +768,182 @@ class UnaccountedWeekdaysTests(unittest.TestCase):
         ):
             with self.subTest(older=older, newer=newer):
                 self.assertTrue(unaccounted_weekdays_between(older, newer))
+
+
+
+class RowDatesTests(unittest.TestCase):
+    """行上的日期必须等于**已校验的**顶层日期。
+
+    行日期本身合法（是 ISO、是真日期）拦不住这件事——错的不是格式，是**归属**：
+    一份 `2026-08-03` 的工件装着 `2026-08-10` 的行，会被当成 8 月 3 日的名义
+    持仓端出去，未来数据从行载荷里绕回来（codex P1 on #475）。
+
+    上一版 `pick_row_violation` 只钉了 `RecommendationPick` 那个 dataclass 的
+    六个字段，而它的 docstring 写着「穷尽式，不挑其中几个——挑选就是下一个
+    漏洞的形状」。它自己正是挑了六个:产出器写在行上的是**八**键
+    （`_BUY_LIST_COLUMNS`，JSON 的 `picks` 就是 `buy_rows`）。
+    """
+
+    def test_a_row_dated_from_another_session_is_refused(self) -> None:
+        payload = _artifact(as_of="2026-08-03", picks=[
+            {**_pick("SH600584", 1, 0.26), "as_of_date": "2026-08-10"},
+        ])
+
+        problem = producer_shape_violation(
+            payload, as_of_date="2026-08-03", entry_date="2026-08-04")
+
+        assert problem is not None
+        self.assertIn("另一个截面", problem)
+        self.assertIn("2026-08-10", problem)
+
+    def test_the_row_dates_are_compared_to_the_validated_top_level(
+        self,
+    ) -> None:
+        # 比的是**传进来的已校验值**，不是 payload 自己那两个键——顶层日期
+        # 的可信度由上游的文件名一致性闸建立，这里只做相等比对。
+        row = _pick("SH600584", 1, 0.26, as_of="2026-08-03", entry="2026-08-04")
+
+        self.assertIsNone(pick_row_violation(
+            row, as_of_date="2026-08-03", entry_date="2026-08-04"))
+        self.assertIsNotNone(pick_row_violation(
+            row, as_of_date="2026-08-10", entry_date="2026-08-04"))
+        self.assertIsNotNone(pick_row_violation(
+            row, as_of_date="2026-08-03", entry_date="2026-08-11"))
+
+    def test_the_dates_are_still_required_without_a_comparison_value(
+        self,
+    ) -> None:
+        # 调用方没有可信顶层日期可比时（空串），**在场与类型**仍然要验:
+        # 缺键的行本身就是产出器产不出的形态。
+        missing = {k: v for k, v in _pick("SH600584", 1, 0.26).items()
+                   if k != "as_of_date"}
+
+        self.assertIsNotNone(pick_row_violation(missing))
+
+    def test_a_conforming_row_passes(self) -> None:
+        self.assertIsNone(pick_row_violation(
+            _pick("SH600584", 1, 0.26),
+            as_of_date=_AS_OF, entry_date=_ENTRY))
+
+
+
+class PickCountIdentityTests(unittest.TestCase):
+    """``len(picks) == min(n_scored, meta.topk)`` 是**构造上**定死的。
+
+    产出器的 picks 是可交易池按分降序的 ``head(topk)``，而 ``n_scored`` 就是
+    那个池子的大小（``daily_recommend`` 的
+    ``n_scored = len(scored_frame) - n_excluded``，``n_excluded`` 是
+    ``~tradable_flag`` 的计数）。
+
+    此前只验了**上界**那一半（``len(picks) <= topk``）。只验上界会放过
+    **被截断/被清空**的清单：一份 50 条的合法工件删到 3 条，rank 仍连续
+    1..3、分仍降序、代码仍唯一、行日期仍对得上——所有现有闸都放行，而头卡
+    会说「有再平衡指令 · 共 3 只候选」。删光则翻成「不动 · 目标清单为空」，
+    在一个**真实的再平衡日**上告诉操作人不必动作。
+    """
+
+    def _payload(self, *, picks: int, n_scored: int, topk: int = 50) -> dict:
+        rows = [_pick(f"SH{600000 + i}", i + 1, 1.0 - 0.01 * i)
+                for i in range(picks)]
+        payload = _artifact(as_of=_AS_OF, picks=rows)
+        payload["meta"] = {"topk": topk, "instruments": "csi800"}
+        payload["n_scored"] = n_scored
+        return payload
+
+    def _check(self, payload: dict) -> str | None:
+        return producer_shape_violation(
+            payload, as_of_date=_AS_OF, entry_date=_ENTRY)
+
+    def test_a_truncated_list_is_refused(self) -> None:
+        problem = self._check(self._payload(picks=3, n_scored=800))
+
+        assert problem is not None
+        self.assertIn("min(n_scored=800, topk=50)", problem)
+
+    def test_an_emptied_list_is_refused(self) -> None:
+        # 最坏的那一格：删光之后头卡会说「目标清单为空」——把一个真实的
+        # 再平衡日说成不必动作。
+        problem = self._check(self._payload(picks=0, n_scored=800))
+
+        assert problem is not None
+        self.assertIn("截断", problem)
+
+    def test_a_full_list_passes(self) -> None:
+        self.assertIsNone(self._check(self._payload(picks=50, n_scored=800)))
+
+    def test_a_pool_smaller_than_topk_passes(self) -> None:
+        # 可交易池比 topk 小是合法产出（宇宙小 / 掩蔽多）——此时清单就是
+        # 整个池子。
+        self.assertIsNone(self._check(self._payload(picks=7, n_scored=7)))
+
+    def test_an_empty_pool_with_an_empty_list_passes(self) -> None:
+        # `--topk 0` 或全部候选被掩蔽,都是合法的空产出。
+        self.assertIsNone(self._check(self._payload(picks=0, n_scored=0)))
+
+    def test_the_counts_themselves_are_validated(self) -> None:
+        # 不先验 n_scored,上面那条恒等式自己就会被一个字符串或负数绕过。
+        # n_masked / n_st_excluded 同罪同治:它们是详情页 caption 上「宇宙
+        # 被筛掉多少」的依据,一个负数会被原样端给操作人当统计口径。
+        for key in ("n_scored", "n_masked", "n_st_excluded"):
+            for bad in ("780", -1, None, True, 1.5):
+                with self.subTest(key=key, bad=bad):
+                    payload = self._payload(picks=50, n_scored=800)
+                    payload[key] = bad
+                    problem = self._check(payload)
+                    assert problem is not None
+                    self.assertIn(key, problem)
+
+    def test_a_missing_count_is_refused(self) -> None:
+        for key in ("n_scored", "n_masked", "n_st_excluded"):
+            with self.subTest(key=key):
+                payload = self._payload(picks=50, n_scored=800)
+                del payload[key]
+                self.assertIsNotNone(self._check(payload))
+
+
+class CodeWhitespaceTests(unittest.TestCase):
+    """带首尾空白的代码要**拒**，不要 strip 之后放行。
+
+    重复码闸是逐字节比的，而同一页更靠后的人工审阅助手
+    （`_daily_review_progress_helpers`）对代码是 strip 之后再比的。两处口径
+    不一致时 `" SH600000"` 与 `"SH600000"` 会同时通过重复码闸，于是同一份
+    工件在同一页上给出两个互相矛盾的结论——「2 只候选」与「其实是同一只」。
+
+    归一化是把产出器产不出的拼写洗成合法值。这里一律不做。
+    """
+
+    def test_a_padded_code_is_refused(self) -> None:
+        for bad in (" SH600584", "SH600584 ", "\tSH600584"):
+            with self.subTest(bad=bad):
+                row = {**_pick("SH600584", 1, 0.26), "stock_code": bad}
+                problem = pick_row_violation(row)
+                assert problem is not None
+                self.assertIn("空白", problem)
+
+    def test_a_missing_or_empty_code_is_refused_by_the_row_gate(self) -> None:
+        # 空白闸(`code != code.strip()`)对空串恒为 False,对 None 会抛——
+        # 「在场且非空」那道闸不能被它顶替。变异实测:把那道闸熄火,空串会
+        # 一路通过 `producer_shape_violation`（此前无用例覆盖这一格）。
+        for bad in (None, "", "   ", 600584):
+            with self.subTest(bad=bad):
+                payload = _artifact(as_of=_AS_OF, picks=[
+                    {**_pick("SH600584", 1, 0.26), "stock_code": bad},
+                ])
+                payload["n_scored"] = 1
+                problem = producer_shape_violation(
+                    payload, as_of_date=_AS_OF, entry_date=_ENTRY)
+                assert problem is not None
+                self.assertIn("stock_code", problem)
+
+    def test_two_rows_differing_only_in_padding_cannot_both_pass(self) -> None:
+        payload = _artifact(as_of=_AS_OF, picks=[
+            _pick("SH600584", 1, 0.26),
+            {**_pick("SH600584", 2, 0.19), "stock_code": " SH600584"},
+        ])
+        payload["n_scored"] = 2
+
+        self.assertIsNotNone(producer_shape_violation(
+            payload, as_of_date=_AS_OF, entry_date=_ENTRY))
 
 
 

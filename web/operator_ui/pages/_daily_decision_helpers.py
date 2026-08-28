@@ -507,17 +507,51 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
 # ---------------------------------------------------------------------------
 
 
-def pick_row_violation(pick: dict[str, Any]) -> str | None:
+def pick_row_violation(
+    pick: dict[str, Any], *, as_of_date: str = "", entry_date: str = "",
+) -> str | None:
     """一行候选违约在哪——None = 合约内。
 
-    钉的是产出器 `RecommendationPick`（frozen dataclass）的**全部**六键与
-    类型（穷尽式，不挑其中几个——挑选就是下一个漏洞的形状）：rank int /
-    stock_code 非空 str / stock_name str / predicted_score 数值 /
-    tradable_flag bool / unavailable_reason str。
+    钉的是产出器**写在行上的全部八键**（canonical
+    ``v2-daily-stock-recommendation``:「rows carry ``as_of_date, entry_date,
+    rank, stock_code, stock_name, predicted_score, tradable_flag,
+    unavailable_reason``」;实现见 ``daily_recommend._BUY_LIST_COLUMNS`` 与
+    ``write_outputs`` 的 ``buy_rows``——JSON 的 ``picks`` 就是 ``buy_rows``）。
+
+    **上一版只钉了六键**——`RecommendationPick` 那个 dataclass 的字段——而行
+    上另有产出器补的两个日期。这个函数的 docstring 当时写着「穷尽式，不挑其
+    中几个——挑选就是下一个漏洞的形状」，而它自己正是挑了六个:一份顶层日期
+    合法、行却是从**另一个截面**拷来的工件，会被当成那一天的名义持仓端出去
+    ——未来数据从行载荷里绕回来了（codex P1 on #475）。
+
+    ``as_of_date`` / ``entry_date`` 传入时还验**跨字段相等**:行上的日期必须
+    等于**已经校验过的**顶层日期。只验「是不是 ISO」拦不住拷来的行——那两个
+    值本身完全合法，错的是它们不属于这一天。空串表示调用方还没有一个可信的
+    顶层日期可比（此时只验在场与类型）。
     """
+    for key in ("as_of_date", "entry_date"):
+        raw = pick.get(key)
+        if not (isinstance(raw, str) and raw):
+            return f"{key} 缺失或非字符串（产出器对每一行都写这两个日期）"
+    if as_of_date and pick["as_of_date"] != as_of_date:
+        return (
+            f"as_of_date 与工件顶层不一致（行 {pick['as_of_date']!r} vs 工件 "
+            f"{as_of_date!r}）——这一行来自另一个截面")
+    if entry_date and pick["entry_date"] != entry_date:
+        return (
+            f"entry_date 与工件顶层不一致（行 {pick['entry_date']!r} vs 工件 "
+            f"{entry_date!r}）——这一行来自另一个截面")
     code = pick.get("stock_code")
     if not (isinstance(code, str) and code.strip()):
         return "stock_code 缺失或为空"
+    # 带首尾空白的代码是产出器产不出的（qlib instrument 名无空白，产出器
+    # 原样写 `p.stock_code`）。**拒**而不是 strip 之后放行:同一页更靠后的
+    # 人工审阅助手对代码是 strip 之后再比的，两处口径不一致时
+    # `" SH600000"` 与 `"SH600000"` 会同时通过重复码闸（它逐字节比），于是
+    # 一份工件在同一页上给出两个互相矛盾的结论——「2 只候选」与「其实是同
+    # 一只」。归一化是把产出器产不出的拼写洗成合法值,这里一律不做。
+    if code != code.strip():
+        return f"stock_code 带首尾空白（实际 {code!r}）——产出器产不出"
     if not isinstance(pick.get("stock_name"), str):
         return "stock_name 缺失或非字符串"
     rank = pick.get("rank")
@@ -569,7 +603,8 @@ def producer_shape_violation(
     # 刻意 pass-through（工单 §1.4）不动；驱动指令句的**基数**在此验约，
     # 违约=需核查，不做静默缩数。
     for index, pick in enumerate(payload["picks"]):
-        problem = pick_row_violation(pick)
+        problem = pick_row_violation(
+            pick, as_of_date=as_of_date, entry_date=entry_date)
         if problem is not None:
             return (
                 f"工件候选第 {index + 1} 行违约：{problem}（产出器恒写六键，"
@@ -603,6 +638,34 @@ def producer_shape_violation(
         return (
             f"工件候选 {len(payload['picks'])} 条超出 meta.topk"
             f"（{raw_topk}）——canonical 契约 N ≤ topk，产出器产不出；需核查。")
+    # 三个计数字段:产出器无条件写，且都是**非负 int**（两个布尔掩码求和
+    # 之差 / 之和）。此前没有任何 reader 验过它们——`n_scored` 是下面那条
+    # 恒等式的一端，不先验它，新闸自己就会被一个字符串或负数绕过；而
+    # `n_masked` / `n_st_excluded` 是详情页 caption 上「宇宙被筛掉多少」的
+    # 依据，一个负数会被原样端给操作人当统计口径。
+    for _key in ("n_scored", "n_masked", "n_st_excluded"):
+        _raw = payload.get(_key)
+        if isinstance(_raw, bool) or not isinstance(_raw, int) or _raw < 0:
+            return (
+                f"工件 {_key} 缺失或非法（实际 {_raw!r}）——产出器无条件写"
+                "非负 int；需核查。")
+    # 清单长度的**产出器恒等式**（此前只验了上界那一半）:
+    # ``picks`` 是可交易池按分降序的 ``head(topk)``，而 ``n_scored`` 就是那
+    # 个池子的大小（``daily_recommend`` 的 ``n_scored = len(scored_frame) -
+    # n_excluded``，``n_excluded`` 是 ``~tradable_flag`` 的计数）。所以
+    # ``len(picks) == min(n_scored, topk)`` 是构造上精确成立的。
+    #
+    # 只验上界会放过**被截断/被清空**的清单:一份 50 条的合法工件删到 3 条，
+    # rank 仍连续 1..3、分仍降序、代码仍唯一、行日期仍对得上——全部现有闸都
+    # 放行，而头卡会说「有再平衡指令 · 共 3 只候选」。删光则翻成「不动 ·
+    # 目标清单为空」，在一个**真实的再平衡日**上告诉操作人不必动作。
+    _expected = min(payload["n_scored"], raw_topk)
+    if len(payload["picks"]) != _expected:
+        return (
+            f"工件候选 {len(payload['picks'])} 条 ≠ min(n_scored="
+            f"{payload['n_scored']}, topk={raw_topk})={_expected}——产出器按"
+            "可交易池的 head(topk) 落盘，这个数是构造上定死的；清单可能被"
+            "截断或被改过，需核查。")
     ranks = [pick["rank"] for pick in payload["picks"]]
     if ranks != list(range(1, len(ranks) + 1)):
         return (
