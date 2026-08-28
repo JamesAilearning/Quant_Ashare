@@ -335,6 +335,14 @@ Presence SHALL be decided by the session key existing, not by its value being
 truthy: the value of a zero-byte archive IS empty, so a truthiness test collapses
 "the operator asked for a rerun" into "they did not".
 
+Availability SHALL come from the GUARDED read's outcome, never from re-checking
+the path. A file that exists but sits outside the permitted output root, or that
+cannot be read, is rejected by the guard and its reason recorded — while a bare
+existence check calls it available, so the page navigates away and reports it as
+an empty file, discarding the real failure. The outcome SHALL be that no read
+issue was recorded AND the file is there: a successfully read zero-byte file, a
+guard-rejected path, and a missing file all yield empty bytes.
+
 #### Scenario: a zero-byte archive explains itself
 
 - **GIVEN** a source run whose archived config exists and is zero bytes

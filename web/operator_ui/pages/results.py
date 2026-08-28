@@ -270,7 +270,8 @@ else:
     )
 
     artifact_issues: list[ArtifactReadIssue] = []
-    config, config_path, config_bytes = _read_config(selected_job, artifact_issues)
+    config, config_path, config_bytes, config_readable = _read_config(
+        selected_job, artifact_issues)
     run_dir = _resolve_run_dir(selected_job, config)
     mode = str(selected_job.get("mode") or "")
 
@@ -336,6 +337,7 @@ else:
             config=config,
             config_path=config_path,
             config_bytes=config_bytes,
+            config_readable=config_readable,
             issues=artifact_issues,
         )
     elif mode == "walk_forward" or wf_report:
@@ -344,9 +346,11 @@ else:
         # pipeline 仪表盘里，于是一份正常的滚动验证结果根本产不出预填状态,
         # 本 change 为跨模式重跑写下的场景在这一侧不可达。
         # 与 pipeline 那一侧调**同一个**函数,不在这里再写一遍。
+        # 判据取**守卫式读取的结果**,不自己 is_file() 重查一遍——重查会
+        # 绕开守卫,把一份被拒绝的归档讲成「零字节空文件」(codex P2)。
         _render_rerun_action(
             job=selected_job, config_bytes=config_bytes,
-            config_present=config_path is not None and config_path.is_file())
+            config_present=config_readable)
         if wf_report:
             _render_walk_forward_summary(wf_report)
             _render_charts(run_dir)

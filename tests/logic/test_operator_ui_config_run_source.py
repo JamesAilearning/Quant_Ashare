@@ -1517,6 +1517,46 @@ class RerunActionReachableFromBothEnginesTests(unittest.TestCase):
         self.assertIsNotNone(disabled, "按钮必须有禁用判据")
         self.assertEqual(ast.unparse(disabled), "not config_present")
 
+    def test_every_call_site_passes_the_guarded_read_outcome(self) -> None:
+        """两个调用点都必须传**守卫式读取的结果**，不许自己 `is_file()` 重查。
+
+        重查会绕开守卫:一份存在但落在允许的输出根之外(或读不出来)的归档会被
+        当成可读,随后被讲成「零字节空文件」,而真正的失败原因被丢掉
+        （codex P2 on #471）。
+        """
+        import ast
+
+        for rel in ("web/operator_ui/pages/results.py",
+                    "web/operator_ui/pages/_results_render.py"):
+            tree = ast.parse(Path(rel).read_text(encoding="utf-8"))
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_render_rerun_action"
+            ]
+            for call in calls:
+                with self.subTest(file=rel):
+                    kw = {k.arg: k.value for k in call.keywords}
+                    self.assertIn("config_present", kw)
+                    # 必须是一个**已经算好的名字**（`config_readable`，或
+                    # 转发同名参数），不许是就地拼的表达式——就地拼的那种
+                    # 正是绕开守卫自己 `is_file()` 的写法。
+                    self.assertIsInstance(
+                        kw["config_present"], ast.Name,
+                        f"{rel}: 判据必须是算好的名字,不是就地表达式:"
+                        f"{ast.unparse(kw['config_present'])}",
+                    )
+                    self.assertIn(
+                        ast.unparse(kw["config_present"]),
+                        {"config_readable", "config_present"},
+                    )
+        # 全仓不许再有第二处自己重查的写法。
+        for rel in ("web/operator_ui/pages/results.py",
+                    "web/operator_ui/pages/_results_render.py"):
+            self.assertNotIn(
+                "config_path.is_file()", Path(rel).read_text(encoding="utf-8"))
+
     def test_the_pipeline_path_reaches_it_through_the_action_bar(self) -> None:
         # pipeline 那一侧仍然走 `_render_header_actions`（它还带三个导出
         # 按钮）；钉住那个函数**委派**给同一个实现，而不是自己再写一遍。

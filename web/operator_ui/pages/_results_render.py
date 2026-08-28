@@ -1154,6 +1154,7 @@ def _render_pipeline_dashboard(
     config: Mapping[str, Any],
     config_path: Path | None,
     config_bytes: bytes,
+    config_readable: bool,
     issues: list[ArtifactReadIssue],
 ) -> None:
     positions = _read_positions(run_dir, issues)
@@ -1174,7 +1175,7 @@ def _render_pipeline_dashboard(
         job=job,
         run_dir=run_dir,
         config_bytes=config_bytes,
-        config_present=config_path is not None and config_path.is_file(),
+        config_present=config_readable,
         metrics=metrics,
         metadata=metadata,
     )
