@@ -30,18 +30,23 @@ expanding its scope or turning remote feedback into an endless loop.
   fixed, obsolete because the diff changed, or out of scope. Inspect the cited
   code and related producer/consumer paths before changing anything.
 - For an actionable item, implement the smallest compliant fix, add or update
-  a regression test, re-run the proportionate checks plus the required full
-  suite, then repeat the publish-and-review step.
+  a regression test, re-run the local review loop to convergence, and re-run
+  the proportionate checks plus the required full suite before repeating the
+  publish-and-review step.
 
 ## Execute an authorized terminal action
 
 - Merge or close the PR only when the user explicitly requests that exact
   action. A request to prepare, publish, review, fix, or monitor a PR does not
   authorize merging or closing it.
-- Immediately before the mutation, resolve the exact repository and PR number,
-  verify that the requested action still applies, and confirm that required
-  checks and actionable review feedback do not block it. Stop and report any
-  unmet requirement instead of bypassing it.
+- Immediately before either mutation, resolve the exact repository and PR
+  number and verify that the requested action still applies.
+- Before merging, confirm that required checks, merge policy, and actionable
+  review feedback do not block the merge. Stop and report an unmet merge
+  requirement instead of bypassing it.
+- Before closing an intentionally abandoned or superseded PR, verify identity
+  and explicit authorization, but do not require passing checks or a clean
+  review state.
 - After the authorized merge or close, verify the remote PR state and report
   the terminal state and head commit.
 
