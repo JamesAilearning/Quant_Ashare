@@ -33,6 +33,18 @@ expanding its scope or turning remote feedback into an endless loop.
   a regression test, re-run the proportionate checks plus the required full
   suite, then repeat the publish-and-review step.
 
+## Execute an authorized terminal action
+
+- Merge or close the PR only when the user explicitly requests that exact
+  action. A request to prepare, publish, review, fix, or monitor a PR does not
+  authorize merging or closing it.
+- Immediately before the mutation, resolve the exact repository and PR number,
+  verify that the requested action still applies, and confirm that required
+  checks and actionable review feedback do not block it. Stop and report any
+  unmet requirement instead of bypassing it.
+- After the authorized merge or close, verify the remote PR state and report
+  the terminal state and head commit.
+
 ## Closing discipline
 
 - Do not reply to GitHub comments or resolve remote review threads unless the

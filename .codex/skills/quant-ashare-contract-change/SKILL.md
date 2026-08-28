@@ -24,8 +24,10 @@ runtime inputs, public signatures, errors, or canonical report semantics.
 
 - Pipeline and WalkForward write parallel artifacts. When one gains or changes
   a shared schema field, migrate the other engine, the run index, consumers,
-  fixtures, and contract tests in the same change unless the approved design
-  explicitly says otherwise.
+  fixtures, and contract tests in the same change.
+- If the symmetric migration cannot be completed, write a TODO that names the
+  exact affected keys and stop. Do not permit an approved design or partial
+  implementation to waive schema symmetry.
 - When a function signature, dataclass field, exception, or JSON schema
   changes, update every caller and rename tests so their names describe the
   post-change behavior.
