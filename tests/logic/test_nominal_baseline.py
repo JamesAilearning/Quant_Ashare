@@ -138,8 +138,34 @@ def _default_next(as_of: str, entry: str, rebalance: object) -> str:
 
 
 def _next_day(day: str) -> str:
+    """下一个**交易会话**——跳过周末。
+
+    产出器的 entry 是 qlib 日历上的下一个交易会话，周六周日产不出。直接
+    +1 天会让「周五 as_of」的夹具配出一个**周六 entry**，那是产出器产不出
+    的形态（codex P2 on #475）——而一份产出器产不出的夹具证明不了任何读侧
+    行为，正是它把这道闸挡在视线外的。
+    """
     from datetime import date, timedelta
-    return (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    nxt = date.fromisoformat(day) + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return nxt.isoformat()
+
+
+def _weekdays_from(start: str, count: int) -> list[str]:
+    """从 ``start`` 起的 ``count`` 个**连续工作日**（含 start 自身若是工作日）。
+
+    生产每个交易日出一次单，所以工件序列是连续工作日。按日历日枚举会造出
+    周末工件——产出器产不出的形态。
+    """
+    from datetime import date, timedelta
+    day = date.fromisoformat(start)
+    out: list[str] = []
+    while len(out) < count:
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += timedelta(days=1)
+    return out
 
 
 def _index(*dates: str) -> tuple[tuple[str, Path], ...]:
@@ -338,7 +364,11 @@ class FindBaselineTests(unittest.TestCase):
 
     def test_the_scan_is_bounded_and_says_so(self) -> None:
         # 无上界回溯既慢，又会把「基准早已过期」说成「找到了」。
-        dates = [f"2026-0{m}-{d:02d}" for m in (5, 6, 7) for d in range(1, 29)]
+        #
+        # 日期取**连续交易日**（跳过周末）：生产每个交易日出一次单，而按
+        # 日历日枚举会造出周末工件——产出器产不出，且会先撞上缺口闸/周末
+        # 闸，测到的就不是「扫描上限」这件事（codex P2 on #475）。
+        dates = _weekdays_from("2026-05-01", 60)
         result = find_nominal_baseline(
             _index(*dates),
             read_payload=_reader({
@@ -944,6 +974,64 @@ class CodeWhitespaceTests(unittest.TestCase):
 
         self.assertIsNotNone(producer_shape_violation(
             payload, as_of_date=_AS_OF, entry_date=_ENTRY))
+
+
+
+class WeekendDatesTests(unittest.TestCase):
+    """两个顶层日期都必须落在**可能是交易日**的那些天上。
+
+    产出器的 `as_of` 是一个真实会话的数据截止，`entry` 是 qlib 日历上的下一个
+    交易会话——周六周日两者都产不出。而上游的
+    `artifact_entry_timing_is_valid` 只验「严格 ISO 且 entry > as_of」，于是
+    「周五 as_of + 周六 entry」会被当成可信的再平衡基准，把清单端给操作人
+    （codex P2 on #475）。
+
+    同一套「周末不是交易日」的判据，本模块已经用在 HOLD 的
+    `next_rebalance_date` 与工件缺口上——一处严一处松，松的那处就是漏洞。
+    """
+
+    def test_a_weekend_entry_date_is_refused(self) -> None:
+        # 2026-07-31 是周五，+1 天是周六。真实产出器给的是 08-03（周一）。
+        payload = _artifact(as_of="2026-07-31", entry="2026-08-01")
+
+        problem = producer_shape_violation(
+            payload, as_of_date="2026-07-31", entry_date="2026-08-01")
+
+        assert problem is not None
+        self.assertIn("entry_date", problem)
+        self.assertIn("周末", problem)
+
+    def test_a_weekend_as_of_date_is_refused(self) -> None:
+        payload = _artifact(as_of="2026-08-01", entry="2026-08-03")
+
+        problem = producer_shape_violation(
+            payload, as_of_date="2026-08-01", entry_date="2026-08-03")
+
+        assert problem is not None
+        self.assertIn("as_of_date", problem)
+        self.assertIn("周末", problem)
+
+    def test_a_weekend_dated_artifact_is_never_the_baseline(self) -> None:
+        # 走完整回溯:这种工件不许当基准，回溯就地停下判不可知。
+        result = find_nominal_baseline(
+            _index("2026-07-31"),
+            read_payload=_reader({
+                "2026-07-31": _artifact(
+                    as_of="2026-07-31", entry="2026-08-01", rebalance=True),
+            }),
+        )
+
+        self.assertFalse(result.found)
+        assert result.blocked_by is not None
+        self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_SHAPE)
+
+    def test_the_real_producers_friday_to_monday_pair_passes(self) -> None:
+        # 本机真实工件就是这一对（2026-07-31 五 → 2026-08-03 一）。这道闸
+        # 不许误伤它。
+        payload = _artifact(as_of="2026-07-31", entry="2026-08-03")
+
+        self.assertIsNone(producer_shape_violation(
+            payload, as_of_date="2026-07-31", entry_date="2026-08-03"))
 
 
 

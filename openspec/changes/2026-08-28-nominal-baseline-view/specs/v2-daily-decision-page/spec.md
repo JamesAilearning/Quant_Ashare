@@ -250,3 +250,41 @@ and "the list was truncated or altered" send the operator to different places.
   with leading whitespace
 - **WHEN** the page validates it
 - **THEN** it is refused, rather than counted as two stocks
+
+### Requirement: Both artifact dates SHALL be provably-possible trading sessions
+
+The reader SHALL refuse an artifact whose `as_of_date` or `entry_date` falls on
+a weekend, applying the same provable half it already applies to a hold's
+`next_rebalance_date` and to gaps in the artifact history.
+
+The upstream entry-timing check verifies only strict ISO formatting and that the
+entry is later than the as-of session. A Friday as-of paired with a Saturday
+entry therefore passes, and the scan presents it as a trustworthy rebalance
+baseline — although the producer's as-of is a real session and its entry is the
+next session on the trading calendar, so neither can be a weekend. Applying the
+weekday rule to one of an artifact's three date groups and not the others makes
+the loosest one the hole.
+
+#### Scenario: a weekend entry date is refused
+
+- **GIVEN** an artifact whose as-of is a Friday and whose entry is the following
+  Saturday
+- **WHEN** the page validates it
+- **THEN** it is refused, and never becomes the nominal baseline
+
+### Requirement: Reaching the scan bound SHALL NOT be reported as exhaustion
+
+Where the backward scan stops because it reached its bound, the page SHALL say
+so in its own words, distinct from the message for an index that truly ran out.
+
+Older artifacts still exist in the bounded case; they simply were not read.
+Reporting it as "the scan reached the end, so the last rebalance predates every
+artifact here" states something the scan did not establish, and directly
+contradicts the bound notice rendered below it.
+
+#### Scenario: the bound is reached and named as such
+
+- **GIVEN** more consecutive validated holds than the scan bound
+- **WHEN** the page renders
+- **THEN** it says the scan stopped at its bound and that older artifacts were
+  not read, rather than that the history was exhausted

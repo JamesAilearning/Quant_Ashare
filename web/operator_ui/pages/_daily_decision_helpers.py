@@ -590,6 +590,29 @@ def producer_shape_violation(
     ``entry_date`` 非空、schema 版本受支持、meta 不是 corrupt-v2。本函数
     从**清单**与**节奏**两组字段往下验，两者正是读侧真正据以下结论的东西。
     """
+    # 两个顶层日期都必须落在**可能是交易日**的那些天上。产出器的 as_of 是
+    # 一个真实会话的数据截止,entry 是 qlib 日历上的下一个交易会话——周六周日
+    # 两者都产不出。上游的 ``artifact_entry_timing_is_valid`` 只验「严格 ISO
+    # 且 entry > as_of」,于是「周五 as_of + 周六 entry」这种工件会被当成可信
+    # 的再平衡基准，把它的清单端给操作人（codex P2 on #475）。
+    #
+    # 这里只做**证得出来**的那一半:周末不是交易日。节假日无从分辨（本模块
+    # 没有交易日历，与 ``artifact_entry_timing_is_valid`` 和
+    # ``unaccounted_weekdays_between`` 同一条限制）——同一套判据用在同一份
+    # 工件的三组日期上，不再一处严一处松。
+    # 两个参数都是必填关键字，且两个调用方（工作台合成、履历回溯）传进来的
+    # 都是**已经校验过非空**的值——所以这里不再补一道「空串就跳过」的恒假
+    # 分支（变异实测:它熄火后行为不变）。真要是空串,下面的 ISO 解析会如实
+    # 拒掉它,而不是静默放行。
+    for _field, _value in (("as_of_date", as_of_date), ("entry_date", entry_date)):
+        try:
+            _day = date.fromisoformat(_value)
+        except ValueError:
+            return f"工件 {_field} 不是严格 ISO 日期（实际 {_value!r}）"
+        if _day.weekday() >= 5:
+            return (
+                f"工件 {_field}（{_value}）落在周末——产出器的 as_of 是一个"
+                "真实会话、entry 是日历上的下一个交易会话，两者都产不出；需核查。")
     try:
         # The detailed page treats a missing/non-list picks value, or a
         # non-object member, as a corrupt producer artifact. Every reader

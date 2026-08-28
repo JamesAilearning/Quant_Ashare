@@ -154,6 +154,23 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertIn("**不能**当作名义持仓基准", self.page)
         self.assertNotIn("_baseline_roster = ()\n    st.info", self.page)
 
+    def test_hitting_the_scan_bound_is_not_reported_as_exhaustion(
+        self,
+    ) -> None:
+        # 「翻到上限就停了」与「翻完了都没有」是两件事：更早的工件**还在**，
+        # 只是没读。说成「回溯到底」会让操作人以为这台机器上确实没有更早的
+        # 再平衡记录，而下面那条上限说明会与这句直接打架（codex P2 on #475）。
+        #
+        # 钉**条件整行**：钉分支里的字面量会被「条件熄火」变异逃走。
+        self.assertIn("\nelif _baseline.limit_reached:\n", self.page)
+        bound_at = self.page.index("elif _baseline.limit_reached:")
+        else_at = self.page.index("\nelse:\n", bound_at)
+        bound_branch = self.page[bound_at:else_at]
+        self.assertIn("撞到扫描", bound_branch)
+        self.assertNotIn("回溯到底", bound_branch)
+        # 且必须排在那条笼统的 else **之前**，否则它永远不会被走到。
+        self.assertLess(bound_at, else_at)
+
     def test_the_stop_explanation_does_not_pick_one_cause_for_both(
         self,
     ) -> None:
