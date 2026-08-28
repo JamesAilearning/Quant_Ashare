@@ -38,6 +38,7 @@ from web.operator_ui.decision_journal import (
 )
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    BASELINE_BLOCK_HISTORY_GAP,
     CERTIFIED_SLIPPAGE_BPS,
     COST_REFERENCE_COLUMN,
     VERDICT_ENSEMBLE_SHA_MISSING,
@@ -56,6 +57,8 @@ from web.operator_ui.pages._daily_decision_helpers import (
     artifact_meta_status,
     artifact_schema_is_supported,
     banner_status,
+    baseline_roster,
+    find_nominal_baseline,
     hold_state,
     journal_model_id,
     list_recommendation_artifacts,
@@ -374,6 +377,138 @@ if _hold.is_hold:
         "N5 生产节奏下调仓只发生在每 ISO 周第一个交易日;下一再平衡日:**"
         + (_hold.next_rebalance_date or "(超出日历尾部,未知)")
         + "**。入场决策表单已阻断。"
+    )
+
+# ---------------------------------------------------------------------------
+# 名义持仓的基准(只读对照,PR-1)
+#
+# 生产是 csi800 / N5 / 周频 iso_week —— 绝大多数交易日是 HOLD 日。所以「我此刻
+# 名义上跟的是哪一天的那张单」这个问题,答案通常**不是**今天。此前这一页只能
+# 一次看一天(日期下拉框只给日期、不标哪天是再平衡日),要回答它得逐个日期点开、
+# 逐个看上面那条 HOLD 横幅。
+#
+# 这里把那次回溯做成一次可复核的搜索:找到了就说是哪一天,找不到就说沿途每一份
+# 工件**各自因为什么**被跳过。「基准在 30 天前」和「一份合格的基准都没有」对
+# 操作人的下一步完全不同。
+#
+# 红线(操作人已明令):这一段是**只读对照**。不接收手输持仓、不生成差分单、
+# 不设缓冲带、不给任何形如下单指令的东西。工件里本来也只有 rank / 评分 /
+# 可交易标志——没有权重、没有股数、没有金额,所以名单只能是代码集合。
+# ---------------------------------------------------------------------------
+st.markdown("#### 名义持仓基准")
+
+
+def _read_baseline_payload(path: Path) -> dict[str, Any] | None:
+    """读一份候选工件——走与本页其余读盘同一道输出目录守卫。"""
+    result = read_json_artifact(path, artifact_name=path.name)
+    if result.issue is not None or not isinstance(result.value, dict):
+        return None
+    loaded: dict[str, Any] = result.value
+    return loaded
+
+
+_baseline = find_nominal_baseline(
+    _artifacts, read_payload=_read_baseline_payload, as_of=_selected_date,
+)
+_baseline_roster: tuple[str, ...] = ()
+_baseline_unreadable = ""
+if _baseline.found:
+    try:
+        _baseline_roster = baseline_roster(_baseline.baseline_payload)
+    except ValueError as _roster_exc:
+        # 损坏的名单**不是**空名单。退成 `()` 会让页面接着说「名义上跟的是
+        # X 那次的清单(共 0 只)」——把一份损坏工件渲染成一个合法的空仓位,
+        # 而这一页别处对 picks 形状违约的处置正是「要被看见,不要被渲染成
+        # 良性空缺」。这里改判整段不可用。
+        _baseline_unreadable = str(_roster_exc)
+
+if _baseline.found and not _baseline_unreadable:
+    _baseline_meta = _baseline.baseline_payload.get("meta")
+    _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
+    st.info(
+        f"截至 **{_selected_date}**,名义上跟的是 **{_baseline.baseline_date}** "
+        f"那次再平衡的清单(共 **{len(_baseline_roster)}** 只 · "
+        f"topk={_baseline_meta.get('topk', '—')} · "
+        f"universe={_baseline_meta.get('instruments', '—')})。"
+    )
+    st.caption(
+        "「名义」= 按那张单**应当**持有的代码集合。这里不知道你的实际账户持仓,"
+        "也不产生任何调仓指令——本页只做只读对照。"
+    )
+    if _baseline_roster:
+        st.dataframe(
+            [{"序": _i + 1, "代码": _code}
+             for _i, _code in enumerate(_baseline_roster)],
+            hide_index=True,
+            width="stretch",
+        )
+elif _baseline_unreadable:
+    st.error(
+        f"⚠ 找到的基准工件（{_baseline.baseline_date}）形状违约，"
+        f"**不能**当作名义持仓基准:{_baseline_unreadable}"
+    )
+elif _baseline.unknowable:
+    # 「不知道」与「确实没有」是两件事。回溯停在一份**回答不了自己是不是
+    # 再平衡日**的工件上——它本身可能就是一次更近的再平衡,所以再往回翻出
+    # 来的那张单可能**已经被它取代**。报成「找不到」会让操作人以为翻遍了,
+    # 报成某张旧单会让他拿过期的清单当此刻该持有的。
+    _blocked = _baseline.blocked_by
+    assert _blocked is not None
+    st.error(
+        f"⚠ 截至 **{_selected_date}** 名义持仓基准**不可知**:回溯在 "
+        f"**{_blocked.trade_date}** 那一份上停下——{_blocked.detail}"
+    )
+    # 总说明**不替两种成因下同一个结论**（codex #472 上学到的同一课）:
+    # 「这一份回答不了它自己是不是再平衡日」对**缺口**那一种是假话——缺口停
+    # 下时那一份恰恰是一个经过校验的 HOLD,问题在它与更早那份之间那几天。
+    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:
+        st.caption(
+            "为什么不继续往回翻:经过校验的 HOLD 只证明了**那一天**没换手,"
+            "证明不了**那一段**。中间那些没有工件的交易日各自都可能是一次"
+            "再平衡,而没有任何记录能排除它们——翻过去报出来的清单可能"
+            "**早已被取代**。"
+        )
+    else:
+        st.caption(
+            "为什么不继续往回翻:只有**经过校验的 HOLD 日**才能证明「那天没换手、"
+            "所以更早那张单仍然有效」。这一份回答不了它自己是不是再平衡日,继续"
+            "翻出来的清单可能**已经被它取代**——那就成了拿过期的单当此刻该持有的。"
+        )
+elif _baseline.limit_reached:
+    # 「翻到上限就停了」与「翻完了都没有」是两件事(codex P2 on #475):更早的
+    # 工件**还在**,只是没读。说成「翻到底」会让操作人以为这台机器上确实没有
+    # 更早的再平衡记录,而下面那条上限说明会与这句直接打架。
+    st.warning(
+        f"⚠ 截至 **{_selected_date}** 名义持仓基准**尚未查到**:已回溯 "
+        f"{_baseline.scanned} 份工件(全部是经过校验的 HOLD 日)后**撞到扫描"
+        "上限**停下——更早的工件还在，只是没有读。"
+    )
+    st.caption(
+        "这不是「翻完了都没有」。要看更早的基准，请选一个更早的日期再看一次。"
+    )
+else:
+    st.warning(
+        f"⚠ 截至 **{_selected_date}** 回溯到底也没遇到再平衡日"
+        f"(已回溯 {_baseline.scanned} 份工件,全部是 HOLD 日)。"
+    )
+    st.caption(
+        "这不等于「没有持仓」——它表示**这台机器上的工件**里，最近一次换手"
+        "早于现有工件的覆盖范围。"
+    )
+if _baseline.skipped:
+    with st.expander(
+        f"回溯途中经过的 HOLD 日({len(_baseline.skipped)} 份)", expanded=False,
+    ):
+        st.dataframe(
+            [{"日期": _c.trade_date, "原因": _c.detail}
+             for _c in _baseline.skipped],
+            hide_index=True,
+            width="stretch",
+        )
+if _baseline.limit_reached:
+    st.caption(
+        f"· 回溯在第 {_baseline.scanned} 份停下(扫描上限)。更早的工件没有读——"
+        "无上界地往回翻会把「基准早已过期」说成「找到了」。"
     )
 
 # ---------------------------------------------------------------------------

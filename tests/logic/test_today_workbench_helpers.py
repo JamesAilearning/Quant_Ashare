@@ -28,8 +28,16 @@ _PROV_OTHER = os.path.join(os.path.abspath(os.sep), "data", "other")
 
 
 def _pick(rank: int, code: str) -> dict[str, object]:
-    """产出器 RecommendationPick 形态的一行合法候选（六键六型恒写）。"""
+    """产出器写在一行上的**全部八键**。
+
+    六键是 ``RecommendationPick`` 那个 dataclass 的字段；``write_outputs``
+    还给每一行补 ``as_of_date`` / ``entry_date``（``_BUY_LIST_COLUMNS``）。
+    漏掉那两个，「行日期来自另一个截面」这道漏洞就测不出来（codex P1 on
+    #475）。日期与 ``_ensemble_payload`` 的顶层日期一致。
+    """
     return {
+        "as_of_date": "2026-08-18",
+        "entry_date": "2026-08-19",
         "rank": rank,
         "stock_code": code,
         "stock_name": f"股票{rank}",
@@ -50,9 +58,38 @@ def _ensemble_payload(
         "rebalance_day": rebalance_day,
         # 再平衡日 next 必为 as_of（跨字段不变式）；HOLD 侧才是未来锚。
         "next_rebalance_date": "2026-08-18" if rebalance_day else "2026-08-25",
-        "meta": {"ensemble": {"manifest_sha256": manifest}, "topk": 50},
+        "meta": {"ensemble": {"manifest_sha256": manifest}, "topk": 50,
+                 # 产出器与 topk 在同一处无条件写 instruments——夹具
+                 # 少写它就又是一份产出器产不出的工件。
+                 "instruments": "csi800"},
         "picks": [],
+        # 产出器恒写的三个计数。`n_scored` 还是清单长度那条恒等式的一端
+        # （len(picks) == min(n_scored, topk)），所以改 picks 的用例必须走
+        # `_set_picks` 一起改它——夹具不满足产出器的恒等式，就又是一份产
+        # 出器产不出的夹具（codex/审计 #475）。
+        "n_scored": 0,
+        "n_masked": 0,
+        "n_st_excluded": 0,
     }
+
+
+def _set_picks(
+    payload: dict[str, object], picks: object,
+) -> dict[str, object]:
+    """把 picks 换掉，并把 `n_scored` 拨到产出器恒等式成立的值。
+
+    产出器的 picks 是可交易池按分降序的 head(topk)，池子大小就是
+    `n_scored`——所以 len(picks) == min(n_scored, topk) 是构造上定死的。
+    直接赋 `payload["picks"] = …` 会造出一份产出器产不出的工件，那样测到的
+    就不是用例自称要测的那道闸。
+    """
+    payload["picks"] = picks
+    meta = payload.get("meta")
+    topk = meta.get("topk") if isinstance(meta, dict) else None
+    count = len(picks) if isinstance(picks, list) else 0
+    if isinstance(topk, int) and not isinstance(topk, bool):
+        payload["n_scored"] = count if count < topk else max(count, 800)
+    return payload
 
 
 class DailySignalSummaryTests(unittest.TestCase):
@@ -81,6 +118,21 @@ class DailySignalSummaryTests(unittest.TestCase):
         )
         self.assertEqual(result.kind, "hold")
         self.assertIn("不构成入场指令", result.detail)
+
+    def test_a_non_bool_cadence_field_is_never_summarised_as_a_signal(
+        self,
+    ) -> None:
+        # `rebalance_day: "yes"` 是产出器产不出的形态。`hold_state` 对它返回
+        # is_hold=False 且带 malformed——只看 is_hold 会把一份损坏工件当成
+        # 「有再平衡指令」端上头卡。这道闸此前无用例覆盖（#475 变异守卫抓到）。
+        result = summarise_daily_signal(
+            "2026-08-18",
+            {**_ensemble_payload(), "rebalance_day": "yes"},
+            incumbent=self.incumbent,
+            current_model_sha=None,
+        )
+        self.assertEqual(result.kind, "needs_verification")
+        self.assertIn("rebalance_day", result.detail)
 
     def test_provenance_or_payload_mismatch_never_becomes_a_signal(self) -> None:
         cases = (
@@ -139,7 +191,7 @@ class DailySignalSummaryTests(unittest.TestCase):
                 if label == "missing":
                     payload.pop("picks")
                 else:
-                    payload["picks"] = picks
+                    _set_picks(payload, picks)
                 result = summarise_daily_signal(
                     "2026-08-18",
                     payload,
@@ -166,7 +218,7 @@ class DailySignalSummaryTests(unittest.TestCase):
             incumbent=self.incumbent, current_model_sha=None)
         self.assertEqual(0, empty.pick_count)
         payload = _ensemble_payload()
-        payload["picks"] = [_pick(1, "SH600000"), _pick(2, "SZ000001")]
+        _set_picks(payload, [_pick(1, "SH600000"), _pick(2, "SZ000001")])
         two = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
@@ -209,7 +261,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         for label, bad in cases:
             with self.subTest(label=label):
                 payload = _ensemble_payload()
-                payload["picks"] = [bad]
+                _set_picks(payload, [bad])
                 got = summarise_daily_signal(
                     "2026-08-18", payload,
                     incumbent=self.incumbent, current_model_sha=None)
@@ -296,7 +348,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         # unique-instruments 守卫在构造 picks 前 fail-loud）——逐行验约看
         # 不见跨行重复，基数会把一只标的报成 2 只候选（codex P2）。
         payload = _ensemble_payload()
-        payload["picks"] = [_pick(1, "SH600000"), _pick(2, "SH600000")]
+        _set_picks(payload, [_pick(1, "SH600000"), _pick(2, "SH600000")])
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
@@ -317,7 +369,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 payload = _ensemble_payload()
-                payload["picks"] = picks
+                _set_picks(payload, picks)
                 got = summarise_daily_signal(
                     "2026-08-18", payload,
                     incumbent=self.incumbent, current_model_sha=None)
@@ -325,8 +377,10 @@ class DailySignalSummaryTests(unittest.TestCase):
                                  "断秩/乱序清单被当成了已核验")
         # 等分合法（稳定排序允许并列）。
         payload = _ensemble_payload()
-        payload["picks"] = [{**_pick(1, "SH600000"), "predicted_score": 0.5},
-                            {**_pick(2, "SZ000001"), "predicted_score": 0.5}]
+        _set_picks(payload, [
+            {**_pick(1, "SH600000"), "predicted_score": 0.5},
+            {**_pick(2, "SZ000001"), "predicted_score": 0.5},
+        ])
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
@@ -398,16 +452,25 @@ class DailySignalSummaryTests(unittest.TestCase):
         # canonical 契约 N ≤ topk；产出器 meta 无条件写 topk——缺失/非法/
         # 被超出都是产出器产不出的形态（codex P2）。
         base_rows = [_pick(1, "SH600000"), _pick(2, "SZ000001")]
-        for label, mutate, expect in (
-            ("缺 topk", lambda m: m.pop("topk"), "needs_verification"),
-            ("topk 布尔", lambda m: m.update(topk=True), "needs_verification"),
-            ("topk 字符串", lambda m: m.update(topk="50"), "needs_verification"),
-            ("N>topk", lambda m: m.update(topk=1), "needs_verification"),
-            ("N==topk 合法", lambda m: m.update(topk=2), "rebalance"),
+        # `detail` 也钉:超出上界要报**「超出 meta.topk」**这句,而不是退回
+        # 那条更笼统的「≠ min(n_scored, topk)」。清单长度的恒等式在数值上
+        # 蕴含了上界,但两句话对操作人的下一步不同——「配置的 topk 比清单
+        # 小」与「清单被截断/改过」要查的地方不是一处。不钉这句,把上界那道
+        # 闸整条删掉都不会红（变异实测逃逸）。
+        for label, mutate, expect, detail in (
+            ("缺 topk", lambda m: m.pop("topk"), "needs_verification",
+             "meta.topk 缺失或非法"),
+            ("topk 布尔", lambda m: m.update(topk=True), "needs_verification",
+             "meta.topk 缺失或非法"),
+            ("topk 字符串", lambda m: m.update(topk="50"), "needs_verification",
+             "meta.topk 缺失或非法"),
+            ("N>topk", lambda m: m.update(topk=1), "needs_verification",
+             "超出 meta.topk"),
+            ("N==topk 合法", lambda m: m.update(topk=2), "rebalance", ""),
         ):
             with self.subTest(label=label):
                 payload = _ensemble_payload()
-                payload["picks"] = [dict(r) for r in base_rows]
+                _set_picks(payload, [dict(r) for r in base_rows])
                 meta = dict(payload["meta"])  # type: ignore[arg-type]
                 mutate(meta)
                 payload["meta"] = meta
@@ -415,6 +478,8 @@ class DailySignalSummaryTests(unittest.TestCase):
                     "2026-08-18", payload,
                     incumbent=self.incumbent, current_model_sha=None)
                 self.assertEqual(expect, got.kind, f"{label} 判错")
+                if detail:
+                    self.assertIn(detail, got.detail, f"{label} 的成因说错了")
 
     def test_a_lone_cadence_field_is_unverifiable(self) -> None:
         # write_outputs 在同一守卫块同写 rebalance_day + next_rebalance_date

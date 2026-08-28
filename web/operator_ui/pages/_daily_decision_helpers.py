@@ -7,8 +7,10 @@ No Streamlit imports here — everything is unit-testable plain Python
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -490,6 +492,282 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
 
 
 # ---------------------------------------------------------------------------
+# 产出器形状合约 —— **一处实现，两处消费**
+#
+# 这一串闸原本只长在今日工作台（``summarise_daily_signal``）里。决策履历的
+# 回溯扫描要读同一批工件的**同两件事**（节奏答案 + 清单），一旦它自己另写
+# 一份「差几道闸」的校验，就成了同一份工件的第二条**更弱**的路径——工作台
+# 会拒的损坏工件，在履历里被当成可信基准。codex 在 #475 一次点出两道
+# （节奏双字段不全、重复 stock_code）；照着补那两道，剩下的六道就是下一轮
+# 的同类漏洞。所以整类**下沉**到这里，两边调同一个函数。
+#
+# 刻意**不**含来源判据（``provenance_verdict``）：那道闸问的是「这份工件是
+# 不是**现任**模型出的」。对历史基准而言，一次更早的再平衡本就可能出自上一
+# 代模型——拿现任身份去拒它是错的。形状合约与身份归属是两个问题。
+# ---------------------------------------------------------------------------
+
+
+def pick_row_violation(
+    pick: dict[str, Any], *, as_of_date: str = "", entry_date: str = "",
+) -> str | None:
+    """一行候选违约在哪——None = 合约内。
+
+    钉的是产出器**写在行上的全部八键**（canonical
+    ``v2-daily-stock-recommendation``:「rows carry ``as_of_date, entry_date,
+    rank, stock_code, stock_name, predicted_score, tradable_flag,
+    unavailable_reason``」;实现见 ``daily_recommend._BUY_LIST_COLUMNS`` 与
+    ``write_outputs`` 的 ``buy_rows``——JSON 的 ``picks`` 就是 ``buy_rows``）。
+
+    **上一版只钉了六键**——`RecommendationPick` 那个 dataclass 的字段——而行
+    上另有产出器补的两个日期。这个函数的 docstring 当时写着「穷尽式，不挑其
+    中几个——挑选就是下一个漏洞的形状」，而它自己正是挑了六个:一份顶层日期
+    合法、行却是从**另一个截面**拷来的工件，会被当成那一天的名义持仓端出去
+    ——未来数据从行载荷里绕回来了（codex P1 on #475）。
+
+    ``as_of_date`` / ``entry_date`` 传入时还验**跨字段相等**:行上的日期必须
+    等于**已经校验过的**顶层日期。只验「是不是 ISO」拦不住拷来的行——那两个
+    值本身完全合法，错的是它们不属于这一天。空串表示调用方还没有一个可信的
+    顶层日期可比（此时只验在场与类型）。
+    """
+    for key in ("as_of_date", "entry_date"):
+        raw = pick.get(key)
+        if not (isinstance(raw, str) and raw):
+            return f"{key} 缺失或非字符串（产出器对每一行都写这两个日期）"
+    if as_of_date and pick["as_of_date"] != as_of_date:
+        return (
+            f"as_of_date 与工件顶层不一致（行 {pick['as_of_date']!r} vs 工件 "
+            f"{as_of_date!r}）——这一行来自另一个截面")
+    if entry_date and pick["entry_date"] != entry_date:
+        return (
+            f"entry_date 与工件顶层不一致（行 {pick['entry_date']!r} vs 工件 "
+            f"{entry_date!r}）——这一行来自另一个截面")
+    code = pick.get("stock_code")
+    if not (isinstance(code, str) and code.strip()):
+        return "stock_code 缺失或为空"
+    # 带首尾空白的代码是产出器产不出的（qlib instrument 名无空白，产出器
+    # 原样写 `p.stock_code`）。**拒**而不是 strip 之后放行:同一页更靠后的
+    # 人工审阅助手对代码是 strip 之后再比的，两处口径不一致时
+    # `" SH600000"` 与 `"SH600000"` 会同时通过重复码闸（它逐字节比），于是
+    # 一份工件在同一页上给出两个互相矛盾的结论——「2 只候选」与「其实是同
+    # 一只」。归一化是把产出器产不出的拼写洗成合法值,这里一律不做。
+    if code != code.strip():
+        return f"stock_code 带首尾空白（实际 {code!r}）——产出器产不出"
+    if not isinstance(pick.get("stock_name"), str):
+        return "stock_name 缺失或非字符串"
+    rank = pick.get("rank")
+    if isinstance(rank, bool) or not isinstance(rank, int):
+        return "rank 缺失或非整数"
+    score = pick.get("predicted_score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return "predicted_score 缺失或非有限数值"
+    # NaN/inf 也拒：json.loads 接受裸 NaN，而 NaN 的比较恒 False 会悄悄
+    # 穿过降序检查；产出器打分后 dropna 再构造 picks，非有限分产不出
+    # （codex P2）。isfinite 对 JSON 任意精度大整数（10**1000）抛
+    # OverflowError——检查自己不许成为崩溃源（codex 续指），同判非有限。
+    try:
+        finite = math.isfinite(score)
+    except OverflowError:
+        finite = False
+    if not finite:
+        return "predicted_score 缺失或非有限数值"
+    # 不止验类型，验**字面**：产出器只落已过可交易筛选的行（untradable 在
+    # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
+    # _build_picks）。False/非空 reason 的行产出器产不出；只验布尔会让
+    # 「工件自己标注不可交易」的行照样计入候选数（codex P2）。
+    if pick.get("tradable_flag") is not True:
+        return "tradable_flag 缺失或非 True（产出器只落可交易行）"
+    if pick.get("unavailable_reason") != "":
+        return "unavailable_reason 非空串（产出器对入选行恒写空串）"
+    return None
+
+
+def producer_shape_violation(
+    payload: dict[str, Any], *, as_of_date: str, entry_date: str,
+) -> str | None:
+    """这份 payload 的**形状**违约在哪——``None`` = 产出器产得出的形态。
+
+    调用方须已确认：``payload`` 是 dict、``as_of_date`` 与文件名一致、
+    ``entry_date`` 非空、schema 版本受支持、meta 不是 corrupt-v2。本函数
+    从**清单**与**节奏**两组字段往下验，两者正是读侧真正据以下结论的东西。
+    """
+    # 两个顶层日期都必须落在**可能是交易日**的那些天上。产出器的 as_of 是
+    # 一个真实会话的数据截止,entry 是 qlib 日历上的下一个交易会话——周六周日
+    # 两者都产不出。上游的 ``artifact_entry_timing_is_valid`` 只验「严格 ISO
+    # 且 entry > as_of」,于是「周五 as_of + 周六 entry」这种工件会被当成可信
+    # 的再平衡基准，把它的清单端给操作人（codex P2 on #475）。
+    #
+    # 这里只做**证得出来**的那一半:周末不是交易日。节假日无从分辨（本模块
+    # 没有交易日历，与 ``artifact_entry_timing_is_valid`` 和
+    # ``unaccounted_weekdays_between`` 同一条限制）——同一套判据用在同一份
+    # 工件的三组日期上，不再一处严一处松。
+    # 两个参数都是必填关键字，且两个调用方（工作台合成、履历回溯）传进来的
+    # 都是**已经校验过非空**的值——所以这里不再补一道「空串就跳过」的恒假
+    # 分支（变异实测:它熄火后行为不变）。真要是空串,下面的 ISO 解析会如实
+    # 拒掉它,而不是静默放行。
+    for _field, _value in (("as_of_date", as_of_date), ("entry_date", entry_date)):
+        try:
+            _day = date.fromisoformat(_value)
+        except ValueError:
+            return f"工件 {_field} 不是严格 ISO 日期（实际 {_value!r}）"
+        if _day.weekday() >= 5:
+            return (
+                f"工件 {_field}（{_value}）落在周末——产出器的 as_of 是一个"
+                "真实会话、entry 是日历上的下一个交易会话，两者都产不出；需核查。")
+    try:
+        # The detailed page treats a missing/non-list picks value, or a
+        # non-object member, as a corrupt producer artifact. Every reader
+        # must use that same boundary before presenting this file.
+        picks_table_rows(payload)
+    except ValueError as exc:
+        return f"工件候选列表不合法：{exc}"
+    # 行级契约：产出器 RecommendationPick（frozen dataclass）六键六型**恒写**
+    # ——`picks: [{}]` 这类行数不出任何可买标的，却会把基数抬成 1、让最显
+    # 眼的卡说「有再平衡指令 · 1 只候选」（codex P2）。详情页的 display 层
+    # 刻意 pass-through（工单 §1.4）不动；驱动指令句的**基数**在此验约，
+    # 违约=需核查，不做静默缩数。
+    for index, pick in enumerate(payload["picks"]):
+        problem = pick_row_violation(
+            pick, as_of_date=as_of_date, entry_date=entry_date)
+        if problem is not None:
+            return (
+                f"工件候选第 {index + 1} 行违约：{problem}（产出器恒写六键，"
+                "缺任一即非产出器产物）。")
+    # 清单级验约：同一 stock_code 出现两次是产出器产不出的形态——上游
+    # _scores_to_inst_map 的 unique-instruments 守卫在构造 picks 之前就
+    # fail-loud（其 docstring 明言）。逐行验约看不见跨行重复，基数会把
+    # 「两行一只标的」报成「2 只候选」（codex P2）。
+    codes = [str(pick["stock_code"]) for pick in payload["picks"]]
+    if len(codes) != len(set(codes)):
+        duplicated = sorted({c for c in codes if codes.count(c) > 1})
+        return (
+            f"工件候选包含重复代码 {duplicated}——产出器上游对重复标的 "
+            "fail-loud，产不出这种清单；需核查。")
+    # 序与秩验约（canonical 契约 v2-daily-stock-recommendation：Ranks
+    # SHALL be contiguous 1..N，按 predicted_score 降序稳定排序）——
+    # [2] 或 [1,1] 这类断秩/乱序清单产出器产不出，基数照数会拿损坏工件
+    # 驱动头卡（codex P2）。
+    # topk 界（canonical 契约 N ≤ topk；产出器在 meta 无条件写 topk）：
+    # 缺失/非法/被超出都是产出器产不出的形态——超长清单照数会把损坏工件
+    # 的基数端上头卡（codex P2）。
+    meta_for_topk = payload.get("meta")
+    raw_topk = (meta_for_topk.get("topk")
+                if isinstance(meta_for_topk, dict) else None)
+    if (isinstance(raw_topk, bool) or not isinstance(raw_topk, int)
+            or raw_topk < 0):
+        return (
+            f"工件 meta.topk 缺失或非法（实际 {raw_topk!r}）——产出器无条件"
+            "写非负 int；需核查。")
+    # `meta.instruments` 与 `topk` 同罪同治:产出器在同一个 dict 字面量里
+    # **无条件**写这两个（`_assemble_run_meta`）。此前只验了 topk——缺失或
+    # 非串的 instruments 会让基准卡渲染成「universe=—」,把一份损坏工件当成
+    # 可信基准端出去,而那个「—」读起来像「这次运行没记录宇宙」而不是「这
+    # 份工件坏了」（codex P2 on #475；本仓自查审计也独立命中同一条）。
+    raw_universe = (meta_for_topk.get("instruments")
+                    if isinstance(meta_for_topk, dict) else None)
+    if not (isinstance(raw_universe, str) and raw_universe.strip()):
+        return (
+            f"工件 meta.instruments 缺失或非法（实际 {raw_universe!r}）——"
+            "产出器与 topk 在同一处无条件写它；需核查。")
+    if len(payload["picks"]) > raw_topk:
+        return (
+            f"工件候选 {len(payload['picks'])} 条超出 meta.topk"
+            f"（{raw_topk}）——canonical 契约 N ≤ topk，产出器产不出；需核查。")
+    # 三个计数字段:产出器无条件写，且都是**非负 int**（两个布尔掩码求和
+    # 之差 / 之和）。此前没有任何 reader 验过它们——`n_scored` 是下面那条
+    # 恒等式的一端，不先验它，新闸自己就会被一个字符串或负数绕过；而
+    # `n_masked` / `n_st_excluded` 是详情页 caption 上「宇宙被筛掉多少」的
+    # 依据，一个负数会被原样端给操作人当统计口径。
+    for _key in ("n_scored", "n_masked", "n_st_excluded"):
+        _raw = payload.get(_key)
+        if isinstance(_raw, bool) or not isinstance(_raw, int) or _raw < 0:
+            return (
+                f"工件 {_key} 缺失或非法（实际 {_raw!r}）——产出器无条件写"
+                "非负 int；需核查。")
+    # 清单长度的**产出器恒等式**（此前只验了上界那一半）:
+    # ``picks`` 是可交易池按分降序的 ``head(topk)``，而 ``n_scored`` 就是那
+    # 个池子的大小（``daily_recommend`` 的 ``n_scored = len(scored_frame) -
+    # n_excluded``，``n_excluded`` 是 ``~tradable_flag`` 的计数）。所以
+    # ``len(picks) == min(n_scored, topk)`` 是构造上精确成立的。
+    #
+    # 只验上界会放过**被截断/被清空**的清单:一份 50 条的合法工件删到 3 条，
+    # rank 仍连续 1..3、分仍降序、代码仍唯一、行日期仍对得上——全部现有闸都
+    # 放行，而头卡会说「有再平衡指令 · 共 3 只候选」。删光则翻成「不动 ·
+    # 目标清单为空」，在一个**真实的再平衡日**上告诉操作人不必动作。
+    _expected = min(payload["n_scored"], raw_topk)
+    if len(payload["picks"]) != _expected:
+        return (
+            f"工件候选 {len(payload['picks'])} 条 ≠ min(n_scored="
+            f"{payload['n_scored']}, topk={raw_topk})={_expected}——产出器按"
+            "可交易池的 head(topk) 落盘，这个数是构造上定死的；清单可能被"
+            "截断或被改过，需核查。")
+    ranks = [pick["rank"] for pick in payload["picks"]]
+    if ranks != list(range(1, len(ranks) + 1)):
+        return (
+            f"工件候选 rank 序列 {ranks} 不是连续 1..N——canonical 契约"
+            "明文 contiguous，产出器产不出；需核查。")
+    scores = [pick["predicted_score"] for pick in payload["picks"]]
+    if any(scores[i] < scores[i + 1] for i in range(len(scores) - 1)):
+        return (
+            "工件候选 predicted_score 非降序——canonical 契约按分降序稳定"
+            "排序，产出器产不出；需核查。")
+
+    cadence = hold_state(payload)
+    if cadence.malformed is not None:
+        return cadence.malformed
+    # 节奏日期验约（codex P2）：产出器只写严格 ISO 日期或 null（日历尾附
+    # 近合法 None）——hold_state 刻意宽容（非 str 静默成 None、非 ISO 原样
+    # 保留），把 `123`/"tomorrow" 这类产出器产不出的值放到头卡上宣布
+    # 「HOLD 无需动作」是拿损坏工件下结论。缺键 = cadence-1 合法形态。
+    # 节奏双字段 both-or-neither（write_outputs 在同一个守卫块里同写两键；
+    # codex P2）：只带其一是产出器产不出的形态——缺 next 键时 hold_state
+    # 会静默补 None，头卡把损坏工件当已核验 HOLD 报「未记录」。显式 null
+    # （日历尾外无锚）与缺键是两回事。
+    if ("rebalance_day" in payload) != ("next_rebalance_date" in payload):
+        present = ("rebalance_day" if "rebalance_day" in payload
+                   else "next_rebalance_date")
+        return (
+            f"工件只带节奏双字段之一（{present}）——产出器在同一守卫块同写"
+            "两键，产不出这种形态；需核查。")
+    if "next_rebalance_date" in payload:
+        raw_next = payload["next_rebalance_date"]
+        next_problem: str | None = None
+        if payload.get("rebalance_day") is True and raw_next != str(as_of_date):
+            # 跨字段不变式（无需日历复推，codex P2）：next_rebalance_date(d)
+            # 在 d 本身是再平衡日时**必然返回 d**——rebalance_day=true 配
+            # null 或别的日期是产出器产不出的节奏记录。
+            next_problem = (
+                f"再平衡日的 next 必为 as_of（{as_of_date}）——实际 "
+                f"{raw_next!r}，产出器产不出")
+        elif raw_next is not None:
+            if not isinstance(raw_next, str):
+                next_problem = f"非 str/null（实际 {type(raw_next).__name__}）"
+            else:
+                try:
+                    strict = date.fromisoformat(raw_next).isoformat() == raw_next
+                except ValueError:
+                    strict = False
+                if not strict:
+                    next_problem = f"不是严格 ISO 日期（实际 {raw_next!r}）"
+                elif (payload.get("rebalance_day") is False
+                        and (raw_next < str(entry_date)
+                             or date.fromisoformat(raw_next).weekday() >= 5)):
+                    # 产出器契约：next_rebalance_date(d) = 首个再平衡日
+                    # >= d，HOLD 日的 as_of 本身不是再平衡日 → 严格大于。
+                    # 过去/当日值是产出器产不出的——头卡把它宣布成「下一
+                    # 再平衡日」是拿损坏工件报日程（codex P2）。再平衡日
+                    # 工件的 next == as_of 合法，不在此限。
+                    next_problem = (
+                        f"不可能的取值（{raw_next}）：HOLD 日的下一再平衡"
+                        f"日是交易日且最早为 entry（{entry_date}）——早于"
+                        " entry 或落在周末的值产出器产不出")
+        if next_problem is not None:
+            return (
+                f"工件 next_rebalance_date {next_problem}——产出器只写严格 "
+                "ISO 或 null，需核查。")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Provenance verdict — the incumbent × artifact matrix as DATA, not as a
 # chain of elifs (codex #430 r1..r4 leaked four different cells of it: a
 # single-model artifact under an ensemble incumbent, a v1 artifact called
@@ -658,3 +936,327 @@ def provenance_verdict(
         ensemble_sha_matches=bool(inc_sha) and art_sha == inc_sha,
         single_sha_mismatch=status.sha_mismatch,
     )
+
+
+# ---------------------------------------------------------------------------
+# 名义持仓的基准：最近一次「再平衡日」工件
+#
+# 生产是 csi800 / N5 / 周频 iso_week —— 大多数交易日是 HOLD 日，出单工件写
+# ``rebalance_day: false``。所以「我此刻名义上跟的是哪一天的那张单」这个问题，
+# 答案通常**不是今天**，而要往回找到最近一个再平衡日。
+#
+# 这一页此前只能一次看一天（日期下拉框只给日期、不标哪天是再平衡日），要回答
+# 这个问题得逐个日期点开、逐个看 HOLD 横幅。下面这组纯函数把那次回溯做成一次
+# 可复核的搜索：找到了就说是哪一天，找不到就说**沿途每一份工件各自因为什么被
+# 跳过**——「没有基准」和「基准在 30 天前」对操作人的下一步完全不同。
+#
+# 边界（本模块的既有纪律，这里逐条继承）：
+# * 不重推产出器的节奏语义：只读它写下的 ``rebalance_day``，绝不自己按日历算
+#   哪天该再平衡（``src.inference.rebalance_schedule`` 是产出器那一侧的东西，
+#   把它引进 web/ 会跨越现有 import 边界）。
+# * 不做 I/O：读盘由调用方注入，页面注入的是过了 ``guard_output_path`` 的那个
+#   读取器。这样这组函数保持可单测，而读边界仍由页面那一侧执法。
+# * 不推断缺失：老工件没有 cadence 字段时**不**假设它是再平衡日——那等于替一次
+#   没记录节奏的运行编造语义。
+# ---------------------------------------------------------------------------
+
+#: 回溯为什么在某一份工件上**停下**。除了 HOLD 日，其余每一种都表示
+#: 「这一份回答不了它是不是再平衡日」——而那正是不能再往回翻的理由。
+BASELINE_SKIP_HOLD = "hold_day"
+BASELINE_BLOCK_NO_CADENCE = "no_cadence"
+BASELINE_BLOCK_MALFORMED_CADENCE = "malformed_cadence"
+BASELINE_BLOCK_UNSUPPORTED_SCHEMA = "unsupported_schema"
+BASELINE_BLOCK_ENTRY_TIMING = "entry_timing"
+BASELINE_BLOCK_DATE_MISMATCH = "date_mismatch"
+BASELINE_BLOCK_CORRUPT_V2 = "corrupt_v2"
+BASELINE_BLOCK_UNREADABLE = "unreadable"
+#: 工件形状违约（清单或节奏字段不是产出器产得出的形态）。
+BASELINE_BLOCK_SHAPE = "shape_violation"
+#: 两份相邻工件之间有**没有工件**的交易日——那几天里可能发生过再平衡。
+BASELINE_BLOCK_HISTORY_GAP = "history_gap"
+
+#: 向后兼容的别名（首版把这些都叫 SKIP，语义已改为 BLOCK）。
+BASELINE_SKIP_NO_CADENCE = BASELINE_BLOCK_NO_CADENCE
+BASELINE_SKIP_MALFORMED_CADENCE = BASELINE_BLOCK_MALFORMED_CADENCE
+BASELINE_SKIP_UNSUPPORTED_SCHEMA = BASELINE_BLOCK_UNSUPPORTED_SCHEMA
+BASELINE_SKIP_ENTRY_TIMING = BASELINE_BLOCK_ENTRY_TIMING
+BASELINE_SKIP_UNREADABLE = BASELINE_BLOCK_UNREADABLE
+
+#: 回溯的硬上界。模块的读侧纪律拒绝「无上界地扩大读取直到找到」——一次翻遍
+#: 全部历史工件既慢又会把「基准早已过期」这个事实说成「找到了」。
+DEFAULT_BASELINE_SCAN_LIMIT: Final[int] = 60
+
+
+@dataclass(frozen=True)
+class SkippedCandidate:
+    """回溯途中经过的一份工件，以及它对回溯意味着什么。"""
+
+    trade_date: str
+    reason: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class NominalBaselineSearch:
+    """向后找「最近一次再平衡日工件」的结果。
+
+    三种终局，对操作人的下一步各不相同：
+
+    * ``found``：``baseline_date`` 非空——那一天的清单就是名义持仓；
+    * **不可知**（``blocked_by`` 非 ``None``）：回溯在某一份工件上停下，因为
+      那一份**回答不了**它自己是不是再平衡日。它可能正是一次比更早那份更近
+      的再平衡——所以继续往回翻会把一份**过期**的清单报成当前基准。这不是
+      「没有基准」，是「不知道」；
+    * ``exhausted`` / ``limit_reached``：一路都是**经过校验**的 HOLD 日，翻
+      到底/翻到上限也没遇到再平衡日。
+
+    只有**经过校验的 HOLD** 才许可继续往回翻：它是唯一能证明「那天没换手、
+    所以更早那张单仍然有效」的证据。读不出来、schema 不认、日期对不上、
+    meta 损坏、没有节奏字段——每一种都让这条证据链断在这里。
+    """
+
+    baseline_date: str
+    baseline_payload: dict[str, Any]
+    skipped: tuple[SkippedCandidate, ...]
+    scanned: int
+    limit_reached: bool
+    exhausted: bool
+    #: 让回溯停下的那一份（``None`` = 证据链没断）。
+    blocked_by: SkippedCandidate | None = None
+
+    @property
+    def found(self) -> bool:
+        return bool(self.baseline_date)
+
+    @property
+    def unknowable(self) -> bool:
+        """证据链断了——既不是「找到了」，也不是「确实没有」。"""
+        return self.blocked_by is not None
+
+
+def _baseline_block(
+    payload: dict[str, Any], artifact_date: str,
+) -> SkippedCandidate | None:
+    """这份 payload 能不能被信任到「说得出它是不是再平衡日」。
+
+    这一串闸与**选中工件流**（``daily_decision.py`` 的日期一致性闸与
+    corrupt-v2 闸）逐条对齐。回溯若只做其中一部分，就成了同一份工件的第二条
+    **更弱**的校验路径——那正是「一份页面自己会 stop 的工件，在这里被当成
+    可信基准」的由来。
+    """
+
+    if not artifact_schema_is_supported(payload):
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_UNSUPPORTED_SCHEMA,
+            "工件 schema 版本不是本页支持的那一版，其字段语义无法确认。",
+        )
+    # 文件名日期 ↔ payload as_of_date：改名/拷贝过的工件会让「八月三日那一
+    # 份」其实装着八月十日的截面——按它当基准就是把未来数据当成当日应持有。
+    payload_as_of = str(payload.get("as_of_date", ""))
+    if payload_as_of != artifact_date:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_DATE_MISMATCH,
+            f"文件名日期与 payload 的 as_of_date 不一致（payload 记的是 "
+            f"{payload_as_of!r}）——文件可能被改名/拷贝或已损坏。",
+        )
+    if not artifact_entry_timing_is_valid(payload):
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_ENTRY_TIMING,
+            "工件的 as_of / entry 日期不构成严格向前的建仓时点。",
+        )
+    # 带 v2 标记却没有 dict meta = 损坏（产出器对 v2 恒写 dict meta）。选中
+    # 工件流对同一形状是 st.stop()，这里不能更宽松。
+    if artifact_meta_status(payload, None).artifact_is_corrupt_v2:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_CORRUPT_V2,
+            "带 artifact_schema_version 标记但 meta 块缺失/非 object——"
+            "文件可能损坏或非本系统产物。",
+        )
+    # 形状合约与今日工作台**同一个函数**（``producer_shape_violation``）。
+    # 回溯据以下结论的正是清单与节奏这两组字段——少验一道，这里就成了同一
+    # 份工件的第二条更弱路径：工作台会判「需核查」的工件，在履历里被当成
+    # 可信基准端给操作人。节奏双字段只带其一、重复 stock_code（codex #475
+    # 两条）都在这一道闸里，且不止这两条。
+    # entry 必是严格 ISO：上面的 ``artifact_entry_timing_is_valid`` 已经证过
+    # （缺失/空串/非 ISO 都在那道闸被拦下），所以这里不再补一道恒真的检查。
+    entry_date = str(payload["entry_date"])
+    # 节奏字段自身的形状先判——它有自己的成因码（回溯停在「说不出自己是不
+    # 是再平衡日」上，与「清单不可信」是两回事，页面分开说）。
+    state = hold_state(payload)
+    if state.malformed:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_MALFORMED_CADENCE, state.malformed)
+    shape_problem = producer_shape_violation(
+        payload, as_of_date=artifact_date, entry_date=entry_date)
+    if shape_problem is not None:
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_SHAPE, shape_problem)
+    if "rebalance_day" not in payload:
+        # 老工件没有节奏语义。**不**当作再平衡日（那等于替一次没记录节奏的
+        # 运行编造语义），也**不**当作 HOLD 继续往回翻——它可能本身就是一次
+        # 再平衡，只是那时还没有这个字段。两种猜测都不做，停在这里说不知道。
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_NO_CADENCE,
+            "工件没有记录 rebalance_day（早于节奏语义），无法确认它是不是"
+            "再平衡日。",
+        )
+    return None
+
+
+def unaccounted_weekdays_between(older: str, newer: str) -> tuple[str, ...]:
+    """``(older, newer)`` 开区间里的**工作日**——空元组 = 这段确实跨不出事。
+
+    一份经过校验的 HOLD 工件只证明了**那一天**没换手。它对「没有工件的那些
+    天」一无所知——而 ``list_recommendation_artifacts`` 枚举的只是**存在的
+    文件**。生产是每个交易日出一次单，所以两份相邻工件之间夹着工作日，就是
+    夹着一次**没有记录**的运行；那一天完全可能是再平衡日，而它会让更早那张
+    单当场作废（codex P1 on #475）。
+
+    这里刻意只做**证得出来**的那一半：周六周日不是交易日，所以只隔着周末的
+    两份工件之间证明得了没有交易日。节假日无从分辨（本模块没有交易日历，与
+    ``artifact_entry_timing_is_valid`` 同一条限制），于是节假日会让回溯判
+    「不可知」。宁可如此——反过来是拿一张**可能已被取代**的清单当此刻该持有
+    的，而那正是这一页存在的理由。
+
+    日期读不出来时返回一个非空结果（`("?",)`）:证不出「没有缺口」就当有缺口。
+    """
+    try:
+        start = date.fromisoformat(older)
+        end = date.fromisoformat(newer)
+    except ValueError:
+        return ("?",)
+    missing: list[str] = []
+    day = start + timedelta(days=1)
+    while day < end:
+        if day.weekday() < 5:
+            missing.append(day.isoformat())
+        day += timedelta(days=1)
+    return tuple(missing)
+
+
+def find_nominal_baseline(
+    artifacts: Sequence[tuple[str, Path]],
+    *,
+    read_payload: Callable[[Path], dict[str, Any] | None],
+    as_of: str = "",
+    limit: int = DEFAULT_BASELINE_SCAN_LIMIT,
+) -> NominalBaselineSearch:
+    """从 ``as_of`` 起向后找**第一份**可信的再平衡日工件。
+
+    ``artifacts`` 是 :func:`list_recommendation_artifacts` 的产出（日期倒序）。
+    ``read_payload`` 读一份工件，读不出来返回 ``None``——由调用方注入，因为读盘
+    要过页面那一侧的输出目录守卫。``as_of`` 为空表示从最新的一份开始。
+
+    **只有经过校验的 HOLD 日才许可继续往回翻。** 任何一份「回答不了自己是不是
+    再平衡日」的工件（读不出来 / schema 不认 / 文件名与 payload 日期对不上 /
+    meta 损坏 / 没有节奏字段 / 节奏字段形状违约）都让回溯**就地停下**并判为
+    不可知——继续翻过去，就可能把一份**已被它取代**的更早清单报成当前基准，
+    而那正是「拿过期的单当此刻该持有的」。
+    """
+
+    skipped: list[SkippedCandidate] = []
+    scanned = 0
+    limit_reached = False
+    #: 上一份（更新的）已校验工件的日期。跨到下一份之前，这两份之间不许夹着
+    #: 没有工件的交易日——见 ``unaccounted_weekdays_between``。
+    #:
+    #: 从 ``as_of`` 起算而不是从第一份工件起算:两者之间同样可能夹着缺失的
+    #: 运行。选中日自己就有工件时这一步恒为空缺口（区间是空的），所以不是
+    #: 多余的一道闸,是同一道闸的第一格。
+    previous_date = as_of
+    for artifact_date, path in artifacts:
+        if as_of and artifact_date > as_of:
+            continue
+        if scanned >= limit:
+            limit_reached = True
+            break
+        if previous_date:
+            gap = unaccounted_weekdays_between(artifact_date, previous_date)
+            if gap:
+                # 多于三天时报**区间端点**而不是前三天:操作人要判断的是
+                # 「缺的这一段跨没跨过一个再平衡锚」,只看开头三天答不了。
+                shown = ("、".join(gap) if len(gap) <= 3
+                         else f"{gap[0]} … {gap[-1]}")
+                return NominalBaselineSearch(
+                    baseline_date="", baseline_payload={},
+                    skipped=tuple(skipped), scanned=scanned,
+                    limit_reached=False, exhausted=False,
+                    blocked_by=SkippedCandidate(
+                        previous_date, BASELINE_BLOCK_HISTORY_GAP,
+                        f"它与更早那份（{artifact_date}）之间有 {len(gap)} 个"
+                        f"工作日没有工件（{shown}）——那几天里可能发生过一次"
+                        "再平衡，而没有任何记录能排除它。",
+                    ))
+        previous_date = artifact_date
+        scanned += 1
+        payload = read_payload(path)
+        if payload is None:
+            blocked = SkippedCandidate(
+                artifact_date, BASELINE_BLOCK_UNREADABLE,
+                "工件读不出来（缺失、损坏、或不在允许的输出目录内）——"
+                "它本身可能就是一次更近的再平衡，所以更早那份不能当基准。",
+            )
+            return NominalBaselineSearch(
+                baseline_date="", baseline_payload={}, skipped=tuple(skipped),
+                scanned=scanned, limit_reached=False, exhausted=False,
+                blocked_by=blocked)
+        block = _baseline_block(payload, artifact_date)
+        if block is not None:
+            return NominalBaselineSearch(
+                baseline_date="", baseline_payload={}, skipped=tuple(skipped),
+                scanned=scanned, limit_reached=False, exhausted=False,
+                blocked_by=block)
+        if not hold_state(payload).is_hold:
+            return NominalBaselineSearch(
+                baseline_date=artifact_date,
+                baseline_payload=payload,
+                skipped=tuple(skipped),
+                scanned=scanned,
+                limit_reached=False,
+                exhausted=False,
+            )
+        skipped.append(SkippedCandidate(
+            artifact_date, BASELINE_SKIP_HOLD, "该日是 HOLD 日，不换手。"))
+    return NominalBaselineSearch(
+        baseline_date="",
+        baseline_payload={},
+        skipped=tuple(skipped),
+        scanned=scanned,
+        limit_reached=limit_reached,
+        exhausted=not limit_reached,
+    )
+
+
+def baseline_roster(payload: dict[str, Any]) -> tuple[str, ...]:
+    """基准工件的**代码集合**（按工件里的顺序，即 rank 序）。
+
+    刻意只给代码，不给任何数量口径：工件里只有 rank / predicted_score /
+    tradable_flag，**没有权重、没有股数、没有金额**。把一个等权假设写进这里，
+    就是凭空造出一份工件从未记录的仓位。
+
+    代码缺失时**抛**，不静默丢弃那一条。``picks_table_rows`` 对
+    ``stock_code`` 不做校验（``pick.get`` 缺失即 ``None``），而静默丢弃会让
+    名单比工件的候选数**少一条却不说**——操作人看到「共 49 只」，无从知道
+    第 50 条是被丢了还是本来就没有。
+    """
+    roster: list[str] = []
+    for index, row in enumerate(picks_table_rows(payload)):
+        code = row.get("代码")
+        if not isinstance(code, str) or not code:
+            raise ValueError(
+                "工件形状违约:第 "
+                f"{index + 1} 条候选缺少 stock_code(实际 {code!r})"
+                "——文件可能损坏。"
+            )
+        roster.append(code)
+    # 重复代码同样**抛**，不去重也不照数：这个元组的长度就是页面上那句
+    # 「共 N 只」。``find_nominal_baseline`` 的形状闸通常先一步拦下，但本
+    # 函数是公开入口——报数的那一处自己也得验，不能指望调用链上游都验过
+    # （codex #475）。
+    duplicated = sorted({c for c in roster if roster.count(c) > 1})
+    if duplicated:
+        raise ValueError(
+            f"工件形状违约:候选包含重复代码 {duplicated}"
+            "——产出器上游对重复标的 fail-loud,产不出这种清单。"
+        )
+    return tuple(roster)

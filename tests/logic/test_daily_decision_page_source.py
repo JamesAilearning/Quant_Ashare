@@ -8,8 +8,58 @@ pure helpers.
 
 from __future__ import annotations
 
+import ast
 import unittest
 from pathlib import Path
+
+
+def _rendered_strings(source: str) -> tuple[str, ...]:
+    """页面真正**渲染出去**的字符串字面量（传给 ``st.*`` 的那些）。
+
+    用 AST 而不是全文串查：这一页大量**否定**执行口径的词（「不表示买入、
+    卖出」「请勿据此下单」），全文禁词会把那些正确的免责声明也判红，而真正
+    要防的是有人把执行语义**渲染**出来。注释、docstring、变量名都不在这里。
+
+    f-string 的字面段也收（``JoinedStr`` 的 ``Constant`` 部分）——一句
+    ``f"目标仓位 {n} 股"`` 的危险部分正是那些字面段。
+    """
+    collected: list[str] = []
+
+    def _harvest(node: ast.expr) -> None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            collected.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    collected.append(part.value)
+        elif isinstance(node, ast.BinOp):
+            _harvest(node.left)
+            _harvest(node.right)
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            for element in node.elts:
+                _harvest(element)
+        elif isinstance(node, ast.Dict):
+            for value in node.values:
+                _harvest(value)
+
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_st = (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "st"
+        )
+        if not is_st:
+            continue
+        for argument in node.args:
+            _harvest(argument)
+        for keyword in node.keywords:
+            if keyword.arg in {"label", "help", "body", "text", "title"}:
+                _harvest(keyword.value)
+    return tuple(collected)
+
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PAGE = _ROOT / "web" / "operator_ui" / "pages" / "daily_decision.py"
@@ -39,6 +89,107 @@ class PageBoundaryTests(unittest.TestCase):
         for write_api in ("open(", "write_text", "write_bytes", "mkdir"):
             self.assertNotIn(write_api, self.page, write_api)
         self.assertIn("append_decision", self.page)
+
+    def test_the_nominal_baseline_stays_a_read_only_comparison(self) -> None:
+        """名义持仓基准段的红线（操作人明令）：只读对照，不越「一键下单只差
+        复制粘贴」那条线。
+
+        这一段是这一页第一次出现「应当持有什么」的表述，也因此是最容易往
+        执行工具方向滑的地方。红线钉在这里，而不是靠写文档提醒。
+        """
+        # 一、不接收手输持仓：页面不得出现任何能收持仓的输入控件。
+        for input_api in ("st.text_area", "st.number_input", "st.data_editor",
+                          "st.file_uploader"):
+            self.assertNotIn(input_api, self.page, input_api)
+        # 二、不给导出/复制：一份可粘贴的清单就是「只差复制粘贴」的那一步。
+        for handoff in ("st.download_button", "execCommand",
+                        "navigator.clipboard"):
+            self.assertNotIn(handoff, self.page, handoff)
+        # 三、执行口径的词不得出现在**渲染出去的文字**里。
+        #
+        # 刻意不做全文串禁：这一页本来就大量**否定**这些词（「不表示买入、
+        # 卖出」「请勿据此下单」），那些正是要保留的。所以**解析**页面，只取
+        # 真正传给 `st.*` 的字符串字面量来查——注释与否定说明不在其中，而
+        # 一旦有人真的渲染出「差分单」「目标仓位」，它就落在这里。
+        rendered = _rendered_strings(self.page)
+        self.assertTrue(rendered, "一个渲染字符串都没解析出来——守卫是空的")
+        # 名单刻意**窄**：只收「除非真的把功能做出来、否则没有理由出现」的词。
+        # 像「调仓指令」「下单」这类，这一页的免责声明本来就要用它们的否定式
+        # （「不产生任何调仓指令」），禁掉只会逼出更弱的免责声明。真正的守卫
+        # 是上面那两条 affordance 禁令。
+        for verb in ("差分单", "缓冲带", "目标仓位", "股数", "手数"):
+            for text in rendered:
+                self.assertNotIn(verb, text, f"{verb!r} 出现在渲染文字里")
+        # 明说它是只读对照，且明说不知道真实持仓。
+        self.assertIn("只读对照", self.page)
+        self.assertIn("不知道你的实际账户持仓", self.page)
+
+    def test_the_baseline_search_is_wired_and_bounded(self) -> None:
+        # 判据整行：只钉函数名的话，把 `found` 分支熄火能原样逃逸。
+        self.assertIn(
+            "_baseline = find_nominal_baseline(\n"
+            "    _artifacts, read_payload=_read_baseline_payload, "
+            "as_of=_selected_date,\n"
+            ")\n",
+            self.page,
+        )
+        # 三种终局各自有分支，且**互斥**：找到 / 不可知 / 翻完了都没有。
+        self.assertIn(
+            "\nif _baseline.found and not _baseline_unreadable:\n", self.page)
+        self.assertIn("\nelif _baseline_unreadable:\n", self.page)
+        self.assertIn("\nelif _baseline.unknowable:\n", self.page)
+        self.assertIn("\nif _baseline.skipped:\n", self.page)
+        self.assertIn("\nif _baseline.limit_reached:\n", self.page)
+        # 读盘走本页同一道输出目录守卫，不另开一条读路径。
+        self.assertIn("read_json_artifact(path, artifact_name=path.name)",
+                      self.page)
+        # 「不可知」与「确实没有」必须分开说：前者表示回溯**停在**一份回答
+        # 不了自己的工件上，继续翻出来的清单可能已被它取代。
+        self.assertIn("名义持仓基准**不可知**", self.page)
+        self.assertIn("回溯到底也没遇到再平衡日", self.page)
+        self.assertIn("不等于「没有持仓」", self.page)
+        # 损坏的名单**不是**空名单：退成 () 会让页面接着说「共 0 只」，
+        # 把一份损坏工件渲染成一个合法的空仓位。
+        self.assertIn("_baseline_unreadable = str(_roster_exc)", self.page)
+        self.assertIn("**不能**当作名义持仓基准", self.page)
+        self.assertNotIn("_baseline_roster = ()\n    st.info", self.page)
+
+    def test_hitting_the_scan_bound_is_not_reported_as_exhaustion(
+        self,
+    ) -> None:
+        # 「翻到上限就停了」与「翻完了都没有」是两件事：更早的工件**还在**，
+        # 只是没读。说成「回溯到底」会让操作人以为这台机器上确实没有更早的
+        # 再平衡记录，而下面那条上限说明会与这句直接打架（codex P2 on #475）。
+        #
+        # 钉**条件整行**：钉分支里的字面量会被「条件熄火」变异逃走。
+        self.assertIn("\nelif _baseline.limit_reached:\n", self.page)
+        bound_at = self.page.index("elif _baseline.limit_reached:")
+        else_at = self.page.index("\nelse:\n", bound_at)
+        bound_branch = self.page[bound_at:else_at]
+        self.assertIn("撞到扫描", bound_branch)
+        self.assertNotIn("回溯到底", bound_branch)
+        # 且必须排在那条笼统的 else **之前**，否则它永远不会被走到。
+        self.assertLess(bound_at, else_at)
+
+    def test_the_stop_explanation_does_not_pick_one_cause_for_both(
+        self,
+    ) -> None:
+        # 「这一份回答不了它自己是不是再平衡日」对**缺口**那一种是假话——缺口
+        # 停下时那一份恰恰是一个**经过校验的 HOLD**，问题在它与更早那份之间
+        # 那几天。一句话盖住两种成因，就是对其中一种撒谎（#472 学到的同一课，
+        # #475 第三轮再次适用）。
+        #
+        # 钉**条件整行**：钉分支里的字面量会被「条件熄火」变异逃走。
+        self.assertIn(
+            "    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:\n",
+            self.page,
+        )
+        # 缺口那一支说的是「那一天 vs 那一段」，不是「这一份回答不了自己」。
+        gap_at = self.page.index("BASELINE_BLOCK_HISTORY_GAP:")
+        else_at = self.page.index("    else:\n", gap_at)
+        gap_branch = self.page[gap_at:else_at]
+        self.assertIn("只证明了**那一天**没换手", gap_branch)
+        self.assertNotIn("回答不了它自己是不是再平衡日", gap_branch)
 
     def test_banner_warns_and_never_defaults(self) -> None:
         self.assertIn("模型元信息缺失", self.page)
