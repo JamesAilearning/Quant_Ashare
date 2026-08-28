@@ -4,11 +4,13 @@
 
 ### Requirement: Every non-dry-run SHALL record its identity in its own artifacts
 
-A run SHALL write its identity into the artifacts it produces: a run id, the
-config fingerprint, and the source revision. Recording identity only in a
-separate catalog is not enough — the directory on disk cannot then answer which
-run its bytes belong to, and a reader holding only the directory has nothing to
-check.
+A run SHALL write its identity into the artifacts it produces: a run id and the
+config fingerprint. Recording identity only in a separate catalog is not enough
+— the directory on disk cannot then answer which run its bytes belong to, and a
+reader holding only the directory has nothing to check.
+
+The source revision and timestamps are ALREADY written and SHALL NOT be
+reimplemented; the gap this closes is identity, not lineage.
 
 The fingerprint SHALL be computed by the implementation the resume logic already
 uses, which deliberately excludes the output directory so that renaming it does
@@ -25,8 +27,8 @@ SHALL treat their absence as LEGACY, never as corruption.
 #### Scenario: a completed run names itself in its report
 
 - **WHEN** a non-dry-run walk-forward run completes
-- **THEN** its report carries the run id, the config fingerprint, and the source
-  revision
+- **THEN** its report carries the run id and the config fingerprint, alongside
+  the source revision it already recorded
 - **AND** the output directory carries a marker naming that run
 
 #### Scenario: an artifact predating the requirement is legacy, not corrupt

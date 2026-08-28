@@ -7,8 +7,9 @@
       其实已经做对了」，例如 pipeline 的 `_make_run_dir`、`_resume.py` 那个
       刻意排除 `output_dir` 的指纹
 - [x] 0.2 三条确认项在**真实数据**上复核，数字逐个对上:
-      - `walk_forward_report.json` 顶层键无 `run_id` / `config_fingerprint` /
-        `git_commit`（实测打印）
+      - 产出器的报告顶层键**无** `run_id` / `config_fingerprint`（源码实读;
+        `git_commit` / `git_dirty` 已在写——初稿据一份 2026-05-22 的旧工件
+        误列它也缺，已更正）
       - catalog **105 行 / 33 目录 / 72 行被覆盖**
       - `output/walk_forward` 单目录 **59 行、3 个不同配置指纹**
 - [x] 0.3 关键约束确认:`engine.py:186` 的 `FoldManifest.discover(output_dir)`
@@ -18,8 +19,9 @@
 ## 1. 产物带身份
 
 - [ ] 1.1 `run_id = uuid4().hex` 在非 dry-run 起跑时铸一次，贯穿本次运行
-- [ ] 1.2 `walk_forward_report.json` 顶层写 `run_id` / `config_fingerprint` /
-      `git_commit`
+- [ ] 1.2 `walk_forward_report.json` 顶层写 `run_id` / `config_fingerprint`
+      ——`git_commit` / `git_dirty` 产出器已经在写（`aggregate.py:106` 起），
+      **不重复实现**
 - [ ] 1.3 指纹用**既有**的 `compute_config_fingerprint`（`_resume.py:116`），
       不新造哈希。它已经排除 `output_dir`——改目录名不该换指纹
 - [ ] 1.4 目录里落 `run_owner.json`（`run_id` / `config_fingerprint` /

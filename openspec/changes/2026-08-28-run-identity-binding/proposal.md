@@ -8,16 +8,27 @@
 > reproducibility and auditability, including **run identity, config
 > fingerprint**, lineage context, and timestamps.
 
-而实测:`output/walk_forward/walk_forward_report.json` 的顶层键是
+而产出器今天写进 `walk_forward_report.json` 的顶层键是（`aggregate.py:106`
+起的字面量，源码实读）:
 
 ```
-['aggregate_metrics', 'config', 'folds', 'generated_at', 'num_folds',
- 'test_window_coverage']
+generated_at, git_commit, git_dirty, comparison_provenance, config, folds,
+aggregate_metrics, metric_status, metrics_purpose, test_window_coverage,
+num_folds
 ```
 
-**`run_id` / `config_fingerprint` / `git_commit` 一个都没有**。`grep -rn
-"run_id" src/core/walk_forward/` 零命中。身份只活在 `output/runs/_index.jsonl`
-的目录行里,而那一行**不在产物目录里**——磁盘上那个目录说不出自己属于谁。
+**`run_id` 与 `config_fingerprint` 不在其中。** `grep -rn "run_id"
+src/core/walk_forward/` 零命中;`config_fingerprint` 只在 `_resume.py` 里为
+resume manifest 算，**从不写进报告**。lineage（`git_commit` / `git_dirty`）
+与 timestamps 早已写了——契约四项里缺的正是**身份**那两项。
+
+身份只活在 `output/runs/_index.jsonl` 的目录行里,而那一行**不在产物目录
+里**——磁盘上那个目录说不出自己属于谁。
+
+> 一处更正:本提案初稿把 `git_commit` 也列成「没有」。那是拿磁盘上一份
+> **2026-05-22** 的旧工件（只有 6 个顶层键）去论证今天的产出器——那份工件
+> 早于 `git_commit` / `comparison_provenance` / `metric_status` 被加进报告。
+> 结论不变（身份仍然缺），但缺的是**两项**不是三项。
 
 代价可以量出来。本机 catalog:
 
@@ -53,9 +64,9 @@
 
 ### 1. 产物里写上身份
 
-每一次**非 dry-run** 的滚动验证运行铸一个 `run_id`，并把契约要求的三个字段
-写进 `walk_forward_report.json` 顶层:`run_id` / `config_fingerprint` /
-`git_commit`。指纹用**既有的** `compute_config_fingerprint`（`_resume.py:116`）
+每一次**非 dry-run** 的滚动验证运行铸一个 `run_id`，并把契约里**尚缺的那
+两项**写进 `walk_forward_report.json` 顶层:`run_id` / `config_fingerprint`
+（`git_commit` / `git_dirty` 产出器已经在写，不动）。指纹用**既有的** `compute_config_fingerprint`（`_resume.py:116`）
 ——它已经刻意排除 `output_dir`，所以改目录名不会让同一份配置换指纹，这正是
 「两次同配置运行可被认成同一配置」所需要的语义。不新造第二套哈希。
 
