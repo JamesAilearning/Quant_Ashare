@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quant Ashare UI Change"
+  short_description: "Implement contract-safe Streamlit UI changes"

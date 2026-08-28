@@ -1,0 +1,3 @@
+interface:
+  display_name: "Quant Ashare Contract Change"
+  short_description: "Migrate runtime and artifact contracts safely"
