@@ -73,10 +73,22 @@ manifest 的错峰与 24 月窗 pins。
    直接写三成员（oldest→newest），随后由切换执行器以严格加载器验证。
 4. **ensemble 级门 ×1**（退化/约束干跑/veto 面）：
    `--window-start 2026-05-06 --window-end 2026-07-31`（trailing
-   quarter，对三名成员全样本外；终点=bundle 尾前最后一个交易日，
+   quarter，位于三成员训练窗之后的预注册行为干跑；终点=bundle 尾前最后一个交易日，
    qlib 回测需 T+1 结算日）。该窗口与三份 preset 的 valid 窗
    一样是**预注册值**：切换执行器会逐一比对 gate 工件的被测窗口，
    改动即拒（`BOOTSTRAP_DRYRUN_WINDOW`，治理测试钉守）。
+
+   **验证重叠，不是独立未见数据的样本外业绩验证**：m3 的 valid 窗为
+   `2026-04-07..2026-07-07`，与本干跑的重叠为 `2026-05-06..2026-07-07`。
+   valid 参与早停与模型选择，因此“训练窗之后”不等于“三成员都未见过”。
+   证据：[m3 preset](../config/presets/csi800_n5_bootstrap_m3.yaml)、
+   [m3 成员门](research/evidence/csi800_n5_runs/bootstrap_v2_gates/m3_member_gate.json)、
+   [ensemble 门](research/evidence/csi800_n5_runs/bootstrap_v2_gates/ensemble_gate.json)。
+   这里仅核对退化、约束与 veto 行为面；预注册日期、阈值和原始 PASS 工件不变，
+   也不代表该历史期间已实时运行。净业绩仍以已认证战役证据 + 年度再认证为权威。
+   m3 的 `2026-07-10..2026-07-31` test 段只是内嵌日频诊断，
+   不能自动当作整个 ensemble 的独立样本外认证；
+   也不能仅截取 valid_end 之后的日期就声称完全未见，本次不指定新的业绩验证窗。
 5. **切换执行**（晋升路径全门→零写入拒绝；先 `--dry-run` 看门）：
    ```bash
    python scripts/bootstrap_ensemble_cutover.py --dry-run      --manifest <候选 manifest>      --member-gate <m1 gate> --member-gate <m2 gate>      --member-gate <m3 gate> --ensemble-gate <ensemble gate>      --incumbent D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl      --manifest-out <生产 manifest 路径>
