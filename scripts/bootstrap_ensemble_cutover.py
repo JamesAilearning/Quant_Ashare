@@ -149,44 +149,11 @@ def _show(repo: Path, rev: str, relpath: str) -> bytes:
     return _git(["git", "show", f"{rev}:{relpath}"], repo)
 
 
-# The producer layout: ``Pipeline.run`` writes the model to
-# ``<run_dir>/artifacts/model.pkl`` and the RESOLVED config to
-# ``<run_dir>/config.yaml``.
-_RUN_ARTIFACTS_DIRNAME = "artifacts"
-_RUN_CONFIG_NAME = "config.yaml"
-
-
 def _member_run_config(pkl_path: Path) -> tuple[Any, str] | None:
-    """The PRODUCER's resolved config for this member's training run,
-    with the sha256 of its exact bytes.
+    """Compatibility adapter for the shared exact-layout producer reader."""
+    from src.data.model_training_provenance import read_member_run_config
 
-    Resolved from the exact known layout, never by searching upward
-    (codex #392 r9): an upward search hits
-    ``<run>/artifacts/config.yaml`` first, so a stale or hand-copied
-    file there would be validated INSTEAD of the run config the
-    pipeline actually wrote — letting a same-date but retuned member
-    through. A model outside the layout, a missing run config, or a
-    second config sitting in the artifacts dir all return ``None``,
-    which the caller turns into a refusal (an unbindable member cannot
-    become production).
-
-    Single read (codex #392 r14): the parsed config and the digest
-    the provenance check binds come from the SAME bytes."""
-    artifacts_dir = pkl_path.parent
-    if artifacts_dir.name != _RUN_ARTIFACTS_DIRNAME:
-        return None
-    if (artifacts_dir / _RUN_CONFIG_NAME).exists():
-        # Ambiguous evidence: only the run root may carry the config.
-        return None
-    candidate = artifacts_dir.parent / _RUN_CONFIG_NAME
-    if not candidate.is_file():
-        return None
-    try:
-        raw = candidate.read_bytes()
-        return (yaml.safe_load(raw.decode("utf-8")),
-                hashlib.sha256(raw).hexdigest())
-    except (OSError, yaml.YAMLError, UnicodeDecodeError):
-        return None
+    return read_member_run_config(pkl_path)
 
 
 # `--now` exists for deterministic tests. In a real promotion the

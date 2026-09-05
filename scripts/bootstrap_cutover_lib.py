@@ -372,34 +372,18 @@ _MISSING = _Missing()
 def check_run_config_provenance(
     label: str, *, run_config_sha256: str, sidecar: Any,
 ) -> None:
-    """Bind the run config the semantic gate reads to the gated chain.
+    """Keep the cutover error boundary over the shared digest validator."""
+    from src.data.model_training_provenance import (
+        ModelTrainingProvenanceError,
+    )
+    from src.data.model_training_provenance import (
+        check_run_config_provenance as check_digest,
+    )
 
-    ``<run>/config.yaml`` is a mutable, uncommitted file (codex #392
-    r14): an operator could train with retuned settings and edit the
-    YAML back to the pre-registered values afterwards. The run's own
-    result serializer therefore stamps the persisted config's digest
-    into the trainer sidecar — which IS digest-bound end-to-end
-    (manifest ``meta_sha256`` → member gate → serving loader). This
-    check closes the loop: the config bytes on disk must be exactly
-    the ones the run persisted, or the member cannot be promoted."""
-    if not isinstance(sidecar, dict):
-        raise CutoverRefusal(
-            f"{label}: trainer sidecar is not an object — cannot bind "
-            "the run config to the gated chain, refusing")
-    declared = sidecar.get("run_config_sha256")
-    if (not isinstance(declared, str) or len(declared) != 64
-            or any(c not in "0123456789abcdef" for c in declared)):
-        raise CutoverRefusal(
-            f"{label}: trainer sidecar carries no run_config_sha256 — "
-            "the run predates the config-binding serializer or was not "
-            "produced by the pipeline; its run config cannot be "
-            "trusted, refusing")
-    if declared != run_config_sha256:
-        raise CutoverRefusal(
-            f"{label}: the run config on disk (sha256 "
-            f"{run_config_sha256}) is NOT the config the run persisted "
-            f"({declared}) — post-training edits to config.yaml do not "
-            "re-authorize a member, refusing")
+    try:
+        check_digest(label, run_config_sha256=run_config_sha256, sidecar=sidecar)
+    except ModelTrainingProvenanceError as exc:
+        raise CutoverRefusal(str(exc)) from exc
 
 
 def check_member_source_provenance(label: str, sidecar: Any) -> str:

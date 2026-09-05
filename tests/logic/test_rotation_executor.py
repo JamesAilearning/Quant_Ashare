@@ -75,14 +75,21 @@ def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
 
     import lightgbm
 
-    pkl = tmp / f"{name}.pkl"
+    run_dir = tmp / name
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    config = run_dir / "config.yaml"
+    config.write_text(json.dumps({
+        "train_start": window[0], "train_end": window[1],
+    }), encoding="utf-8")
+    pkl = run_dir / "artifacts" / "model.pkl"
     pkl.write_bytes(pickle.dumps(_StubModel(name)))
-    meta = tmp / f"{name}.pkl.meta.json"
+    meta = pkl.with_suffix(".pkl.meta.json")
     meta.write_text(json.dumps({
         "schema_version": "v1", "model_type": "LGBModel",
         "best_iteration": 321, "num_boost_round": 1000,
         "lightgbm_version": lightgbm.__version__,
         "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+        "run_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
     }), encoding="utf-8")
     return {
         "pkl_path": str(pkl),
@@ -838,6 +845,25 @@ class RotationExecutorStates(unittest.TestCase):
                          self.manifest.read_text(encoding="utf-8"))
         self.assertEqual([], list(self.tmp.glob("*.pre_rotation_*")))
         self.assertEqual([], list(self.tmp.glob("*.swap*")))
+
+    def test_member_config_edited_after_gates_refuses_without_install(self) -> None:
+        # Check both a surviving member and the incoming one. A previous
+        # PASS gate cannot authorize config bytes changed after training.
+        for pkl in (Path(self.kept_members[0]["pkl_path"]), self.new_pkl):
+            with self.subTest(member=pkl):
+                config = pkl.parent.parent / "config.yaml"
+                original = config.read_bytes()
+                try:
+                    config.write_bytes(original + b"\n# post-gate edit\n")
+                    self.assertEqual(1, self._execute())
+                    self._assert_manifest_untouched()
+                finally:
+                    config.write_bytes(original)
+
+    def test_member_config_missing_after_gates_refuses_without_install(self) -> None:
+        (self.new_pkl.parent.parent / "config.yaml").unlink()
+        self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
 
     def test_member_pkl_deleted_after_gates_refused(self) -> None:
         # codex #391 r9: the gates proved the members were valid when

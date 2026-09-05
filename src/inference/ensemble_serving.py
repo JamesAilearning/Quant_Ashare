@@ -275,12 +275,40 @@ def _check_member_sidecar(
             f"{current_ver} — serialization semantics may have "
             "drifted, refusing.")
 
+    # Bind the declared dates to the run that actually trained this member.
+    # The sidecar here is the SAME parsed, manifest-hash-verified buffer, not
+    # a second mutable read. Factual binding is not certified-family policy.
+    from src.data.model_training_provenance import (
+        ModelTrainingProvenanceError,
+        check_member_training_window,
+        check_run_config_provenance,
+        read_member_run_config,
+    )
+
+    resolved_run = read_member_run_config(Path(member.pkl_path))
+    if resolved_run is None:
+        raise EnsembleServingError(
+            f"ensemble member[{i}] training run config is missing, unreadable "
+            "or outside the unambiguous producer layout — refusing.")
+    run_config, run_config_sha = resolved_run
+    try:
+        check_run_config_provenance(
+            f"ensemble member[{i}]", run_config_sha256=run_config_sha,
+            sidecar=sidecar,
+        )
+        check_member_training_window(
+            f"ensemble member[{i}]", run_config,
+            fit_start=member.fit_start, fit_end=member.fit_end,
+        )
+    except ModelTrainingProvenanceError as exc:
+        raise EnsembleServingError(str(exc)) from exc
+
 
 def load_member_models(
     members: tuple[EnsembleMember, ...],
 ) -> list[tuple[EnsembleMember, Any]]:
     """Load every member pickle STRICTLY — any missing file, digest
-    mismatch, sidecar/version-guard failure, unpickle failure or
+    mismatch, sidecar/version/config-evidence failure, unpickle failure or
     missing ``.predict`` refuses the whole ensemble (never a partial
     one). The digest is computed from the SAME byte buffer that is
     unpickled (single read), mirroring the single-model ``_load_model``

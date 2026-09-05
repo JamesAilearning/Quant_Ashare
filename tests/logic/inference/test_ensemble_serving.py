@@ -94,14 +94,21 @@ def _write_member(tmp: Path, i: int, obj: object) -> dict:
     # to lightgbm (tests/logic/test_walk_forward_ensemble.py).
     import lightgbm
 
-    pkl = tmp / f"member_{i}.pkl"
+    run_dir = tmp / f"member_{i}"
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    config = run_dir / "config.yaml"
+    config.write_text(json.dumps({
+        "train_start": _WINDOWS[i][0], "train_end": _WINDOWS[i][1],
+    }), encoding="utf-8")
+    pkl = run_dir / "artifacts" / "model.pkl"
     pkl.write_bytes(pickle.dumps(obj))
-    meta = tmp / f"member_{i}.pkl.meta.json"
+    meta = pkl.with_suffix(".pkl.meta.json")
     meta.write_text(json.dumps({
         "schema_version": "v1", "model_type": "LGBModel",
         "best_iteration": 100 + i, "num_boost_round": 1000,
         "lightgbm_version": lightgbm.__version__,
         "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
+        "run_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
     }), encoding="utf-8")
     return {
         "pkl_path": str(pkl),
@@ -119,6 +126,208 @@ def _write_manifest(tmp: Path, members: list[dict], **over) -> Path:
     p = tmp / "manifest.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     return p
+
+
+@pytest.mark.parametrize("member_index", [0, 1, 2])
+@pytest.mark.parametrize("field", ["train_start", "train_end"])
+def test_declared_fit_window_must_match_bound_training_config(tmp_path, monkeypatch, member_index, field):
+    _, members = _happy_manifest(tmp_path)
+    member = members[member_index]
+    config = Path(member["pkl_path"]).parent.parent / "config.yaml"
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload[field] = "2020-01-01"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    sidecar = json.loads(Path(member["meta_path"]).read_text(encoding="utf-8"))
+    sidecar["run_config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    _resync_sidecar(member, json.dumps(sidecar))
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    bad_pickle = Path(member["pkl_path"]).read_bytes()
+    original_loads = pickle.loads
+    seen = []
+
+    def tracked_loads(raw):
+        seen.append(raw)
+        return original_loads(raw)
+
+    monkeypatch.setattr("src.inference.ensemble_serving.pickle.loads", tracked_loads)
+    with pytest.raises(EnsembleServingError, match=field):
+        load_member_models(loaded_members)
+    assert bad_pickle not in seen
+
+
+def test_config_edit_after_training_refuses_before_model_deserialization(tmp_path, monkeypatch):
+    _, members = _happy_manifest(tmp_path)
+    member = members[0]
+    config = Path(member["pkl_path"]).parent.parent / "config.yaml"
+    config.write_bytes(config.read_bytes() + b"\n# changed after training\n")
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    seen = []
+    original_loads = pickle.loads
+
+    def tracked_loads(raw):
+        seen.append(raw)
+        return original_loads(raw)
+
+    monkeypatch.setattr("src.inference.ensemble_serving.pickle.loads", tracked_loads)
+    with pytest.raises(EnsembleServingError, match="config on disk"):
+        load_member_models(loaded_members)
+    assert seen == []
+
+
+@pytest.mark.parametrize("operation", ["exists", "is_file", "read_bytes"])
+def test_config_filesystem_failure_is_classified_refusal(tmp_path, monkeypatch, operation):
+    _, members = _happy_manifest(tmp_path)
+    pkl = Path(members[0]["pkl_path"])
+    target = pkl.parent / "config.yaml" if operation == "exists" else pkl.parent.parent / "config.yaml"
+    original = getattr(Path, operation)
+
+    def denied(path):
+        if path == target:
+            raise PermissionError("config access denied")
+        return original(path)
+
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    monkeypatch.setattr(Path, operation, denied)
+    with pytest.raises(EnsembleServingError, match="training run config"):
+        load_member_models(loaded_members)
+
+
+def test_invalid_yaml_timestamp_is_classified_refusal(tmp_path):
+    _, members = _happy_manifest(tmp_path)
+    config = Path(members[0]["pkl_path"]).parent.parent / "config.yaml"
+    # PyYAML's timestamp constructor raises plain ValueError, not YAMLError.
+    config.write_text("train_start: 2024-02-30\n", encoding="utf-8")
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    with pytest.raises(EnsembleServingError, match="training run config"):
+        load_member_models(loaded_members)
+
+
+def test_bootstrap_digest_check_retains_stdlib_only_execution():
+    import subprocess
+
+    code = (
+        "from scripts.bootstrap_cutover_lib import check_run_config_provenance, CutoverRefusal; "
+        "check_run_config_provenance('m', run_config_sha256='ab' * 32, "
+        "sidecar={'run_config_sha256': 'ab' * 32})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", code], cwd=_PROJECT_ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _bind_config_bytes(member: dict, raw: bytes) -> None:
+    """Keep the digest chain valid so tests reach config-shape/date checks."""
+    config = Path(member["pkl_path"]).parent.parent / "config.yaml"
+    config.write_bytes(raw)
+    sidecar = _sidecar_payload(member)
+    sidecar["run_config_sha256"] = hashlib.sha256(raw).hexdigest()
+    _resync_sidecar(member, json.dumps(sidecar))
+
+
+@pytest.mark.parametrize("case", [
+    "missing", "directory", "shadow", "flat_layout", "bad_yaml", "bad_utf8",
+])
+def test_unbindable_config_refuses_before_deserialization(tmp_path, monkeypatch, case):
+    _, members = _happy_manifest(tmp_path)
+    member = members[0]
+    pkl = Path(member["pkl_path"])
+    config = pkl.parent.parent / "config.yaml"
+    if case in ("missing", "directory"):
+        config.unlink()
+        if case == "directory":
+            config.mkdir()
+    elif case == "shadow":
+        (pkl.parent / "config.yaml").write_bytes(config.read_bytes())
+    elif case == "flat_layout":
+        moved = pkl.parent.parent / "model.pkl"
+        pkl.rename(moved)
+        member["pkl_path"] = str(moved)
+    elif case == "bad_yaml":
+        config.write_bytes(b"train_start: [unfinished")
+    else:
+        config.write_bytes(b"\xff\xfe")
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+
+    def forbidden_loads(raw):
+        pytest.fail("invalid config must be refused before unpickling")
+
+    monkeypatch.setattr("src.inference.ensemble_serving.pickle.loads", forbidden_loads)
+    with pytest.raises(EnsembleServingError, match="training run config"):
+        load_member_models(loaded_members)
+
+
+@pytest.mark.parametrize("raw", [b"", b"null", b"[]", b"42", b"a scalar"])
+def test_bound_non_mapping_config_refuses(tmp_path, raw):
+    _, members = _happy_manifest(tmp_path)
+    _bind_config_bytes(members[0], raw)
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    with pytest.raises(EnsembleServingError, match="not an object"):
+        load_member_models(loaded_members)
+
+
+@pytest.mark.parametrize("declared", [None, 42, "", "ab" * 31, "AB" * 32, "zz" * 32, "00" * 32])
+def test_invalid_bound_config_digest_refuses(tmp_path, declared):
+    _, members = _happy_manifest(tmp_path)
+    member = members[0]
+    sidecar = _sidecar_payload(member)
+    if declared is None:
+        sidecar.pop("run_config_sha256")
+    else:
+        sidecar["run_config_sha256"] = declared
+    _resync_sidecar(member, json.dumps(sidecar))
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    with pytest.raises(EnsembleServingError, match="run.config"):
+        load_member_models(loaded_members)
+
+
+@pytest.mark.parametrize("field", ["train_start", "train_end"])
+@pytest.mark.parametrize("value", [None, 20240101, "", "2024-02-30", "20240201", "2024-W05-4"])
+def test_invalid_bound_train_date_refuses(tmp_path, field, value):
+    _, members = _happy_manifest(tmp_path)
+    payload = {"train_start": _WINDOWS[0][0], "train_end": _WINDOWS[0][1]}
+    if value is None:
+        payload.pop(field)
+    else:
+        payload[field] = value
+    _bind_config_bytes(members[0], json.dumps(payload).encode("utf-8"))
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    with pytest.raises(EnsembleServingError, match=field):
+        load_member_models(loaded_members)
+
+
+def test_equal_duration_shifted_training_window_refuses(tmp_path):
+    from datetime import date, timedelta
+
+    _, members = _happy_manifest(tmp_path)
+    # Both ends shift together: validating only duration would accept this.
+    payload = {
+        key: (date.fromisoformat(value) + timedelta(days=1)).isoformat()
+        for key, value in zip(("train_start", "train_end"), _WINDOWS[0], strict=True)
+    }
+    _bind_config_bytes(members[0], json.dumps(payload).encode("utf-8"))
+    loaded_members, _ = load_ensemble_manifest(_write_manifest(tmp_path, members))
+    with pytest.raises(EnsembleServingError, match="train_start"):
+        load_member_models(loaded_members)
+
+
+def test_config_hash_and_dates_come_from_one_read_per_member(tmp_path, monkeypatch):
+    mp, members = _happy_manifest(tmp_path)
+    configs = {Path(m["pkl_path"]).parent.parent / "config.yaml": 0 for m in members}
+    loaded_members, _ = load_ensemble_manifest(mp)
+    original = Path.read_bytes
+
+    def counted_read(path):
+        if path in configs:
+            configs[path] += 1
+            if configs[path] > 1:
+                pytest.fail("digest and parsed dates must share a single byte buffer")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    assert len(load_member_models(loaded_members)) == ENSEMBLE_SIZE
+    assert list(configs.values()) == [1, 1, 1]
 
 
 def _happy_manifest(tmp: Path) -> tuple[Path, list[dict]]:
