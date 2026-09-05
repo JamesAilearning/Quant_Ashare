@@ -80,6 +80,10 @@ from scripts.rotation_lib import (  # noqa: E402
     plan_rotated_members,
     recert_validity,
 )
+from src.data.model_training_provenance import (  # noqa: E402
+    ModelTrainingProvenanceError,
+    check_member_gate_provenance,
+)
 from src.inference.ensemble_serving import (  # noqa: E402
     EnsembleServingError,
     load_ensemble_manifest,
@@ -519,6 +523,26 @@ def cmd_execute(args: argparse.Namespace) -> int:
                     "candidate manifest does not equal the rotation "
                     "plan (current minus oldest plus the gated "
                     "member) — refusing")
+
+            # Bind the gate to the run's EXACT valid dates, not merely a
+            # plausible span/gap. Old PASS artifacts get no replay bypass.
+            incoming = staged_members[-1]
+            meta_raw = _read_bytes_or_refuse(Path(incoming.meta_path), "incoming trainer sidecar")
+            if hashlib.sha256(meta_raw).hexdigest() != incoming.meta_sha256:
+                raise RotationRefusal(
+                    "incoming trainer sidecar does not match the staged "
+                    "manifest's declared sha256 — refusing")
+            try:
+                sidecar = json.loads(meta_raw.decode("utf-8"))
+                check_member_gate_provenance(
+                    "incoming member gate", pkl_path=Path(incoming.pkl_path),
+                    sidecar=sidecar, pkl_sha256=incoming.pkl_sha256,
+                    fit_start=incoming.fit_start, fit_end=incoming.fit_end,
+                    valid_start=member_gate["window"]["valid_start"],
+                    valid_end=member_gate["window"]["valid_end"],
+                )
+            except (ValueError, ModelTrainingProvenanceError) as exc:
+                raise RotationRefusal(f"incoming member gate evidence refused: {exc}") from exc
 
             # 5. Member-chain re-validation at EXECUTE time (codex
             # #391 r9): the gate artifacts prove the members were

@@ -66,6 +66,7 @@ class _StubModel:
 
 
 def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
+                        valid_window: tuple[str, str] | None = None,
                         ) -> dict:
     """A REAL loadable member (pkl + trainer sidecar with the version
     chain the serving loader enforces) — execute's member-chain
@@ -80,6 +81,8 @@ def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
     config = run_dir / "config.yaml"
     config.write_text(json.dumps({
         "train_start": window[0], "train_end": window[1],
+        **({"valid_start": valid_window[0], "valid_end": valid_window[1]}
+           if valid_window is not None else {}),
     }), encoding="utf-8")
     pkl = run_dir / "artifacts" / "model.pkl"
     pkl.write_bytes(pickle.dumps(_StubModel(name)))
@@ -179,7 +182,7 @@ class RotationExecutorStates(unittest.TestCase):
         # The incoming member: a REAL loadable stub (hashed by `plan`,
         # unpickled by execute's member-chain re-validation).
         new_files = _write_member_files(self.tmp, "new_member",
-                                        _NEW_WINDOW)
+                                        _NEW_WINDOW, _MEMBER_VALID)
         self.new_pkl = Path(new_files["pkl_path"])
         self.new_meta = Path(new_files["meta_path"])
 
@@ -863,6 +866,51 @@ class RotationExecutorStates(unittest.TestCase):
     def test_member_config_missing_after_gates_refuses_without_install(self) -> None:
         (self.new_pkl.parent.parent / "config.yaml").unlink()
         self.assertEqual(1, self._execute())
+        self._assert_manifest_untouched()
+
+    def test_legal_but_wrong_member_valid_window_refuses_before_loading(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        # Still satisfies every broad span/gap/recency rule, but this is
+        # not the config-bound validation window actually used by training.
+        artifact = json.loads(self.member_gate.read_text(encoding="utf-8"))
+        artifact["window"] = {"valid_start": "2026-05-06", "valid_end": "2026-07-31"}
+        self.member_gate.write_text(json.dumps(artifact), encoding="utf-8")
+        with patch.object(rotation, "load_member_models", wraps=rotation.load_member_models) as loader:
+            self.assertEqual(1, self._execute())
+            loader.assert_not_called()
+        self._assert_manifest_untouched()
+
+    def test_rotation_missing_bound_valid_date_refuses_before_loading(self) -> None:
+        import hashlib
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        # Rebind the whole fixture chain, so failure reaches missing valid
+        # evidence instead of an earlier config/sidecar/manifest digest check.
+        config = self.new_pkl.parent.parent / "config.yaml"
+        payload = json.loads(config.read_text(encoding="utf-8"))
+        payload.pop("valid_end")
+        config.write_text(json.dumps(payload), encoding="utf-8")
+        meta = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        meta["run_config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+        self.new_meta.write_text(json.dumps(meta), encoding="utf-8")
+        meta_sha = hashlib.sha256(self.new_meta.read_bytes()).hexdigest()
+        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
+        candidate["members"][-1]["meta_sha256"] = meta_sha
+        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
+        member_gate = json.loads(self.member_gate.read_text(encoding="utf-8"))
+        member_gate["subject"]["meta_sha256"] = meta_sha
+        self.member_gate.write_text(json.dumps(member_gate), encoding="utf-8")
+        ensemble_gate = json.loads(self.ensemble_gate.read_text(encoding="utf-8"))
+        ensemble_gate["subject"]["manifest_sha256"] = hashlib.sha256(self.candidate.read_bytes()).hexdigest()
+        self.ensemble_gate.write_text(json.dumps(ensemble_gate), encoding="utf-8")
+        with patch.object(rotation, "load_member_models", wraps=rotation.load_member_models) as loader:
+            self.assertEqual(1, self._execute())
+            loader.assert_not_called()
         self._assert_manifest_untouched()
 
     def test_member_pkl_deleted_after_gates_refused(self) -> None:

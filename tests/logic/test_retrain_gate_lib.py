@@ -150,6 +150,18 @@ class TrainerIntegrityGate(unittest.TestCase):
             self.assertTrue(
                 any("model_type" in r for r in block["reasons"]))
 
+    def test_non_string_model_type_fails_without_type_error(self) -> None:
+        for bad in ([], {}, 123, True):
+            with self.subTest(model_type=bad):
+                sidecar = _good_sidecar()
+                sidecar["model_type"] = bad
+                block = gate_trainer_integrity(sidecar)
+                self.assertEqual(FAIL, block["verdict"])
+                self.assertIsNone(block["model_type"])
+                self.assertIsNone(block["boost_rounds_used"])
+                self.assertTrue(
+                    any("model_type" in r for r in block["reasons"]))
+
     def test_non_finite_valid_loss_fails(self) -> None:
         for bad in (float("nan"), float("inf"), None, "0.1"):
             sidecar = _good_sidecar()

@@ -56,7 +56,7 @@ def read_member_run_config(pkl_path: Path) -> tuple[Any, str] | None:
     except (OSError, yaml.YAMLError, ValueError):
         # ValueError also covers UTF-8 decoding and PyYAML timestamp
         # construction (e.g. February 30), neither is usable evidence.
-        return None  # fallback-ok: unbindable evidence; both callers refuse, never default.
+        return None  # fallback-ok: unbindable evidence; callers refuse, never default.
 
 
 def check_run_config_provenance(
@@ -113,3 +113,42 @@ def check_member_training_window(
                 f"{label}: training config {key}={actual!r} != manifest "
                 f"fit boundary {expected!r} — declared dates do not describe "
                 "the bound training run, refusing")
+
+
+def check_member_gate_provenance(
+    label: str, *, pkl_path: Path, sidecar: Any, pkl_sha256: str,
+    fit_start: str, fit_end: str, valid_start: str, valid_end: str,
+) -> None:
+    """Bind gate dates to a caller-bound pickle/sidecar/config chain.
+
+    The runner supplies its actual pickle digest and single-read sidecar.
+    Rotation verifies the sidecar against the staged manifest before calling,
+    and retains the strict loader's subsequent actual-pickle verification.
+    This proves facts, not registered-family or source policy.
+    """
+    if not isinstance(sidecar, dict) or sidecar.get("pkl_sha256") != pkl_sha256:
+        raise ModelTrainingProvenanceError(
+            f"{label}: trainer sidecar pkl_sha256 does not match the "
+            "bound member pickle — refusing")
+    resolved = read_member_run_config(pkl_path)
+    if resolved is None:
+        raise ModelTrainingProvenanceError(
+            f"{label}: training run config is missing, unreadable or "
+            "outside the unambiguous producer layout — refusing")
+    run_config, digest = resolved
+    check_run_config_provenance(label, run_config_sha256=digest, sidecar=sidecar)
+    check_member_training_window(label, run_config, fit_start=fit_start, fit_end=fit_end)
+    for key, expected in (("valid_start", valid_start), ("valid_end", valid_end)):
+        actual = run_config.get(key)
+        try:
+            if not isinstance(actual, str) or date.fromisoformat(actual).isoformat() != actual:
+                raise ValueError("not a canonical ISO date")
+        except ValueError as exc:
+            raise ModelTrainingProvenanceError(
+                f"{label}: training config {key}={actual!r} is not a "
+                "YYYY-MM-DD date — refusing") from exc
+        if actual != expected:
+            raise ModelTrainingProvenanceError(
+                f"{label}: training config {key}={actual!r} != gate "
+                f"validation boundary {expected!r} — this is not the "
+                "member's own validation window, refusing")
