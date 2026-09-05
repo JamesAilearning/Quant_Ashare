@@ -534,14 +534,14 @@ class RefreshCurrentTests(unittest.TestCase):
                 tmp_path / "active_stocks.parquet", index=False)
             pd.DataFrame({"ts_code": [tickers[1]]}).to_parquet(
                 tmp_path / "delisted_stocks.parquet", index=False)
-            # 2020 complete through 2020-12-31 (a Thursday — the year's last
-            # weekday); 2021 stale at June (yesterday's boundary file).
+            # Both files start at the synthetic calendar's first session.
+            # 2020 reaches Dec 31; 2021 is still stale at June.
             for year, max_td in ((2020, "20201231"), (2021, "20210610")):
                 d = tmp_path / "daily" / str(year)
                 d.mkdir(parents=True)
                 for tk in tickers:
                     pd.DataFrame(
-                        {"ts_code": [tk], "trade_date": [max_td]}
+                        {"ts_code": [tk, tk], "trade_date": [f"{year}0101", max_td]}
                     ).to_parquet(d / f"{tk}.parquet", index=False)
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path, endpoints=("daily",),
@@ -615,7 +615,7 @@ class RefreshCurrentTests(unittest.TestCase):
             d.mkdir(parents=True)
             for tk in tickers:
                 pd.DataFrame(
-                    {"ts_code": [tk], "trade_date": ["20201231"]}
+                    {"ts_code": [tk, tk], "trade_date": ["20200101", "20201231"]}
                 ).to_parquet(d / f"{tk}.parquet", index=False)
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path, endpoints=("daily",),
@@ -729,7 +729,8 @@ class DailyAndAdjFactorTests(unittest.TestCase):
             year_dir = tmp_path / "daily" / "2020"
             year_dir.mkdir(parents=True)
             pd.DataFrame(
-                {"ts_code": ["600000.SH"], "trade_date": ["20201231"]}
+                {"ts_code": ["600000.SH"] * 2,
+                 "trade_date": ["20200101", "20201231"]}
             ).to_parquet(year_dir / "600000.SH.parquet", index=False)
 
             cfg = TushareFetcherConfig(
@@ -1577,7 +1578,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path)
             # Complete 2018 file ending on the real last trading day (Dec 28).
-            self._prefill(tmp_path, 2018, ["20180102", "20181228"])
+            self._prefill(tmp_path, 2018, [cal[0], "20181228"])
             fetcher = TushareFetcher(client, self._cfg(tmp_path, "20180101", "20181231"))
             fetcher.fetch()
             self.assertEqual(_data_call_count(client), 0)  # complete → not re-pulled
@@ -1656,7 +1657,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path)
-            self._prefill(tmp_path, 2025, ["20250102", "20251231"])
+            self._prefill(tmp_path, 2025, ["20250101", "20251231"])
             results = TushareFetcher(
                 client, self._cfg(tmp_path, "20250101", "20251231"),
             ).fetch()
@@ -1679,7 +1680,8 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
                 2025: "20251231",
             }
             for year, floor in complete.items():
-                self._prefill(tmp_path, year, [f"{year}0102", floor])
+                first = pd.bdate_range(f"{year}0101", periods=1)[0].strftime("%Y%m%d")
+                self._prefill(tmp_path, year, [first, floor])
             cfg = self._cfg(
                 tmp_path, "20180101", "20251231",
                 assume_verified_ranges={"daily": ("20200101", "20251231")},
@@ -1731,13 +1733,13 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path)
-            day1 = self._client_returning(["20260610"])
+            day1 = self._client_returning(["20260101", "20260610"])
             TushareFetcher(day1, self._cfg(tmp_path, "20260101", "20260610")).fetch()
             self.assertEqual(_data_call_count(day1), 1)
             path = tmp_path / "daily" / "2026" / f"{self.TICKER}.parquet"
             self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260610")
             # Tomorrow (2026-06-11, a Thursday): the file stops one day short.
-            day2 = self._client_returning(["20260610", "20260611"])
+            day2 = self._client_returning(["20260101", "20260610", "20260611"])
             TushareFetcher(day2, self._cfg(tmp_path, "20260101", "20260611")).fetch()
             self.assertEqual(_data_call_count(day2), 1)
             self.assertEqual(str(pd.read_parquet(path)["trade_date"].max()), "20260611")
@@ -1752,7 +1754,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path)
-            self._prefill(tmp_path, 2026, ["20260612"])
+            self._prefill(tmp_path, 2026, ["20260101", "20260612"])
             TushareFetcher(client, self._cfg(tmp_path, "20260101", "20260614")).fetch()
             self.assertEqual(_data_call_count(client), 0)
 
@@ -1763,7 +1765,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path, delist_date="20250310")
-            self._prefill(tmp_path, 2025, ["20250102", "20250310"])
+            self._prefill(tmp_path, 2025, ["20250101", "20250310"])
             TushareFetcher(client, self._cfg(tmp_path, "20250101", "20251231")).fetch()
             self.assertEqual(_data_call_count(client), 0)
 
@@ -2123,7 +2125,7 @@ class BoundaryYearFreshnessTests(unittest.TestCase):
             tmp_path = Path(tmp)
             self._seed_universe(tmp_path)
             self._prefill(tmp_path, 2024, ["20240102", "20240630"])  # stale!
-            self._prefill(tmp_path, 2025, ["20250102", "20251231"])  # complete
+            self._prefill(tmp_path, 2025, ["20250101", "20251231"])  # complete
             watermarked = self._cfg(
                 tmp_path, "20240101", "20251231",
                 assume_verified_ranges={"daily": ("20240101", "20251231")},

@@ -292,9 +292,9 @@ class TushareFetcherConfig:
     # must bring current — stock_basic (both buckets) and the namechange /
     # suspend_d aggregates. The per-ticker endpoints (daily / adj_factor /
     # daily_basic) no longer need this flag: their currency is decided per
-    # (ticker, year) file by the max(trade_date) freshness rule (P3-7b), which
-    # re-pulls exactly the year files whose content stops short of what this
-    # run's range expects. index_weight is NOT refreshed (one file per index
+    # (ticker, year) file by the two-bound freshness rule, which selects files
+    # whose validated history does not span this run's expected sessions.
+    # index_weight is NOT refreshed (one file per index
     # over the full range; re-pulling all of them every day is hundreds of
     # calls — refresh membership deliberately / on its own cadence).
     refresh_current: bool = False
@@ -379,9 +379,13 @@ def _clean_yyyymmdd(value: Any) -> str | None:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     text = str(value).strip()
-    if len(text) == 8 and text.isdigit():
-        return text
-    return None
+    if len(text) != 8 or not text.isascii() or not text.isdigit():
+        return None
+    try:
+        datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return None  # fallback-ok: invalid bound is unknown, never no-data evidence
+    return text
 
 
 def _last_weekday_str(yyyymmdd: str) -> str:
@@ -482,6 +486,33 @@ def _expected_year_file_end(
     if floored is None or floored < lo:
         return None
     return floored
+
+
+def _expected_year_file_start(
+    *, year_start: str, year_end: str,
+    window: tuple[str | None, str | None],
+    trading_days: Sequence[str] | None = None,
+) -> str | None:
+    """First expected session in the requested/listing-clipped year slice.
+
+    Only an unavailable calendar uses the conservative weekday approximation.
+    An available empty calendar remains a no-session result, not a fallback.
+    """
+    clipped = _clip_slice_to_window(year_start, year_end, window)
+    if clipped is None:
+        return None
+    lo, hi = clipped
+    if trading_days is None:
+        first = datetime.strptime(lo, "%Y%m%d").date()
+        while first.weekday() >= 5:
+            first += timedelta(days=1)
+        ceiled = first.strftime("%Y%m%d")
+    else:
+        idx = bisect.bisect_left(trading_days, lo)
+        if idx == len(trading_days):
+            return None
+        ceiled = trading_days[idx]
+    return ceiled if ceiled <= hi else None
 
 
 class TushareFetcher:
@@ -1043,11 +1074,10 @@ class TushareFetcher:
 
     def _scan_year_freshness(
         self, *, path: Path, scan_year: bool, holiday_only_existing: bool,
-        expected_boundary: str | None,
+        expected_boundary: str | None, expected_start: str | None,
     ) -> tuple[str, str | None]:
         """Freshness verdict for an EXISTING, non-force-retried year file
-        (P4 extraction — behavior-preserving; every branch/comment moved
-        verbatim from the ``_fetch_per_ticker_per_year`` loop).
+        with both expected edges required for positive content reuse.
 
         Returns ``(verdict, recheck_boundary)`` with verdict one of:
 
@@ -1086,13 +1116,14 @@ class TushareFetcher:
             # Dirty placeholder → re-pull (no freshness compare:
             # there is no expected date to compare against).
             return "refetch", None
-        file_max = self._read_file_max_trade_date(path)
-        if file_max is not None and file_max >= expected_boundary:
+        bounds = self._read_file_trade_date_bounds(path, year=expected_boundary[:4])
+        if (bounds is not None and expected_start is not None
+                and bounds[0] <= expected_start and bounds[1] >= expected_boundary):
             # Content POSITIVELY confirmed complete for this
             # run's range — verified, establishes coverage
             # (codex P2).
             return "skip_verified", None
-        # Stale (max < expected), empty-but-data-possible, or
+        # Short at either edge, invalid, empty-but-data-possible, or
         # unreadable: select a one-call year-slice re-pull. The
         # shared write guard below refuses destructive clipped replacements. A
         # failure below leaves the old file in place and
@@ -1261,6 +1292,12 @@ class TushareFetcher:
         in ``_fetch_ticker_year``, and the post-loop aggregate shortfall
         verdict in ``_check_systemic_shortfall``.
         """
+        if any(_clean_yyyymmdd(bound) is None for bound in (
+            self._config.start_date, self._config.end_date,
+        )):
+            raise TushareFetcherError(
+                f"{endpoint} start_date/end_date must be real ASCII calendar dates"
+            )
         try:
             tickers = self._load_ticker_universe()
         except TushareFetcherError:
@@ -1395,6 +1432,10 @@ class TushareFetcher:
                         path=path, scan_year=scan_year,
                         holiday_only_existing=holiday_only_existing,
                         expected_boundary=expected_boundary,
+                        expected_start=_expected_year_file_start(
+                            year_start=year_start, year_end=year_end,
+                            window=window, trading_days=tdays,
+                        ),
                     )
                     if verdict == "skip_blind":
                         skipped += 1
@@ -1488,12 +1529,12 @@ class TushareFetcher:
             endpoint, written, rows, skipped, units_verified=verified,
         )
 
-    def _read_file_max_trade_date(self, path: Path) -> str | None:
-        """Latest ``trade_date`` (YYYYMMDD string) inside an existing year
-        file, or ``None`` when the file is an empty placeholder, lacks the
-        column, or cannot be read (all three mean "cannot confirm complete" —
-        the freshness rule then re-pulls the year, which also self-heals a
-        corrupt file by overwriting it)."""
+    def _read_file_trade_date_bounds(self, path: Path, *, year: str) -> tuple[str, str] | None:
+        """Validated same-year extents, or None when positive reuse is unsafe.
+
+        All dates must be valid: dropping malformed rows could manufacture the
+        bounds that decide coverage. Refetch remains subject to the write guard.
+        """
         try:
             frame = pd.read_parquet(path, columns=["trade_date"])
         except Exception as exc:  # noqa: BLE001 — any unreadable shape → refetch
@@ -1504,10 +1545,20 @@ class TushareFetcher:
             return None  # fallback-ok: WARNED; None marks year stale -> conservative re-pull
         if frame.empty:
             return None
-        value = frame["trade_date"].max()
-        if pd.isna(value):
-            return None
-        return str(value)
+        values = frame["trade_date"].astype(str).unique()
+        for value in values:
+            try:
+                if (len(value) != 8 or not value.isascii() or not value.isdigit()
+                        or value[:4] != year):
+                    raise ValueError("malformed or out-of-year trade_date")
+                datetime.strptime(value, "%Y%m%d")
+            except ValueError:
+                _logger.warning(
+                    "  Invalid/out-of-year trade_date in %s — treating as stale "
+                    "and selecting a guarded year-slice re-pull.", path,
+                )
+                return None  # fallback-ok: WARNED; invalid dates cannot establish coverage
+        return min(values), max(values)
 
     def _placeholder_is_clean(self, path: Path) -> bool:
         """True iff an expected-no-data placeholder is a READABLE parquet with
@@ -1541,9 +1592,9 @@ class TushareFetcher:
         Used by the freshness rule to bound what a year file can be expected
         to contain: a ticker listed after (or delisted before) the year slice
         legitimately has an empty placeholder, and a ticker delisted mid-year
-        cannot have bars past its delist date. Missing/malformed columns
-        degrade to ``(None, None)`` — the rule then expects the full slice,
-        which only costs extra re-pulls, never skips real data."""
+        cannot have bars past its delist date. A missing/malformed date is
+        unknown (None); a reversed pair makes both bounds unknown. Unknown
+        bounds cannot manufacture no-data evidence or narrow the request."""
         windows: dict[str, tuple[str | None, str | None]] = {}
         for name in ("active_stocks.parquet", "delisted_stocks.parquet"):
             path = self._config.output_dir / name
@@ -1557,10 +1608,16 @@ class TushareFetcher:
                 code = str(getattr(row, "ts_code", "") or "")
                 if not code:
                     continue
-                windows[code] = (
+                window = (
                     _clean_yyyymmdd(getattr(row, "list_date", None)),
                     _clean_yyyymmdd(getattr(row, "delist_date", None)),
                 )
+                if window[0] is not None and window[1] is not None and window[0] > window[1]:
+                    _logger.warning(
+                        "  Reversed listing window for %s — treating both bounds as unknown.", code,
+                    )
+                    window = (None, None)
+                windows[code] = window
         return windows
 
     def _load_ticker_universe(self) -> tuple[str, ...]:

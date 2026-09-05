@@ -1,9 +1,31 @@
 # Ticker-year update safety
 
-This guard protects existing raw `daily`, `adj_factor`, and `daily_basic`
-parquets from replacement by a request that excludes their stored history.
-It does not merge intervals, certify vendor completeness, repair previously
-lost rows, or change production data automatically.
+Raw `daily`, `adj_factor`, and `daily_basic` year files have two complementary
+checks: content freshness decides whether an existing file can be reused;
+the overwrite guard protects its stored history if a refetch is selected.
+Neither check merges intervals, certifies vendor completeness, repairs
+previously lost rows, or changes production data automatically.
+
+## When an existing file is reusable
+
+For a scanned year with expected trading sessions, **both** ends must cover
+the requested interval: the earliest stored date must be no later than the
+first expected session, and the latest no earlier than the last. All stored
+dates must be real, eight-digit ASCII `YYYYMMDD` dates in that partition's
+year; malformed or out-of-year rows cannot be discarded to claim verification.
+A July–December file therefore cannot verify a January–December request just
+because its December date is current. A valid January–December file can still
+be reused for a narrower July–September request without writing it.
+
+Expected sessions are clipped to the request, year, and valid listing window.
+The exchange calendar supplies the first/last session; the existing logged,
+holiday-unaware weekday fallback is used only when that calendar is unavailable.
+An available empty calendar is not replaced with weekdays. Missing or invalid
+listing dates are unknown, and a reversed pair makes both bounds unknown.
+Legitimate no-session skips and clean out-of-listing placeholders are retained.
+Impossible or non-ASCII requested dates fail at the per-year endpoint boundary,
+before reading year files or requesting its calendar/data; the CLI reports a
+controlled error instead of leaking a date-parsing exception.
 
 ## What the operator sees
 
@@ -51,12 +73,16 @@ raw data, rebuilding/swapping the live qlib provider, or changing a model.
 - Initial partial-year downloads have no prior history to erase and remain
   allowed. Readable empty placeholders, including legacy schema-less ones,
   remain replaceable. Covering year-to-date requests remain allowed.
-- No-write resume and dry runs remain unchanged. A prior-hole forced retry
-  cannot bypass the guard once a refetch is selected.
+- Previously attested past-year watermark skips remain blind skips, not new
+  verification; `--verify-all-years` forces their content scan. Dry runs remain
+  unchanged. A prior-hole forced retry cannot bypass the guard once selected.
 - The guard checks the **request interval**, not the returned rows. A vendor
   response truncated inside that interval remains a separate data-quality risk.
-- Maximum-date freshness alone does not prove an interval's left edge or
-  internal completeness. This guard does not fix or certify that coverage.
+- Two-boundary freshness does not prove every session inside the interval
+  exists. A vendor response that still starts late is not newly classified as
+  a systemic failure; it remains subject to refetch on the next content scan.
+  Existing write/manifest accounting and tail-shortfall policy are unchanged;
+  neither a written unit nor a complete manifest certifies vendor completeness.
 - Aggregate files such as `namechange`, `suspend_d`, and `index_weight` do not
   use this ticker-year guard. It is not a general guarantee that arbitrary
   narrow requests are safe across all endpoints. See the separate

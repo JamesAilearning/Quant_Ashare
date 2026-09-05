@@ -25,15 +25,15 @@ Resume
 Aggregate endpoints (stock_basic / namechange / suspend_d / index_weight)
 use per-file existence as their checkpoint, pierced by ``--refresh-current``
 (aggregates only) and by prior-manifest holes. Per-``(ticker, year)``
-endpoints (daily / adj_factor / daily_basic) use the P3-7b FRESHNESS rule
-instead of bare existence: an existing year file is skipped only when its
-``max(trade_date)`` reaches everything this run's range can expect of it
-(bounded by the year, the requested end date, and the ticker's listing
-window); a stale or suspicious-empty file is selected for a one-call re-pull
+endpoints (daily / adj_factor / daily_basic) use a content FRESHNESS rule
+instead of bare existence: a scanned year file with expected sessions is
+reused only when valid same-year trade dates span BOTH expected boundaries
+(bounded by the year, the requested range, the ticker's listing window, and
+the exchange calendar); a stale or suspicious-empty file is selected for a one-call re-pull
 of the requested year slice. A request excluding stored history is refused
 with an ``unsafe_overwrite`` hole; use a covering range rather than deleting
 the old file. See ``docs/ticker-year-update-safety.md`` for recovery and the
-separate limits of max-date freshness. Past years already attested by the previous manifest's
+separate limits of boundary freshness. Past years already attested by the previous manifest's
 coverage are not re-scanned — ``--verify-all-years`` forces a full sweep.
 
 Manifest red line (P3-7b): the fetch NEVER deletes ``fetch_manifest.json``
@@ -177,7 +177,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "namechange / suspend_d aggregates (P3-6a). The per-ticker "
              "endpoints (daily / adj_factor / daily_basic) no longer need "
              "this: their year files are re-pulled exactly when stale, by the "
-             "P3-7b max(trade_date) freshness rule. index_weight is not "
+             "two-boundary date freshness rule. index_weight is not "
              "refreshed.",
     )
     p.add_argument(
