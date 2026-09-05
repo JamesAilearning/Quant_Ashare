@@ -325,62 +325,151 @@ class NamechangeAndSuspendDFetchTests(unittest.TestCase):
 
 class IndexWeightFetchTests(unittest.TestCase):
 
-    def test_one_file_per_index_with_year_chunking(self) -> None:
-        """The fetcher chunks index_weight calls by year and concats into
-        one parquet per index. Phase A.4 smoke test discovered Tushare's
-        per-call row cap silently truncating multi-year ranges, so a
-        single (start_date, end_date) call missed most history.
-        Regression asserts: (a) per-(index, year) calls happen,
-        (b) the concatenated rows all land in one ``{index}.parquet``.
-        """
+    def test_monthly_calls_preserve_all_snapshots_under_annual_row_cap(self) -> None:
+        """A CSI800 year has 9,600 rows; a capped annual call loses history."""
         calls = []
+        dates = [f"2025{month:02d}28" for month in range(1, 13)]
+        snapshots = pd.DataFrame([
+            {"con_code": f"{600000 + ticker}.SH", "trade_date": day,
+             "weight": 0.125}
+            for day in dates for ticker in range(800)
+        ])
 
         def side_effect(api, **p):
             calls.append((p["index_code"], p["start_date"], p["end_date"]))
-            # Return one row per call; concat should sum across years
-            return pd.DataFrame({"index_code": [p["index_code"]],
-                                 "con_code": ["600519.SH"],
-                                 "trade_date": [f"{p['start_date'][:4]}1231"],
-                                 "weight": [1.0]})
+            selected = snapshots.loc[snapshots["trade_date"].between(
+                p["start_date"], p["end_date"])]
+            return selected.tail(7000).assign(index_code=p["index_code"])
 
         client = _make_client(side_effect)
         with tempfile.TemporaryDirectory() as tmp:
             cfg = TushareFetcherConfig(
                 output_dir=Path(tmp), endpoints=("index_weight",),
-                indices=("000300.SH", "000905.SH"),
-                start_date="20200101", end_date="20221231",  # 3 years
+                indices=("000906.SH", "000905.SH"),
+                start_date="20250101", end_date="20251231",
                 rate_limit_sleep_ms=0,
             )
             results = TushareFetcher(client, cfg).fetch()
-            for idx in ("000300.SH", "000905.SH"):
+            for idx in ("000906.SH", "000905.SH"):
                 path = Path(tmp) / "index_weight" / f"{idx}.parquet"
                 self.assertTrue(path.exists())
                 df = pd.read_parquet(path)
-                # Per-index chunks concatenated: 3 yearly chunks × 1 row each
-                self.assertEqual(len(df), 3,
-                                 f"{idx}: expected 3 chunks concatenated, got {len(df)}")
-                self.assertEqual(set(df["trade_date"]),
-                                 {"20201231", "20211231", "20221231"})
+                self.assertEqual(len(df), 9600)
+                self.assertEqual(set(df["trade_date"]), set(dates))
+                self.assertEqual(set(df["index_code"]), {idx})
+                self.assertTrue((df.groupby("trade_date").size() == 800).all())
 
         self.assertEqual(results[0].files_written, 2)
-        # 2 indices × 3 years = 6 calls
-        self.assertEqual(len(calls), 6)
-        # Each year called for each index
-        year_starts = {(c[0], c[1]) for c in calls}
-        self.assertEqual(year_starts, {
-            ("000300.SH", "20200101"),
-            ("000300.SH", "20210101"),
-            ("000300.SH", "20220101"),
-            ("000905.SH", "20200101"),
-            ("000905.SH", "20210101"),
-            ("000905.SH", "20220101"),
-        })
+        self.assertEqual(len(calls), 24)
+        self.assertTrue(all(start[:6] == end[:6] for _, start, end in calls))
+
+    def test_monthly_windows_clip_edges_and_cover_leap_year_without_overlap(self) -> None:
+        for start, end, expected in (
+            ("20231217", "20240302", [("20231217", "20231231"),
+                                     ("20240101", "20240131"),
+                                     ("20240201", "20240229"),
+                                     ("20240301", "20240302")]),
+            ("20250210", "20250210", [("20250210", "20250210")]),
+            ("20250201", "20250301", [("20250201", "20250228"),
+                                     ("20250301", "20250301")]),
+        ):
+            with self.subTest(start=start, end=end), tempfile.TemporaryDirectory() as tmp:
+                calls = []
+
+                def side_effect(api, calls=calls, **p):
+                    calls.append((p["start_date"], p["end_date"]))
+                    return pd.DataFrame()
+
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("index_weight",),
+                    indices=("000906.SH",), start_date=start, end_date=end,
+                    rate_limit_sleep_ms=0,
+                )
+                TushareFetcher(_make_client(side_effect), cfg).fetch()
+                self.assertEqual(calls, expected)
+
+    def test_later_month_hole_preserves_index_file_and_continues_other_indices(self) -> None:
+        for failure in ("retryable", "saturated_6000", "saturated_7000"):
+            for existing in (False, True):
+                with self.subTest(failure=failure, existing=existing), \
+                        tempfile.TemporaryDirectory() as tmp, \
+                        patch("src.data.tushare.fetcher.time.sleep"):
+                    path = Path(tmp) / "index_weight" / "000906.SH.parquet"
+                    old_bytes = b""
+                    if existing:
+                        path.parent.mkdir()
+                        pd.DataFrame({"legacy": [1]}).to_parquet(path)
+                        old_bytes = path.read_bytes()
+
+                    def side_effect(api, failure=failure, **p):
+                        if p["index_code"] == "000906.SH" and p["end_date"] >= "20250201":
+                            if failure == "retryable":
+                                raise TushareClientError("returned None — rate limit exceeded")
+                            size = int(failure.split("_")[1])
+                            return pd.DataFrame({
+                                "index_code": [p["index_code"]] * size,
+                                "con_code": [f"{600000 + i}.SH" for i in range(size)],
+                                "trade_date": [p["end_date"]] * size,
+                                "weight": [100 / size] * size,
+                            })
+                        return pd.DataFrame({
+                            "index_code": [p["index_code"]], "con_code": ["600000.SH"],
+                            "trade_date": [p["end_date"]], "weight": [100.0],
+                        })
+
+                    cfg = TushareFetcherConfig(
+                        output_dir=Path(tmp), endpoints=("index_weight",),
+                        indices=("000906.SH", "000300.SH"),
+                        start_date="20250101", end_date="20250228",
+                        rate_limit_sleep_ms=0,
+                        force_retry_units=frozenset({("index_weight", "index=000906.SH")}),
+                    )
+                    fetcher = TushareFetcher(_make_client(side_effect), cfg)
+                    result = fetcher.fetch()[0]
+                    self.assertEqual(result.files_written, 1)
+                    self.assertEqual(len(fetcher.holes), 1)
+                    self.assertEqual(fetcher.holes[0].unit, "index=000906.SH")
+                    if failure.startswith("saturated"):
+                        self.assertEqual(fetcher.holes[0].reason_class, "unusable_response")
+                    if existing:
+                        self.assertEqual(path.read_bytes(), old_bytes)
+                    else:
+                        self.assertFalse(path.exists())
+                    self.assertTrue((path.parent / "000300.SH.parquet").exists())
+
+    def test_index_weight_dry_run_makes_no_api_calls_or_files(self) -> None:
+        client = _make_client(lambda api, **p: self.fail("dry-run called API"))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = TushareFetcherConfig(
+                output_dir=Path(tmp), endpoints=("index_weight",),
+                start_date="20200101", end_date="20261231", dry_run=True,
+            )
+            self.assertEqual(TushareFetcher(client, cfg).fetch()[0].files_written, 0)
+            self.assertFalse((Path(tmp) / "index_weight").exists())
+
+    def test_invalid_monthly_range_refuses_before_touching_existing_index_file(self) -> None:
+        for start, end in (("20250230", "20250230"), ("20261301", "20261331"),
+                           ("20250229", "20250301"), ("20240101", "20240230")):
+            with self.subTest(start=start, end=end), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "index_weight" / "000906.SH.parquet"
+                path.parent.mkdir()
+                pd.DataFrame({"legacy": [1]}).to_parquet(path)
+                old_bytes = path.read_bytes()
+                client = _make_client(lambda api, **p: self.fail("invalid range called API"))
+                cfg = TushareFetcherConfig(
+                    output_dir=Path(tmp), endpoints=("index_weight",),
+                    indices=("000906.SH",), start_date=start, end_date=end,
+                    force_retry_units=frozenset({("index_weight", "index=000906.SH")}),
+                )
+                with self.assertRaisesRegex(TushareFetcherError, "real calendar dates"):
+                    TushareFetcher(client, cfg).fetch()
+                self.assertEqual(path.read_bytes(), old_bytes)
 
     def test_empty_response_writes_empty_parquet_placeholder(self) -> None:
         """If Tushare returns no rows across the whole range (e.g. an
         index code with no historical data), write an empty parquet so
         resume on a subsequent run skips this index instead of redoing
-        all the year-chunk calls.
+        all the month-chunk calls.
         """
         client = _make_client(
             lambda api, **p: pd.DataFrame(
