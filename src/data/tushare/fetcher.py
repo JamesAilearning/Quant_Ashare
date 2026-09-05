@@ -67,6 +67,7 @@ secrets-in-config violation).
 from __future__ import annotations
 
 import bisect
+import calendar
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -129,6 +130,11 @@ TRADE_CAL_START_DATE = "19901201"
 # requested start — anything within this slack is the data source's
 # genuine head, anything beyond it is a truncated response.
 _TRADE_CAL_HEAD_SLACK_DAYS = 31
+
+# Conservative tripwire, not a guaranteed vendor limit: older observations
+# reported ~6,000 rows; audited CSI800 annual responses stopped at 7,000.
+# A monthly response this large cannot be trusted without narrower acquisition.
+_INDEX_WEIGHT_RESPONSE_ROW_GUARD = 6000
 
 
 def _trade_cal_unusable(
@@ -741,20 +747,34 @@ class TushareFetcher:
     def _fetch_index_weight(self) -> TushareFetchResult:
         """Pull index_weight per configured index across the date range.
 
-        Tushare returns monthly snapshots, BUT the ``index_weight`` endpoint
-        caps the per-call payload at ~6000 rows. CSI300 with ~300
-        constituents per snapshot fits ~20 snapshots per call, so a
-        multi-year date range would silently truncate to the most recent
-        ~20 months (discovered during Phase A.4 smoke test against real
-        Tushare). We chunk by year and concat to defeat the cap, writing
-        one parquet per index as the contract still requires.
+        Even annual CSI800 requests can exceed the upstream response limit.
+        Use calendar-month windows and reject potentially saturated responses;
+        publish one parquet only after ALL months succeed. This avoids the
+        reproduced annual truncation, not every possible upstream omission.
         """
+        try:
+            datetime.strptime(self._config.start_date, "%Y%m%d")
+            datetime.strptime(self._config.end_date, "%Y%m%d")
+        except ValueError as exc:
+            raise TushareFetcherError(
+                "index_weight start_date/end_date must be real calendar dates"
+            ) from exc
         written = 0
         rows = 0
         skipped = 0
         out_root = self._config.output_dir / "index_weight"
         start_year = int(self._config.start_date[:4])
         end_year = int(self._config.end_date[:4])
+        windows: list[tuple[str, str]] = []
+        for year in range(start_year, end_year + 1):
+            for month in range(1, 13):
+                month_start = max(f"{year:04d}{month:02d}01", self._config.start_date)
+                last_day = calendar.monthrange(year, month)[1]
+                month_end = min(
+                    f"{year:04d}{month:02d}{last_day:02d}", self._config.end_date,
+                )
+                if month_start <= month_end:
+                    windows.append((month_start, month_end))
         for idx in self._config.indices:
             path = out_root / f"{idx}.parquet"
             # index_weight is exempt from refresh_current (honor_refresh_current
@@ -767,32 +787,35 @@ class TushareFetcher:
                 skipped += 1
                 continue
             if self._config.dry_run:
-                _logger.info("  [dry-run] would write %s (chunked %d-%d)",
-                             path, start_year, end_year)
+                _logger.info("  [dry-run] would write %s (%d monthly requests)",
+                             path, len(windows))
                 continue
             chunks: list[pd.DataFrame] = []
             holed = False
-            for year in range(start_year, end_year + 1):
-                y_start = f"{year}0101"
-                y_end = f"{year}1231"
-                if y_start < self._config.start_date:
-                    y_start = self._config.start_date
-                if y_end > self._config.end_date:
-                    y_end = self._config.end_date
+            for month_start, month_end in windows:
                 try:
                     chunk = self._safe_call(
                         "index_weight",
                         index_code=idx,
-                        start_date=y_start,
-                        end_date=y_end,
+                        start_date=month_start,
+                        end_date=month_end,
                         fields="index_code,con_code,trade_date,weight",
                     )
+                    if len(chunk) >= _INDEX_WEIGHT_RESPONSE_ROW_GUARD:
+                        raise FetchHoleError(
+                            "index_weight", reason_class="unusable_response", attempts=1,
+                            last_error=(
+                                f"potentially truncated response: {len(chunk)} rows "
+                                f"reaches safety threshold {_INDEX_WEIGHT_RESPONSE_ROW_GUARD} "
+                                f"(index={idx}, requested {month_start}..{month_end})"
+                            ),
+                        )
                 except FetchHoleError as hole:
                     # index_weight writes ONE file per index, so a hole is the
                     # WHOLE index (a partial file would be SKIPPED by resume and
                     # the hole never filled — a re-run re-fetches the whole index).
-                    # The unit is the index ALONE, NOT the first-failing year:
-                    # that year varies run-to-run (whichever transient failure
+                    # The unit is the index ALONE, NOT the first-failing month:
+                    # that month varies run-to-run (whichever transient failure
                     # hits first), so including it would make a re-run's hole look
                     # like a different unit and the manifest merge would drop the
                     # prior un-healed hole as if self-healed (codex P1).
@@ -813,7 +836,7 @@ class TushareFetcher:
                 df = pd.concat(chunks, ignore_index=True)
             atomic_write_parquet(df, path)
             _logger.info(
-                "  wrote %d rows to %s (across %d yearly chunks)",
+                "  wrote %d rows to %s (across %d non-empty monthly chunks)",
                 len(df), path, len(chunks),
             )
             written += 1
