@@ -216,9 +216,8 @@ class DailyBasicFetchTests(unittest.TestCase):
             )
 
     def test_resume_skips_existing_files(self) -> None:
-        """The per-file existence checkpoint must skip already-written
-        files — same resume semantics the existing ``daily`` /
-        ``adj_factor`` endpoints rely on.
+        """A stored date span covering both expected boundaries is reusable,
+        with the same resume semantics as ``daily`` / ``adj_factor``.
         """
         tickers = ["600000.SH", "600001.SH"]
 
@@ -237,7 +236,8 @@ class DailyBasicFetchTests(unittest.TestCase):
             year_dir = tmp_path / "daily_basic" / "2020"
             year_dir.mkdir(parents=True)
             pd.DataFrame(
-                {"ts_code": ["600000.SH"], "trade_date": ["20201231"]}
+                {"ts_code": ["600000.SH"] * 2,
+                 "trade_date": ["20200101", "20201231"]}
             ).to_parquet(year_dir / "600000.SH.parquet", index=False)
 
             cfg = TushareFetcherConfig(

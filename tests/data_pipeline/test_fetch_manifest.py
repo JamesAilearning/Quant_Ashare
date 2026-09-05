@@ -608,12 +608,12 @@ class CliManifestIntegrationTests(unittest.TestCase):
 
     @staticmethod
     def _daily_row(ticker: str) -> pd.DataFrame:
-        # trade_date is the year's LAST WEEKDAY so a written file counts as
-        # complete under the P3-7b freshness rule (re-runs resume-skip it).
+        # Both expected weekdays are present, so the same-range re-run can
+        # positively reuse the file even when the calendar is unavailable.
         return pd.DataFrame({
-            "ts_code": [ticker], "trade_date": ["20251231"],
-            "open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0],
-            "vol": [0.0], "amount": [0.0],
+            "ts_code": [ticker] * 2, "trade_date": ["20250101", "20251231"],
+            "open": [1.0] * 2, "high": [1.0] * 2, "low": [1.0] * 2, "close": [1.0] * 2,
+            "vol": [0.0] * 2, "amount": [0.0] * 2,
         })
 
     def test_manifest_written_and_self_heals_across_runs(self) -> None:
@@ -659,8 +659,8 @@ class CliManifestIntegrationTests(unittest.TestCase):
             self.assertEqual(len(m1.endpoints["daily"].holes), 1)
             self.assertIn(bad, m1.endpoints["daily"].holes[0].unit)
 
-            # Run 2: MUST go through real file-existence resume — the good unit's
-            # file exists so it is SKIPPED (not re-called), the bad unit's file is
+            # Run 2: MUST go through real content freshness — the good unit's
+            # file spans both bounds so it is SKIPPED, the bad unit's file is
             # missing so it is re-fetched (now succeeds). Asserting the call set
             # proves resume is genuinely driving the re-fetch, not a mock bypass.
             state["heal"] = True
@@ -697,7 +697,7 @@ class CliManifestIntegrationTests(unittest.TestCase):
             daily_calls.append(year)
             return pd.DataFrame({
                 "ts_code": [p["ts_code"]] * 2,
-                "trade_date": [f"{year}0102", f"{year}1231"],
+                "trade_date": [f"{year}0101", f"{year}1231"],
             })
 
         client = MagicMock()
@@ -720,7 +720,7 @@ class CliManifestIntegrationTests(unittest.TestCase):
                 for tk in (t1, t2):
                     pd.DataFrame({
                         "ts_code": [tk] * 2,
-                        "trade_date": [f"{year}0102", max_td],
+                        "trade_date": [f"{year}0101", max_td],
                     }).to_parquet(d / f"{tk}.parquet", index=False)
             args = [
                 "--output-dir", str(out), "--endpoints", "daily",

@@ -20,8 +20,10 @@ class TushareFetchResult:
     """Per-endpoint summary returned by ``TushareFetcher.fetch``.
 
     ``units_verified`` (P3-7b, codex P2 on PR #240) counts existing files the
-    freshness rule POSITIVELY confirmed complete this run (content reached the
-    expected end, or the listing window proves no data can exist). It is
+    freshness rule POSITIVELY confirmed for this run's range (valid same-year
+    date extents span both expected boundaries, or listing/calendar bounds
+    establish a legitimate no-data skip). This is not proof of internal or
+    vendor-response completeness. It is
     POSITIVE evidence that establishes manifest coverage — unlike a blind
     watermark/resume skip, which proves nothing and is counted in ``skipped``
     only. Both kinds of skip also count in ``skipped`` (total not-fetched)."""
