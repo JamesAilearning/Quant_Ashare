@@ -9,7 +9,8 @@ explicitly preserve m3's non-window family, with only six date fields changing.
 
 **Goals:** enforce that existing family boundary at rotation, with classified
 refusal before unpickling or backup/install, synthetic regression coverage and
-unchanged bootstrap behavior.
+preserved registered values and public contracts. The boolean-alias follow-up
+explicitly tightens type fidelity in the shared bootstrap/rotation comparison.
 
 **Non-Goals:** recertification, new performance gates, changed gate/producer APIs,
 fixed m4 dates, provider migration, live data repair, retrospective qualification
@@ -44,6 +45,14 @@ of surviving members, or daily-serving Git checks.
    failures or config mismatch refuse through `RotationRefusal`. All new Git
    reads have a 30-second bound. Existing cleanup releases the advisory lock and
    removes staging; its persistent lockfile is not deleted.
+6. Compare scalar booleans by identity in the shared family check. Python numeric
+   equality admits `1 == True` and `0 == False`, so value-only drift tests cannot
+   protect the declared type boundary. Reject boolean/numeric aliases in both
+   preset and base comparisons while preserving intentional int/float equality.
+   Use that same rule for committed preset-to-preset agreement, so one preset's
+   integer guard cannot be hidden by Python dictionary equality with two booleans.
+   This is the explicit follow-up behavior change; the provider-helper extraction
+   remains unchanged and its proof is distinguished from this comparison fix.
 
 ## Risks / Trade-offs
 

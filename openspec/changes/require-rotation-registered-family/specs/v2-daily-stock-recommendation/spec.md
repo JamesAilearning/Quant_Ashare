@@ -15,6 +15,10 @@ the guard trio and device. Their non-window surfaces SHALL agree. Comparison
 SHALL cover every declared field other than `extends` and the six train/valid/test
 boundaries, plus bootstrap's existing same-family keys and explicit defaults.
 Existing date, source, light-gate and serving checks SHALL remain unchanged.
+Registered boolean values SHALL match boolean identity, never numeric aliases
+such as `1` or `0`; conversely booleans SHALL NOT substitute for numeric fields.
+Equal integer/float representations of numeric fields remain equivalent. This
+scalar comparison rule SHALL be shared by bootstrap and rotation family checks.
 
 Expected provider identity SHALL use only committed template defaults and the
 canonical qlib path normalizer, never a live environment override. The exact
@@ -38,6 +42,13 @@ manifest-bound sidecar buffer used by execution's factual/source checks.
   member but the pinned committed registration does not
 - **THEN** execution rejects the member using the pinned registration
 - **AND** a mainline ref moving mid-execution does not change that authority
+
+#### Scenario: Boolean and numeric aliases do not change registered types
+- **WHEN** a digest-bound config uses `1` or `1.0` for a registered true guard,
+  or `false` for registered numeric zero
+- **THEN** family comparison refuses before model loading and installation
+- **AND** literal registered booleans and equal numeric forms such as `50` and
+  `50.0` remain accepted
 
 #### Scenario: Registration or reread evidence is unusable
 - **WHEN** a registered file is missing, malformed, incomplete or inconsistent,

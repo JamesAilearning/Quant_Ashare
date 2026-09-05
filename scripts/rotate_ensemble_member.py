@@ -77,6 +77,7 @@ from scripts.bootstrap_cutover_lib import (  # noqa: E402
     CutoverRefusal,
     _canonicalize_provider_uri,
     _expand_registered_default,
+    _same_family_value,
     check_member_source_provenance,
     check_member_training_config,
 )
@@ -166,7 +167,10 @@ def _require_member_family(pkl_path: Path, sidecar: Any, *, repo: Path, rev: str
                 raise RotationRefusal(f"registered family preset is incomplete: {relpath}")
             family = {key: value for key, value in preset.items()
                       if key not in _FAMILY_WINDOW_KEYS and key != "extends"}
-            if declared_family is not None and family != declared_family:
+            if declared_family is not None and (
+                    family.keys() != declared_family.keys()
+                    or any(not _same_family_value(value, declared_family[key])
+                           for key, value in family.items())):
                 raise RotationRefusal("registered family presets disagree outside rolling windows")
             declared_family = family
         if declared_family is None:

@@ -354,6 +354,13 @@ def _canonicalize_provider_uri(config: Any) -> Any:
     return config
 
 
+def _same_family_value(actual: Any, expected: Any) -> bool:
+    """Keep boolean identity distinct from ordinary numeric equivalence."""
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return actual is expected
+    return bool(actual == expected)
+
+
 def check_member_training_config(
     label: str, run_config: Any, preset_declared: dict[str, Any],
     base_config: dict[str, Any],
@@ -383,7 +390,7 @@ def check_member_training_config(
         if key == "extends":
             continue
         actual = run_config.get(key, _MISSING)
-        if actual != expected:
+        if not _same_family_value(actual, expected):
             raise CutoverRefusal(
                 f"{label}: training config {key}={actual!r} != the "
                 f"pre-registered preset's {expected!r} — this member "
@@ -403,7 +410,7 @@ def check_member_training_config(
                 "mainline base config and has no pinned default — "
                 "cannot adjudicate the frozen semantics, refusing")
         actual = run_config.get(key, _MISSING)
-        if actual != expected:
+        if not _same_family_value(actual, expected):
             raise CutoverRefusal(
                 f"{label}: training config {key}={actual!r} != the "
                 f"frozen protocol's {expected!r} — retuned "

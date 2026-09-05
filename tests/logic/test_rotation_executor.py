@@ -386,6 +386,38 @@ class RotationExecutorStates(unittest.TestCase):
         self._rebind_incoming_config(config)
         self._assert_family_refused_before_loading()
 
+    def test_integer_guard_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["risk_constraints_enabled"] = 1
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_float_guard_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["attribution_sleeve_grouping"] = 1.0
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_boolean_numeric_parameter_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["lambda_l1"] = False
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_registered_boolean_numeric_disagreement_is_refused(self) -> None:
+        path = self.repo / _REGISTERED_PATHS[0]
+        preset = json.loads(path.read_text(encoding="utf-8"))
+        preset["risk_constraints_enabled"] = 1
+        path.write_text(json.dumps(preset), encoding="utf-8")
+        self._commit_registration()
+        self._assert_family_refused_before_loading()
+
+    def test_equivalent_numeric_representations_still_rotate(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config.update(topk=50.0, lambda_l1=0, lambda_l2=1)
+        self._rebind_incoming_config(config)
+        self.assertEqual(0, self._execute())
+
     def test_environment_cannot_register_a_different_provider(self) -> None:
         from unittest.mock import patch
 
