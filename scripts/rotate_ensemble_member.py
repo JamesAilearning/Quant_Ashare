@@ -30,6 +30,8 @@ Two subcommands:
               "current minus oldest plus gated member" exactly and
               re-validate under the serving loader;
            4. member-chain re-validation at execute time — the strict
+              incoming source check requires a recorded clean tree
+              and commit ancestral to the pinned mainline; the
               serving loader runs over the staged members (existence,
               digest chain, sidecar version guard, unpickle,
               ``.predict``) so a pkl/sidecar deleted or replaced since
@@ -66,6 +68,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.bootstrap_cutover_lib import (  # noqa: E402
+    CutoverRefusal,
+    check_member_source_provenance,
+)
 from scripts.retrain_gate_lib import (  # noqa: E402
     SCOPE_ENSEMBLE,
     SCOPE_MEMBER,
@@ -91,6 +97,7 @@ from src.inference.ensemble_serving import (  # noqa: E402
 )
 
 MANIFEST_SCHEMA_VERSION = "csi800_n5_ensemble_manifest_v1"
+_SOURCE_GIT_TIMEOUT_SECONDS = 30
 
 
 def _members_from_bytes(raw: bytes, what: str) -> list[dict[str, Any]]:
@@ -264,6 +271,28 @@ def _git(cmd: list[str], repo: Path) -> str:
         raise RotationRefusal(
             f"{' '.join(cmd)} produced non-UTF-8 bytes ({exc}) — "
             "malformed certification state, refusing") from exc
+
+
+def _require_member_source(sidecar: Any, *, repo: Path, rev: str) -> None:
+    """Adjudicate the incoming source against the already pinned revision."""
+    try:
+        commit = check_member_source_provenance("incoming member", sidecar)
+    except CutoverRefusal as exc:
+        raise RotationRefusal(f"incoming training source refused: {exc}") from exc
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, rev],
+            cwd=repo, capture_output=True, check=False,
+            timeout=_SOURCE_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RotationRefusal(
+            f"incoming training source cannot be checked: {exc} — refusing") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="replace").strip() or "not in pinned mainline history"
+        raise RotationRefusal(
+            f"incoming training source commit {commit} is not a verified "
+            f"ancestor of pinned mainline {rev}: {detail} — refusing")
 
 
 def _validate_candidate(path: Path) -> str:
@@ -543,6 +572,11 @@ def cmd_execute(args: argparse.Namespace) -> int:
                 )
             except (ValueError, ModelTrainingProvenanceError) as exc:
                 raise RotationRefusal(f"incoming member gate evidence refused: {exc}") from exc
+
+            # The fields come from the SAME manifest-bound sidecar buffer.
+            # Source eligibility uses the certification revision, not a new
+            # resolution of origin/main after it may have advanced.
+            _require_member_source(sidecar, repo=repo, rev=rev)
 
             # 5. Member-chain re-validation at EXECUTE time (codex
             # #391 r9): the gate artifacts prove the members were
