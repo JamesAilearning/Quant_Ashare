@@ -38,6 +38,12 @@ from src.data.tushare.client import (  # noqa: E402
     TushareClientError,
     classify_tushare_failure,
 )
+from src.data.tushare.fetch_manifest import (  # noqa: E402
+    MANIFEST_FILENAME,
+    EndpointCoverage,
+    FetchManifest,
+    write_manifest,
+)
 from src.data.tushare.fetcher import (  # noqa: E402
     ENDPOINTS,
     FetchHoleError,
@@ -48,6 +54,15 @@ from src.data.tushare.fetcher import (  # noqa: E402
     _last_trading_day_on_or_before,
     _last_weekday_str,
 )
+
+
+def _seed_aggregate_provenance(root, endpoints, start, end):
+    """Real prior acquisition evidence for fixtures exercising safe refreshes."""
+    write_manifest(root / MANIFEST_FILENAME, FetchManifest(
+        1, "2026-01-01T00:00:00+00:00", {
+            ep: EndpointCoverage("complete", start, end, 1, ()) for ep in endpoints
+        },
+    ))
 
 
 class _FakeClient:
@@ -400,6 +415,9 @@ class IndexWeightFetchTests(unittest.TestCase):
                         path.parent.mkdir()
                         pd.DataFrame({"legacy": [1]}).to_parquet(path)
                         old_bytes = path.read_bytes()
+                        _seed_aggregate_provenance(
+                            Path(tmp), ("index_weight",), "20250101", "20250228",
+                        )
 
                     def side_effect(api, failure=failure, **p):
                         if p["index_code"] == "000906.SH" and p["end_date"] >= "20250201":
@@ -557,6 +575,9 @@ class RefreshCurrentTests(unittest.TestCase):
                           "all_namechanges.parquet", "suspend_d.parquet"):
                 pd.DataFrame({"ts_code": ["x"]}).to_parquet(
                     tmp_path / fname, index=False)
+            _seed_aggregate_provenance(
+                tmp_path, ("namechange", "suspend_d"), "20000101", "20251231",
+            )
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path,
                 endpoints=("stock_basic", "namechange", "suspend_d"),

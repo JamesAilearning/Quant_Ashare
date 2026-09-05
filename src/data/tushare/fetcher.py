@@ -87,6 +87,13 @@ from src.data.tushare.client import (
     TushareClient,
     TushareClientError,
 )
+from src.data.tushare.fetch_manifest import (
+    MANIFEST_FILENAME,
+    SCHEMA_VERSION,
+    FetchManifest,
+    FetchManifestError,
+    read_manifest,
+)
 
 # Moved to the dependency-free fetch_types module (P3-6b) so that reading a
 # manifest / integrity stamp never imports this network stack; re-exported
@@ -491,6 +498,8 @@ class TushareFetcher:
         # P3-4a). Reset at the start of every fetch(). In-memory only — P3-4b
         # persists these to a fetch manifest.
         self._holes: list[FetchHole] = []
+        self._aggregate_manifest: FetchManifest | None = None
+        self._aggregate_manifest_loaded = False
         # SSE trading calendar (sorted YYYYMMDD), fetched once per run and used
         # to floor freshness boundaries to the actual last TRADING day rather
         # than the last weekday (which is wrong when a year's last weekday is a
@@ -560,6 +569,8 @@ class TushareFetcher:
         mistaken for a complete one. Inspect :attr:`holes` after the call.
         """
         self._holes = []
+        self._aggregate_manifest = None
+        self._aggregate_manifest_loaded = False
         # Honour --dry-run: do NOT create output_dir (Codex review #99
         # PR comment). dry-run promises no filesystem side-effects.
         if not self._config.dry_run:
@@ -607,6 +618,68 @@ class TushareFetcher:
             return False
         return not self._must_retry(endpoint, unit)
 
+    def _aggregate_replacement_allowed(
+        self, path: Path, endpoint: str, unit: str, *, start_date: str,
+    ) -> bool:
+        """Protect declared history BEFORE an existing aggregate's data call.
+
+        Called after skip/dry-run decisions. Unknown provenance is a hard abort,
+        not a hole: persisting a hole-only run would establish its requested
+        range and could falsely authorize the same destructive retry next time.
+        The manifest is endpoint-level evidence, not a digest of the file bytes.
+        """
+        if not path.exists():
+            return True
+        guidance = (
+            f"Refusing to replace {path}: unusable aggregate provenance. "
+            "Preserve and inspect the file and fetch manifest; back up and rebuild "
+            "in a separate empty staging directory. Resetting metadata does not "
+            "authorize overwriting unknown history."
+        )
+        if not self._aggregate_manifest_loaded:
+            try:
+                self._aggregate_manifest = read_manifest(
+                    self._config.output_dir / MANIFEST_FILENAME,
+                )
+            except FetchManifestError as exc:
+                raise TushareFetcherError(guidance) from exc
+            self._aggregate_manifest_loaded = True
+        manifest = self._aggregate_manifest
+        if (manifest is None or type(manifest.schema_version) is not int
+                or manifest.schema_version != SCHEMA_VERSION):
+            raise TushareFetcherError(guidance)
+        previous = manifest.endpoints.get(endpoint)
+        if (previous is None or not isinstance(previous.status, str)
+                or previous.status not in {"complete", "holes"}):
+            raise TushareFetcherError(guidance)
+        prior_start, prior_end = previous.coverage_start_date, previous.coverage_end_date
+        for bound in (prior_start, prior_end):
+            if (not isinstance(bound, str) or len(bound) != 8
+                    or not bound.isascii() or not bound.isdigit()):
+                raise TushareFetcherError(guidance)
+            try:
+                datetime.strptime(bound, "%Y%m%d")
+            except ValueError as exc:
+                raise TushareFetcherError(guidance) from exc
+        if prior_start > prior_end:
+            raise TushareFetcherError(guidance)
+        # The CLI records its own start, but calendar requests always use the
+        # exchange-history floor. A pre-exchange CLI start is not a lost range.
+        if endpoint == "trade_cal":
+            prior_start = max(prior_start, TRADE_CAL_START_DATE)
+        if start_date > prior_start or self._config.end_date < prior_end:
+            self._add_hole(
+                endpoint, unit, reason_class="unsafe_overwrite", attempts=0,
+                last_error=(
+                    f"Requested {start_date}..{self._config.end_date} excludes "
+                    f"previously declared coverage {prior_start}..{prior_end}; "
+                    "preserving file. Retry with a range covering the prior "
+                    "coverage; no request was widened automatically."
+                ),
+            )
+            return False
+        return True
+
     def _fetch_single_file_aggregate(
         self, *, endpoint: str, filename: str, fields: str,
     ) -> TushareFetchResult:
@@ -623,6 +696,10 @@ class TushareFetcher:
             return TushareFetchResult(endpoint, 0, 0, skipped=1)
         if self._config.dry_run:
             _logger.info("  [dry-run] would write %s", path)
+            return TushareFetchResult(endpoint, 0, 0, skipped=0)
+        if not self._aggregate_replacement_allowed(
+            path, endpoint, "file", start_date=self._config.start_date,
+        ):
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         try:
             df = self._safe_call(
@@ -711,6 +788,10 @@ class TushareFetcher:
         if self._config.dry_run:
             _logger.info("  [dry-run] would write %s", path)
             return TushareFetchResult("trade_cal", 0, 0, skipped=0)
+        if not self._aggregate_replacement_allowed(
+            path, "trade_cal", "file", start_date=TRADE_CAL_START_DATE,
+        ):
+            return TushareFetchResult("trade_cal", 0, 0, skipped=0)
         try:
             df = self._safe_call(
                 "trade_cal",
@@ -789,6 +870,10 @@ class TushareFetcher:
             if self._config.dry_run:
                 _logger.info("  [dry-run] would write %s (%d monthly requests)",
                              path, len(windows))
+                continue
+            if not self._aggregate_replacement_allowed(
+                path, "index_weight", f"index={idx}", start_date=self._config.start_date,
+            ):
                 continue
             chunks: list[pd.DataFrame] = []
             holed = False

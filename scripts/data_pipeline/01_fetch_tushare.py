@@ -39,7 +39,12 @@ coverage are not re-scanned — ``--verify-all-years`` forces a full sweep.
 Manifest red line (P3-7b): the fetch NEVER deletes ``fetch_manifest.json``
 on its own. Hard failures leave the prior manifest intact; completed-with-holes
 runs normally persist the hole ledger and exit 3. Do not use ``--reset-manifest``
-to conceal an unsafe-overwrite refusal.
+to conceal an unsafe-overwrite refusal. Selected existing namechange, suspend_d,
+index_weight and trade_cal replacements must also cover their prior manifest
+range before a data call; unusable prior coverage hard-aborts without recording
+a new manifest. Resetting metadata cannot authorize unknown existing history.
+See ``docs/aggregate-update-safety.md`` for the calendar exception and staging
+recovery. No-write resume and dry runs retain their existing behavior.
 """
 
 from __future__ import annotations
