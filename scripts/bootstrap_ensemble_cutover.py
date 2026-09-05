@@ -39,7 +39,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -56,7 +55,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.bootstrap_cutover_lib import (  # noqa: E402
     BOOTSTRAP_MEMBER_COUNT,
+    BOOTSTRAP_PRESET_PATHS,
     CutoverRefusal,
+    _canonicalize_provider_uri,
+    _expand_registered_default,
     build_baseline_record,
     build_inference_meta,
     build_initial_status,
@@ -92,14 +94,6 @@ ISOWEEK_EVIDENCE_DIR = (
     "csi800_cadence5_conservative_isoweek")
 ISOWEEK_PRESET_PATH = (
     "config/presets/csi800_cadence5_conservative_isoweek.yaml")
-# The PRE-REGISTERED bootstrap trio (R1-DP-C, windows frozen before
-# ignition). Read at the pinned mainline revision: a locally edited
-# preset must not be able to authorize a differently-windowed trio.
-BOOTSTRAP_PRESET_PATHS = (
-    "config/presets/csi800_n5_bootstrap_m1.yaml",
-    "config/presets/csi800_n5_bootstrap_m2.yaml",
-    "config/presets/csi800_n5_bootstrap_m3.yaml",
-)
 # The PRE-REGISTERED ensemble dry-run window (trailing quarter, fully
 # out of sample for all three members: m3's training ends 2026-04-01).
 # Frozen here with the presets and pinned by governance — the runbook
@@ -181,28 +175,6 @@ def _validate_injected_now(now_iso: str, wall_now: datetime) -> None:
             "must measure the true present. Refusing.")
 
 
-def _expand_registered_default(raw: str, what: str) -> str:
-    """Expand a ``${VAR:-default}`` template using ONLY the committed
-    default (codex #392 r15). The live environment is mutable process
-    state: the same wrong ``QUANT_PROVIDER_URI`` that mis-trained a
-    member would also fabricate the expected value at cutover time,
-    collapsing the comparison into a tautology. The default committed
-    at the pinned revision IS the pre-registered bundle identity; a
-    template with no default is unadjudicable — refuse."""
-    from src.core._yaml_loader import _ENV_VAR_PATTERN
-
-    def _take_default(match: re.Match[str]) -> str:
-        default = match.group("default")
-        if default is None:
-            raise CutoverRefusal(
-                f"{what}: template ${{{match.group('name')}}} declares "
-                "no committed default — there is no pre-registered "
-                "bundle identity to bind, refusing")
-        return default
-
-    return _ENV_VAR_PATTERN.sub(_take_default, raw)
-
-
 def _require_registered_commit(repo: Path, commit: str, rev: str,
                                label: str) -> None:
     """The member's training code must be REGISTERED history (codex
@@ -221,24 +193,6 @@ def _require_registered_commit(repo: Path, commit: str, rev: str,
             f"ancestor of the pinned mainline {rev[:12]} ({detail}) — "
             "the member was trained from unregistered source, "
             "refusing")
-
-
-def _canonicalize_provider_uri(config: Any) -> Any:
-    """Normalize ``config["provider_uri"]`` in place to the canonical
-    runtime spelling (codex #392 r13). Training persisted whatever
-    spelling the run was launched with — ``~/bundle`` vs its absolute
-    path, a symlink vs its target, Windows drive-letter/separator
-    variants. Both sides of the family binding go through the SAME
-    normalizer ``init_qlib_canonical`` applies, so equality after
-    normalization is exactly "qlib treated them as the same bundle"
-    — and inequality is a genuinely different bundle, refused."""
-    if isinstance(config, dict) and isinstance(
-            config.get("provider_uri"), str):
-        from src.core.qlib_runtime import _normalize_provider_uri
-
-        config["provider_uri"] = _normalize_provider_uri(
-            config["provider_uri"])
-    return config
 
 
 def _binding_subset(config: Any, what: str) -> dict[str, Any]:

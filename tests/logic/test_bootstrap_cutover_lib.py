@@ -313,6 +313,32 @@ class MemberTrainingConfigBinding(unittest.TestCase):
     def test_frozen_config_admits(self) -> None:
         self._check(self._run_config())
 
+    def test_registered_booleans_reject_equal_numeric_aliases(self) -> None:
+        from scripts.bootstrap_cutover_lib import check_member_training_config
+
+        for key in ("risk_constraints_enabled", "attribution_sleeve_grouping"):
+            for expected in (True, False):
+                check_member_training_config(
+                    "member", self._run_config(**{key: expected}),
+                    {**self._PRESET, key: expected}, self._BASE)
+                for actual in (int(expected), float(expected)):
+                    with self.subTest(key=key, expected=expected, actual=actual):
+                        preset = {**self._PRESET, key: expected}
+                        with self.assertRaises(CutoverRefusal):
+                            check_member_training_config(
+                                "member", self._run_config(**{key: actual}), preset, self._BASE)
+
+    def test_registered_numeric_fields_reject_equal_boolean_aliases(self) -> None:
+        for key, actual in (("lambda_l1", False), ("lambda_l2", True),
+                            ("label_horizon_days", True)):
+            with self.subTest(key=key):
+                with self.assertRaises(CutoverRefusal):
+                    self._check(self._run_config(**{key: actual}))
+
+    def test_registered_numbers_retain_equal_int_float_representations(self) -> None:
+        self._check(self._run_config(lambda_l1=0, lambda_l2=1,
+                                     topk=50.0, label_horizon_days=1.0))
+
     def test_same_dates_different_semantics_refused(self) -> None:
         # The exact scenario: windows reused, semantics retuned.
         cases = {

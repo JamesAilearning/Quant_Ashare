@@ -54,6 +54,27 @@ _MEMBER_VALID = ("2026-05-05", "2026-07-30")
 # The ensemble gates' trailing-quarter dry run.
 _TRAILING_QUARTER = ("2026-05-01", "2026-07-31")
 
+# Synthetic committed registration, independent of live models and local YAML.
+_BASE_FAMILY = {
+    "feature_handler": "Alpha158", "model_type": "LGBModel",
+    "num_boost_round": 1000, "early_stopping_rounds": 50,
+    "learning_rate": 0.005, "max_depth": 6, "num_leaves": 64,
+    "lambda_l1": 0.0, "lambda_l2": 1.0, "min_data_in_leaf": 50,
+    "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+    "topk": 50, "n_drop": 5, "provider_uri": "/registered/provider",
+}
+_FAMILY_DEFAULTS = {
+    "label_horizon_days": 1, "seed": 42, "region": "cn", "adjust_mode": "pre_adjusted",
+}
+_PRESET_FAMILY = {
+    "instruments": "csi800", "benchmark_code": "SH000906TR",
+    "attribution_sleeve_grouping": True, "risk_constraints_enabled": True,
+    "risk_constraints_calibration": "campaign_v1", "compute_device": "gpu",
+}
+_REGISTERED_PATHS = tuple(
+    f"config/presets/csi800_n5_bootstrap_m{i}.yaml" for i in (1, 2, 3)
+)
+
 
 class _StubModel:
     """Pickle-able member stub with the .predict serving requires."""
@@ -81,7 +102,9 @@ def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
     (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
     config = run_dir / "config.yaml"
     config.write_text(json.dumps({
+        **_BASE_FAMILY, **_FAMILY_DEFAULTS, **_PRESET_FAMILY,
         "train_start": window[0], "train_end": window[1],
+        "test_start": "2026-08-04", "test_end": "2026-08-31",
         **({"valid_start": valid_window[0], "valid_end": valid_window[1]}
            if valid_window is not None else {}),
     }), encoding="utf-8")
@@ -134,6 +157,19 @@ def _make_mainline_repo(repo: Path, *, status: dict | None) -> None:
                           encoding="utf-8")
     else:
         (repo / "README.md").write_text("no status", encoding="utf-8")
+    (repo / "config.yaml").write_text(json.dumps({
+        **_BASE_FAMILY,
+        "provider_uri": "${QUANT_PROVIDER_URI:-/registered/provider}",
+    }), encoding="utf-8")
+    for relpath in _REGISTERED_PATHS:
+        preset = repo / relpath
+        preset.parent.mkdir(parents=True, exist_ok=True)
+        preset.write_text(json.dumps({
+            "extends": "../../config.yaml", **_PRESET_FAMILY,
+            "train_start": "2024-04-01", "train_end": "2026-04-01",
+            "valid_start": "2026-04-07", "valid_end": "2026-07-07",
+            "test_start": "2026-07-10", "test_end": "2026-07-31",
+        }), encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "state")
     _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
@@ -308,6 +344,302 @@ class RotationExecutorStates(unittest.TestCase):
             pass
         for path, raw in gates.items():
             self.assertEqual(raw, path.read_bytes())
+
+    def _rebind_incoming_config(self, config: dict) -> None:
+        """A truthful changed training run, not a broken digest-chain test."""
+        import hashlib
+
+        path = self.new_pkl.parent.parent / "config.yaml"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        meta = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        meta["run_config_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self._rebind_incoming_sidecar(meta)
+
+    def _assert_family_refused_before_loading(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        gates = {p: p.read_bytes() for p in (self.member_gate, self.ensemble_gate)}
+        error = io.StringIO()
+        with redirect_stderr(error), patch.object(rotation, "load_member_models") as loader:
+            self.assertEqual(1, self._execute())
+            loader.assert_not_called()
+        self.assertIn("family", error.getvalue())
+        self._assert_manifest_untouched()
+        with rotation._ManifestLock(self.manifest):
+            pass
+        for path, raw in gates.items():
+            self.assertEqual(raw, path.read_bytes())
+
+    def test_truthful_retuned_member_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["learning_rate"] = 0.05
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_truthful_wrong_universe_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["instruments"] = "csi300"
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_integer_guard_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["risk_constraints_enabled"] = 1
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_float_guard_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["attribution_sleeve_grouping"] = 1.0
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_boolean_numeric_parameter_alias_is_refused_before_loading(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["lambda_l1"] = False
+        self._rebind_incoming_config(config)
+        self._assert_family_refused_before_loading()
+
+    def test_registered_boolean_numeric_disagreement_is_refused(self) -> None:
+        path = self.repo / _REGISTERED_PATHS[0]
+        preset = json.loads(path.read_text(encoding="utf-8"))
+        preset["risk_constraints_enabled"] = 1
+        path.write_text(json.dumps(preset), encoding="utf-8")
+        self._commit_registration()
+        self._assert_family_refused_before_loading()
+
+    def test_equivalent_numeric_representations_still_rotate(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config.update(topk=50.0, lambda_l1=0, lambda_l2=1)
+        self._rebind_incoming_config(config)
+        self.assertEqual(0, self._execute())
+
+    def test_environment_cannot_register_a_different_provider(self) -> None:
+        from unittest.mock import patch
+
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        config["provider_uri"] = "/wrong/provider"
+        self._rebind_incoming_config(config)
+        # A local config and env override agree with the wrong trained family.
+        (self.repo / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        with patch.dict(os.environ, {"QUANT_PROVIDER_URI": "/wrong/provider"}):
+            self._assert_family_refused_before_loading()
+
+    def test_every_fixed_family_field_rejects_drift_or_missing_actual(self) -> None:
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        for key, value in {**_BASE_FAMILY, **_FAMILY_DEFAULTS, **_PRESET_FAMILY}.items():
+            changed = not value if isinstance(value, bool) else (
+                value + 1 if isinstance(value, (int, float)) else value + "_retuned")
+            for case in ("changed", "missing", "null"):
+                with self.subTest(key=key, case=case):
+                    candidate = dict(config)
+                    if case == "missing":
+                        candidate.pop(key)
+                    else:
+                        candidate[key] = changed if case == "changed" else None
+                    self._rebind_incoming_config(candidate)
+                    self._assert_family_refused_before_loading()
+
+    def _commit_registration(self) -> None:
+        _git(self.repo, "add", "-A")
+        _git(self.repo, "commit", "-q", "-m", "registration fixture change")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def test_each_registered_file_must_exist_in_pinned_revision(self) -> None:
+        for relpath in ("config.yaml", *_REGISTERED_PATHS):
+            with self.subTest(path=relpath):
+                path = self.repo / relpath
+                original = path.read_bytes()
+                path.unlink()
+                self._commit_registration()
+                # Even a restored worktree copy cannot repair the pinned evidence.
+                path.write_bytes(original)
+                self._assert_family_refused_before_loading()
+                self._commit_registration()
+
+    def test_malformed_registered_yaml_is_a_classified_family_refusal(self) -> None:
+        for relpath in ("config.yaml", _REGISTERED_PATHS[0]):
+            path = self.repo / relpath
+            original = path.read_bytes()
+            for raw in (b"\xff", b"bad: [", b"[]", b"null", b"a: 2026-02-30"):
+                with self.subTest(path=relpath, raw=raw):
+                    path.write_bytes(raw)
+                    self._commit_registration()
+                    self._assert_family_refused_before_loading()
+            path.write_bytes(original)
+            self._commit_registration()
+
+    def test_missing_base_family_keys_do_not_gain_implicit_defaults(self) -> None:
+        path = self.repo / "config.yaml"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        for key in _BASE_FAMILY:
+            with self.subTest(key=key):
+                config = dict(original)
+                config.pop(key)
+                path.write_text(json.dumps(config), encoding="utf-8")
+                self._commit_registration()
+                self._assert_family_refused_before_loading()
+
+    def test_registered_base_overrides_are_not_replaced_by_pinned_defaults(self) -> None:
+        path = self.repo / "config.yaml"
+        base = json.loads(path.read_text(encoding="utf-8"))
+        for key, value in _FAMILY_DEFAULTS.items():
+            with self.subTest(key=key):
+                changed = value + 1 if isinstance(value, int) else value + "_new"
+                path.write_text(json.dumps({**base, key: changed}), encoding="utf-8")
+                self._commit_registration()
+                self._assert_family_refused_before_loading()
+
+    def test_incomplete_presets_cannot_all_drop_the_same_family_field(self) -> None:
+        originals = {p: json.loads((self.repo / p).read_text(encoding="utf-8"))
+                     for p in _REGISTERED_PATHS}
+        for key in (*_PRESET_FAMILY, "extends"):
+            with self.subTest(key=key):
+                for relpath, original in originals.items():
+                    config = dict(original)
+                    config.pop(key)
+                    (self.repo / relpath).write_text(json.dumps(config), encoding="utf-8")
+                self._commit_registration()
+                self._assert_family_refused_before_loading()
+
+    def test_registered_presets_cannot_select_a_different_base(self) -> None:
+        for relpath in _REGISTERED_PATHS:
+            path = self.repo / relpath
+            config = json.loads(path.read_text(encoding="utf-8"))
+            config["extends"] = "../../config_walk.yaml"
+            path.write_text(json.dumps(config), encoding="utf-8")
+        self._commit_registration()
+        self._assert_family_refused_before_loading()
+
+    def test_committed_presets_must_agree_without_majority_voting(self) -> None:
+        path = self.repo / _REGISTERED_PATHS[1]
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["compute_device"] = "cpu"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        self._commit_registration()
+        self._assert_family_refused_before_loading()
+
+    def test_future_declared_preset_fields_are_not_silently_ignored(self) -> None:
+        for relpath in _REGISTERED_PATHS:
+            path = self.repo / relpath
+            config = json.loads(path.read_text(encoding="utf-8"))
+            config["future_registered_option"] = True
+            path.write_text(json.dumps(config), encoding="utf-8")
+        self._commit_registration()
+        self._assert_family_refused_before_loading()
+
+    def test_provider_requires_a_nonempty_committed_default(self) -> None:
+        from unittest.mock import patch
+
+        path = self.repo / "config.yaml"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        for raw in ("${QUANT_PROVIDER_URI}", "${QUANT_PROVIDER_URI:-}", "", " ", None, []):
+            with self.subTest(provider=raw):
+                path.write_text(json.dumps({**original, "provider_uri": raw}), encoding="utf-8")
+                self._commit_registration()
+                with patch.dict(os.environ, {"QUANT_PROVIDER_URI": _BASE_FAMILY["provider_uri"]}):
+                    self._assert_family_refused_before_loading()
+
+    def test_equivalent_provider_spelling_and_all_six_rolling_dates_are_accepted(self) -> None:
+        from unittest.mock import patch
+
+        config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        preset = json.loads((self.repo / _REGISTERED_PATHS[2]).read_text(encoding="utf-8"))
+        for key in ("train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end"):
+            self.assertNotEqual(preset[key], config[key])
+        config["provider_uri"] = str(Path(_BASE_FAMILY["provider_uri"]).resolve()) + "/."
+        self._rebind_incoming_config(config)
+        with patch.dict(os.environ, {"QUANT_PROVIDER_URI": "/ignored/local/override"}):
+            self.assertEqual(0, self._execute())
+
+    def test_registered_family_uses_the_certification_pin_when_mainline_moves(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        path = self.repo / "config.yaml"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["learning_rate"] = 0.05
+        path.write_text(json.dumps(config), encoding="utf-8")
+        self._commit_registration()
+        later = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", self.source_commit)
+        original_git = rotation._git
+
+        def move_after_pin(cmd, repo):
+            result = original_git(cmd, repo)
+            if cmd[1] == "rev-parse":
+                _git(repo, "update-ref", "refs/remotes/origin/main", later)
+            return result
+
+        with patch.object(rotation, "_git", side_effect=move_after_pin), patch.object(
+                rotation, "_registered_family_config", wraps=rotation._registered_family_config) as reads:
+            self.assertEqual(0, self._execute())
+        self.assertEqual(
+            [(self.repo, self.source_commit, p) for p in ("config.yaml", *_REGISTERED_PATHS)],
+            [call.args for call in reads.call_args_list])
+
+    def test_family_reread_must_match_the_original_bound_sidecar(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        original_source = rotation._require_member_source
+
+        def replace_config_and_sidecar_after_factual_check(sidecar, *, repo, rev):
+            original_source(sidecar, repo=repo, rev=rev)
+            config = json.loads((self.new_pkl.parent.parent / "config.yaml").read_text(encoding="utf-8"))
+            # It is still a legal family, but these are not the gated bytes.
+            config["test_end"] = "2026-09-01"
+            self._rebind_incoming_config(config)
+
+        with patch.object(rotation, "_require_member_source",
+                          side_effect=replace_config_and_sidecar_after_factual_check):
+            # The adversarial callback changes gate files; check refusal and
+            # incumbent/staging only, not the normal immutable-gate assertion.
+            with patch.object(rotation, "load_member_models") as loader:
+                self.assertEqual(1, self._execute())
+                loader.assert_not_called()
+        self._assert_manifest_untouched()
+
+    def test_family_reread_unavailable_is_a_classified_refusal(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        with patch.object(rotation, "read_member_run_config", return_value=None):
+            self._assert_family_refused_before_loading()
+
+    def test_family_git_failure_or_timeout_never_loads_or_installs(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        original_run = subprocess.run
+        cases = (OSError("git unavailable"), subprocess.TimeoutExpired("git", 30),
+                 subprocess.CompletedProcess([], 128, b"", b"unreadable \xff"))
+        for failure in cases:
+            with self.subTest(failure=type(failure).__name__):
+                calls = []
+
+                def fail_family_read(cmd, *, _failure=failure, _calls=calls, **kwargs):
+                    if cmd[1] == "show" and cmd[-1].endswith(":config.yaml"):
+                        _calls.append((cmd, kwargs))
+                        if isinstance(_failure, Exception):
+                            raise _failure
+                        return _failure
+                    return original_run(cmd, **kwargs)
+
+                with patch.object(rotation.subprocess, "run", side_effect=fail_family_read):
+                    self._assert_family_refused_before_loading()
+                self.assertEqual(1, len(calls))
+                self.assertEqual(["git", "show", f"{self.source_commit}:config.yaml"], calls[0][0])
+                self.assertEqual(30, calls[0][1]["timeout"])
 
     def test_dirty_training_source_is_refused_before_loading(self) -> None:
         payload = json.loads(self.new_meta.read_text(encoding="utf-8"))

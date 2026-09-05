@@ -23,7 +23,7 @@ and its serving semantics stay unchanged, and the failure is filed
 (R1-DP-C: the bootstrap has no "keep the old ensemble" branch — that
 action belongs to the quarterly maintenance path).
 
-This module is PURE stdlib: the executor
+Decision helpers (with lazy canonical provider normalization): the executor
 (``scripts/bootstrap_ensemble_cutover.py``) wires git, the filesystem
 and the serving loader around these decisions so every rule is
 unit-testable without a bundle.
@@ -33,7 +33,17 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
+
+# The PRE-REGISTERED bootstrap trio (R1-DP-C, windows frozen before
+# ignition). Read at the pinned mainline revision: a locally edited
+# preset must not be able to authorize a differently-windowed trio.
+BOOTSTRAP_PRESET_PATHS = (
+    "config/presets/csi800_n5_bootstrap_m1.yaml",
+    "config/presets/csi800_n5_bootstrap_m2.yaml",
+    "config/presets/csi800_n5_bootstrap_m3.yaml",
+)
 
 __all__ = [
     "BOOTSTRAP_MEMBER_COUNT",
@@ -304,6 +314,53 @@ SAME_FAMILY_DEFAULTS: dict[str, Any] = {
 }
 
 
+def _expand_registered_default(raw: str, what: str) -> str:
+    """Expand a ``${VAR:-default}`` template using ONLY the committed
+    default (codex #392 r15). The live environment is mutable process
+    state: the same wrong ``QUANT_PROVIDER_URI`` that mis-trained a
+    member would also fabricate the expected value at cutover time,
+    collapsing the comparison into a tautology. The default committed
+    at the pinned revision IS the pre-registered bundle identity; a
+    template with no default is unadjudicable — refuse."""
+    from src.core._yaml_loader import _ENV_VAR_PATTERN
+
+    def _take_default(match: re.Match[str]) -> str:
+        default = match.group("default")
+        if default is None:
+            raise CutoverRefusal(
+                f"{what}: template ${{{match.group('name')}}} declares "
+                "no committed default — there is no pre-registered "
+                "bundle identity to bind, refusing")
+        return default
+
+    return _ENV_VAR_PATTERN.sub(_take_default, raw)
+
+
+def _canonicalize_provider_uri(config: Any) -> Any:
+    """Normalize ``config["provider_uri"]`` in place to the canonical
+    runtime spelling (codex #392 r13). Training persisted whatever
+    spelling the run was launched with — ``~/bundle`` vs its absolute
+    path, a symlink vs its target, Windows drive-letter/separator
+    variants. Both sides of the family binding go through the SAME
+    normalizer ``init_qlib_canonical`` applies, so equality after
+    normalization is exactly "qlib treated them as the same bundle"
+    — and inequality is a genuinely different bundle, refused."""
+    if isinstance(config, dict) and isinstance(
+            config.get("provider_uri"), str):
+        from src.core.qlib_runtime import _normalize_provider_uri
+
+        config["provider_uri"] = _normalize_provider_uri(
+            config["provider_uri"])
+    return config
+
+
+def _same_family_value(actual: Any, expected: Any) -> bool:
+    """Keep boolean identity distinct from ordinary numeric equivalence."""
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return actual is expected
+    return bool(actual == expected)
+
+
 def check_member_training_config(
     label: str, run_config: Any, preset_declared: dict[str, Any],
     base_config: dict[str, Any],
@@ -333,7 +390,7 @@ def check_member_training_config(
         if key == "extends":
             continue
         actual = run_config.get(key, _MISSING)
-        if actual != expected:
+        if not _same_family_value(actual, expected):
             raise CutoverRefusal(
                 f"{label}: training config {key}={actual!r} != the "
                 f"pre-registered preset's {expected!r} — this member "
@@ -353,7 +410,7 @@ def check_member_training_config(
                 "mainline base config and has no pinned default — "
                 "cannot adjudicate the frozen semantics, refusing")
         actual = run_config.get(key, _MISSING)
-        if actual != expected:
+        if not _same_family_value(actual, expected):
             raise CutoverRefusal(
                 f"{label}: training config {key}={actual!r} != the "
                 f"frozen protocol's {expected!r} — retuned "
