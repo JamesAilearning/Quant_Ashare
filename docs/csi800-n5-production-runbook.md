@@ -128,6 +128,11 @@ manifest 的错峰与 24 月窗 pins。
    ```
    四个窗口参数**照抄该成员训练所用 preset**（训窗 + valid 窗）：
    门以生产推理形状建集（归一化 fit = 训窗，评分段 = valid 窗）。
+   程序会核对完整训练目录中 `config.yaml` 的实际四个日期，并校验
+   pickle → sidecar → config 的摘要链；不能换一个更容易通过的验证窗。
+   侧文件或配置证据缺失、损坏或日期不符时不加载模型、不评分，但仍写出
+   FAIL 工件，IC 留空并说明“未测量”。模型文件本身缺失或不可读仍属于
+   工具错误，不会生成门禁工件。保留完整训练目录，不要手改摘要或日期绕过检查。
    trainer 完整性（sidecar 必须携 `num_boost_round`；
    `best_iteration == num_boost_round` = 早停从未触发，拒）+
    valid 窗 IC(1d) > 0。
@@ -159,6 +164,10 @@ manifest 的错峰与 24 月窗 pins。
      --ensemble-gate output/retrain_gates/<季度>_ensemble_gate.json
    ```
    执行器自动写 `<manifest>.pre_rotation_<UTC时间戳>` 备份。
+   备份和安装之前，还会把成员门工件的验证日期与摘要绑定的真实训练
+   配置逐项比对。旧 PASS 工件也不豁免；日期不符即拒绝，原 manifest
+   不变且不产生轮换备份。这里仍是 valid 窗的方向检查，不是独立未见
+   test 窗的净收益认证，也不替代注册模型族和源码来源的治理检查。
 6. **回滚（单步）**：把备份文件复制回 manifest 路径即回到上一
    ensemble。不需要其他任何操作。
 

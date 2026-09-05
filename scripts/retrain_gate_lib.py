@@ -101,19 +101,20 @@ def gate_trainer_integrity(sidecar: Any) -> dict[str, Any]:
     nbr = sidecar.get("num_boost_round")
     loss = sidecar.get("final_valid_loss")
     model_type = sidecar.get("model_type")
-    if model_type not in KNOWN_MODEL_TYPES:
+    known_model_type = isinstance(model_type, str) and model_type in KNOWN_MODEL_TYPES
+    if not known_model_type:
         # best_iteration cannot be normalized without knowing the
         # framework's indexing convention (codex #391 r3) — refuse.
         reasons.append(
             f"model_type {model_type!r} is not one of "
             f"{sorted(KNOWN_MODEL_TYPES)} — cannot normalize "
             "best_iteration, fail-closed")
-    one_based = model_type in _ONE_BASED_BEST_ITER
+    one_based = known_model_type and model_type in _ONE_BASED_BEST_ITER
     if not (_is_num(best_iter) and isinstance(best_iter, int)):
         reasons.append(
             f"best_iteration {best_iter!r} is not an int — extraction "
             "failed or sidecar corrupt")
-    elif model_type in KNOWN_MODEL_TYPES and (
+    elif known_model_type and (
             best_iter < (1 if one_based else 0)):
         # LGB is 1-based (0 is impossible); XGB/CatBoost are 0-based
         # (0 = first round is a LEGITIMATE best).
@@ -133,7 +134,7 @@ def gate_trainer_integrity(sidecar: Any) -> dict[str, Any]:
     rounds_used: int | None = None
     if (isinstance(best_iter, int) and not isinstance(best_iter, bool)
             and isinstance(nbr, int) and not isinstance(nbr, bool)
-            and model_type in KNOWN_MODEL_TYPES):
+            and known_model_type):
         # Normalize to "boost rounds actually used" (codex #391 r3:
         # an exhausted XGB/CatBoost run records num_boost_round - 1 —
         # the raw equality check would let the boundary anomaly pass).

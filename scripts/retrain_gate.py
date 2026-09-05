@@ -107,6 +107,10 @@ from src.core.signal_analyzer import (  # noqa: E402
     SignalAnalysisConfig,
     SignalAnalyzer,
 )
+from src.data.model_training_provenance import (  # noqa: E402
+    ModelTrainingProvenanceError,
+    check_member_gate_provenance,
+)
 from src.inference.ensemble_serving import (  # noqa: E402
     EnsembleServingError,
     ensemble_predict,
@@ -387,47 +391,53 @@ def _member_scope(args: argparse.Namespace,
             sidecar = None  # gate lib fails it closed with the reason
     integrity = gate_trainer_integrity(sidecar)
 
-    # Gate (d): score the member's OWN VALID segment and read the
-    # plain daily IC(1d) mean — a trainer-level directional sanity
-    # check (the spec names executable stamps for the degeneracy gate
-    # only). The dataset is built with the member's OWN three windows,
-    # i.e. the SAME shape its training run used, and the valid window
-    # is scored as the ``valid`` SEGMENT (codex #391 r33: reusing the
-    # valid window as the test segment is rejected outright by
-    # FeatureDatasetBuilder — ``valid_end >= test_start`` is a leakage
-    # violation — so that shape could never have scored anything).
-    dataset = _scoring_dataset(
-        args, profile,
-        fit_start=args.fit_start, fit_end=args.fit_end,
-        score_start=args.valid_start, score_end=args.valid_end)
-    import pickle
-
     # Pickle bytes are read ONCE (codex #391 r2): the object the IC
     # gate scores and the digest the artifact binds must come from the
     # same buffer — a second file read could hash bytes that were
     # never scored, and the rotation executor trusts that binding.
     # (A missing pickle is a TOOL error: there is nothing to gate.)
     pkl_raw = Path(args.member_pkl).read_bytes()
-    model = pickle.loads(pkl_raw)
-    if not hasattr(model, "predict"):
-        raise SystemExit(
-            f"loaded object {type(model).__name__} has no .predict")
-    preds = model.predict(dataset, segment="infer")
-    if not isinstance(preds, pd.Series):
-        preds = pd.Series(preds)
-    preds = preds.dropna()
-    if preds.empty:
-        raise SystemExit(
-            "member scoring produced no predictions on the valid "
-            "segment — check the declared valid window.")
-    signal = SignalAnalyzer.analyze(
-        predictions=preds,
-        config=SignalAnalysisConfig(forward_periods=(1,), topk=TOPK))
-    ic = gate_ic_direction(float(signal.ic_summary[1]["mean_ic"]))
+    pkl_sha = hashlib.sha256(pkl_raw).hexdigest()
+    try:
+        check_member_gate_provenance(
+            "member gate", pkl_path=Path(args.member_pkl), sidecar=sidecar,
+            pkl_sha256=pkl_sha, fit_start=args.fit_start, fit_end=args.fit_end,
+            valid_start=args.valid_start, valid_end=args.valid_end,
+        )
+    except ModelTrainingProvenanceError as exc:
+        # A refusal is still an auditable FAIL, not an invented IC or
+        # a missing artifact. No dataset/model is loaded without evidence.
+        ic = gate_ic_direction(None)
+        ic["reasons"] = [f"IC not measured: training evidence refused: {exc}"]
+    else:
+        # Gate (d): score the member's OWN bound valid window as an
+        # inference segment, with normalization fit to its training dates.
+        dataset = _scoring_dataset(
+            args, profile,
+            fit_start=args.fit_start, fit_end=args.fit_end,
+            score_start=args.valid_start, score_end=args.valid_end)
+        import pickle
+
+        model = pickle.loads(pkl_raw)
+        if not hasattr(model, "predict"):
+            raise SystemExit(
+                f"loaded object {type(model).__name__} has no .predict")
+        preds = model.predict(dataset, segment="infer")
+        if not isinstance(preds, pd.Series):
+            preds = pd.Series(preds)
+        preds = preds.dropna()
+        if preds.empty:
+            raise SystemExit(
+                "member scoring produced no predictions on the valid "
+                "segment — check the declared valid window.")
+        signal = SignalAnalyzer.analyze(
+            predictions=preds,
+            config=SignalAnalysisConfig(forward_periods=(1,), topk=TOPK))
+        ic = gate_ic_direction(float(signal.ic_summary[1]["mean_ic"]))
 
     subject = {
         "pkl_path": str(args.member_pkl),
-        "pkl_sha256": hashlib.sha256(pkl_raw).hexdigest(),
+        "pkl_sha256": pkl_sha,
         "meta_path": str(args.member_meta),
         # Honest null when the sidecar was unreadable — the FAIL
         # artifact still records everything measurable, and the null
