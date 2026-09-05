@@ -135,6 +135,24 @@ Three files under `--out-dir`, stamped by the as-of date `T`
   `unavailable_reason` (`suspended` / `one_price_lock` / `unavailable` / `st`).
   Read this when you want to know *why* a name you expected is missing.
 
+For cadence-enabled runs, **both CSVs append `rebalance_day` and
+`next_rebalance_date`**, mirroring the JSON top-level values. `False` means
+**HOLD / monitoring only, not an entry instruction**, even when a stock's
+`tradable_flag` is True. `True` identifies a scheduled rebalance result; it does
+not override the observed-session timing limitations above. An empty next-date
+cell means the calendar does not provide a known next anchor (JSON retains
+`null`); do not substitute `entry_date` or guess a date. Ranking, stock rows,
+`as_of_date` and `entry_date` are unchanged. The terminal/operator presentation
+continues to show the explicit HOLD notice.
+
+Empty CSVs keep their headers and **zero stock rows**; they cannot encode the
+run's actual boolean/date values, so read the sibling JSON for that context.
+Daily-mode CSV columns and content are unchanged. Older cadence CSVs also lack
+these columns: absence in a CSV alone does not prove a daily/rebalance run—check
+its JSON. Consumers matching CSV headers exactly must allow the two appended
+columns in new cadence exports. JSON remains schema v2 with unchanged pick rows;
+no historical exports are rewritten.
+
 The terminal header echoes both time points and the funnel:
 
 ```

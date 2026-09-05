@@ -1382,12 +1382,26 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
     # 原先放在 payload 装配处，CSV 已落盘才抛——失败运行留下新 CSV 配旧/
     # 缺 JSON 的半成品输出）。canonical next_rebalance_date(as_of) 在再平
     # 衡日恒返 as_of，recommend() 产不出 True+None/True+异日。
+    if result.rebalance_day is not None and not isinstance(result.rebalance_day, bool):
+        raise DailyRecommendationError(
+            "rebalance_day must be bool or None, "
+            f"got {type(result.rebalance_day).__name__}")
     if (result.rebalance_day is True
             and result.next_rebalance_date != result.as_of_date):
         raise DailyRecommendationError(
             "cadence invariant violated: rebalance_day=True requires "
             f"next_rebalance_date == as_of_date; got "
             f"{result.next_rebalance_date!r} vs {result.as_of_date!r}")
+    # One projection for both CSVs and JSON. Do not add these fields to
+    # buy_rows (the JSON picks contract) or mutate the input scored frame.
+    # Daily results keep the pre-cadence schema; header-only CSVs retain
+    # zero rows, so the sibling JSON remains their run-level authority.
+    cadence_context: dict[str, Any] = {}
+    if result.rebalance_day is not None:
+        cadence_context = {
+            "rebalance_day": result.rebalance_day,
+            "next_rebalance_date": result.next_rebalance_date,
+        }
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = result.as_of_date
@@ -1410,7 +1424,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
 
     # Explicit columns so an empty buy list (e.g. --topk 0, or every
     # candidate masked) still writes a header row downstream readers expect.
-    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).to_csv(
+    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).assign(**cadence_context).to_csv(
         csv_path, index=False, encoding="utf-8-sig",
     )
     payload: dict[str, Any] = {
@@ -1426,15 +1440,10 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         "picks": buy_rows,
         "meta": dict(result.run_meta),
     }
-    # Cadence-aware serving fields (PR-A, DP-2): present ONLY under a
-    # cadence-enabled config — a daily (cadence=1) artifact stays
-    # byte-identical to the pre-cadence contract, and readers treat the
-    # absent field as daily semantics (backward compatible).
-    if result.rebalance_day is not None:
-        # 节奏不变式已在函数顶部（任何文件 I/O 之前）执法——见上。
-        payload["rebalance_day"] = result.rebalance_day
-        payload["next_rebalance_date"] = result.next_rebalance_date
+    payload.update(cadence_context)
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    result.scored_frame.to_csv(audit_path, index=False, encoding="utf-8-sig")
+    result.scored_frame.assign(**cadence_context).to_csv(
+        audit_path, index=False, encoding="utf-8-sig",
+    )
     return {"csv": str(csv_path), "json": str(json_path), "audit": str(audit_path)}
