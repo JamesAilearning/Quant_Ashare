@@ -67,6 +67,7 @@ class _StubModel:
 
 def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
                         valid_window: tuple[str, str] | None = None,
+                        source_commit: str | None = None,
                         ) -> dict:
     """A REAL loadable member (pkl + trainer sidecar with the version
     chain the serving loader enforces) — execute's member-chain
@@ -93,6 +94,8 @@ def _write_member_files(tmp: Path, name: str, window: tuple[str, str],
         "lightgbm_version": lightgbm.__version__,
         "pkl_sha256": hashlib.sha256(pkl.read_bytes()).hexdigest(),
         "run_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+        **({"source_git_commit": source_commit, "source_git_dirty": False}
+           if source_commit is not None else {}),
     }), encoding="utf-8")
     return {
         "pkl_path": str(pkl),
@@ -154,6 +157,11 @@ class RotationExecutorStates(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
+        self.repo = self.tmp / "mainline"
+        _make_mainline_repo(self.repo, status=_win_status())
+        self.source_commit = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+
         # Current production manifest. The OLDEST member (dropped by
         # the rotation) may be a phantom entry — execute's member-chain
         # re-validation runs over the CANDIDATE members only; members
@@ -182,7 +190,7 @@ class RotationExecutorStates(unittest.TestCase):
         # The incoming member: a REAL loadable stub (hashed by `plan`,
         # unpickled by execute's member-chain re-validation).
         new_files = _write_member_files(self.tmp, "new_member",
-                                        _NEW_WINDOW, _MEMBER_VALID)
+                                        _NEW_WINDOW, _MEMBER_VALID, self.source_commit)
         self.new_pkl = Path(new_files["pkl_path"])
         self.new_meta = Path(new_files["meta_path"])
 
@@ -216,9 +224,6 @@ class RotationExecutorStates(unittest.TestCase):
                           "fit_end": _NEW_WINDOW[1]})
         self._write_gate(self.ensemble_gate, SCOPE_ENSEMBLE,
                          {"manifest_sha256": self.candidate_sha})
-
-        self.repo = self.tmp / "mainline"
-        _make_mainline_repo(self.repo, status=_win_status())
 
     _GATES_BY_SCOPE = {
         SCOPE_MEMBER: ("trainer_integrity", "ic_direction"),
@@ -266,6 +271,167 @@ class RotationExecutorStates(unittest.TestCase):
         # The private staging copy (unique mkstemp name) must not
         # survive a refusal either.
         self.assertEqual([], list(self.tmp.glob("*.swap*")))
+
+    def _rebind_incoming_sidecar(self, payload: dict) -> None:
+        """Keep all other gates valid when testing source eligibility."""
+        import hashlib
+
+        self.new_meta.write_text(json.dumps(payload), encoding="utf-8")
+        meta_sha = hashlib.sha256(self.new_meta.read_bytes()).hexdigest()
+        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
+        candidate["members"][-1]["meta_sha256"] = meta_sha
+        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
+        member_gate = json.loads(self.member_gate.read_text(encoding="utf-8"))
+        member_gate["subject"]["meta_sha256"] = meta_sha
+        self.member_gate.write_text(json.dumps(member_gate), encoding="utf-8")
+        ensemble_gate = json.loads(self.ensemble_gate.read_text(encoding="utf-8"))
+        ensemble_gate["subject"]["manifest_sha256"] = hashlib.sha256(self.candidate.read_bytes()).hexdigest()
+        self.ensemble_gate.write_text(json.dumps(ensemble_gate), encoding="utf-8")
+
+    def _assert_source_refused_before_loading(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        gates = {p: p.read_bytes() for p in (self.member_gate, self.ensemble_gate)}
+        error = io.StringIO()
+        with redirect_stderr(error), patch.object(rotation, "load_member_models") as loader:
+            self.assertEqual(1, self._execute())
+            loader.assert_not_called()
+        self.assertIn("source", error.getvalue())
+        self._assert_manifest_untouched()
+        # The lockfile intentionally persists to avoid inode races; prove
+        # the lock was released by acquiring it again after refusal.
+        with rotation._ManifestLock(self.manifest):
+            pass
+        for path, raw in gates.items():
+            self.assertEqual(raw, path.read_bytes())
+
+    def test_dirty_training_source_is_refused_before_loading(self) -> None:
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload["source_git_dirty"] = True
+        self._rebind_incoming_sidecar(payload)
+        self._assert_source_refused_before_loading()
+
+    def test_missing_training_source_is_refused_before_loading(self) -> None:
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload.pop("source_git_commit")
+        self._rebind_incoming_sidecar(payload)
+        self._assert_source_refused_before_loading()
+
+    def test_unmerged_training_source_is_refused_before_loading(self) -> None:
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "unmerged training source")
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload["source_git_commit"] = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        self._rebind_incoming_sidecar(payload)
+        self._assert_source_refused_before_loading()
+
+    def test_malformed_training_source_is_refused_before_loading(self) -> None:
+        original = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        cases = [
+            ("source_git_dirty", None), ("source_git_dirty", 0),
+            ("source_git_dirty", "False"), ("source_git_dirty", []),
+            ("source_git_commit", None), ("source_git_commit", "abc123"),
+            ("source_git_commit", "g" * 40), ("source_git_commit", "A" * 40),
+            ("source_git_commit", 123), ("source_git_commit", []),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self._rebind_incoming_sidecar({**original, field: value})
+                self._assert_source_refused_before_loading()
+        for field in ("source_git_dirty", "source_git_commit"):
+            with self.subTest(missing=field):
+                payload = dict(original)
+                payload.pop(field)
+                self._rebind_incoming_sidecar(payload)
+                self._assert_source_refused_before_loading()
+
+    def test_unknown_training_commit_is_refused_before_loading(self) -> None:
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload["source_git_commit"] = "f" * 40
+        self._rebind_incoming_sidecar(payload)
+        self._assert_source_refused_before_loading()
+
+    def test_divergent_training_branch_is_refused_before_loading(self) -> None:
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "unmerged source branch")
+        unmerged = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        _git(self.repo, "switch", "-c", "registered", self.source_commit)
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "different mainline change")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload["source_git_commit"] = unmerged
+        self._rebind_incoming_sidecar(payload)
+        self._assert_source_refused_before_loading()
+
+    def test_clean_training_ancestor_retains_legal_rotation(self) -> None:
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "new mainline revision")
+        _git(self.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual(0, self._execute())
+        self.assertEqual(self.candidate.read_bytes(), self.manifest.read_bytes())
+        backups = list(self.tmp.glob("*.pre_rotation_*"))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(self.original_bytes, backups[0].read_bytes())
+
+    def test_source_ancestry_uses_pinned_revision_when_mainline_moves(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        _git(self.repo, "commit", "--allow-empty", "-q", "-m", "later mainline source")
+        later = subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True).strip()
+        payload = json.loads(self.new_meta.read_text(encoding="utf-8"))
+        payload["source_git_commit"] = later
+        self._rebind_incoming_sidecar(payload)
+        original_git = rotation._git
+        resolutions = []
+
+        def move_after_pin(cmd, repo):
+            result = original_git(cmd, repo)
+            if cmd[1] == "rev-parse":
+                resolutions.append(result.strip())
+                _git(repo, "update-ref", "refs/remotes/origin/main", later)
+            return result
+
+        with patch.object(rotation, "_git", side_effect=move_after_pin):
+            self._assert_source_refused_before_loading()
+        self.assertEqual([self.source_commit], resolutions)
+        self.assertEqual(later, subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "origin/main"], text=True).strip())
+
+    def test_source_git_failures_are_classified_without_installation(self) -> None:
+        from unittest.mock import patch
+
+        import scripts.rotate_ensemble_member as rotation
+
+        original_run = subprocess.run
+        cases = (OSError("git unavailable"),
+                 subprocess.TimeoutExpired("git", 30),
+                 subprocess.CompletedProcess([], 128, b"", b"bad history \xff"))
+        for failure in cases:
+            with self.subTest(failure=type(failure).__name__):
+                ancestry_calls = []
+
+                def fail_ancestry(cmd, *, _failure=failure, _calls=ancestry_calls, **kwargs):
+                    if cmd[1:3] == ["merge-base", "--is-ancestor"]:
+                        _calls.append((cmd, kwargs))
+                        if isinstance(_failure, Exception):
+                            raise _failure
+                        return _failure
+                    return original_run(cmd, **kwargs)
+
+                with patch.object(rotation.subprocess, "run", side_effect=fail_ancestry):
+                    self._assert_source_refused_before_loading()
+                self.assertEqual(1, len(ancestry_calls))
+                cmd, kwargs = ancestry_calls[0]
+                self.assertEqual(["git", "merge-base", "--is-ancestor",
+                                  self.source_commit, self.source_commit], cmd)
+                self.assertEqual(self.repo, kwargs["cwd"])
+                self.assertEqual(30, kwargs["timeout"])
 
     def test_legal_rotation_full_chain(self) -> None:
         import os
