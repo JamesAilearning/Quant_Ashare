@@ -59,6 +59,7 @@ raw data, rebuilding/swapping the live qlib provider, or changing a model.
   internal completeness. This guard does not fix or certify that coverage.
 - Aggregate files such as `namechange`, `suspend_d`, and `index_weight` do not
   use this ticker-year guard. It is not a general guarantee that arbitrary
-  narrow requests are safe across all endpoints.
+  narrow requests are safe across all endpoints. See the separate
+  [aggregate declared-range guard](aggregate-update-safety.md) and its provenance limits.
 - Independent concurrent writers to the same raw directory remain unsupported
   by this check; use the existing single-job operational discipline.
