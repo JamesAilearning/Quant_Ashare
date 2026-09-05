@@ -482,7 +482,10 @@ class RealArtifactsOnThisMachineTests(unittest.TestCase):
         if not artifacts:
             self.skipTest("本机没有出单工件（worktree 里通常没有 output/）")
 
+        reads: list[Path] = []
+
         def read(path: Path) -> dict[str, Any] | None:
+            reads.append(path)
             try:
                 loaded = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -498,10 +501,9 @@ class RealArtifactsOnThisMachineTests(unittest.TestCase):
             (not result.found and not result.unknowable),
         ]
         self.assertEqual(sum(1 for t in terminal if t), 1)
-        self.assertEqual(
-            result.scanned,
-            len(result.skipped) + (1 if result.found or result.unknowable else 0),
-        )
+        # A history gap stops BEFORE reading another artifact; an unknowable
+        # verdict therefore need not account for an additional read.
+        self.assertEqual(result.scanned, len(reads))
         for candidate in result.skipped:
             with self.subTest(date=candidate.trade_date):
                 # 记账里现在只该有**经过校验的 HOLD**。
@@ -725,13 +727,18 @@ class HistoryGapTests(unittest.TestCase):
         # 08-11(二) HOLD → 缺 08-10(一) → 08-03(一) 再平衡。照原样翻过去，
         # 页面会把 8 月 3 日那张单报成当前基准，而缺掉的 8 月 10 日那次运行
         # 完全可能已经取代了它。
-        result = find_nominal_baseline(
-            _index("2026-08-11", "2026-08-03"),
-            read_payload=_reader({
-                "2026-08-11": _artifact(as_of="2026-08-11", rebalance=False),
-                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
-            }),
-        )
+        reads: list[Path] = []
+        reader = _reader({
+            "2026-08-11": _artifact(as_of="2026-08-11", rebalance=False),
+            "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
+        })
+
+        def read(path: Path) -> dict[str, Any] | None:
+            reads.append(path)
+            return reader(path)
+
+        artifacts = _index("2026-08-11", "2026-08-03")
+        result = find_nominal_baseline(artifacts, read_payload=read)
 
         self.assertFalse(result.found)
         self.assertTrue(result.unknowable)
@@ -739,6 +746,9 @@ class HistoryGapTests(unittest.TestCase):
         self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_HISTORY_GAP)
         self.assertEqual(result.blocked_by.trade_date, "2026-08-11")
         self.assertIn("2026-08-10", result.blocked_by.detail)
+        self.assertEqual(result.scanned, 1)
+        self.assertEqual(result.scanned, len(reads))
+        self.assertEqual(reads, [artifacts[0][1]])
 
     def test_a_weekend_only_gap_is_provably_empty(self) -> None:
         # 周五 → 周一之间只隔周六周日。没有交易日历也证得了那两天不是交易日，
@@ -757,17 +767,20 @@ class HistoryGapTests(unittest.TestCase):
         self,
     ) -> None:
         # 同一道闸的第一格：选中日与最新那份工件之间同样可能夹着缺失的运行。
+        def unread(path: Path) -> dict[str, Any] | None:
+            self.fail("the initial history gap must stop before any artifact read")
+
         result = find_nominal_baseline(
             _index("2026-08-03"),
-            read_payload=_reader({
-                "2026-08-03": _artifact(as_of="2026-08-03", rebalance=True),
-            }),
+            read_payload=unread,
             as_of="2026-08-05",
         )
 
         assert result.blocked_by is not None
         self.assertEqual(result.blocked_by.reason, BASELINE_BLOCK_HISTORY_GAP)
         self.assertIn("2026-08-04", result.blocked_by.detail)
+        self.assertEqual(result.scanned, 0)
+        self.assertEqual(result.skipped, ())
 
     def test_the_selected_date_itself_is_not_a_gap(self) -> None:
         # 选中日自己就有工件时，区间是空的——第一格恒为空缺口，不是多余的闸。
