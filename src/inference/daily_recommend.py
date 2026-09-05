@@ -329,14 +329,51 @@ def prepare_asof_features(config: RecommendationConfig, as_of_date: str) -> pd.D
 
 
 # --------------------------------------------------------------------------
-# Names (best-effort, current name only)
+# Names (required for eligible candidates, best-effort for masked audit rows)
 # --------------------------------------------------------------------------
+def _validate_candidate_st_names(
+    df: pd.DataFrame, required_codes: set[str], *, source: str,
+) -> None:
+    """Require unique, usable current names before any coercion or ST test.
+
+    ``df`` is the same frame already schema/date-checked by
+    ``_validate_st_snapshot``. Only non-NaN-scored, entry-day-unmasked codes
+    require name evidence: missing names cannot make masked rows tradable.
+    """
+    counts: Counter[str] = Counter()
+    invalid_names: set[str] = set()
+    for code, name in df[["ts_code", "name"]].itertuples(index=False, name=None):
+        if not isinstance(code, str) or code not in required_codes:
+            continue
+        counts[code] += 1
+        if not isinstance(name, str) or not name.strip():
+            invalid_names.add(code)
+    problems = []
+    for label, codes in (
+        ("missing", required_codes - counts.keys()),
+        ("duplicate", {code for code, count in counts.items() if count > 1}),
+        ("invalid name", invalid_names),
+    ):
+        if codes:
+            shown = ", ".join(sorted(codes)[:10]) + (" ..." if len(codes) > 10 else "")
+            problems.append(f"{label}: {shown} ({len(codes)} code(s))")
+    if problems:
+        raise DailyRecommendationError(
+            f"current-ST candidate evidence is incomplete or ambiguous in {source}: "
+            f"{'; '.join(problems)}. Each unmasked scored candidate requires "
+            "exactly one non-blank string name. Refresh the configured "
+            "active-stocks snapshot (tushare stock_basic); refusing to emit "
+            "a list with unknown ST status."
+        )
+
+
 def _name_map_from_df(df: pd.DataFrame) -> dict[str, str]:
     """Build the ts_code -> name map from a validated active-stocks frame.
 
     The frame is the one ``_validate_st_snapshot`` already read and validated
-    (ts_code + name present, non-empty), so the recommend path reuses it
-    instead of reading the parquet a second time.
+    (ts_code + name present, non-empty); candidate-level evidence is checked
+    before this display conversion. Masked audit rows remain best-effort.
+    The recommend path reuses the frame instead of re-reading the parquet.
     """
     return {str(r.ts_code): str(r.name) for r in df.itertuples(index=False)}
 
@@ -1058,6 +1095,11 @@ def recommend(
     st_snapshot_date, st_df = _validate_st_snapshot(config, as_of_date)
     _assert_st_snapshot_consistent_with_bundle(
         st_snapshot_date, bundle_last_day, config.bundle_max_age_days,
+    )
+    _validate_candidate_st_names(
+        st_df,
+        {qlib_to_ts_code(inst) for inst in score_by_inst if inst not in masked_pairs},
+        source=str(config.name_source_parquet),
     )
     name_map = _name_map_from_df(st_df)
 
