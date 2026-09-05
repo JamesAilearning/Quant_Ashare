@@ -32,6 +32,8 @@ Two subcommands:
            4. member-chain re-validation at execute time — the strict
               incoming source check requires a recorded clean tree
               and commit ancestral to the pinned mainline; the
+              incoming family must match that revision's registered
+              presets/base (excluding only the six rolling dates);
               serving loader runs over the staged members (existence,
               digest chain, sidecar version guard, unpickle,
               ``.predict``) so a pkl/sidecar deleted or replaced since
@@ -64,13 +66,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.bootstrap_cutover_lib import (  # noqa: E402
+    BOOTSTRAP_PRESET_PATHS,
     CutoverRefusal,
+    _canonicalize_provider_uri,
+    _expand_registered_default,
     check_member_source_provenance,
+    check_member_training_config,
 )
 from scripts.retrain_gate_lib import (  # noqa: E402
     SCOPE_ENSEMBLE,
@@ -89,6 +97,8 @@ from scripts.rotation_lib import (  # noqa: E402
 from src.data.model_training_provenance import (  # noqa: E402
     ModelTrainingProvenanceError,
     check_member_gate_provenance,
+    check_run_config_provenance,
+    read_member_run_config,
 )
 from src.inference.ensemble_serving import (  # noqa: E402
     EnsembleServingError,
@@ -98,6 +108,73 @@ from src.inference.ensemble_serving import (  # noqa: E402
 
 MANIFEST_SCHEMA_VERSION = "csi800_n5_ensemble_manifest_v1"
 _SOURCE_GIT_TIMEOUT_SECONDS = 30
+_FAMILY_GIT_TIMEOUT_SECONDS = 30
+# Quarterly maintenance changes the six date fields, not the model family.
+_FAMILY_WINDOW_KEYS = frozenset({
+    "train_start", "train_end", "valid_start", "valid_end", "test_start", "test_end",
+})
+_REQUIRED_PRESET_FAMILY_KEYS = frozenset({
+    "instruments", "benchmark_code", "attribution_sleeve_grouping",
+    "risk_constraints_enabled", "risk_constraints_calibration", "compute_device",
+})
+
+
+def _registered_family_config(repo: Path, rev: str, relpath: str) -> dict[str, Any]:
+    """Read registration at the execution pin, never from the worktree."""
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{rev}:{relpath}"], cwd=repo,
+            capture_output=True, check=False, timeout=_FAMILY_GIT_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RotationRefusal(f"registered family read failed: {relpath} ({exc})") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="replace").strip()
+        raise RotationRefusal(f"registered family unavailable: {relpath} ({detail})")
+    try:
+        config = yaml.safe_load(proc.stdout.decode("utf-8"))
+    except (ValueError, yaml.YAMLError) as exc:
+        raise RotationRefusal(f"registered family unreadable: {relpath} ({exc})") from exc
+    if not isinstance(config, dict):
+        raise RotationRefusal(f"registered family is not a mapping: {relpath}")
+    return config
+
+
+def _require_member_family(pkl_path: Path, sidecar: Any, *, repo: Path, rev: str) -> None:
+    """Apply the bootstrap family policy to the incoming rolling member."""
+    try:
+        resolved = read_member_run_config(pkl_path)
+        if resolved is None:
+            raise RotationRefusal("incoming family config is missing or unreadable")
+        run_config, digest = resolved
+        # This read must prove its OWN binding; the preceding gate-date check
+        # cannot authorize bytes changed between its read and this comparison.
+        check_run_config_provenance(
+            "incoming family", run_config_sha256=digest, sidecar=sidecar)
+        base = _registered_family_config(repo, rev, "config.yaml")
+        raw_provider = base.get("provider_uri")
+        if not isinstance(raw_provider, str) or not raw_provider.strip():
+            raise RotationRefusal("registered family has no usable provider identity")
+        base["provider_uri"] = _expand_registered_default(raw_provider, "registered family")
+        if not base["provider_uri"].strip():
+            raise RotationRefusal("registered family provider default is empty")
+        _canonicalize_provider_uri(base)
+        declared_family: dict[str, Any] | None = None
+        for relpath in BOOTSTRAP_PRESET_PATHS:
+            preset = _registered_family_config(repo, rev, relpath)
+            if (preset.get("extends") != "../../config.yaml"
+                    or not _REQUIRED_PRESET_FAMILY_KEYS.issubset(preset)):
+                raise RotationRefusal(f"registered family preset is incomplete: {relpath}")
+            family = {key: value for key, value in preset.items()
+                      if key not in _FAMILY_WINDOW_KEYS and key != "extends"}
+            if declared_family is not None and family != declared_family:
+                raise RotationRefusal("registered family presets disagree outside rolling windows")
+            declared_family = family
+        if declared_family is None:
+            raise RotationRefusal("registered family has no presets")
+        check_member_training_config(
+            "incoming family", _canonicalize_provider_uri(run_config), declared_family, base)
+    except (CutoverRefusal, ModelTrainingProvenanceError) as exc:
+        raise RotationRefusal(f"incoming registered family refused: {exc}") from exc
 
 
 def _members_from_bytes(raw: bytes, what: str) -> list[dict[str, Any]]:
@@ -577,6 +654,7 @@ def cmd_execute(args: argparse.Namespace) -> int:
             # Source eligibility uses the certification revision, not a new
             # resolution of origin/main after it may have advanced.
             _require_member_source(sidecar, repo=repo, rev=rev)
+            _require_member_family(Path(incoming.pkl_path), sidecar, repo=repo, rev=rev)
 
             # 5. Member-chain re-validation at EXECUTE time (codex
             # #391 r9): the gate artifacts prove the members were
