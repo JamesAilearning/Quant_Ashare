@@ -29,13 +29,17 @@ endpoints (daily / adj_factor / daily_basic) use the P3-7b FRESHNESS rule
 instead of bare existence: an existing year file is skipped only when its
 ``max(trade_date)`` reaches everything this run's range can expect of it
 (bounded by the year, the requested end date, and the ticker's listing
-window); a stale or suspicious-empty file is re-pulled for the whole year
-(one API call). Past years already attested by the previous manifest's
+window); a stale or suspicious-empty file is selected for a one-call re-pull
+of the requested year slice. A request excluding stored history is refused
+with an ``unsafe_overwrite`` hole; use a covering range rather than deleting
+the old file. See ``docs/ticker-year-update-safety.md`` for recovery and the
+separate limits of max-date freshness. Past years already attested by the previous manifest's
 coverage are not re-scanned — ``--verify-all-years`` forces a full sweep.
 
 Manifest red line (P3-7b): the fetch NEVER deletes ``fetch_manifest.json``
-on its own. Every failure path exits non-zero and leaves the manifest
-exactly as it was; a deliberate fresh start is ``--reset-manifest``.
+on its own. Hard failures leave the prior manifest intact; completed-with-holes
+runs normally persist the hole ledger and exit 3. Do not use ``--reset-manifest``
+to conceal an unsafe-overwrite refusal.
 """
 
 from __future__ import annotations

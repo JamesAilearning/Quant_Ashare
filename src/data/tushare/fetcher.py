@@ -972,7 +972,8 @@ class TushareFetcher:
           range (fresh-enough file, clean window-miss placeholder, or a
           preserved holiday-only slice) — establishes coverage.
         * ``"refetch"``       — stale / dirty placeholder / unreadable:
-          re-pull the WHOLE year and overwrite. ``recheck_boundary`` is the
+          select a year-slice re-pull, subject to the write guard.
+          ``recheck_boundary`` is the
           expected content boundary the re-pull is re-checked against
           (``None`` for the dirty-placeholder case: there is no expected
           date to compare against).
@@ -993,8 +994,8 @@ class TushareFetcher:
             # skip). But VERIFY the placeholder before claiming it
             # (codex P2 round 2): a corrupt blob or a file holding
             # unexpected rows (external mutation / interrupted
-            # write) falls through to the re-pull, which overwrites
-            # it with a clean empty placeholder.
+            # write) falls through to the guarded re-pull. A partial
+            # slice must not erase legitimate rows from the wider year.
             if self._placeholder_is_clean(path):
                 return "skip_verified", None
             # Dirty placeholder → re-pull (no freshness compare:
@@ -1007,22 +1008,89 @@ class TushareFetcher:
             # (codex P2).
             return "skip_verified", None
         # Stale (max < expected), empty-but-data-possible, or
-        # unreadable: re-pull the WHOLE year (one API call —
-        # same cost as fetching a single day) and overwrite. A
+        # unreadable: select a one-call year-slice re-pull. The
+        # shared write guard below refuses destructive clipped replacements. A
         # failure below leaves the old file in place and
         # records a hole; the file stays stale, so the next
         # run re-attempts it (self-healing without any extra
         # bookkeeping).
         return "refetch", expected_boundary
 
+    def _year_overwrite_refusal(
+        self, *, path: Path, year_start: str, year_end: str,
+    ) -> str | None:
+        """Explain unsafe replacement, or return None when the request covers
+        old history. This checks request bounds, not vendor completeness.
+        Full-year repair may replace corrupt contents, but not known rows in
+        another year. No-write resume skips never call this helper.
+        """
+        if not path.exists():
+            return None
+        year = year_start[:4]
+        full_year = year_start == f"{year}0101" and year_end == f"{year}1231"
+        unknown_bounds = (
+            f"Cannot establish all existing trade dates for {year_start}..{year_end}; "
+            f"preserving file. Back up and inspect it before explicit full-year "
+            f"repair {year}0101..{year}1231."
+        )
+        try:
+            frame = pd.read_parquet(path)
+        except Exception:  # noqa: BLE001 — any unreadable parquet has unknown extent
+            if not full_year:
+                return unknown_bounds
+            _logger.warning("  Explicit full-year repair of unreadable file %s.", path)
+            return None  # fallback-ok: explicit full-year corrupt-file repair contract
+        if len(frame) == 0:
+            return None  # even legacy schema-less empty placeholders contain no history
+        valid_dates: list[str] = []
+        invalid = "trade_date" not in frame.columns
+        if not invalid:
+            for value in frame["trade_date"].astype(str).unique():
+                if len(value) != 8 or not value.isascii() or not value.isdigit():
+                    invalid = True
+                    continue
+                try:
+                    datetime.strptime(value, "%Y%m%d")
+                except ValueError:
+                    invalid = True
+                else:
+                    valid_dates.append(value)
+        if any(value[:4] != year for value in valid_dates):
+            return (
+                f"Existing file has trade dates outside year {year}; preserving file. "
+                "Back up and repair the year partition before retrying."
+            )
+        if invalid:
+            if not full_year:
+                return unknown_bounds
+            _logger.warning("  Explicit full-year repair of invalid trade dates in %s.", path)
+            return None  # fallback-ok: explicit full-year corrupt-file repair contract
+        if valid_dates and (min(valid_dates) < year_start or max(valid_dates) > year_end):
+            covering_start = min(year_start, min(valid_dates))
+            covering_end = max(year_end, max(valid_dates))
+            return (
+                f"Requested {year_start}..{year_end} excludes existing history; "
+                f"preserving file. Retry with a covering range {covering_start}..{covering_end}."
+            )
+        return None
+
     def _fetch_ticker_year(
         self, *, endpoint: str, ticker: str, year_start: str, year_end: str,
         fields: str, path: Path, unit: str,
     ) -> Any | None:
-        """One (ticker, year) pull + atomic write (P4 extraction —
-        behavior-preserving). Returns the written frame, or ``None`` when
+        """One guarded (ticker, year) pull + atomic write.
+        Returns the written frame, or ``None`` when
         nothing was written: a recorded hole (continue-on-error), or an
         empty response with placeholder-writing disabled."""
+        refusal = self._year_overwrite_refusal(
+            path=path, year_start=year_start, year_end=year_end,
+        )
+        if refusal is not None:
+            self._add_hole(
+                endpoint, unit, reason_class="unsafe_overwrite", attempts=0,
+                last_error=refusal,
+            )
+            return None  # fallback-ok: explicit refusal RECORDED as a build-blocking hole
         try:
             df = self._safe_call(
                 endpoint,
@@ -1228,8 +1296,9 @@ class TushareFetcher:
                 # freshness scan AND a forced retry of a prior-manifest hole
                 # (codex P1 rounds 4-5). A MISSING file has nothing to lose and
                 # still falls through to write an empty placeholder. (A
-                # window-MISS keeps expected_boundary None too — but there the
-                # empty placeholder IS the truth, handled in-branch below.)
+                # window-MISS keeps expected_boundary None too — but there an
+                # empty placeholder describes only the requested slice. The
+                # write guard below protects any wider-year history.)
                 holiday_only_existing = (
                     path.exists()
                     and expected_boundary is None
@@ -1323,7 +1392,7 @@ class TushareFetcher:
         if stale_refetched or verified:
             _logger.info(
                 "  %s: freshness rule verified %d existing year file(s) "
-                "complete and re-pulled %d stale/incomplete one(s) (P3-7b).",
+                "complete and selected %d stale/incomplete one(s) for guarded re-pull (P3-7b).",
                 endpoint, verified, stale_refetched,
             )
         self._check_systemic_shortfall(
@@ -1358,8 +1427,8 @@ class TushareFetcher:
     def _placeholder_is_clean(self, path: Path) -> bool:
         """True iff an expected-no-data placeholder is a READABLE parquet with
         ZERO rows. A corrupt blob or a file holding unexpected rows (external
-        mutation / interrupted write) is dirty — the caller re-pulls the year,
-        which overwrites it with a clean empty placeholder (codex P2 round 2
+        mutation / interrupted write) is dirty — the caller selects a guarded
+        year-slice re-pull to produce a clean empty placeholder (codex P2 round 2
         on PR #240: claiming such a file "verified" would advance coverage
         over an unreadable/wrong file and bypass the unreadable-file re-pull
         path)."""
