@@ -57,6 +57,7 @@ SHALL remain unchanged.
   performing a write followed by an unexpected resume skip
 
 #### Scenario: Invalid new options cannot erase a manifest
-- **WHEN** fetch is given an invalid explicit aggregate start together with reset
+- **WHEN** fetch is given an invalid configuration together with reset, including
+  duplicate index targets or an invalid explicit aggregate start
 - **THEN** it returns a configuration failure before removing the prior manifest,
   constructing a client or changing any raw file

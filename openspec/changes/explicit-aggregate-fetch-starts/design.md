@@ -50,6 +50,10 @@ performance claims or an automatic deployment mechanism.
    all-index writes can establish the requested interval. The manifest builder
    rejects index results that establish coverage over remaining blind skips.
    Duplicate configured index targets are refused before execution.
+7. Construct the complete fetch config before any manifest reset, rather than
+   duplicating a subset of its validators in the CLI. After reading the
+   post-reset manifest, replace only the immutable config's derived retry and
+   verified-range evidence. Configuration failures preserve prior provenance.
 
 ## Risks / Trade-offs
 
@@ -66,6 +70,9 @@ performance claims or an automatic deployment mechanism.
 - Mixed per-index outcomes were missed by the original single-index fixture →
   cover three indices, partial writes/skips/failures, unconfigured retained files,
   unselected holes (including missing files) and duplicate targets together.
+- A new config constraint was initially checked only after the destructive
+  reset → use the actual complete config before reset and exercise invalid
+  options with reset on/off and dry-run on/off using the real clear path.
 
 ## Migration Plan
 

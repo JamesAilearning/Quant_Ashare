@@ -4,6 +4,7 @@
 - [x] 1.2 Implement shared override validation, fetch/config/CLI wiring and truthful manifest coverage.
 - [x] 1.3 Add synthetic integration and refusal regressions, proving failure before the fix.
 - [x] 1.4 Address remote mixed-index coverage finding with preflight, honest retained coverage and multi-index regressions.
+- [x] 1.5 Validate the full CLI configuration before manifest reset; regress invalid-option/reset combinations with the real deletion path.
 
 ## 2. Verification and handoff
 

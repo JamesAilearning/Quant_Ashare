@@ -702,6 +702,38 @@ def test_duplicate_index_targets_are_refused_before_data_calls_or_manifest_chang
     assert not (tmp_path / "index_weight").exists()
 
 
+@pytest.mark.parametrize("invalid_args", [
+    ["--indices", "000300.SH,000300.SH"],
+    ["--endpoints", "unknown"],
+    ["--start-date", "bad-date"],
+    ["--start-date", "20180216"],
+    ["--end-date", "bad-date"],
+    ["--rate-limit-sleep-ms", "-1"],
+    ["--snapshot-date", "bad-date"],
+    ["--index-weight-start-date", "bad-date"],
+])
+@pytest.mark.parametrize("reset", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_invalid_complete_cli_config_preserves_provenance_before_reset_or_client(
+    tmp_path, invalid_args, reset, dry_run,
+):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    cli = _cli()
+    argv = _index_cli_args(tmp_path) + invalid_args
+    argv += ["--reset-manifest"] if reset else []
+    argv += ["--dry-run"] if dry_run else []
+    with patch.object(cli, "setup_logging"), \
+            patch.object(cli.TushareClient, "from_environment") as construct_client:
+        assert cli.main(argv) == 2
+    construct_client.assert_not_called()
+    # Keep the actual clear_manifest implementation: a mock would conceal deletion.
+    assert manifest_path.read_bytes() == manifest_before
+    _assert_index_bytes_unchanged(tmp_path, before)
+
+
 def test_same_range_mixed_retry_failure_retains_old_files_and_the_original_hole(tmp_path):
     before = _seed_index_files(tmp_path)
     _seed_index_manifest(tmp_path, holes=("000300.SH",))

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -71,7 +72,6 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
 )
 from src.data.tushare.fetch_ranges import (  # noqa: E402
     AGGREGATE_START_ENDPOINTS,
-    resolve_aggregate_start_dates,
 )
 from src.data.tushare.fetcher import (  # noqa: E402
     DEFAULT_INDICES,
@@ -245,18 +245,6 @@ def main(argv: list[str] | None = None) -> int:
     endpoints = tuple(e.strip() for e in args.endpoints.split(",") if e.strip())
     indices = tuple(i.strip() for i in args.indices.split(",") if i.strip())
 
-    # New options must fail BEFORE --reset-manifest or client construction.
-    try:
-        resolve_aggregate_start_dates(
-            end_date=args.end_date,
-            namechange_start_date=args.namechange_start_date,
-            suspend_d_start_date=args.suspend_d_start_date,
-            index_weight_start_date=args.index_weight_start_date,
-        )
-    except ValueError as exc:
-        _logger.error("Config invalid: %s", exc)
-        return 2
-
     snapshot_now: date | None = None
     if args.snapshot_date is not None:
         try:
@@ -266,6 +254,31 @@ def main(argv: list[str] | None = None) -> int:
                 "--snapshot-date must be YYYYMMDD, got %r", args.snapshot_date,
             )
             return 2
+
+    # Validate ALL CLI configuration before the destructive reset or client
+    # construction. Use the actual config validator, not a partial copy that
+    # can fall behind new constraints (e.g. duplicate indices).
+    try:
+        config = TushareFetcherConfig(
+            output_dir=args.output_dir,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            endpoints=endpoints,
+            indices=indices,
+            rate_limit_sleep_ms=args.rate_limit_sleep_ms,
+            dry_run=args.dry_run,
+            refresh_current=args.refresh_current,
+            now=snapshot_now,
+            verify_all_years=args.verify_all_years,
+            provider_tag=args.provider_tag,
+            run_id=args.run_id,
+            namechange_start_date=args.namechange_start_date,
+            suspend_d_start_date=args.suspend_d_start_date,
+            index_weight_start_date=args.index_weight_start_date,
+        )
+    except TushareFetcherError as exc:
+        _logger.error("Config invalid: %s", exc)
+        return 2
 
     manifest_path = args.output_dir / MANIFEST_FILENAME
     if args.reset_manifest:
@@ -326,24 +339,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        config = TushareFetcherConfig(
-            output_dir=args.output_dir,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            endpoints=endpoints,
-            indices=indices,
-            rate_limit_sleep_ms=args.rate_limit_sleep_ms,
-            dry_run=args.dry_run,
-            refresh_current=args.refresh_current,
-            now=snapshot_now,
+        # Attach only evidence derived from the post-reset manifest; all CLI
+        # values remain in the already validated immutable config.
+        config = replace(
+            config,
             force_retry_units=force_retry_units,
             assume_verified_ranges=assume_verified_ranges,
-            verify_all_years=args.verify_all_years,
-            provider_tag=args.provider_tag,
-            run_id=args.run_id,
-            namechange_start_date=args.namechange_start_date,
-            suspend_d_start_date=args.suspend_d_start_date,
-            index_weight_start_date=args.index_weight_start_date,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)
