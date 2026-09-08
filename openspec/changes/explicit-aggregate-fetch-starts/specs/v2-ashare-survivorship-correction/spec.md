@@ -29,10 +29,32 @@ SHALL remain unchanged.
   overwrite occurs for that target, and a prior hole cannot be silently healed
 
 #### Scenario: Index windows use the override but resume does not claim a fetch
-- **WHEN** index retry is selected with an explicit wider start
+- **WHEN** every index file is selected for fetching with an explicit wider start,
+  no existing index file is retained and every prior index hole is re-attempted
 - **THEN** monthly requests cover that effective start and complete before publication
 - **WHEN** all existing indices are legitimately skipped without retry
 - **THEN** the override does not advance their manifest coverage
+
+#### Scenario: Partial index refresh cannot extend retained files
+- **WHEN** some indices will be fetched and any existing index parquet will be
+  retained, including a file outside the configured index selection
+- **THEN** the request SHALL exactly match the trusted prior endpoint interval
+  or the endpoint SHALL refuse before its first data request or file write
+- **AND** same-range configured retained files SHALL count as manifest-attested
+  verified units, without claiming a fresh response or file-content audit
+- **AND** the manifest builder SHALL reject an established index result containing
+  blind-skipped units not accounted for by verified units
+
+#### Scenario: Partial selection cannot clear an unattempted index hole
+- **WHEN** an index write is planned but a hole in the actual previous manifest
+  will not be re-attempted, even if the hole's file is absent or the library caller
+  omitted force-retry metadata
+- **THEN** the endpoint SHALL refuse before any index data call or write
+
+#### Scenario: Duplicate targets cannot change a write plan into a blind skip
+- **WHEN** configuration contains duplicate index targets
+- **THEN** configuration SHALL refuse instead of silently deduplicating or
+  performing a write followed by an unexpected resume skip
 
 #### Scenario: Invalid new options cannot erase a manifest
 - **WHEN** fetch is given an invalid explicit aggregate start together with reset

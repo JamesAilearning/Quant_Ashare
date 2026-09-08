@@ -43,6 +43,7 @@ TARGETS = {
 COMMON_START = "20180101"
 PRIOR_END = "20180131"
 END = "20180215"
+INDEX_CODES = ("000300.SH", "000905.SH", "000906.SH")
 
 
 def _cli():
@@ -468,6 +469,260 @@ def test_index_resume_with_override_never_claims_unfetched_coverage(tmp_path):
     assert path.read_bytes() == before
     coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"]
     assert coverage == previous.endpoints["index_weight"]
+
+
+def _seed_index_files(tmp_path, indices=INDEX_CODES):
+    root = tmp_path / "index_weight"
+    root.mkdir()
+    for code in indices:
+        pd.DataFrame({
+            "index_code": [code, code], "con_code": ["600000.SH", "600000.SH"],
+            "trade_date": [COMMON_START, END], "weight": [100.0, 100.0],
+        }).to_parquet(root / f"{code}.parquet", index=False)
+    return {code: (root / f"{code}.parquet").read_bytes() for code in indices}
+
+
+def _seed_index_manifest(tmp_path, *, holes=(), count=3):
+    previous = FetchManifest(
+        1, "2018-02-15T00:00:00+00:00", {
+            "index_weight": EndpointCoverage(
+                "holes" if holes else "complete", COMMON_START, END, count,
+                tuple(FetchHole("index_weight", f"index={code}", "transient", 2, "prior failure")
+                      for code in holes),
+            ),
+        },
+    )
+    write_manifest(tmp_path / MANIFEST_FILENAME, previous)
+    return previous
+
+
+def _index_cli_args(tmp_path, *, indices=INDEX_CODES, start=COMMON_START, end=END):
+    return _fetch_args(tmp_path, ("index_weight",), {"index_weight": start}, end=end) + [
+        "--indices", ",".join(indices),
+    ]
+
+
+def _assert_index_bytes_unchanged(tmp_path, before):
+    assert {path.stem: path.read_bytes() for path in (tmp_path / "index_weight").glob("*.parquet")} == before
+
+
+def test_one_index_retry_cannot_claim_wider_history_for_two_blind_skips(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start=STARTS["index_weight"])) == 1
+    client.call.assert_not_called()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert manifest_path.read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize("start,end", [
+    ("20180102", END), (COMMON_START, "20180131"), (COMMON_START, "20180216"),
+])
+def test_mixed_index_retry_rejects_any_change_to_trusted_common_interval(tmp_path, start, end):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start=start, end=end)) == 1
+    client.call.assert_not_called()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert manifest_path.read_bytes() == manifest_before
+
+
+def test_same_range_index_retry_attests_two_skips_and_heals_the_selected_hole(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path)) == 0
+    called_indices = {call.kwargs["index_code"] for call in client.call.call_args_list}
+    assert called_indices == {"000300.SH"}
+    assert client.call.call_args_list[0].kwargs["start_date"] == COMMON_START
+    assert client.call.call_args_list[-1].kwargs["end_date"] == END
+    for code in INDEX_CODES[1:]:
+        assert (tmp_path / f"index_weight/{code}.parquet").read_bytes() == before[code]
+    assert (tmp_path / "index_weight/000300.SH.parquet").read_bytes() != before["000300.SH"]
+    manifest = read_manifest(tmp_path / MANIFEST_FILENAME)
+    assert manifest is not None
+    coverage = manifest.endpoints["index_weight"]
+    assert (coverage.coverage_start_date, coverage.coverage_end_date) == (COMMON_START, END)
+    assert coverage.units_written == 1 and coverage.units_verified == 2
+    assert coverage.status == "complete" and coverage.holes == ()
+
+
+def test_three_blind_index_skips_keep_the_prior_endpoint_record(tmp_path):
+    before = _seed_index_files(tmp_path)
+    previous = _seed_index_manifest(tmp_path)
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start=STARTS["index_weight"])) == 0
+    client.call.assert_not_called()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"] == previous.endpoints["index_weight"]
+
+
+def test_retrying_every_existing_index_can_establish_the_explicit_wider_interval(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=INDEX_CODES)
+    client = _client()
+    start = "20171201"
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start=start)) == 0
+    for code in INDEX_CODES:
+        calls = [call for call in client.call.call_args_list if call.kwargs["index_code"] == code]
+        assert calls[0].kwargs["start_date"] == start
+        assert calls[-1].kwargs["end_date"] == END
+        assert (tmp_path / f"index_weight/{code}.parquet").read_bytes() != before[code]
+    coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"]
+    assert (coverage.coverage_start_date, coverage.coverage_end_date) == (start, END)
+    assert coverage.units_written == 3 and coverage.units_verified == 0
+    assert coverage.status == "complete" and coverage.holes == ()
+
+
+def test_all_index_retry_with_one_network_failure_keeps_a_stable_hole_and_old_file(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=INDEX_CODES)
+    client = _client()
+    response = client.call.side_effect
+
+    def fail_one_index(api, **params):
+        if params["index_code"] == "000905.SH":
+            raise TushareClientError("synthetic network failure", kind=KIND_NETWORK)
+        return response(api, **params)
+
+    client.call.side_effect = fail_one_index
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start="20171201")) == 3
+    assert {call.kwargs["index_code"] for call in client.call.call_args_list} == set(INDEX_CODES)
+    for code in INDEX_CODES:
+        unchanged = (tmp_path / f"index_weight/{code}.parquet").read_bytes() == before[code]
+        assert unchanged == (code == "000905.SH")
+    coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"]
+    hole, = coverage.holes
+    assert coverage.status == "holes" and coverage.units_written == 2
+    assert (hole.endpoint, hole.unit) == ("index_weight", "index=000905.SH")
+    assert hole.attempts == 2 + sum(call.kwargs["index_code"] == "000905.SH" for call in client.call.call_args_list)
+
+
+@pytest.mark.parametrize("known_provenance", [False, True])
+@pytest.mark.parametrize("include_retained_in_config", [False, True])
+def test_fresh_index_cannot_widen_or_invent_coverage_for_retained_files(
+    tmp_path, known_provenance, include_retained_in_config,
+):
+    before = _seed_index_files(tmp_path, indices=INDEX_CODES[1:])
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    if known_provenance:
+        _seed_index_manifest(tmp_path, count=2)
+    manifest_before = manifest_path.read_bytes() if known_provenance else None
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(
+        tmp_path, indices=INDEX_CODES if include_retained_in_config else ("000300.SH",),
+        start="20171201" if known_provenance else COMMON_START,
+    )) == 1
+    client.call.assert_not_called()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert (manifest_path.read_bytes() if manifest_path.exists() else None) == manifest_before
+
+
+def test_unconfigured_existing_index_files_block_endpoint_range_expansion(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(
+        tmp_path, indices=("000300.SH",), start="20171201",
+    )) == 1
+    client.call.assert_not_called()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert manifest_path.read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize("holed_index", ["000905.SH", "000906.SH"])
+def test_library_empty_force_set_cannot_hide_a_prior_unattempted_index_hole(tmp_path, holed_index):
+    before = _seed_index_files(tmp_path, indices=INDEX_CODES[1:])
+    _seed_index_manifest(tmp_path, holes=(holed_index,), count=2)
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest_before = manifest_path.read_bytes()
+    client = _client()
+    fetcher = TushareFetcher(client, TushareFetcherConfig(
+        output_dir=tmp_path, start_date=COMMON_START, end_date=END,
+        endpoints=("index_weight",), indices=("000300.SH", "000905.SH"),
+        index_weight_start_date=COMMON_START, rate_limit_sleep_ms=0,
+        force_retry_units=frozenset(),
+    ))
+    with pytest.raises(TushareFetcherError):
+        fetcher.fetch()
+    client.call.assert_not_called()
+    assert fetcher.holes == ()
+    _assert_index_bytes_unchanged(tmp_path, before)
+    assert manifest_path.read_bytes() == manifest_before
+
+
+@pytest.mark.parametrize("established_by", ["written", "hole", "verified"])
+@pytest.mark.parametrize("override", [None, {"index_weight": "20171201"}])
+def test_manifest_rejects_unattested_mixed_index_outcomes(established_by, override):
+    result = TushareFetchResult(
+        "index_weight", int(established_by == "written"), 0,
+        skipped=2, units_verified=int(established_by == "verified"),
+    )
+    holes = ((FetchHole("index_weight", "index=000300.SH", "transient", 1, "failure"),)
+             if established_by == "hole" else ())
+    with pytest.raises(FetchManifestError):
+        build_manifest([result], holes, COMMON_START, END, endpoint_start_dates=override)
+
+
+def test_missing_unselected_index_hole_is_preserved_even_without_any_retained_file(tmp_path):
+    _seed_index_manifest(tmp_path, holes=("000906.SH",), count=0)
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    before = manifest_path.read_bytes()
+    client = _client()
+    fetcher = TushareFetcher(client, TushareFetcherConfig(
+        output_dir=tmp_path, start_date=COMMON_START, end_date=END,
+        endpoints=("index_weight",), indices=("000300.SH",),
+        index_weight_start_date=COMMON_START, force_retry_units=frozenset(),
+    ))
+    with pytest.raises(TushareFetcherError, match="prior hole"):
+        fetcher.fetch()
+    client.call.assert_not_called()
+    assert manifest_path.read_bytes() == before
+    assert not (tmp_path / "index_weight").exists()
+
+
+def test_duplicate_index_targets_are_refused_before_data_calls_or_manifest_changes(tmp_path):
+    _seed_index_manifest(tmp_path, count=0)
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    before = manifest_path.read_bytes()
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(
+        tmp_path, indices=("000300.SH", "000300.SH"),
+    )) == 2
+    client.call.assert_not_called()
+    assert manifest_path.read_bytes() == before
+    assert not (tmp_path / "index_weight").exists()
+
+
+def test_same_range_mixed_retry_failure_retains_old_files_and_the_original_hole(tmp_path):
+    before = _seed_index_files(tmp_path)
+    _seed_index_manifest(tmp_path, holes=("000300.SH",))
+    client = _client(fail_endpoint="index_weight")
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path)) == 3
+    assert {call.kwargs["index_code"] for call in client.call.call_args_list} == {"000300.SH"}
+    _assert_index_bytes_unchanged(tmp_path, before)
+    coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"]
+    assert (coverage.coverage_start_date, coverage.coverage_end_date) == (COMMON_START, END)
+    assert coverage.status == "holes" and coverage.units_written == 0 and coverage.units_verified == 2
+    hole, = coverage.holes
+    assert hole.unit == "index=000300.SH" and hole.attempts == 2 + client.call.call_count
+
+
+def test_new_empty_index_directory_establishes_all_three_requested_histories(tmp_path):
+    client = _client()
+    assert _run_cli(_cli(), client, _index_cli_args(tmp_path, start="20171201")) == 0
+    assert {call.kwargs["index_code"] for call in client.call.call_args_list} == set(INDEX_CODES)
+    coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["index_weight"]
+    assert (coverage.coverage_start_date, coverage.coverage_end_date) == ("20171201", END)
+    assert coverage.units_written == 3 and coverage.units_verified == 0 and coverage.holes == ()
 
 
 @pytest.mark.parametrize("outcome", ["written", "verified", "hole", "blind_skip"])

@@ -41,6 +41,15 @@ performance claims or an automatic deployment mechanism.
 5. Retain all overwrite/response guards. An explicit start that is still too
    late is refused; an explicit end that goes backward remains refused; unknown
    provenance remains a hard error. Index override does not force refresh.
+6. Endpoint coverage cannot advance over retained index files. Before any index
+   data call in a write-bearing run, inspect all retained parquet files (including
+   unconfigured indices) and actual prior holes. Every old hole must be attempted;
+   a retained-file mix is permitted only at the exact trusted prior interval.
+   Those configured retained units count as manifest-attested `units_verified`,
+   not fresh API or content verification. All-blind-skip remains a no-op; fresh
+   all-index writes can establish the requested interval. The manifest builder
+   rejects index results that establish coverage over remaining blind skips.
+   Duplicate configured index targets are refused before execution.
 
 ## Risks / Trade-offs
 
@@ -54,6 +63,9 @@ performance claims or an automatic deployment mechanism.
   authorized backed-up migration after review; preserve provenance and guards.
 - Date-scoped prior holes in other endpoints → retain existing merge refusal,
   never drop those holes to force a green run.
+- Mixed per-index outcomes were missed by the original single-index fixture →
+  cover three indices, partial writes/skips/failures, unconfigured retained files,
+  unselected holes (including missing files) and duplicate targets together.
 
 ## Migration Plan
 

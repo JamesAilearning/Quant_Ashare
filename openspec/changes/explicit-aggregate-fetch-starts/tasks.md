@@ -3,6 +3,7 @@
 - [x] 1.1 Specify explicit aggregate start semantics and independently review the design.
 - [x] 1.2 Implement shared override validation, fetch/config/CLI wiring and truthful manifest coverage.
 - [x] 1.3 Add synthetic integration and refusal regressions, proving failure before the fix.
+- [x] 1.4 Address remote mixed-index coverage finding with preflight, honest retained coverage and multi-index regressions.
 
 ## 2. Verification and handoff
 

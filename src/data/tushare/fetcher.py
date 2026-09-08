@@ -90,6 +90,7 @@ from src.data.tushare.client import (
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
     SCHEMA_VERSION,
+    EndpointCoverage,
     FetchManifest,
     FetchManifestError,
     read_manifest,
@@ -359,6 +360,8 @@ class TushareFetcherConfig:
 
     def __post_init__(self) -> None:
         self.aggregate_start_dates()
+        if len(self.indices) != len(set(self.indices)):
+            raise TushareFetcherError("indices must contain unique targets; duplicate index requests are not supported")
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
         if bad:
             raise TushareFetcherError(
@@ -673,24 +676,8 @@ class TushareFetcher:
             return False
         return not self._must_retry(endpoint, unit)
 
-    def _aggregate_replacement_allowed(
-        self, path: Path, endpoint: str, unit: str, *, start_date: str,
-    ) -> bool:
-        """Protect declared history BEFORE an existing aggregate's data call.
-
-        Called after skip/dry-run decisions. Unknown provenance is a hard abort,
-        not a hole: persisting a hole-only run would establish its requested
-        range and could falsely authorize the same destructive retry next time.
-        The manifest is endpoint-level evidence, not a digest of the file bytes.
-        """
-        if not path.exists():
-            return True
-        guidance = (
-            f"Refusing to replace {path}: unusable aggregate provenance. "
-            "Preserve and inspect the file and fetch manifest; back up and rebuild "
-            "in a separate empty staging directory. Resetting metadata does not "
-            "authorize overwriting unknown history."
-        )
+    def _load_aggregate_manifest(self, guidance: str) -> FetchManifest | None:
+        """Read prior evidence once; never turn unreadable provenance into holes."""
         if not self._aggregate_manifest_loaded:
             try:
                 self._aggregate_manifest = read_manifest(
@@ -699,7 +686,17 @@ class TushareFetcher:
             except FetchManifestError as exc:
                 raise TushareFetcherError(guidance) from exc
             self._aggregate_manifest_loaded = True
-        manifest = self._aggregate_manifest
+        return self._aggregate_manifest
+
+    def _prior_aggregate_coverage(self, path: Path, endpoint: str) -> EndpointCoverage:
+        """Validate the shared prior evidence used by replacement and resume."""
+        guidance = (
+            f"Refusing to replace {path}: unusable aggregate provenance. "
+            "Preserve and inspect the file and fetch manifest; back up and rebuild "
+            "in a separate empty staging directory. Resetting metadata does not "
+            "authorize overwriting unknown history."
+        )
+        manifest = self._load_aggregate_manifest(guidance)
         if (manifest is None or type(manifest.schema_version) is not int
                 or manifest.schema_version != SCHEMA_VERSION):
             raise TushareFetcherError(guidance)
@@ -718,6 +715,22 @@ class TushareFetcher:
                 raise TushareFetcherError(guidance) from exc
         if prior_start > prior_end:
             raise TushareFetcherError(guidance)
+        return previous
+
+    def _aggregate_replacement_allowed(
+        self, path: Path, endpoint: str, unit: str, *, start_date: str,
+    ) -> bool:
+        """Protect declared history BEFORE an existing aggregate's data call.
+
+        Called after skip/dry-run decisions. Unknown provenance is a hard abort,
+        not a hole: persisting a hole-only run would establish its requested
+        range and could falsely authorize the same destructive retry next time.
+        The manifest is endpoint-level evidence, not a digest of the file bytes.
+        """
+        if not path.exists():
+            return True
+        previous = self._prior_aggregate_coverage(path, endpoint)
+        prior_start, prior_end = previous.coverage_start_date, previous.coverage_end_date
         # The CLI records its own start, but calendar requests always use the
         # exchange-history floor. A pre-exchange CLI start is not a lost range.
         if endpoint == "trade_cal":
@@ -733,6 +746,51 @@ class TushareFetcher:
                 ),
             )
             return False
+        return True
+
+    def _index_resume_scope_verified(self, out_root: Path, start_date: str) -> bool:
+        """Only same-range retained indices can attest a mixed endpoint update.
+
+        Endpoint schema v1 cannot represent different intervals for different
+        indices. No-write resume remains blind; a partial write must not widen
+        the shared range, including over files outside the configured selection.
+        """
+        pending = {
+            idx for idx in self._config.indices
+            if not self._aggregate_can_skip(
+                out_root / f"{idx}.parquet", "index_weight", f"index={idx}",
+                honor_refresh_current=False,
+            )
+        }
+        if not pending or self._config.dry_run:
+            return False
+        manifest = self._load_aggregate_manifest(
+            "Refusing index_weight update: unusable aggregate provenance. "
+            "Preserve the old files and manifest; inspect a separate full-history rebuild."
+        )
+        previous = manifest.endpoints.get("index_weight") if manifest else None
+        attempted_units = {f"index={idx}" for idx in pending}
+        prior_units = {h.unit for h in previous.holes} if previous else set()
+        forced_units = {unit for endpoint, unit in self._config.force_retry_units if endpoint == "index_weight"}
+        if (prior_units | forced_units) - attempted_units:
+            raise TushareFetcherError(
+                "Refusing partial index_weight update: a prior hole would not be "
+                "re-attempted. Select and retry every recorded index hole; "
+                "preserving the files and manifest."
+            )
+        retained = [path for path in out_root.glob("*.parquet") if path.stem not in pending]
+        if not retained:
+            return False
+        previous = self._prior_aggregate_coverage(retained[0], "index_weight")
+        if (start_date != previous.coverage_start_date
+                or self._config.end_date != previous.coverage_end_date):
+            raise TushareFetcherError(
+                "Refusing mixed-range index_weight update: retained index files "
+                "only attest the prior shared interval. A partial retry must use "
+                "exactly that interval; rebuild all required indices in a separate "
+                "empty staging directory to extend history. No request was widened "
+                "or existing index implicitly refreshed."
+            )
         return True
 
     def _fetch_single_file_aggregate(
@@ -901,6 +959,8 @@ class TushareFetcher:
         rows = 0
         skipped = 0
         out_root = self._config.output_dir / "index_weight"
+        resume_verified = self._index_resume_scope_verified(out_root, start_date)
+        verified = 0
         start_year = int(start_date[:4])
         end_year = int(self._config.end_date[:4])
         windows: list[tuple[str, str]] = []
@@ -923,6 +983,7 @@ class TushareFetcher:
             ):
                 _logger.info("  skip (exists): %s", path)
                 skipped += 1
+                verified += int(resume_verified)
                 continue
             if self._config.dry_run:
                 _logger.info("  [dry-run] would write %s (%d monthly requests)",
@@ -983,7 +1044,7 @@ class TushareFetcher:
             )
             written += 1
             rows += len(df)
-        return TushareFetchResult("index_weight", written, rows, skipped)
+        return TushareFetchResult("index_weight", written, rows, skipped, units_verified=verified)
 
     def _fetch_daily(self) -> TushareFetchResult:
         """Pull daily OHLCV per (ticker, year). Long pole — supports resume."""
