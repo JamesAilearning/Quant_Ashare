@@ -94,6 +94,7 @@ from src.data.tushare.fetch_manifest import (
     FetchManifestError,
     read_manifest,
 )
+from src.data.tushare.fetch_ranges import resolve_aggregate_start_dates
 
 # Moved to the dependency-free fetch_types module (P3-6b) so that reading a
 # manifest / integrity stamp never imports this network stack; re-exported
@@ -350,7 +351,14 @@ class TushareFetcherConfig:
     #: 归属,与本字段落地之前的行为一致。
     run_id: str = ""
 
+    # Explicit whole-file history starts; None retains the common price start.
+    # These do not change the common end, price/benchmark ranges or refresh policy.
+    namechange_start_date: str | None = None
+    suspend_d_start_date: str | None = None
+    index_weight_start_date: str | None = None
+
     def __post_init__(self) -> None:
+        self.aggregate_start_dates()
         bad = tuple(e for e in self.endpoints if e not in ENDPOINTS)
         if bad:
             raise TushareFetcherError(
@@ -372,6 +380,22 @@ class TushareFetcherConfig:
             raise TushareFetcherError(
                 f"rate_limit_sleep_ms must be >= 0, got {self.rate_limit_sleep_ms}"
             )
+
+    def aggregate_start_dates(self) -> dict[str, str]:
+        """Explicit starts for both requests and build_manifest's override map."""
+        try:
+            return resolve_aggregate_start_dates(
+                end_date=self.end_date,
+                namechange_start_date=self.namechange_start_date,
+                suspend_d_start_date=self.suspend_d_start_date,
+                index_weight_start_date=self.index_weight_start_date,
+            )
+        except ValueError as exc:
+            raise TushareFetcherError(str(exc)) from exc
+
+    def effective_start_date(self, endpoint: str) -> str:
+        """Use an explicit aggregate start or the documented common default."""
+        return self.aggregate_start_dates().get(endpoint, self.start_date)
 
 
 def _clean_yyyymmdd(value: Any) -> str | None:
@@ -722,6 +746,7 @@ class TushareFetcher:
         the manifest coverage fields, not the unit — codex P2).
         """
         path = self._config.output_dir / filename
+        start_date = self._config.effective_start_date(endpoint)
         if self._aggregate_can_skip(path, endpoint, "file"):
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult(endpoint, 0, 0, skipped=1)
@@ -729,13 +754,13 @@ class TushareFetcher:
             _logger.info("  [dry-run] would write %s", path)
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         if not self._aggregate_replacement_allowed(
-            path, endpoint, "file", start_date=self._config.start_date,
+            path, endpoint, "file", start_date=start_date,
         ):
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         try:
             df = self._safe_call(
                 endpoint,
-                start_date=self._config.start_date,
+                start_date=start_date,
                 end_date=self._config.end_date,
                 fields=fields,
             )
@@ -864,8 +889,9 @@ class TushareFetcher:
         publish one parquet only after ALL months succeed. This avoids the
         reproduced annual truncation, not every possible upstream omission.
         """
+        start_date = self._config.effective_start_date("index_weight")
         try:
-            datetime.strptime(self._config.start_date, "%Y%m%d")
+            datetime.strptime(start_date, "%Y%m%d")
             datetime.strptime(self._config.end_date, "%Y%m%d")
         except ValueError as exc:
             raise TushareFetcherError(
@@ -875,12 +901,12 @@ class TushareFetcher:
         rows = 0
         skipped = 0
         out_root = self._config.output_dir / "index_weight"
-        start_year = int(self._config.start_date[:4])
+        start_year = int(start_date[:4])
         end_year = int(self._config.end_date[:4])
         windows: list[tuple[str, str]] = []
         for year in range(start_year, end_year + 1):
             for month in range(1, 13):
-                month_start = max(f"{year:04d}{month:02d}01", self._config.start_date)
+                month_start = max(f"{year:04d}{month:02d}01", start_date)
                 last_day = calendar.monthrange(year, month)[1]
                 month_end = min(
                     f"{year:04d}{month:02d}{last_day:02d}", self._config.end_date,
@@ -903,7 +929,7 @@ class TushareFetcher:
                              path, len(windows))
                 continue
             if not self._aggregate_replacement_allowed(
-                path, "index_weight", f"index={idx}", start_date=self._config.start_date,
+                path, "index_weight", f"index={idx}", start_date=start_date,
             ):
                 continue
             chunks: list[pd.DataFrame] = []

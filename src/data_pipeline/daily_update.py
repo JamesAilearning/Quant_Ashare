@@ -77,6 +77,7 @@ import pandas as pd
 
 from src.core.logger import get_logger
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
+from src.data.tushare.fetch_ranges import resolve_aggregate_start_dates
 from src.data_pipeline.bundle_swap import (
     BundleSwapError,
     bak_dir,
@@ -624,7 +625,13 @@ class DailyUpdateConfig:
     # snapshot-freshness verification. Production leaves None -> system date.
     now: date | None = None
 
+    # Aggregate history can predate prices; explicit options never widen prices.
+    namechange_start_date: str | None = None
+    suspend_d_start_date: str | None = None
+    index_weight_start_date: str | None = None
+
     def __post_init__(self) -> None:
+        self.aggregate_start_dates()
         # codex P1: the status write is an UNCONDITIONAL atomic replace — an
         # operator-typo'd --status-path aliasing a canonical input (the live
         # provider tree, the raw tushare tree, the delisted registry, the
@@ -751,6 +758,21 @@ class DailyUpdateConfig:
                 f"status artifact must be a file path, not a directory/root"
             )
 
+    def aggregate_start_dates(self, *, end_date: str | None = None) -> dict[str, str]:
+        """Validate explicit starts against the configured or frozen run end."""
+        if (self.namechange_start_date is None and self.suspend_d_start_date is None
+                and self.index_weight_start_date is None):
+            return {}
+        effective_end = end_date if end_date is not None else self.end_date
+        if effective_end is None:
+            effective_end = (self.now if self.now is not None else date.today()).strftime("%Y%m%d")
+        return resolve_aggregate_start_dates(
+            end_date=effective_end,
+            namechange_start_date=self.namechange_start_date,
+            suspend_d_start_date=self.suspend_d_start_date,
+            index_weight_start_date=self.index_weight_start_date,
+        )
+
 
 def _load_script_main(filename: str) -> Runner:
     """Load ``scripts/data_pipeline/<filename>``'s ``main`` via importlib.
@@ -812,6 +834,7 @@ def build_plan(
     if run_date is None:
         run_date = config.now if config.now is not None else date.today()
     end_date = config.end_date or run_date.strftime("%Y%m%d")
+    aggregate_starts = config.aggregate_start_dates(end_date=end_date)
     staging = new_dir(config.provider_dir)
     fetch = [
         "--output-dir", str(config.tushare_dir),
@@ -840,6 +863,8 @@ def build_plan(
         fetch += ["--run-id", run_id]
     if config.rate_limit_sleep_ms is not None:
         fetch += ["--rate-limit-sleep-ms", str(config.rate_limit_sleep_ms)]
+    for endpoint, start in aggregate_starts.items():
+        fetch += [f"--{endpoint.replace('_', '-')}-start-date", start]
     bins = [
         "--tushare-dir", str(config.tushare_dir),
         "--delisted-registry", str(config.delisted_registry),
@@ -980,12 +1005,17 @@ def run_daily_update(
     failed_stage at every terminal state. A ``--dry-run`` mutates nothing —
     including this artifact — so it returns before any status write.
     """
-    if config.dry_run:
-        return _execute_daily_update(config, runners)[0]
-    status_path = config.status_path or default_status_path(config.provider_dir)
     # ONE date for the whole run — stamped here and threaded into the body, so
     # the artifact and the fetch plan can never name different days.
     run_date = config.now if config.now is not None else date.today()
+    try:
+        config.aggregate_start_dates(end_date=config.end_date or run_date.strftime("%Y%m%d"))
+    except ValueError as exc:
+        _logger.error("Config invalid: %s", exc)
+        return EXIT_CONFIG
+    if config.dry_run:
+        return _execute_daily_update(config, runners, run_date=run_date)[0]
+    status_path = config.status_path or default_status_path(config.provider_dir)
     started_at = datetime.now(tz=_CN_TZ)
     # 本次运行的一次性身份(uuid4().hex,与 launch_nonce 同形状同纪律)。
     # 它同时写进**状态工件**和**每一条 fetch 进度行**,让读侧的归属判定

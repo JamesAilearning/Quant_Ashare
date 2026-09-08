@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.logger import setup_logging  # noqa: E402
+from src.data.tushare.fetch_ranges import AGGREGATE_START_ENDPOINTS  # noqa: E402
 from src.data_pipeline.daily_update import (  # noqa: E402
     EXIT_ALREADY_RUNNING,
     EXIT_CONFIG,
@@ -62,6 +63,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "build.")
     p.add_argument("--end-date", default=None,
                    help="Fetch range end, YYYYMMDD (default: today).")
+    for endpoint in AGGREGATE_START_ENDPOINTS:
+        p.add_argument(
+            f"--{endpoint.replace('_', '-')}-start-date", default=None,
+            help=f"Explicit YYYYMMDD history start for {endpoint} only; "
+                 "default: --start-date. Price and benchmark starts do not change.",
+        )
     p.add_argument("--rate-limit-sleep-ms", type=int, default=None,
                    help="Passed through to 01 (default: 01's own default).")
     p.add_argument("--allow-holey-fetch", action="store_true",
@@ -98,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             rate_limit_sleep_ms=args.rate_limit_sleep_ms,
             status_path=args.status_path,
+            namechange_start_date=args.namechange_start_date,
+            suspend_d_start_date=args.suspend_d_start_date,
+            index_weight_start_date=args.index_weight_start_date,
         )
     except (TypeError, ValueError) as exc:
         print(f"Config invalid: {exc}", file=sys.stderr)

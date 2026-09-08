@@ -26,6 +26,32 @@
 旧清单可能记了比交易所历史还早的用户起点，比较时也按这个实际起点截取；
 日历结束日期仍不得倒退。
 
+## 汇总历史比行情更早时，显式指定各自起点
+
+`01_fetch_tushare.py` 和 `daily_update.py` 支持三个可选参数：
+
+- `--namechange-start-date YYYYMMDD`
+- `--suspend-d-start-date YYYYMMDD`
+- `--index-weight-start-date YYYYMMDD`
+
+不传时仍使用原来的 `--start-date`；不从旧清单自动扩大请求。传入时只改变
+该汇总端点的请求和清单覆盖起点，不改变 `daily`、`adj_factor`、`daily_basic`
+或基准行情范围，所有端点继续使用同一个 `--end-date`。例如已核对改名、停牌、
+指数分别有1990、2015、2000年起的历史，而行情日更从2018年开始，应分别传入
+对应起点，不能把共同起点直接改为1990年。日期须为真实的八位ASCII数字且不晚于
+结束日期；无效新参数在清单重置、客户端构造和日更状态写入之前拒绝。
+
+这不是保护豁免：指定的起点仍然太晚、结束日期倒退、旧来源未知时照样拒绝。
+指数参数也不强制刷新已有文件；无缺口的指数仍跳过，清单不会因为传了较早起点
+就冒称已重新获取历史。实际文件仍需按[历史修复说明](index-weight-history-repair.md)
+在隔离目录验收，再安排成套切换。
+
+库调用者使用 `TushareFetcherConfig` 的同名可选字段。若自行持久化结果，必须把
+`config.aggregate_start_dates()` 同源传给
+`build_manifest(..., endpoint_start_dates=config.aggregate_start_dates())`；结果DTO
+本身不携带请求日期。省略映射保留旧的共同范围接口含义，并不会自动读取Fetcher配置。
+清单JSON仍是schema v1，非本次运行的端点和盲跳过的覆盖处理不变。
+
 ## 没有可信清单，不能靠重试“变可信”
 
 已有文件（包括空文件）缺少可用的原覆盖记录时，程序会在该文件的请求前
