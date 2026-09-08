@@ -54,11 +54,13 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.data.tushare.fetch_ranges import validate_aggregate_start_dates
 from src.data.tushare.fetch_types import FetchHole, TushareFetchResult
 
 SCHEMA_VERSION = 1
@@ -114,15 +116,26 @@ def build_manifest(
     coverage_end_date: str,
     *,
     now: datetime | None = None,
+    endpoint_start_dates: Mapping[str, str] | None = None,
 ) -> FetchManifest:
     """Build THIS run's manifest from the fetcher's ``results`` + ``holes``.
 
     Only the endpoints that ran (present in ``results``) appear, each tagged with
-    this run's ``[coverage_start_date, coverage_end_date]`` so the merge can refuse
-    a later narrower-scope run. ``now`` is injectable for tests / determinism — the
+    this run's interval so the merge can refuse a later narrower-scope run.
+    Callers using explicit aggregate starts MUST pass the same mapping as
+    ``TushareFetcherConfig.aggregate_start_dates()``; results do not carry dates.
+    Without that mapping the existing common-range contract remains unchanged.
+    ``now`` is injectable for tests / determinism — the
     same value-injection pattern as the Phase 2 staleness guard
     (``recommend(..., now=...)``); the production default is the system clock.
     """
+    try:
+        starts = validate_aggregate_start_dates(
+            endpoint_start_dates if endpoint_start_dates is not None else {},
+            coverage_end_date,
+        )
+    except ValueError as exc:
+        raise FetchManifestError(str(exc)) from exc
     stamp = (now if now is not None else datetime.now(tz=timezone.utc)).isoformat()
     holes_by_ep: dict[str, list[FetchHole]] = {}
     for h in holes:
@@ -144,9 +157,17 @@ def build_manifest(
         established = (
             r.files_written > 0 or bool(ep_holes) or r.units_verified > 0
         )
+        if r.endpoint == "index_weight" and established and r.skipped > r.units_verified:
+            raise FetchManifestError(
+                "refusing index_weight coverage over blind-skipped indices: "
+                "every retained index must attest the same requested interval "
+                "before a mixed result can establish endpoint coverage"
+            )
         endpoints[r.endpoint] = EndpointCoverage(
             status="holes" if ep_holes else "complete",
-            coverage_start_date=coverage_start_date if established else "",
+            coverage_start_date=(
+                starts.get(r.endpoint, coverage_start_date) if established else ""
+            ),
             coverage_end_date=coverage_end_date if established else "",
             units_written=r.files_written,
             holes=ep_holes,

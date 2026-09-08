@@ -91,6 +91,42 @@ no-op, exit 12); the next day catches up. Scheduling late avoids the wasted run.
 
 ## Monitoring — exit codes
 
+### Migrating deployments with wider aggregate history
+
+Before deploying new code, inspect the existing complete fetch manifest and raw
+files. A shared `--start-date 20180101` cannot safely replace a namechange file
+whose declared history starts in 1990 or a suspension file starting in 2015.
+Keep the shared price/benchmark start, and add the explicit aggregate options to
+the scheduled invocation. For the independently verified mixed-history layout,
+the ADDITIONAL arguments are:
+
+```text
+--namechange-start-date 19900101
+--suspend-d-start-date 20151001
+--index-weight-start-date 20000101
+```
+
+These are an example based on inspected provenance, not new defaults for every
+deployment. The effective end must still include prior coverage. Verify the
+`--dry-run` plan shows the three options only on fetch, with the common start
+unchanged for prices and benchmark. A dry-run validates configuration, but does
+not exercise replacement guards, API responses or a rebuild. Do not test a
+suspected unsafe configuration by running a live update: other raw endpoints
+can change before the final holes/error outcome.
+
+Use a backed-up, supervised maintenance window for code/argument/data migration.
+The optional arguments do not repair existing raw files, change index refresh
+cadence or update provider membership by themselves; see
+[aggregate range safety](aggregate-update-safety.md) and
+[index history repair](index-weight-history-repair.md).
+
+This configuration is CLI/API-only. The current manual UI launcher does not
+forward these three options, and editing the scheduler wrapper does not change
+that launcher. A deployment requiring these wider histories must not advertise
+its manual button as configured; use the approved explicit CLI invocation until
+that entry point receives its own explicit configuration wiring. No environment
+variable silently fills in these dates.
+
 | Code | Meaning | Action |
 |---|---|---|
 | 0 | success (incl. weekend calendar-gate no-op; a weekday holiday runs normally and also exits 0 when there is no new bar) | none |

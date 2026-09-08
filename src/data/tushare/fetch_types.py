@@ -23,7 +23,11 @@ class TushareFetchResult:
     freshness rule POSITIVELY confirmed for this run's range (valid same-year
     date extents span both expected boundaries, or listing/calendar bounds
     establish a legitimate no-data skip). This is not proof of internal or
-    vendor-response completeness. It is
+    vendor-response completeness.
+    For a mixed index update, retained indices count only when trusted prior
+    endpoint provenance attests the EXACT same requested interval and every
+    prior index hole is re-attempted. This is retained coverage evidence, not
+    a fresh API response or an independent file-content audit. It is
     POSITIVE evidence that establishes manifest coverage — unlike a blind
     watermark/resume skip, which proves nothing and is counted in ``skipped``
     only. Both kinds of skip also count in ``skipped`` (total not-fetched)."""
