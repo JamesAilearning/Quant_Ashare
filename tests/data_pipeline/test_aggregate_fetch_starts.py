@@ -68,12 +68,51 @@ def _unit(endpoint):
     return "index=000906.SH" if endpoint == "index_weight" else "file"
 
 
+def _history_frame(endpoint, start=COMMON_START, end=END):
+    dates = [COMMON_START, PRIOR_END, END]
+    if endpoint == "namechange":
+        frame = pd.DataFrame({
+            "ts_code": ["600000.SH"] * 3, "name": ["A", "B", "C"],
+            "start_date": dates, "end_date": ["20180130", "20180214", None],
+            "ann_date": dates, "change_reason": ["改名"] * 3,
+        })
+        query_date = "ann_date"
+    elif endpoint == "suspend_d":
+        frame = pd.DataFrame({
+            "ts_code": ["600000.SH"] * 3, "trade_date": dates,
+            "suspend_timing": [None] * 3, "suspend_type": ["S", "R", "S"],
+        })
+        query_date = "trade_date"
+    elif endpoint == "index_weight":
+        frame = pd.DataFrame({
+            "index_code": ["000906.SH"] * 3, "con_code": ["600000.SH"] * 3,
+            "trade_date": dates, "weight": [100.0] * 3,
+        })
+        query_date = "trade_date"
+    else:
+        raise AssertionError(f"Unexpected synthetic endpoint {endpoint!r}")
+    return frame.loc[frame[query_date].between(start, end)].copy()
+
+
+def _assert_aggregate_windows(calls, endpoint, start, end):
+    windows = [(call.kwargs["start_date"], call.kwargs["end_date"]) for call in calls]
+    if endpoint == "namechange":
+        assert windows == [(start, end)]
+    else:
+        expected = [
+            (max(start, month.start_time.strftime("%Y%m%d")),
+             min(end, month.end_time.strftime("%Y%m%d")))
+            for month in pd.period_range(start, end, freq="M")
+        ]
+        assert windows == expected
+
+
 def _seed(root, starts, *, holey=(), end=PRIOR_END):
     endpoints = {}
     for endpoint, start in starts.items():
         path = root / TARGETS[endpoint]
         path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({"old_history": [1, 2]}).to_parquet(path, index=False)
+        _history_frame(endpoint, start, end).to_parquet(path, index=False)
         holes = ((FetchHole(endpoint, _unit(endpoint), "transient", 2, "prior failure"),)
                  if endpoint in holey else ())
         endpoints[endpoint] = EndpointCoverage(
@@ -111,10 +150,8 @@ def _client(*, fail_endpoint=None):
                 "ts_code": "600000.SH", "trade_date": dates.strftime("%Y%m%d"),
                 "close": 10.0, "adj_factor": 1.0,
             })
-        if api == "namechange":
-            return pd.DataFrame({"ts_code": ["600000.SH"], "start_date": [params["start_date"]]})
-        if api == "suspend_d":
-            return pd.DataFrame({"ts_code": ["600000.SH"], "trade_date": [params["start_date"]]})
+        if api in {"namechange", "suspend_d"}:
+            return _history_frame(api, params["start_date"], params["end_date"])
         raise AssertionError(f"Unexpected synthetic API {api!r}")
 
     client = MagicMock()
@@ -146,13 +183,20 @@ def test_cli_refresh_uses_explicit_ranges_in_requests_and_manifest(tmp_path, hol
     assert manifest is not None and manifest.schema_version == 1
     for endpoint, start in STARTS.items():
         calls = [call for call in client.call.call_args_list if call.args[0] == endpoint]
-        assert calls[0].kwargs["start_date"] == start
-        assert calls[-1].kwargs["end_date"] == END
+        _assert_aggregate_windows(calls, endpoint, start, END)
         coverage = manifest.endpoints[endpoint]
         assert (coverage.coverage_start_date, coverage.coverage_end_date) == (start, END)
         assert coverage.status == "complete" and coverage.holes == ()
         assert coverage.units_written == 1
-        assert "old_history" not in pd.read_parquet(tmp_path / TARGETS[endpoint]).columns
+        published = pd.read_parquet(tmp_path / TARGETS[endpoint])
+        assert set(published.columns) == set(_history_frame(endpoint).columns)
+        if endpoint in {"namechange", "suspend_d"}:
+            query_date = "ann_date" if endpoint == "namechange" else "trade_date"
+            pd.testing.assert_frame_equal(
+                published.sort_values(query_date).reset_index(drop=True),
+                _history_frame(endpoint, start, END).reset_index(drop=True),
+                check_dtype=False,
+            )
 
 
 def _daily_config(root, **kwargs):
@@ -213,8 +257,7 @@ def test_one_explicit_override_keeps_other_aggregate_requests_and_coverage_at_co
     assert manifest is not None
     for endpoint, start in effective.items():
         calls = [call for call in client.call.call_args_list if call.args[0] == endpoint]
-        assert calls[0].kwargs["start_date"] == start
-        assert calls[-1].kwargs["end_date"] == END
+        _assert_aggregate_windows(calls, endpoint, start, END)
         coverage = manifest.endpoints[endpoint]
         assert (coverage.coverage_start_date, coverage.coverage_end_date) == (start, END)
         assert coverage.holes == ()
@@ -372,7 +415,7 @@ def test_explicit_but_noncovering_retry_keeps_raw_and_prior_holes(tmp_path, endp
 def test_explicit_range_cannot_authorize_existing_file_without_provenance(tmp_path, endpoint):
     path = tmp_path / TARGETS[endpoint]
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"old_history": [1]}).to_parquet(path, index=False)
+    _history_frame(endpoint, STARTS[endpoint], PRIOR_END).to_parquet(path, index=False)
     before = path.read_bytes()
     client = _client()
     config = TushareFetcherConfig(

@@ -80,6 +80,11 @@ import pandas as pd
 from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
 from src.data._trade_cal import calendar_frame_defect
+from src.data.tushare.aggregate_response import (
+    AggregateResponseError,
+    collect_aggregate_response,
+    require_retained_keys,
+)
 from src.data.tushare.client import (
     KIND_NETWORK,
     KIND_RATE_LIMIT,
@@ -794,11 +799,11 @@ class TushareFetcher:
         return True
 
     def _fetch_single_file_aggregate(
-        self, *, endpoint: str, filename: str, fields: str,
+        self, *, endpoint: str, filename: str,
     ) -> TushareFetchResult:
         """Fetch a single-file aggregate endpoint (``namechange`` / ``suspend_d``).
 
-        One call covers ``[start_date, end_date]`` and writes one parquet. The
+        Collect and validate the complete candidate before writing one parquet. The
         hole unit is the stable ``"file"``: the whole file IS the unit, so a
         re-failure matches the prior hole (the run's range varies and lives in
         the manifest coverage fields, not the unit — codex P2).
@@ -816,14 +821,27 @@ class TushareFetcher:
         ):
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         try:
-            df = self._safe_call(
-                endpoint,
+            df = collect_aggregate_response(
+                endpoint=endpoint,
                 start_date=start_date,
                 end_date=self._config.end_date,
-                fields=fields,
+                call=self._safe_call,
             )
+            if path.exists():
+                try:
+                    retained = pd.read_parquet(path)
+                except Exception as exc:  # domain error, never an empty-data fallback
+                    raise TushareFetcherError(
+                        f"Refusing to replace unreadable aggregate {path} "
+                        f"({type(exc).__name__}); preserve and inspect the source."
+                    ) from exc
+                require_retained_keys(df, retained, endpoint, label=f"{endpoint}: retained file")
         except FetchHoleError as hole:
             self._record_hole(endpoint, "file", hole)
+            return TushareFetchResult(endpoint, 0, 0, skipped=0)
+        except AggregateResponseError as exc:
+            self._add_hole(endpoint, "file", reason_class="unusable_response",
+                           attempts=1, last_error=str(exc))
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
@@ -869,11 +887,10 @@ class TushareFetcher:
         return TushareFetchResult("stock_basic", written, rows, skipped)
 
     def _fetch_namechange(self) -> TushareFetchResult:
-        """Pull all name changes in [start_date, end_date]. One call."""
+        """Pull the requested announcement-date range; refuse unsafe responses."""
         return self._fetch_single_file_aggregate(
             endpoint="namechange",
             filename="all_namechanges.parquet",
-            fields="ts_code,name,start_date,end_date,ann_date,change_reason",
         )
 
     def _fetch_suspend_d(self) -> TushareFetchResult:
@@ -881,7 +898,6 @@ class TushareFetcher:
         return self._fetch_single_file_aggregate(
             endpoint="suspend_d",
             filename="suspend_d.parquet",
-            fields="ts_code,trade_date,suspend_timing,suspend_type",
         )
 
     def _fetch_trade_cal(self) -> TushareFetchResult:

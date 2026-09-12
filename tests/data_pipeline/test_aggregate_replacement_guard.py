@@ -37,10 +37,35 @@ def _unit(endpoint):
     return "index=000906.SH" if endpoint == "index_weight" else "file"
 
 
+def _history_frame(endpoint):
+    dates = ["20250102", "20250602"]
+    if endpoint == "namechange":
+        return pd.DataFrame({
+            "ts_code": ["600000.SH", "600000.SH"], "name": ["A", "B"],
+            "start_date": dates, "end_date": ["20250601", None],
+            "ann_date": dates, "change_reason": ["改名", "改名"],
+        })
+    if endpoint == "suspend_d":
+        return pd.DataFrame({
+            "ts_code": ["600000.SH", "600000.SH"], "trade_date": dates,
+            "suspend_timing": [None, None], "suspend_type": ["S", "R"],
+        })
+    if endpoint == "trade_cal":
+        return pd.DataFrame({"exchange": ["SSE", "SSE"], "cal_date": dates, "is_open": [1, 1]})
+    if endpoint == "index_weight":
+        return pd.DataFrame({
+            "index_code": ["000906.SH", "000906.SH"],
+            "con_code": ["600000.SH", "600000.SH"], "trade_date": dates,
+            "weight": [100.0, 100.0],
+        })
+    raise AssertionError(f"Unexpected synthetic endpoint {endpoint!r}")
+
+
 def _seed_file(root, endpoint, *, empty=False):
     path = root / TARGETS[endpoint]
     path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"old_history": [] if empty else [1, 2]}).to_parquet(path, index=False)
+    frame = _history_frame(endpoint)
+    (frame.iloc[:0] if empty else frame).to_parquet(path, index=False)
     return path
 
 
@@ -62,7 +87,14 @@ def _client():
                 "exchange": "SSE", "cal_date": dates.strftime("%Y%m%d"),
                 "is_open": (dates.dayofweek < 5).astype(int),
             })
-        return pd.DataFrame({"new_history": [1]})
+        if api == "index_weight":
+            return pd.DataFrame({
+                "index_code": [params["index_code"]], "con_code": ["600000.SH"],
+                "trade_date": [params["start_date"]], "weight": [100.0],
+            })
+        frame = _history_frame(api)
+        query_date = "ann_date" if api == "namechange" else "trade_date"
+        return frame.loc[frame[query_date].between(params["start_date"], params["end_date"])].copy()
 
     client = MagicMock()
     client.call.side_effect = call
@@ -196,6 +228,14 @@ def test_safe_acquisition_keeps_requested_bounds(tmp_path, endpoint, kind):
     calls = fetcher._client.call.call_args_list
     assert calls[0].kwargs["start_date"] == (TRADE_CAL_START_DATE if endpoint == "trade_cal" else start)
     assert calls[-1].kwargs["end_date"] == end
+    if endpoint == "suspend_d":
+        expected = [
+            (max(start, month.start_time.strftime("%Y%m%d")),
+             min(end, month.end_time.strftime("%Y%m%d")))
+            for month in pd.period_range(start, end, freq="M")
+        ]
+        assert [(call.kwargs["start_date"], call.kwargs["end_date"])
+                for call in calls] == expected
 
 
 @pytest.mark.parametrize("prior_start", [TRADE_CAL_START_DATE, "19800101"])
@@ -240,15 +280,30 @@ def test_manifest_snapshot_is_shared_then_reset_for_next_fetch(tmp_path):
     assert len(fetcher.holes) == 2
 
 
-@pytest.mark.parametrize("endpoint", ["namechange", "suspend_d", "index_weight"])
-def test_covering_empty_response_retains_existing_publication_contract(tmp_path, endpoint):
-    path = _seed_file(tmp_path, endpoint)
-    _seed_manifest(tmp_path, [endpoint])
-    fetcher = _fetcher(tmp_path, endpoint)
+def test_covering_empty_index_response_retains_existing_publication_contract(tmp_path):
+    path = _seed_file(tmp_path, "index_weight")
+    _seed_manifest(tmp_path, ["index_weight"])
+    fetcher = _fetcher(tmp_path, "index_weight")
     fetcher._client.call.side_effect = lambda *args, **kwargs: pd.DataFrame()
     assert fetcher.fetch()[0].files_written == 1
     assert pd.read_parquet(path).empty
     assert fetcher.holes == ()
+
+
+@pytest.mark.parametrize("endpoint", ["namechange", "suspend_d"])
+def test_covering_empty_response_cannot_erase_retained_business_keys(tmp_path, endpoint):
+    path = _seed_file(tmp_path, endpoint)
+    before = path.read_bytes()
+    _seed_manifest(tmp_path, [endpoint])
+    manifest_before = (tmp_path / MANIFEST_FILENAME).read_bytes()
+    fetcher = _fetcher(tmp_path, endpoint)
+    fetcher._client.call.side_effect = lambda *args, **kwargs: _history_frame(endpoint).iloc[:0]
+    result, = fetcher.fetch()
+    assert result.files_written == result.rows_total == 0
+    assert path.read_bytes() == before
+    assert (tmp_path / MANIFEST_FILENAME).read_bytes() == manifest_before
+    hole, = fetcher.holes
+    assert (hole.endpoint, hole.unit, hole.reason_class) == (endpoint, "file", "unusable_response")
 
 
 def test_covering_calendar_still_rejects_unusable_vendor_response(tmp_path):
