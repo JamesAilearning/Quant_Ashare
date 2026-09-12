@@ -154,6 +154,27 @@ def _stock_basic_df(status: str, rows: int = 3) -> pd.DataFrame:
     )
 
 
+def _aggregate_df(endpoint: str, start: str, end: str) -> pd.DataFrame:
+    """Real aggregate schemas with responses clipped to their query dates."""
+    dates = ["20200102", "20200203"]
+    if endpoint == "namechange":
+        frame = pd.DataFrame({
+            "ts_code": ["600000.SH", "600000.SH"], "name": ["A", "B"],
+            "start_date": dates, "end_date": ["20200202", None],
+            "ann_date": dates, "change_reason": ["改名", "改名"],
+        })
+        query_date = "ann_date"
+    elif endpoint == "suspend_d":
+        frame = pd.DataFrame({
+            "ts_code": ["600000.SH", "600000.SH"], "trade_date": dates,
+            "suspend_timing": [None, None], "suspend_type": ["S", "R"],
+        })
+        query_date = "trade_date"
+    else:
+        raise AssertionError(f"Unexpected synthetic endpoint {endpoint!r}")
+    return frame.loc[frame[query_date].between(start, end)].copy()
+
+
 class ConfigValidationTests(unittest.TestCase):
 
     def test_rejects_unknown_endpoint(self) -> None:
@@ -308,15 +329,12 @@ class NamechangeAndSuspendDFetchTests(unittest.TestCase):
 
     def test_namechange_single_call(self) -> None:
         client = _make_client(
-            lambda api, **p: pd.DataFrame({"ts_code": ["600000.SH"], "name": ["A"],
-                                           "start_date": ["20200101"],
-                                           "end_date": [None],
-                                           "ann_date": ["20200101"],
-                                           "change_reason": ["改名"]})
+            lambda api, **p: _aggregate_df(api, p["start_date"], p["end_date"])
         )
         with tempfile.TemporaryDirectory() as tmp:
             cfg = TushareFetcherConfig(
                 output_dir=Path(tmp), endpoints=("namechange",),
+                start_date="20200101", end_date="20200229",
                 rate_limit_sleep_ms=0,
             )
             results = TushareFetcher(client, cfg).fetch()
@@ -324,18 +342,25 @@ class NamechangeAndSuspendDFetchTests(unittest.TestCase):
         self.assertEqual(results[0].files_written, 1)
         self.assertEqual(_data_call_count(client), 1)
 
-    def test_suspend_d_single_call(self) -> None:
+    def test_suspend_d_monthly_calls_write_one_aggregate(self) -> None:
         client = _make_client(
-            lambda api, **p: pd.DataFrame({"ts_code": [], "trade_date": [],
-                                           "suspend_timing": [], "suspend_type": []})
+            lambda api, **p: _aggregate_df(api, p["start_date"], p["end_date"])
         )
         with tempfile.TemporaryDirectory() as tmp:
             cfg = TushareFetcherConfig(
                 output_dir=Path(tmp), endpoints=("suspend_d",),
+                start_date="20200101", end_date="20200302",
                 rate_limit_sleep_ms=0,
             )
             results = TushareFetcher(client, cfg).fetch()
+            published = pd.read_parquet(Path(tmp) / "suspend_d.parquet")
         self.assertEqual(results[0].files_written, 1)
+        self.assertEqual(results[0].rows_total, 2)
+        self.assertEqual(set(published["trade_date"]), {"20200102", "20200203"})
+        self.assertEqual([
+            (call.kwargs["start_date"], call.kwargs["end_date"])
+            for call in client.call.call_args_list if call.args[0] == "suspend_d"
+        ], [("20200101", "20200131"), ("20200201", "20200229"), ("20200301", "20200302")])
 
 
 class IndexWeightFetchTests(unittest.TestCase):
@@ -565,30 +590,46 @@ class RefreshCurrentTests(unittest.TestCase):
             calls.append(api)
             if api == "stock_basic":
                 return _stock_basic_df(p["list_status"])
-            return pd.DataFrame({"ts_code": ["600000.SH"]})
+            return _aggregate_df(api, p["start_date"], p["end_date"])
 
         client = _make_client(side_effect)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # Yesterday's files all present.
-            for fname in ("active_stocks.parquet", "delisted_stocks.parquet",
-                          "all_namechanges.parquet", "suspend_d.parquet"):
+            # Prior stock snapshots and aggregate histories are all present.
+            for fname in ("active_stocks.parquet", "delisted_stocks.parquet"):
                 pd.DataFrame({"ts_code": ["x"]}).to_parquet(
                     tmp_path / fname, index=False)
+            for endpoint, fname in (("namechange", "all_namechanges.parquet"),
+                                    ("suspend_d", "suspend_d.parquet")):
+                _aggregate_df(endpoint, "20200101", "20200131").to_parquet(
+                    tmp_path / fname, index=False)
             _seed_aggregate_provenance(
-                tmp_path, ("namechange", "suspend_d"), "20000101", "20251231",
+                tmp_path, ("namechange", "suspend_d"), "20200101", "20200131",
             )
             cfg = TushareFetcherConfig(
                 output_dir=tmp_path,
                 endpoints=("stock_basic", "namechange", "suspend_d"),
+                start_date="20200101", end_date="20200229",
                 rate_limit_sleep_ms=0, refresh_current=True,
                 now=date(2026, 6, 10),
             )
             results = TushareFetcher(client, cfg).fetch()
             self.assertEqual(calls.count("stock_basic"), 2)  # both buckets
             self.assertEqual(calls.count("namechange"), 1)
-            self.assertEqual(calls.count("suspend_d"), 1)
+            self.assertEqual([
+                (call.kwargs["start_date"], call.kwargs["end_date"])
+                for call in client.call.call_args_list if call.args[0] == "suspend_d"
+            ], [("20200101", "20200131"), ("20200201", "20200229")])
             self.assertEqual({r.skipped for r in results}, {0})
+            self.assertEqual([r.files_written for r in results], [2, 1, 1])
+            for endpoint, fname in (("namechange", "all_namechanges.parquet"),
+                                    ("suspend_d", "suspend_d.parquet")):
+                query_date = "ann_date" if endpoint == "namechange" else "trade_date"
+                pd.testing.assert_frame_equal(
+                    pd.read_parquet(tmp_path / fname).sort_values(query_date).reset_index(drop=True),
+                    _aggregate_df(endpoint, "20200101", "20200229").reset_index(drop=True),
+                    check_dtype=False,
+                )
             # The refreshed snapshot carries TODAY's embedded stamp (P3-5).
             df = pd.read_parquet(tmp_path / "active_stocks.parquet")
             self.assertEqual(set(df["snapshot_date"]), {"20260610"})
