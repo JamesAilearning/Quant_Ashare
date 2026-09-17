@@ -72,6 +72,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
 )
 from src.data.tushare.fetch_ranges import (  # noqa: E402
     AGGREGATE_START_ENDPOINTS,
+    NAMECHANGE_MODES,
 )
 from src.data.tushare.fetcher import (  # noqa: E402
     DEFAULT_INDICES,
@@ -164,6 +165,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                  "Default: --start-date. Does not force refresh or bypass "
                  "prior-coverage protection; the common --end-date still applies.",
         )
+    p.add_argument("--namechange-mode", choices=NAMECHANGE_MODES, default="date_range",
+                   help="Explicit name-history strategy; per_security_full requires fresh "
+                        "stock_basic snapshots and refresh of an existing name file.")
     p.add_argument(
         "--endpoints", default=",".join(ENDPOINTS),
         help=f"Comma-separated endpoint names. Default: all 7. Valid: {','.join(ENDPOINTS)}",
@@ -275,6 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             namechange_start_date=args.namechange_start_date,
             suspend_d_start_date=args.suspend_d_start_date,
             index_weight_start_date=args.index_weight_start_date,
+            namechange_mode=args.namechange_mode,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)

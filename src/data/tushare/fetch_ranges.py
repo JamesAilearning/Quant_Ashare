@@ -11,6 +11,13 @@ from collections.abc import Mapping
 from datetime import datetime
 
 AGGREGATE_START_ENDPOINTS = ("namechange", "suspend_d", "index_weight")
+NAMECHANGE_MODES = ("date_range", "per_security_full")
+
+
+def validate_namechange_mode(value: str) -> None:
+    """Reject unknown acquisition modes before any producer side effect."""
+    if not isinstance(value, str) or value not in NAMECHANGE_MODES:
+        raise ValueError(f"namechange_mode must be one of {NAMECHANGE_MODES}, got {value!r}")
 
 
 def _require_date(value: str, label: str) -> None:

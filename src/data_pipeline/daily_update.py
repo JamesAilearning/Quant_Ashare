@@ -77,7 +77,11 @@ import pandas as pd
 
 from src.core.logger import get_logger
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
-from src.data.tushare.fetch_ranges import resolve_aggregate_start_dates
+from src.data.tushare.fetch_ranges import (
+    resolve_aggregate_start_dates,
+    validate_aggregate_start_dates,
+    validate_namechange_mode,
+)
 from src.data_pipeline.bundle_swap import (
     BundleSwapError,
     bak_dir,
@@ -629,9 +633,16 @@ class DailyUpdateConfig:
     namechange_start_date: str | None = None
     suspend_d_start_date: str | None = None
     index_weight_start_date: str | None = None
+    namechange_mode: str = "date_range"
 
     def __post_init__(self) -> None:
+        validate_namechange_mode(self.namechange_mode)
         self.aggregate_start_dates()
+        if self.namechange_mode == "per_security_full":
+            start = self.namechange_start_date if self.namechange_start_date is not None else self.start_date
+            end = (self.end_date if self.end_date is not None
+                   else (self.now if self.now is not None else date.today()).strftime("%Y%m%d"))
+            validate_aggregate_start_dates({"namechange": start}, end)
         # codex P1: the status write is an UNCONDITIONAL atomic replace — an
         # operator-typo'd --status-path aliasing a canonical input (the live
         # provider tree, the raw tushare tree, the delisted registry, the
@@ -865,6 +876,8 @@ def build_plan(
         fetch += ["--rate-limit-sleep-ms", str(config.rate_limit_sleep_ms)]
     for endpoint, start in aggregate_starts.items():
         fetch += [f"--{endpoint.replace('_', '-')}-start-date", start]
+    if config.namechange_mode != "date_range":
+        fetch += ["--namechange-mode", config.namechange_mode]
     bins = [
         "--tushare-dir", str(config.tushare_dir),
         "--delisted-registry", str(config.delisted_registry),
