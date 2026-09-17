@@ -29,7 +29,9 @@ raw/manifest schema changes; automatic production deployment or scheduler change
 
 2. The new mode freezes a sorted union of `active_stocks.parquet`,
    `delisted_stocks.parquet` and retained `all_namechanges.parquet` codes before
-   the first name query. Both snapshots must be readable, have unique valid
+   the first name query. Both snapshots must be readable and include every
+   producer `STOCK_BASIC_FIELDS` column plus `snapshot_date`, not just the
+   fields consumed by the universe selector. They must have unique valid
    six-digit SH/SZ/BJ codes and their correct L/D status, and have the run's
    embedded snapshot date. Neither bucket can be empty (an empty table cannot
    attest its embedded date), and the buckets cannot overlap. A stock-basic

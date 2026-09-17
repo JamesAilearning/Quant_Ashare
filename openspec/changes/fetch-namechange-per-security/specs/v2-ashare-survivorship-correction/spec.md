@@ -12,7 +12,8 @@ contracts SHALL otherwise remain unchanged.
 
 Full mode SHALL query the sorted union of the two stock-basic snapshots and
 retained name-history codes. Before name API calls it SHALL require readable,
-schema-valid L/D snapshots with unique valid SH/SZ/BJ codes, no cross-bucket
+schema-valid L/D snapshots containing every producer `STOCK_BASIC_FIELDS`
+column plus `snapshot_date`, with unique valid SH/SZ/BJ codes, no cross-bucket
 overlap, nonempty L and D buckets, fewer than 6,000 rows per snapshot and the
 configured run's embedded snapshot date. Prior stock-basic provenance SHALL be
 complete and hole-free unless both buckets were successfully refreshed in this
@@ -63,6 +64,12 @@ provider publication or scheduled task SHALL change as a side effect.
 - **WHEN** earlier codes succeeded but a later query exhausts retries, violates
   schema/identity, reaches a response cap or exceeds the cumulative budget
 - **THEN** the old aggregate and coverage remain unchanged with a failed file unit
+
+#### Scenario: A stock snapshot omits a producer field unused by the selector
+- **WHEN** either snapshot lacks any requested stock-basic field, including
+  `name`, `list_date` or `delist_date`
+- **THEN** no name API call or aggregate write occurs and retained coverage does
+  not advance; all producer fields are prerequisites, not only selector fields
 
 #### Scenario: Empty response cannot erase an observed code
 - **WHEN** a valid empty response would remove a retained business key

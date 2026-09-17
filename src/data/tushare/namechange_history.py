@@ -13,6 +13,14 @@ import pandas as pd
 
 from src.data.tushare import aggregate_response as aggregate
 
+# Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
+# delist_date are the load-bearing fields for Phase A.2; the rest are
+# kept for diagnostics. Shared by the producer and prerequisite validation.
+STOCK_BASIC_FIELDS = (
+    "ts_code,symbol,name,area,industry,market,list_date,delist_date,"
+    "list_status,curr_type"
+)
+
 MAX_NAMECHANGE_SECURITIES = 10_000
 # Official stock_basic response cap; saturation cannot attest a full snapshot.
 STOCK_BASIC_ROW_GUARD = 6_000
@@ -35,7 +43,7 @@ def namechange_security_universe(
     for frame, status in ((active, "L"), (delisted, "D")):
         label = f"namechange stock_basic {status}"
         aggregate._frame_bytes(frame, label)
-        required = {"ts_code", "list_status", "snapshot_date"}
+        required = set(STOCK_BASIC_FIELDS.split(",")) | {"snapshot_date"}
         if not frame.columns.is_unique or not required.issubset(frame.columns):
             raise aggregate.AggregateResponseError(f"{label}: missing or duplicate snapshot fields")
         if frame.empty or len(frame) >= STOCK_BASIC_ROW_GUARD:

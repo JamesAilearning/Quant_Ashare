@@ -115,7 +115,11 @@ from src.data.tushare.fetch_types import FetchHole as FetchHole  # noqa: F401
 from src.data.tushare.fetch_types import (  # noqa: F401
     TushareFetchResult as TushareFetchResult,
 )
-from src.data.tushare.namechange_history import collect_namechange_history, namechange_security_universe
+from src.data.tushare.namechange_history import (
+    STOCK_BASIC_FIELDS,
+    collect_namechange_history,
+    namechange_security_universe,
+)
 
 _logger = get_logger(__name__)
 
@@ -231,14 +235,6 @@ SYSTEMIC_SHORTFALL_UNIVERSE_RATIO = 0.90
 # targeted run is 33%): below this many short units in a year the shortfall is
 # always treated as idiosyncratic (warning only).
 SYSTEMIC_SHORTFALL_MIN_CHECKED = 50
-
-# Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
-# delist_date are the load-bearing fields for Phase A.2; the rest are
-# kept for diagnostics.
-STOCK_BASIC_FIELDS = (
-    "ts_code,symbol,name,area,industry,market,list_date,delist_date,"
-    "list_status,curr_type"
-)
 
 
 class TushareFetcherError(RuntimeError):

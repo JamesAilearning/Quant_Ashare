@@ -45,7 +45,7 @@ def _name(code="000001.SZ", **changes):
 
 
 def _stocks(codes, status):
-    return pd.DataFrame({
+    frame = pd.DataFrame({
         "ts_code": list(codes),
         "symbol": [code[:6] for code in codes],
         "name": [f"Synthetic {code}" for code in codes],
@@ -58,6 +58,8 @@ def _stocks(codes, status):
         "curr_type": ["CNY"] * len(codes),
         "snapshot_date": [RUN_DATE.strftime("%Y%m%d")] * len(codes),
     })
+    assert set(frame.columns) == set(fetcher_module.STOCK_BASIC_FIELDS.split(",")) | {"snapshot_date"}
+    return frame
 
 
 def _seed(root, *, active=("000001.SZ",), delisted=("600003.SH",), retained=None):
@@ -258,6 +260,38 @@ def test_invalid_stock_snapshot_refuses_before_name_queries(tmp_path, bucket, pr
     _assert_unusable(fetcher, path, before)
 
     fetcher._client.call.assert_not_called()
+
+
+@pytest.mark.parametrize("bucket", ["active_stocks", "delisted_stocks"])
+@pytest.mark.parametrize("missing_field", fetcher_module.STOCK_BASIC_FIELDS.split(","))
+def test_missing_stock_producer_field_refuses_names_without_write_or_coverage_advance(
+    tmp_path, monkeypatch, bucket, missing_field,
+):
+    path = _seed(tmp_path, retained=[_name()])
+    before = path.read_bytes()
+    manifest_before = (tmp_path / MANIFEST_FILENAME).read_bytes()
+    snapshot = tmp_path / f"{bucket}.parquet"
+    pd.read_parquet(snapshot).drop(columns=[missing_field]).to_parquet(snapshot, index=False)
+    writer = MagicMock(wraps=fetcher_module.atomic_write_parquet)
+    monkeypatch.setattr(fetcher_module, "atomic_write_parquet", writer)
+    fetcher = _fetcher(
+        tmp_path, lambda params: pd.DataFrame([_name(params["ts_code"])]), end_date="20260918",
+    )
+
+    results = fetcher.fetch()
+
+    result, = results
+    assert result.files_written == result.rows_total == result.units_verified == 0
+    fetcher._client.call.assert_not_called()
+    writer.assert_not_called()
+    assert path.read_bytes() == before
+    assert (tmp_path / MANIFEST_FILENAME).read_bytes() == manifest_before
+    assert [(hole.endpoint, hole.unit, hole.reason_class) for hole in fetcher.holes] == [
+        ("namechange", "file", "unusable_response"),
+    ]
+    coverage = _persist_manifest(tmp_path, fetcher, results)
+    assert coverage.status == "holes" and coverage.units_written == 0
+    assert (coverage.coverage_start_date, coverage.coverage_end_date) == (START, END)
 
 
 @pytest.mark.parametrize("bucket", ["active_stocks", "delisted_stocks"])
