@@ -20,6 +20,13 @@ complete and hole-free unless both buckets were successfully refreshed in this
 fetcher run; current stock-basic holes SHALL block full-mode publication. Missing
 or corrupt prerequisites SHALL NOT be treated as an empty security set.
 
+Ordinary codes SHALL have six ASCII digits and an SH/SZ/BJ suffix. The exact
+observed historical identifier `T600018.SH` SHALL additionally be accepted in
+D snapshots, retained name history and per-security name requests only; L
+snapshots SHALL reject it. Both raw and existing snapshots SHALL apply this
+contextual rule. It SHALL be preserved verbatim, never mapped to `600018.SH`.
+No other nonstandard identifier SHALL be inferred from this exception.
+
 When full mode includes stock-basic acquisition, raw candidates SHALL be
 validated before stamping or replacing snapshots, and all pending buckets plus
 any retained skipped counterpart SHALL pass the same stock-only pair checks
@@ -67,6 +74,17 @@ provider publication or scheduled task SHALL change as a side effect.
 #### Scenario: Historical code is absent from current snapshots
 - **WHEN** a retained name-history code appears in neither current L nor D bucket
 - **THEN** the frozen set still includes and queries that code exactly once
+
+#### Scenario: Historical identifier coexists with an ordinary code
+- **WHEN** L contains `600018.SH` and D or retained names contain `T600018.SH`
+- **THEN** both distinct identifiers are queried unchanged and retained keys
+  for one cannot be satisfied by rows for the other
+- **AND** a response substituting either identifier for the requested one fails
+
+#### Scenario: Historical exception cannot relax the listed universe
+- **WHEN** L contains `T600018.SH` or any context contains an unregistered
+  nonstandard identifier such as `T600019.SH` or `T600018.SZ`
+- **THEN** validation fails without name requests or partial snapshot publication
 
 #### Scenario: Stock-basic refresh failed but yesterday's files exist
 - **WHEN** a stock-basic prerequisite is stale, missing, malformed, saturated,

@@ -32,7 +32,8 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    the first name query. Both snapshots must be readable and include every
    producer `STOCK_BASIC_FIELDS` column plus `snapshot_date`, not just the
    fields consumed by the universe selector. They must have unique valid
-   six-digit SH/SZ/BJ codes and their correct L/D status, and have the run's
+   six-digit SH/SZ/BJ codes (plus the D-only historical exception in decision 8)
+   and their correct L/D status, and have the run's
    embedded snapshot date. Neither bucket can be empty (an empty table cannot
    attest its embedded date), and the buckets cannot overlap. A stock-basic
    response at the documented 6,000-row cap is rejected
@@ -89,6 +90,29 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    dry-run and no-pending blind skips remain unchanged. Individual file writes
    are atomic, not a two-file transaction: I/O failures hard-abort and are not
    reported as a successful pair refresh.
+
+8. The first isolated real fetch after PR #494 exposed `T600018.SH` in both
+   the retained D snapshot and the current vendor D response. Accept exactly
+   this opaque historical identifier in D snapshots, retained name history and
+   per-security name requests. L snapshots still require ordinary six-digit
+   SH/SZ/BJ codes. Preserve the entire identifier: never strip `T`, map it to
+   `600018.SH`, infer aliases, or accept a generic T-prefix grammar. Unknown
+   identifiers, changed suffixes/case/whitespace still fail. Raw D responses and
+   existing D snapshots share the same validation; response identity and
+   retained business keys remain exact. A retained historical ID still enters
+   the query union when it is absent from current snapshots. Empty-response
+   rules and all budgets/publication guards remain unchanged.
+
+   Evidence from the isolated 2026-09-18 attempt (not a production acceptance):
+   retained D snapshot SHA-256
+   `30f0037cf72412d2d96153313bfbeafb4816493ce7b007f8f2fccd5499feb962`,
+   raw D response SHA-256
+   `c4de6eb48d66f7f9c6c373828944026235445d4d07e9e4ebc5afb0730fe1b60a`.
+   Both contain symbol `T600018`, listing `20000719`, delisting `20061020`.
+   These observations justify only the exact identifier, not a general vendor
+   grammar or a mapping to another security. The failed execution and its
+   helpers stay frozen; any retry gets a new recovery root and independently
+   reviewed runner/auditor with the same contextual identity policy.
 
 ## Risks / Trade-offs
 

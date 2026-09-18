@@ -14,6 +14,12 @@ from src.data.pit._common import qlib_to_ts_code, to_qlib_ticker
 
 
 class QlibToTsCodeTests(unittest.TestCase):
+    def test_historical_vendor_id_does_not_collapse_into_ordinary_code(self) -> None:
+        self.assertEqual(to_qlib_ticker("T600018.SH"), "T600018.SH")
+        self.assertEqual(qlib_to_ts_code("T600018.SH"), "T600018.SH")
+        self.assertEqual(to_qlib_ticker("600018.SH"), "SH600018")
+        self.assertEqual(qlib_to_ts_code("SH600018"), "600018.SH")
+
     def test_qlib_to_ts_code_exchanges(self) -> None:
         # The exact conversions the daily-recommend name lookup relied on.
         self.assertEqual(qlib_to_ts_code("SH600000"), "600000.SH")
