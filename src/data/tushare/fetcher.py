@@ -69,7 +69,7 @@ from __future__ import annotations
 import bisect
 import calendar
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1946,7 +1946,10 @@ class TushareFetcher:
                 try:
                     # Footer inspection avoids decoding a possibly large polluted
                     # file just to refuse it. Never rewrite historical placeholders.
-                    if not path.is_file() or read_metadata(path).num_rows != 0:  # type: ignore[no-untyped-call]
+                    # PyArrow versions differ in typing coverage; bind the one
+                    # supported call shape without a version-specific ignore.
+                    metadata_reader: Callable[[Path], Any] = read_metadata
+                    if not path.is_file() or metadata_reader(path).num_rows != 0:
                         raise ValueError("not an empty Parquet file")
                 except Exception as exc:
                     raise TushareFetcherError(
