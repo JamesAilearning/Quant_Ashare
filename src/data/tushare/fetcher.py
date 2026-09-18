@@ -81,6 +81,7 @@ from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
 from src.data._trade_cal import calendar_frame_defect
 from src.data.tushare.aggregate_response import (
+    AGGREGATE_FIELDS,
     AggregateResponseError,
     collect_aggregate_response,
     require_retained_keys,
@@ -100,7 +101,11 @@ from src.data.tushare.fetch_manifest import (
     FetchManifestError,
     read_manifest,
 )
-from src.data.tushare.fetch_ranges import resolve_aggregate_start_dates
+from src.data.tushare.fetch_ranges import (
+    resolve_aggregate_start_dates,
+    validate_aggregate_start_dates,
+    validate_namechange_mode,
+)
 
 # Moved to the dependency-free fetch_types module (P3-6b) so that reading a
 # manifest / integrity stamp never imports this network stack; re-exported
@@ -109,6 +114,13 @@ from src.data.tushare.fetch_ranges import resolve_aggregate_start_dates
 from src.data.tushare.fetch_types import FetchHole as FetchHole  # noqa: F401
 from src.data.tushare.fetch_types import (  # noqa: F401
     TushareFetchResult as TushareFetchResult,
+)
+from src.data.tushare.namechange_history import (
+    STOCK_BASIC_FIELDS,
+    collect_namechange_history,
+    namechange_security_universe,
+    stock_basic_security_codes,
+    validate_stock_basic_snapshot,
 )
 
 _logger = get_logger(__name__)
@@ -225,14 +237,6 @@ SYSTEMIC_SHORTFALL_UNIVERSE_RATIO = 0.90
 # targeted run is 33%): below this many short units in a year the shortfall is
 # always treated as idiosyncratic (warning only).
 SYSTEMIC_SHORTFALL_MIN_CHECKED = 50
-
-# Stock_basic field list for both 'L' and 'D' buckets. ts_code, list_date,
-# delist_date are the load-bearing fields for Phase A.2; the rest are
-# kept for diagnostics.
-STOCK_BASIC_FIELDS = (
-    "ts_code,symbol,name,area,industry,market,list_date,delist_date,"
-    "list_status,curr_type"
-)
 
 
 class TushareFetcherError(RuntimeError):
@@ -362,8 +366,16 @@ class TushareFetcherConfig:
     namechange_start_date: str | None = None
     suspend_d_start_date: str | None = None
     index_weight_start_date: str | None = None
+    namechange_mode: str = "date_range"
 
     def __post_init__(self) -> None:
+        try:
+            validate_namechange_mode(self.namechange_mode)
+            if self.namechange_mode == "per_security_full":
+                start = self.namechange_start_date if self.namechange_start_date is not None else self.start_date
+                validate_aggregate_start_dates({"namechange": start}, self.end_date)
+        except ValueError as exc:
+            raise TushareFetcherError(str(exc)) from exc
         self.aggregate_start_dates()
         if len(self.indices) != len(set(self.indices)):
             raise TushareFetcherError("indices must contain unique targets; duplicate index requests are not supported")
@@ -563,6 +575,8 @@ class TushareFetcher:
         self._holes: list[FetchHole] = []
         self._aggregate_manifest: FetchManifest | None = None
         self._aggregate_manifest_loaded = False
+        self._stock_basic_refreshed: set[str] = set()
+        self._namechange_snapshot_date = config.now if config.now is not None else date.today()
         # SSE trading calendar (sorted YYYYMMDD), fetched once per run and used
         # to floor freshness boundaries to the actual last TRADING day rather
         # than the last weekday (which is wrong when a year's last weekday is a
@@ -634,6 +648,10 @@ class TushareFetcher:
         self._holes = []
         self._aggregate_manifest = None
         self._aggregate_manifest_loaded = False
+        self._stock_basic_refreshed = set()
+        self._namechange_snapshot_date = (
+            self._config.now if self._config.now is not None else date.today()
+        )
         # Honour --dry-run: do NOT create output_dir (Codex review #99
         # PR comment). dry-run promises no filesystem side-effects.
         if not self._config.dry_run:
@@ -810,7 +828,13 @@ class TushareFetcher:
         """
         path = self._config.output_dir / filename
         start_date = self._config.effective_start_date(endpoint)
+        full_names = endpoint == "namechange" and self._config.namechange_mode == "per_security_full"
         if self._aggregate_can_skip(path, endpoint, "file"):
+            if full_names and not self._config.dry_run:
+                raise TushareFetcherError(
+                    "per_security_full requires --refresh-current for an existing namechange file; "
+                    "blind resume cannot establish full-history acquisition."
+                )
             _logger.info("  skip (exists): %s", path)
             return TushareFetchResult(endpoint, 0, 0, skipped=1)
         if self._config.dry_run:
@@ -821,21 +845,23 @@ class TushareFetcher:
         ):
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
         try:
-            df = collect_aggregate_response(
-                endpoint=endpoint,
-                start_date=start_date,
-                end_date=self._config.end_date,
-                call=self._safe_call,
-            )
-            if path.exists():
-                try:
-                    retained = pd.read_parquet(path)
-                except Exception as exc:  # domain error, never an empty-data fallback
-                    raise TushareFetcherError(
-                        f"Refusing to replace unreadable aggregate {path} "
-                        f"({type(exc).__name__}); preserve and inspect the source."
-                    ) from exc
+            if full_names:
+                retained = self._read_retained_aggregate(path, endpoint)
+                securities = self._full_namechange_universe(retained)
+                df = collect_namechange_history(
+                    securities, call=self._safe_call, progress=self._namechange_progress,
+                )
                 require_retained_keys(df, retained, endpoint, label=f"{endpoint}: retained file")
+            else:
+                df = collect_aggregate_response(
+                    endpoint=endpoint,
+                    start_date=start_date,
+                    end_date=self._config.end_date,
+                    call=self._safe_call,
+                )
+                if path.exists():
+                    retained = self._read_retained_aggregate(path, endpoint)
+                    require_retained_keys(df, retained, endpoint, label=f"{endpoint}: retained file")
         except FetchHoleError as hole:
             self._record_hole(endpoint, "file", hole)
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
@@ -847,11 +873,58 @@ class TushareFetcher:
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult(endpoint, 1, len(df))
 
+    @staticmethod
+    def _read_retained_aggregate(path: Path, endpoint: str) -> pd.DataFrame:
+        """Absent first-write source is empty; unreadable existing history is not."""
+        if not path.exists():
+            return pd.DataFrame(columns=list(AGGREGATE_FIELDS[endpoint]))
+        try:
+            return pd.read_parquet(path)
+        except Exception as exc:  # domain error, never an empty-data fallback
+            raise TushareFetcherError(
+                f"Refusing to replace unreadable aggregate {path} "
+                f"({type(exc).__name__}); preserve and inspect the source."
+            ) from exc
+
+    def _full_namechange_universe(self, retained: pd.DataFrame) -> tuple[str, ...]:
+        """Require proven snapshots before freezing the full-mode security set."""
+        if any(h.endpoint == "stock_basic" for h in self._holes):
+            raise AggregateResponseError("namechange: current stock_basic prerequisite has holes")
+        paths = [self._config.output_dir / name for name in (
+            "active_stocks.parquet", "delisted_stocks.parquet",
+        )]
+        if self._stock_basic_refreshed != {"L", "D"}:
+            previous = self._prior_aggregate_coverage(paths[0], "stock_basic")
+            if previous.holes or previous.status != "complete":
+                raise AggregateResponseError("namechange: prior stock_basic prerequisite has holes")
+        frames = []
+        for path in paths:
+            try:
+                frames.append(pd.read_parquet(path))
+            except Exception as exc:  # prerequisite failure must not become an empty universe
+                raise TushareFetcherError(
+                    f"per_security_full requires readable stock_basic snapshots: {path} "
+                    f"({type(exc).__name__}); refresh stock_basic first."
+                ) from exc
+        return namechange_security_universe(
+            frames[0], frames[1], retained,
+            snapshot_date=self._namechange_snapshot_date.strftime("%Y%m%d"),
+        )
+
+    def _namechange_progress(self, done: int, total: int, rows: int) -> None:
+        _logger.info(
+            "  namechange per_security_full: %d/%d securities, %d source rows%s%s",
+            done, total, rows, self._progress_provider_suffix(), self._progress_run_suffix(),
+        )
+
     def _fetch_stock_basic(self) -> TushareFetchResult:
         """Pull both 'L' (active) and 'D' (delisted) buckets as separate files."""
         written = 0
         rows = 0
         skipped = 0
+        self._stock_basic_refreshed = set()
+        full_names = self._config.namechange_mode == "per_security_full"
+        pending: dict[str, pd.DataFrame] = {}
         for label, status in [("active_stocks", "L"), ("delisted_stocks", "D")]:
             path = self._config.output_dir / f"{label}.parquet"
             unit = f"list_status={status} ({label})"
@@ -873,21 +946,78 @@ class TushareFetcher:
             except FetchHoleError as hole:
                 self._record_hole("stock_basic", f"list_status={status} ({label})", hole)
                 continue
+            if full_names:
+                try:
+                    # Bound and validate the raw frame before allocating its stamp.
+                    validate_stock_basic_snapshot(df, status=status, snapshot_date=None)
+                except AggregateResponseError as exc:
+                    self._record_hole("stock_basic", unit, FetchHoleError(
+                        "stock_basic", reason_class="unusable_response", attempts=1,
+                        last_error=str(exc),
+                    ))
+                    continue
             # P3-5: embed the snapshot date IN the file (YYYYMMDD, one value for
             # every row). Downstream staleness guards previously had only the file
             # mtime — a weak proxy a sync/copy tool can silently refresh; an
             # embedded column survives copies and pandas round-trips. Injectable
             # via config.now (value-injection); production = system date.
-            snapshot = self._config.now if self._config.now is not None else date.today()
+            snapshot = (self._namechange_snapshot_date
+                        if self._config.namechange_mode == "per_security_full"
+                        else self._config.now if self._config.now is not None else date.today())
             df = df.assign(snapshot_date=snapshot.strftime("%Y%m%d"))
+            if full_names:
+                pending[status] = df
+                continue
             atomic_write_parquet(df, path)
             _logger.info("  wrote %d rows to %s", len(df), path)
             written += 1
             rows += len(df)
+            self._stock_basic_refreshed.add(status)
+        if full_names and not self._config.dry_run:
+            if any(h.endpoint == "stock_basic" for h in self._holes):
+                self._stock_pair_holes("stock_basic pair withheld because a bucket failed")
+            elif pending:
+                try:
+                    pair = dict(pending)
+                    for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+                        if status not in pair:
+                            try:
+                                pair[status] = pd.read_parquet(self._config.output_dir / f"{label}.parquet")
+                            except Exception as exc:
+                                raise AggregateResponseError(
+                                    f"stock_basic {status}: retained snapshot is unreadable ({type(exc).__name__})"
+                                ) from exc
+                    stock_basic_security_codes(
+                        pair["L"], pair["D"], snapshot_date=self._namechange_snapshot_date.strftime("%Y%m%d"),
+                    )
+                except AggregateResponseError as exc:
+                    self._stock_pair_holes(str(exc))
+                else:
+                    # No API/validation failure can change either old snapshot.
+                    # Each write is atomic; an I/O failure is a hard abort, not
+                    # a claim of a two-file transaction or successful refresh.
+                    for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+                        if status in pending:
+                            path = self._config.output_dir / f"{label}.parquet"
+                            atomic_write_parquet(pending[status], path)
+                            _logger.info("  wrote %d rows to %s", len(pending[status]), path)
+                            written += 1
+                            rows += len(pending[status])
+                    self._stock_basic_refreshed.update(pending)
         return TushareFetchResult("stock_basic", written, rows, skipped)
 
+    def _stock_pair_holes(self, reason: str) -> None:
+        """Retry both withheld buckets; keep any original API failure evidence."""
+        recorded = {hole.unit for hole in self._holes if hole.endpoint == "stock_basic"}
+        for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+            unit = f"list_status={status} ({label})"
+            if unit not in recorded:
+                self._record_hole("stock_basic", unit, FetchHoleError(
+                    "stock_basic", reason_class="unusable_response", attempts=0, last_error=reason,
+                ))
+
     def _fetch_namechange(self) -> TushareFetchResult:
-        """Pull the requested announcement-date range; refuse unsafe responses."""
+        """Pull the explicitly selected name-history strategy; never fall back."""
         return self._fetch_single_file_aggregate(
             endpoint="namechange",
             filename="all_namechanges.parquet",
