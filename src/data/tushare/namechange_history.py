@@ -27,13 +27,13 @@ STOCK_BASIC_ROW_GUARD = 6_000
 _CODE = re.compile(r"[0-9]{6}\.(SH|SZ|BJ)")
 # Observed opaque vendor identity, not a general T-prefix grammar or an alias
 # for 600018.SH. See fetch-namechange-per-security design decision 8.
-_HISTORICAL_CODES = frozenset({"T600018.SH"})
+HISTORICAL_NAMECHANGE_CODES = frozenset({"T600018.SH"})
 
 
 def _require_code(value: object, label: str, *, allow_historical: bool = False) -> str:
     if not isinstance(value, str) or (
         _CODE.fullmatch(value) is None
-        and not (allow_historical and value in _HISTORICAL_CODES)
+        and not (allow_historical and value in HISTORICAL_NAMECHANGE_CODES)
     ):
         raise aggregate.AggregateResponseError(f"{label}: invalid security code")
     return value

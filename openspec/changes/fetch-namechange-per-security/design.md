@@ -114,6 +114,23 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    helpers stay frozen; any retry gets a new recovery root and independently
    reviewed runner/auditor with the same contextual identity policy.
 
+9. The historical exception does not authorize generic `daily`, `adj_factor`
+   or `daily_basic` queries. In full mode, those entry points validate the same
+   complete, same-day L/D pair before reuse. Before any generic calendar/API
+   call or directory/file write, refuse forced or prior-manifest units for the
+   exact historical ID (including one now absent from the snapshots). If the
+   ID is present, require hole-free stock provenance or both current buckets
+   refreshed, complete real ordered listing dates, and a request interval
+   strictly outside its listing lifespan. Overlap, unknown dates or inconsistent
+   snapshots hard-fail; do not claim supported historical prices by omitting it.
+   In each requested year, an existing historical file must be a readable,
+   zero-row Parquet; nonempty, corrupt or non-file artifacts hard-fail unchanged.
+   Only then exclude the exact ID from generic requests with an explicit warning.
+   Missing files stay missing, empty files stay unchanged, and exclusion adds
+   no written/verified units. Ordinary identities remain unchanged. The legacy
+   `date_range` generic behavior is untouched. This preflight does not roll back
+   aggregate endpoints that completed earlier in the same run.
+
 ## Risks / Trade-offs
 
 - Thousands of calls → serial, bounded acquisition; no parallel heavy jobs.

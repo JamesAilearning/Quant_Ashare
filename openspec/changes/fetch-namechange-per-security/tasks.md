@@ -20,6 +20,7 @@
 - [x] 3a.1 Specify the exact D/history-only `T600018.SH` exception and add synthetic failing regressions without remapping identities. Before fix: seven targeted cases fail because the historical ID is rejected before the expected name queries (153 pass).
 - [x] 3a.2 Apply the same contextual rule to raw D, existing D, retained names and frozen name requests; protect L and unknown identifiers.
 - [ ] 3a.3 Run serial targeted/full gates and local final-diff review; publish a focused follow-up PR, request Codex review, and merge only when clean.
+- [x] 3a.4 Address PR #495's cross-endpoint finding: prevent generic historical-ID requests without silently omitting in-window data, bypassing existing files or healing unprocessed holes. Before fix: 107 of 116 new scenarios fail; after fix: 116 pass. Data pipeline: 1,141 pass (one skip); logic/governance: 5,504 pass (33 skips); imports, lint, types, strict OpenSpec and two independent local reviews pass. Remote re-review and merge remain gated by 3a.3.
 
 ## 4. Operational acceptance (separate from code completion)
 

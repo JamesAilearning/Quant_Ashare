@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pyarrow.parquet import read_metadata
 
 from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
@@ -116,6 +117,7 @@ from src.data.tushare.fetch_types import (  # noqa: F401
     TushareFetchResult as TushareFetchResult,
 )
 from src.data.tushare.namechange_history import (
+    HISTORICAL_NAMECHANGE_CODES,
     STOCK_BASIC_FIELDS,
     collect_namechange_history,
     namechange_security_universe,
@@ -1531,8 +1533,25 @@ class TushareFetcher:
             raise TushareFetcherError(
                 f"{endpoint} start_date/end_date must be real ASCII calendar dates"
             )
+        if self._config.namechange_mode == "per_security_full":
+            # Check disk evidence as well as injected retries: library callers
+            # need not have assembled the CLI's force_retry_units. Do this even
+            # if the historical identity has disappeared from today's snapshots,
+            # and outside the stock-prerequisite handler so merge cannot erase it.
+            manifest = self._load_aggregate_manifest(
+                f"{endpoint}: refusing generic requests with unreadable prior provenance",
+            )
+            units = {unit for ep, unit in self._config.force_retry_units if ep == endpoint}
+            if manifest is not None and endpoint in manifest.endpoints:
+                units.update(hole.unit for hole in manifest.endpoints[endpoint].holes)
+            if any(unit.startswith(f"ts_code={code} ")
+                   for unit in units for code in HISTORICAL_NAMECHANGE_CODES):
+                raise TushareFetcherError(
+                    f"{endpoint}: historical identity has pending generic units; preserve and "
+                    "inspect the files and manifest. Unsupported requests cannot heal these holes."
+                )
         try:
-            tickers = self._load_ticker_universe()
+            tickers = self._load_ticker_universe(endpoint=endpoint, subdir=subdir)
         except TushareFetcherError:
             # The ticker universe is unavailable. If stock_basic holed THIS run
             # (a transient failure left active/delisted incomplete), this
@@ -1853,7 +1872,7 @@ class TushareFetcher:
                 windows[code] = window
         return windows
 
-    def _load_ticker_universe(self) -> tuple[str, ...]:
+    def _load_ticker_universe(self, *, endpoint: str, subdir: str) -> tuple[str, ...]:
         """Return the union of active + delisted tickers from already-pulled
         stock_basic parquet files.
 
@@ -1870,10 +1889,77 @@ class TushareFetcher:
                 + ", ".join(p.name for p in (active_path, delisted_path)
                            if not p.exists())
             )
-        active = pd.read_parquet(active_path)
-        delisted = pd.read_parquet(delisted_path)
+        try:
+            active = pd.read_parquet(active_path)
+            delisted = pd.read_parquet(delisted_path)
+        except Exception as exc:
+            if self._config.namechange_mode != "per_security_full":
+                raise
+            raise TushareFetcherError(
+                f"{endpoint}: per_security_full requires readable stock_basic snapshots; "
+                "preserve and inspect the source."
+            ) from exc
+        if self._config.namechange_mode == "per_security_full":
+            return self._full_mode_generic_tickers(active, delisted, endpoint=endpoint, subdir=subdir)
         tickers = sorted(set(active["ts_code"]) | set(delisted["ts_code"]))
         return tuple(tickers)
+
+    def _full_mode_generic_tickers(
+        self, active: pd.DataFrame, delisted: pd.DataFrame, *, endpoint: str, subdir: str,
+    ) -> tuple[str, ...]:
+        """Exclude name-only IDs only with positive, disjoint-lifespan evidence.
+
+        This preflight precedes the generic calendar call and year-file writes,
+        not aggregate endpoints already completed by the orchestrator.
+        """
+        try:
+            tickers = stock_basic_security_codes(
+                active, delisted, snapshot_date=self._namechange_snapshot_date.strftime("%Y%m%d"),
+            )
+        except AggregateResponseError as exc:
+            raise TushareFetcherError(f"{endpoint}: unusable full-mode stock snapshots: {exc}") from exc
+        historical = tickers & HISTORICAL_NAMECHANGE_CODES
+        if not historical:
+            return tuple(sorted(tickers))
+        if any(hole.endpoint == "stock_basic" for hole in self._holes):
+            raise TushareFetcherError(f"{endpoint}: current stock_basic prerequisite has holes")
+        if self._stock_basic_refreshed != {"L", "D"}:
+            previous = self._prior_aggregate_coverage(
+                self._config.output_dir / "active_stocks.parquet", "stock_basic",
+            )
+            if previous.status != "complete" or previous.holes:
+                raise TushareFetcherError(f"{endpoint}: prior stock_basic prerequisite has holes")
+        for code in sorted(historical):
+            row = delisted.loc[delisted["ts_code"].eq(code)].iloc[0]
+            listed, delisted_date = _clean_yyyymmdd(row["list_date"]), _clean_yyyymmdd(row["delist_date"])
+            if (listed is None or delisted_date is None or listed > delisted_date
+                    or not (self._config.end_date < listed or self._config.start_date > delisted_date)):
+                raise TushareFetcherError(
+                    f"{endpoint}: unsupported historical identity {code} is not proven outside "
+                    "the requested range; complete ordered listing dates and a disjoint range "
+                    "are required. No generic API support or alias is assumed."
+                )
+            for year in range(int(self._config.start_date[:4]), int(self._config.end_date[:4]) + 1):
+                path = self._config.output_dir / subdir / str(year) / f"{code}.parquet"
+                if not path.exists() and not path.is_symlink():
+                    continue
+                try:
+                    # Footer inspection avoids decoding a possibly large polluted
+                    # file just to refuse it. Never rewrite historical placeholders.
+                    if not path.is_file() or read_metadata(path).num_rows != 0:  # type: ignore[no-untyped-call]
+                        raise ValueError("not an empty Parquet file")
+                except Exception as exc:
+                    raise TushareFetcherError(
+                        f"{endpoint}: preserve and inspect historical artifact {path}; "
+                        "only absent or readable zero-row files may be excluded."
+                    ) from exc
+            _logger.warning(
+                "  %s: excluding name-history-only identity %s from generic requests; "
+                "requested %s..%s is outside proven lifespan %s..%s. "
+                "No placeholder is written or counted as verified.",
+                endpoint, code, self._config.start_date, self._config.end_date, listed, delisted_date,
+            )
+        return tuple(sorted(tickers - historical))
 
     def _safe_call(self, api_name: str, **params: Any) -> pd.DataFrame:
         """Call Tushare with per-call sleep + retry backoff.
