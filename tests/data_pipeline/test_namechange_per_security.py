@@ -47,7 +47,7 @@ def _name(code="000001.SZ", **changes):
 def _stocks(codes, status):
     frame = pd.DataFrame({
         "ts_code": list(codes),
-        "symbol": [code[:6] for code in codes],
+        "symbol": [code.split(".", 1)[0] for code in codes],
         "name": [f"Synthetic {code}" for code in codes],
         "area": ["上海"] * len(codes),
         "industry": ["银行"] * len(codes),
@@ -107,6 +107,144 @@ def _persist_manifest(root, fetcher, results):
     merged = merge_manifest(read_manifest(path), current)
     write_manifest(path, merged)
     return merged.endpoints["namechange"]
+
+
+def test_historical_id_and_ordinary_code_refresh_and_query_as_distinct_identities(tmp_path, monkeypatch):
+    historical = "T600018.SH"
+    ordinary = "600018.SH"
+    _seed(tmp_path, active=(ordinary,), retained=[_name(historical)])
+
+    def response(api, **params):
+        if api == "stock_basic":
+            status = params["list_status"]
+            code = ordinary if status == "L" else historical
+            return _stocks((code,), status).drop(columns="snapshot_date")
+        return pd.DataFrame([_name(params["ts_code"])])
+
+    cli, client, writer, args = _stock_name_cli(tmp_path, monkeypatch, response)
+
+    assert cli.main(args + ["--refresh-current"]) == 0
+
+    assert [request.args[1].name for request in writer.call_args_list] == [
+        "active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet",
+    ]
+    for filename, code, status in (
+        ("active_stocks.parquet", ordinary, "L"),
+        ("delisted_stocks.parquet", historical, "D"),
+    ):
+        pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / filename), _stocks((code,), status))
+    assert [request.kwargs for request in client.call.call_args_list if request.args[0] == "namechange"] == [
+        {"ts_code": code, "fields": NAME_FIELDS} for code in (ordinary, historical)
+    ]
+    assert set(pd.read_parquet(tmp_path / "all_namechanges.parquet")["ts_code"]) == {ordinary, historical}
+    for endpoint in ("stock_basic", "namechange"):
+        coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints[endpoint]
+        assert coverage.status == "complete" and coverage.holes == ()
+
+
+@pytest.mark.parametrize("in_delisted", [True, False])
+def test_historical_id_in_saved_snapshot_or_retained_only_is_queried_unchanged(tmp_path, in_delisted):
+    path = _seed(
+        tmp_path, active=("600018.SH",),
+        delisted=("T600018.SH",) if in_delisted else ("600003.SH",),
+        retained=[_name("T600018.SH")],
+    )
+    fetcher = _fetcher(tmp_path, lambda params: pd.DataFrame([_name(params["ts_code"])]))
+
+    result, = fetcher.fetch()
+
+    expected = ["600018.SH", "T600018.SH"] if in_delisted else ["600003.SH", "600018.SH", "T600018.SH"]
+    assert result.files_written == 1 and fetcher.holes == ()
+    assert [request.kwargs["ts_code"] for request in fetcher._client.call.call_args_list] == expected
+    assert set(pd.read_parquet(path)["ts_code"]) == set(expected)
+
+
+def test_historical_id_in_raw_listed_bucket_preserves_pair_and_blocks_name_calls(tmp_path, monkeypatch):
+    def response(api, **params):
+        if api == "stock_basic" and params["list_status"] == "L":
+            return _stocks(("T600018.SH",), "L").drop(columns="snapshot_date")
+        return _stock_and_names(api, **params)
+
+    _assert_cli_preserves_snapshots_after_unusable_stock_response(tmp_path, monkeypatch, response)
+
+
+def test_historical_id_in_saved_listed_bucket_blocks_before_name_queries(tmp_path):
+    path = _seed(tmp_path, active=("T600018.SH",), retained=[_name()])
+    before = path.read_bytes()
+    fetcher = _fetcher(tmp_path, lambda params: pd.DataFrame([_name(params["ts_code"])]))
+
+    _assert_unusable(fetcher, path, before)
+
+    fetcher._client.call.assert_not_called()
+
+
+@pytest.mark.parametrize("requested,returned", [
+    ("T600018.SH", "600018.SH"), ("600018.SH", "T600018.SH"),
+])
+def test_historical_and_ordinary_responses_cannot_substitute_for_each_other(tmp_path, requested, returned):
+    path = _seed(tmp_path, active=("600018.SH",), delisted=("T600018.SH",), retained=[_name(requested)])
+    before = path.read_bytes()
+    fetcher = _fetcher(tmp_path, lambda params: pd.DataFrame([
+        _name(returned if params["ts_code"] == requested else params["ts_code"]),
+    ]))
+
+    _assert_unusable(fetcher, path, before)
+
+    assert requested in [request.kwargs["ts_code"] for request in fetcher._client.call.call_args_list]
+    assert "response contains another security code" in fetcher.holes[0].last_error
+
+
+@pytest.mark.parametrize("has_retained", [True, False])
+def test_historical_empty_response_cannot_be_filled_by_ordinary_identity(tmp_path, has_retained):
+    path = _seed(
+        tmp_path, active=("600018.SH",), delisted=("T600018.SH",),
+        retained=[_name("T600018.SH")] if has_retained else None,
+    )
+    before = path.read_bytes() if has_retained else None
+    fetcher = _fetcher(tmp_path, lambda params: (
+        pd.DataFrame(columns=NAME_FIELDS.split(",")) if params["ts_code"] == "T600018.SH"
+        else pd.DataFrame([_name(params["ts_code"])])
+    ))
+
+    results = fetcher.fetch()
+
+    assert [request.kwargs["ts_code"] for request in fetcher._client.call.call_args_list] == [
+        "600018.SH", "T600018.SH",
+    ]
+    if has_retained:
+        assert results[0].files_written == 0 and path.read_bytes() == before
+        assert "loses 1 retained business keys" in fetcher.holes[0].last_error
+    else:
+        assert results[0].files_written == 1 and fetcher.holes == ()
+        assert list(pd.read_parquet(path)["ts_code"]) == ["600018.SH"]
+
+
+@pytest.mark.parametrize("code", [
+    "T600019.SH", "T600018.SZ", "T600018.BJ", "T00018.SH", "t600018.SH",
+    "T600018.sh", " T600018.SH", "T600018.SH ", "T６０００１８.SH", "T600018.SH\n",
+])
+def test_unregistered_historical_ids_reject_in_all_full_history_contexts(code):
+    from src.data.tushare.aggregate_response import AggregateResponseError
+    from src.data.tushare.namechange_history import (
+        collect_namechange_history,
+        namechange_security_universe,
+        validate_stock_basic_snapshot,
+    )
+
+    for status in ("L", "D"):
+        frame = _stocks((code,), status)
+        for stamp in (None, RUN_DATE.strftime("%Y%m%d")):
+            with pytest.raises(AggregateResponseError, match="invalid security code"):
+                validate_stock_basic_snapshot(frame, status=status, snapshot_date=stamp)
+    with pytest.raises(AggregateResponseError, match="invalid security code"):
+        namechange_security_universe(
+            _stocks(("600018.SH",), "L"), _stocks(("T600018.SH",), "D"),
+            pd.DataFrame([_name(code)]), snapshot_date=RUN_DATE.strftime("%Y%m%d"),
+        )
+    call = MagicMock()
+    with pytest.raises(AggregateResponseError, match="invalid security code"):
+        collect_namechange_history((code,), call=call)
+    call.assert_not_called()
 
 
 def test_full_mode_queries_sorted_active_delisted_and_retained_union_without_dates(tmp_path):

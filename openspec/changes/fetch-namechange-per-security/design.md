@@ -32,7 +32,8 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    the first name query. Both snapshots must be readable and include every
    producer `STOCK_BASIC_FIELDS` column plus `snapshot_date`, not just the
    fields consumed by the universe selector. They must have unique valid
-   six-digit SH/SZ/BJ codes and their correct L/D status, and have the run's
+   six-digit SH/SZ/BJ codes (plus the D-only historical exception in decision 8)
+   and their correct L/D status, and have the run's
    embedded snapshot date. Neither bucket can be empty (an empty table cannot
    attest its embedded date), and the buckets cannot overlap. A stock-basic
    response at the documented 6,000-row cap is rejected
@@ -89,6 +90,46 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    dry-run and no-pending blind skips remain unchanged. Individual file writes
    are atomic, not a two-file transaction: I/O failures hard-abort and are not
    reported as a successful pair refresh.
+
+8. The first isolated real fetch after PR #494 exposed `T600018.SH` in both
+   the retained D snapshot and the current vendor D response. Accept exactly
+   this opaque historical identifier in D snapshots, retained name history and
+   per-security name requests. L snapshots still require ordinary six-digit
+   SH/SZ/BJ codes. Preserve the entire identifier: never strip `T`, map it to
+   `600018.SH`, infer aliases, or accept a generic T-prefix grammar. Unknown
+   identifiers, changed suffixes/case/whitespace still fail. Raw D responses and
+   existing D snapshots share the same validation; response identity and
+   retained business keys remain exact. A retained historical ID still enters
+   the query union when it is absent from current snapshots. Empty-response
+   rules and all budgets/publication guards remain unchanged.
+
+   Evidence from the isolated 2026-09-18 attempt (not a production acceptance):
+   retained D snapshot SHA-256
+   `30f0037cf72412d2d96153313bfbeafb4816493ce7b007f8f2fccd5499feb962`,
+   raw D response SHA-256
+   `c4de6eb48d66f7f9c6c373828944026235445d4d07e9e4ebc5afb0730fe1b60a`.
+   Both contain symbol `T600018`, listing `20000719`, delisting `20061020`.
+   These observations justify only the exact identifier, not a general vendor
+   grammar or a mapping to another security. The failed execution and its
+   helpers stay frozen; any retry gets a new recovery root and independently
+   reviewed runner/auditor with the same contextual identity policy.
+
+9. The historical exception does not authorize generic `daily`, `adj_factor`
+   or `daily_basic` queries. In full mode, those entry points validate the same
+   complete, same-day L/D pair before reuse. Before any generic calendar/API
+   call or directory/file write, refuse forced or prior-manifest units for the
+   exact historical ID (including one now absent from the snapshots). If the
+   ID is present, require hole-free stock provenance or both current buckets
+   refreshed, complete real ordered listing dates, and a request interval
+   strictly outside its listing lifespan. Overlap, unknown dates or inconsistent
+   snapshots hard-fail; do not claim supported historical prices by omitting it.
+   In each requested year, an existing historical file must be a readable,
+   zero-row Parquet; nonempty, corrupt or non-file artifacts hard-fail unchanged.
+   Only then exclude the exact ID from generic requests with an explicit warning.
+   Missing files stay missing, empty files stay unchanged, and exclusion adds
+   no written/verified units. Ordinary identities remain unchanged. The legacy
+   `date_range` generic behavior is untouched. This preflight does not roll back
+   aggregate endpoints that completed earlier in the same run.
 
 ## Risks / Trade-offs
 
