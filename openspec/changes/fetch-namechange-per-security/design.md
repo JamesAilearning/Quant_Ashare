@@ -75,6 +75,21 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    writes. API retry exhaustion keeps its classification; auth/parameter errors
    still abort. No failed candidate advances retained coverage.
 
+7. In full mode, stock-basic refreshes stage L/D responses before either file
+   is replaced. Validate raw frame type/size, complete producer columns, bucket
+   status, unique valid codes and nonempty/unsaturated rows before stamping;
+   validate the complete same-day pair and disjoint codes before publication.
+   A skipped counterpart is read and validated without being marked refreshed.
+   Any API hole or pair validation failure preserves both prior snapshots and
+   records both existing stock-basic bucket units as holes, retaining original
+   API classification/attempts and marking withheld peers for retry. No writes
+   or coverage advancement are claimed. Only actual fetched buckets are marked
+   refreshed, after every pending write succeeds. Stock validation does not
+   depend on retained name data or the name-specific call budget. Legacy writes,
+   dry-run and no-pending blind skips remain unchanged. Individual file writes
+   are atomic, not a two-file transaction: I/O failures hard-abort and are not
+   reported as a successful pair refresh.
+
 ## Risks / Trade-offs
 
 - Thousands of calls → serial, bounded acquisition; no parallel heavy jobs.

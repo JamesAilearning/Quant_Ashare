@@ -20,6 +20,19 @@ complete and hole-free unless both buckets were successfully refreshed in this
 fetcher run; current stock-basic holes SHALL block full-mode publication. Missing
 or corrupt prerequisites SHALL NOT be treated as an empty security set.
 
+When full mode includes stock-basic acquisition, raw candidates SHALL be
+validated before stamping or replacing snapshots, and all pending buckets plus
+any retained skipped counterpart SHALL pass the same stock-only pair checks
+before either file is written. API or validation failures SHALL preserve both
+prior files, report both stable stock-basic bucket units as holes (preserving
+existing API failure classification and attempts), and advance no coverage.
+Only actually fetched buckets SHALL be marked refreshed after all pending
+writes succeed. A skipped counterpart SHALL NOT become refresh evidence.
+Stock-only validation SHALL NOT depend on retained name data or name query
+budgets. Single-file atomic writes SHALL NOT be claimed as a two-file
+transaction; write failures SHALL hard-abort. Legacy, dry-run and no-pending
+skip behavior SHALL remain unchanged.
+
 Every security SHALL be queried serially with `ts_code` and the existing fields,
 without date filters, pagination or code remapping. Raw history SHALL NOT be
 locally date-filtered or have missing announcement dates filled. Every response
@@ -64,6 +77,13 @@ provider publication or scheduled task SHALL change as a side effect.
 - **WHEN** earlier codes succeeded but a later query exhausts retries, violates
   schema/identity, reaches a response cap or exceeds the cumulative budget
 - **THEN** the old aggregate and coverage remain unchanged with a failed file unit
+
+#### Scenario: Invalid stock response or overlapping buckets precede name queries
+- **WHEN** either full-mode stock response is invalid, fails its API call, or
+  the pending/retained pair overlaps or cannot attest the same run date
+- **THEN** neither old stock file is replaced, stock-basic is recorded with
+  both bucket holes rather than complete provenance, and name queries are blocked
+- **AND** a subsequent holes retry retries both withheld buckets
 
 #### Scenario: A stock snapshot omits a producer field unused by the selector
 - **WHEN** either snapshot lacks any requested stock-basic field, including

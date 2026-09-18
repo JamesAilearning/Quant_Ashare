@@ -390,6 +390,7 @@ def test_one_refreshed_bucket_cannot_hide_prior_stock_hole(tmp_path):
     _assert_unusable(fetcher, path, before)
 
     assert [request.args[0] for request in fetcher._client.call.call_args_list] == ["stock_basic"]
+    assert fetcher._stock_basic_refreshed == {"L"}  # The skipped D bucket is not fresh evidence.
 
 
 def test_current_stock_failure_blocks_names_despite_complete_prior_provenance(tmp_path, monkeypatch):
@@ -687,6 +688,277 @@ def test_cli_failed_refresh_keeps_coverage_then_saved_hole_forces_complete_retry
     assert [request.kwargs["ts_code"] for request in client.call.call_args_list] == [
         "000001.SZ", "600003.SH", "800001.BJ",
     ]
+
+
+def _assert_cli_preserves_snapshots_after_unusable_stock_response(tmp_path, monkeypatch, response):
+    _seed(tmp_path, retained=[_name()])
+    protected = ("active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet")
+    before = {name: (tmp_path / name).read_bytes() for name in protected}
+    cli = _fetch_cli()
+    client = MagicMock()
+    client.call.side_effect = response
+    monkeypatch.setattr(cli, "setup_logging", lambda: None)
+    monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: client)
+    writer = MagicMock(wraps=fetcher_module.atomic_write_parquet)
+    monkeypatch.setattr(fetcher_module, "atomic_write_parquet", writer)
+    args = _fetch_args(tmp_path)
+    args[args.index("--endpoints") + 1] = "stock_basic,namechange"
+
+    assert cli.main(args + ["--refresh-current"]) == 3
+
+    assert {name: (tmp_path / name).read_bytes() for name in protected} == before
+    writer.assert_not_called()
+    assert all(request.args[0] == "stock_basic" for request in client.call.call_args_list)
+    manifest = read_manifest(tmp_path / MANIFEST_FILENAME)
+    assert manifest is not None
+    for endpoint in ("stock_basic", "namechange"):
+        coverage = manifest.endpoints[endpoint]
+        assert coverage.status == "holes" and coverage.holes
+        assert coverage.units_written == coverage.units_verified == 0
+        assert (coverage.coverage_start_date, coverage.coverage_end_date) == (START, END)
+
+
+@pytest.mark.parametrize("status", ["L", "D"])
+@pytest.mark.parametrize("problem", [
+    "empty", "saturated", "wrong_status", "duplicate_code", "invalid_code", "null_code",
+    *[f"missing:{field}" for field in fetcher_module.STOCK_BASIC_FIELDS.split(",")],
+])
+def test_full_cli_invalid_stock_response_preserves_both_snapshots_and_records_holes(
+    tmp_path, monkeypatch, status, problem,
+):
+    from src.data.tushare import namechange_history
+
+    if problem == "saturated":
+        monkeypatch.setattr(namechange_history, "STOCK_BASIC_ROW_GUARD", 2)
+
+    def response(api, **params):
+        frame = _stock_and_names(api, **params)
+        if api != "stock_basic" or params["list_status"] != status:
+            return frame
+        if problem == "empty":
+            return frame.iloc[:0]
+        if problem == "saturated":
+            codes = ("000001.SZ", "000002.SZ") if status == "L" else ("600003.SH", "600004.SH")
+            return _stocks(codes, status).drop(columns="snapshot_date")
+        if problem == "wrong_status":
+            return frame.assign(list_status="P")
+        if problem == "duplicate_code":
+            return pd.concat([frame, frame], ignore_index=True)
+        if problem in {"invalid_code", "null_code"}:
+            return frame.assign(ts_code=None if problem == "null_code" else "000001.HK")
+        return frame.drop(columns=problem.split(":", 1)[1])
+
+    _assert_cli_preserves_snapshots_after_unusable_stock_response(tmp_path, monkeypatch, response)
+
+
+def test_full_cli_overlapping_stock_buckets_preserve_old_pair_and_cannot_be_complete(
+    tmp_path, monkeypatch,
+):
+    def response(api, **params):
+        if api == "stock_basic" and params["list_status"] == "D":
+            return _stocks(("000001.SZ",), "D").drop(columns="snapshot_date")
+        return _stock_and_names(api, **params)
+
+    _assert_cli_preserves_snapshots_after_unusable_stock_response(tmp_path, monkeypatch, response)
+
+
+def _stock_name_cli(root, monkeypatch, response):
+    cli = _fetch_cli()
+    client = MagicMock()
+    client.call.side_effect = response
+    monkeypatch.setattr(cli, "setup_logging", lambda: None)
+    monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: client)
+    writer = MagicMock(wraps=fetcher_module.atomic_write_parquet)
+    monkeypatch.setattr(fetcher_module, "atomic_write_parquet", writer)
+    args = _fetch_args(root)
+    args[args.index("--endpoints") + 1] = "stock_basic,namechange"
+    return cli, client, writer, args
+
+
+@pytest.mark.parametrize("failed_status", ["L", "D"])
+def test_cli_stock_api_hole_withholds_pair_then_retries_both_without_refresh(
+    tmp_path, monkeypatch, failed_status,
+):
+    _seed(tmp_path, retained=[_name()])
+    protected = ("active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet")
+    before = {name: (tmp_path / name).read_bytes() for name in protected}
+    monkeypatch.setattr(fetcher_module.time, "sleep", lambda _: None)
+
+    def response(api, **params):
+        if api == "stock_basic" and params["list_status"] == failed_status:
+            raise TushareClientError("synthetic offline", kind=KIND_NETWORK)
+        return _stock_and_names(api, **params)
+
+    cli, client, writer, args = _stock_name_cli(tmp_path, monkeypatch, response)
+
+    assert cli.main(args + ["--refresh-current"]) == 3
+
+    writer.assert_not_called()
+    assert {name: (tmp_path / name).read_bytes() for name in protected} == before
+    coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["stock_basic"]
+    assert coverage.status == "holes" and coverage.units_written == coverage.units_verified == 0
+    holes = {hole.unit: hole for hole in coverage.holes}
+    assert set(holes) == {"list_status=L (active_stocks)", "list_status=D (delisted_stocks)"}
+    for status, label in (("L", "active_stocks"), ("D", "delisted_stocks")):
+        hole = holes[f"list_status={status} ({label})"]
+        if status == failed_status:
+            assert hole.reason_class == "transient"
+            assert hole.attempts == fetcher_module.MAX_RATE_LIMIT_RETRIES
+            assert "synthetic offline" in hole.last_error
+        else:
+            assert hole.reason_class == "unusable_response" and hole.attempts == 0
+    assert all(request.args[0] == "stock_basic" for request in client.call.call_args_list)
+    assert sum(request.kwargs["list_status"] == failed_status
+               for request in client.call.call_args_list) == fetcher_module.MAX_RATE_LIMIT_RETRIES
+    name_coverage = read_manifest(tmp_path / MANIFEST_FILENAME).endpoints["namechange"]
+    assert name_coverage.status == "holes" and name_coverage.units_written == 0
+    client.reset_mock()
+    client.call.side_effect = _stock_and_names
+
+    assert cli.main(args) == 0  # Saved holes must force BOTH stock files past exists-skip.
+
+    assert [(request.args[0], request.kwargs.get("list_status", request.kwargs.get("ts_code")))
+            for request in client.call.call_args_list] == [
+        ("stock_basic", "L"), ("stock_basic", "D"),
+        ("namechange", "000001.SZ"), ("namechange", "600003.SH"),
+    ]
+    assert [request.args[1].name for request in writer.call_args_list] == list(protected)
+    manifest = read_manifest(tmp_path / MANIFEST_FILENAME)
+    for endpoint, written in (("stock_basic", 2), ("namechange", 1)):
+        coverage = manifest.endpoints[endpoint]
+        assert coverage.status == "complete" and coverage.holes == ()
+        assert coverage.units_written == written and coverage.units_verified == 0
+        assert (coverage.coverage_start_date, coverage.coverage_end_date) == (START, "20260918")
+    assert set(pd.read_parquet(tmp_path / "all_namechanges.parquet")["ts_code"]) == {
+        "000001.SZ", "600003.SH",
+    }
+
+
+@pytest.mark.parametrize("problem", ["overlap", "stale_skipped"])
+def test_cli_pending_bucket_must_validate_retained_partner_before_publishing(
+    tmp_path, monkeypatch, problem,
+):
+    _seed(tmp_path, retained=[_name()])
+    _stock_hole(tmp_path)  # Only D is pending; L remains an exists-skipped snapshot.
+    manifest_path = tmp_path / MANIFEST_FILENAME
+    manifest = read_manifest(manifest_path)
+    manifest.endpoints["namechange"] = EndpointCoverage(
+        "holes", START, END, 0,
+        (FetchHole("namechange", "file", "unusable_response", 1, "prior stock hole"),),
+    )
+    write_manifest(manifest_path, manifest)
+    if problem == "stale_skipped":
+        _stocks(("000001.SZ",), "L").assign(snapshot_date="20260917").to_parquet(
+            tmp_path / "active_stocks.parquet", index=False,
+        )
+    protected = ("active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet")
+    before = {name: (tmp_path / name).read_bytes() for name in protected}
+
+    def response(api, **params):
+        if api == "stock_basic" and problem == "overlap":
+            return _stocks(("000001.SZ",), "D").drop(columns="snapshot_date")
+        return _stock_and_names(api, **params)
+
+    cli, client, writer, args = _stock_name_cli(tmp_path, monkeypatch, response)
+
+    assert cli.main(args) == 3
+
+    writer.assert_not_called()
+    assert {name: (tmp_path / name).read_bytes() for name in protected} == before
+    assert [(request.args[0], request.kwargs["list_status"])
+            for request in client.call.call_args_list] == [("stock_basic", "D")]
+    coverage = read_manifest(manifest_path).endpoints["stock_basic"]
+    assert coverage.status == "holes" and coverage.units_written == coverage.units_verified == 0
+    assert {hole.unit for hole in coverage.holes} == {
+        "list_status=L (active_stocks)", "list_status=D (delisted_stocks)",
+    }
+    assert all(hole.reason_class == "unusable_response" for hole in coverage.holes)
+
+
+@pytest.mark.parametrize("invalid_status", ["L", "D"])
+def test_cli_first_stock_pair_with_invalid_bucket_publishes_neither_file(
+    tmp_path, monkeypatch, invalid_status,
+):
+    root = tmp_path / "fresh"
+
+    def response(api, **params):
+        frame = _stock_and_names(api, **params)
+        return frame.iloc[:0] if api == "stock_basic" and params["list_status"] == invalid_status else frame
+
+    cli, client, writer, args = _stock_name_cli(root, monkeypatch, response)
+
+    assert cli.main(args) == 3
+
+    writer.assert_not_called()
+    assert not any((root / filename).exists() for filename in (
+        "active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet",
+    ))
+    assert all(request.args[0] == "stock_basic" for request in client.call.call_args_list)
+    manifest = read_manifest(root / MANIFEST_FILENAME)
+    for endpoint, count in (("stock_basic", 2), ("namechange", 1)):
+        coverage = manifest.endpoints[endpoint]
+        assert coverage.status == "holes" and len(coverage.holes) == count
+        assert coverage.units_written == coverage.units_verified == 0
+
+
+def test_second_stock_publication_failure_hard_aborts_without_claiming_pair_refresh(tmp_path, monkeypatch):
+    _seed(tmp_path, retained=[_name()])
+    protected = ("active_stocks.parquet", "delisted_stocks.parquet", "all_namechanges.parquet", MANIFEST_FILENAME)
+    before = {name: (tmp_path / name).read_bytes() for name in protected}
+    fetcher = _fetcher(tmp_path, lambda params: None, endpoints=("stock_basic", "namechange"))
+
+    def response(api, **params):
+        frame = _stock_and_names(api, **params)
+        return frame.assign(name="Fresh stock snapshot") if api == "stock_basic" else frame
+
+    fetcher._client.call.side_effect = response
+    real_write = fetcher_module.atomic_write_parquet
+
+    def fail_second_write(frame, path):
+        if path.name == "delisted_stocks.parquet":
+            raise OSError("synthetic second publication failure")
+        return real_write(frame, path)
+
+    writer = MagicMock(side_effect=fail_second_write)
+    monkeypatch.setattr(fetcher_module, "atomic_write_parquet", writer)
+
+    with pytest.raises(OSError, match="synthetic second publication failure"):
+        fetcher.fetch()
+
+    assert [request.args[1].name for request in writer.call_args_list] == list(protected[:2])
+    # Per-file atomic publication is NOT a two-file transaction: L already changed.
+    assert (tmp_path / "active_stocks.parquet").read_bytes() != before["active_stocks.parquet"]
+    assert {name: (tmp_path / name).read_bytes() for name in protected[1:]} == {
+        name: before[name] for name in protected[1:]
+    }
+    assert fetcher._stock_basic_refreshed == set()
+    assert all(request.args[0] == "stock_basic" for request in fetcher._client.call.call_args_list)
+
+
+@pytest.mark.parametrize("mode", ["date_range", "per_security_full"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_stock_blind_skip_and_dry_run_do_not_become_verified_snapshot_reads(tmp_path, monkeypatch, mode, dry_run):
+    for filename in ("active_stocks.parquet", "delisted_stocks.parquet"):
+        (tmp_path / filename).write_bytes(b"unverified legacy checkpoint")
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    fetcher = _fetcher(
+        tmp_path, lambda params: None, endpoints=("stock_basic",),
+        namechange_mode=mode, refresh_current=dry_run, dry_run=dry_run,
+    )
+    reader = MagicMock(side_effect=AssertionError("blind skip must not read the old parquet"))
+    writer = MagicMock(side_effect=AssertionError("blind skip and dry-run must not write"))
+    monkeypatch.setattr(fetcher_module.pd, "read_parquet", reader)
+    monkeypatch.setattr(fetcher_module, "atomic_write_parquet", writer)
+
+    result, = fetcher.fetch()
+
+    assert result.files_written == result.rows_total == result.units_verified == 0
+    assert result.skipped == (0 if dry_run else 2)
+    assert fetcher.holes == () and fetcher._stock_basic_refreshed == set()
+    fetcher._client.call.assert_not_called()
+    reader.assert_not_called()
+    writer.assert_not_called()
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
 @pytest.mark.parametrize("bad", ["unknown", "PER_SECURITY_FULL", "", None, 1, True, []])

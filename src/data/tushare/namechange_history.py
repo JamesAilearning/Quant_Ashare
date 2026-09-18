@@ -33,32 +33,52 @@ def _require_code(value: object, label: str) -> str:
     return value
 
 
+def validate_stock_basic_snapshot(
+    frame: pd.DataFrame, *, status: str, snapshot_date: str | None,
+) -> set[str]:
+    """Validate one bucket; None denotes raw input before our date stamp."""
+    label = f"stock_basic {status}"
+    aggregate._frame_bytes(frame, label)
+    required = set(STOCK_BASIC_FIELDS.split(","))
+    if snapshot_date is not None:
+        aggregate._real_date(snapshot_date, "stock_basic snapshot")
+        required.add("snapshot_date")
+    if not frame.columns.is_unique or not required.issubset(frame.columns):
+        raise aggregate.AggregateResponseError(f"{label}: missing or duplicate snapshot fields")
+    if frame.empty or len(frame) >= STOCK_BASIC_ROW_GUARD:
+        raise aggregate.AggregateResponseError(f"{label}: empty or saturated snapshot")
+    codes = [_require_code(value, label) for value in frame["ts_code"]]
+    if len(codes) != len(set(codes)):
+        raise aggregate.AggregateResponseError(f"{label}: duplicate security codes")
+    expected_columns = {"list_status": status}
+    if snapshot_date is not None:
+        expected_columns["snapshot_date"] = snapshot_date
+    for column, expected in expected_columns.items():
+        if any(not isinstance(value, str) or value != expected for value in frame[column]):
+            raise aggregate.AggregateResponseError(f"{label}: invalid or stale {column}")
+    return set(codes)
+
+
+def stock_basic_security_codes(
+    active: pd.DataFrame, delisted: pd.DataFrame, *, snapshot_date: str,
+) -> set[str]:
+    """Validate the complete pair without depending on retained name history."""
+    buckets: list[set[str]] = []
+    for frame, status in ((active, "L"), (delisted, "D")):
+        buckets.append(validate_stock_basic_snapshot(frame, status=status, snapshot_date=snapshot_date))
+    if buckets[0] & buckets[1]:
+        raise aggregate.AggregateResponseError("stock_basic: overlapping L/D codes")
+    return buckets[0] | buckets[1]
+
+
 def namechange_security_universe(
     active: pd.DataFrame, delisted: pd.DataFrame, retained: pd.DataFrame,
     *, snapshot_date: str,
 ) -> tuple[str, ...]:
     """Freeze validated L/D/retained codes; never infer a missing snapshot."""
-    aggregate._real_date(snapshot_date, "namechange snapshot")
-    buckets: list[set[str]] = []
-    for frame, status in ((active, "L"), (delisted, "D")):
-        label = f"namechange stock_basic {status}"
-        aggregate._frame_bytes(frame, label)
-        required = set(STOCK_BASIC_FIELDS.split(",")) | {"snapshot_date"}
-        if not frame.columns.is_unique or not required.issubset(frame.columns):
-            raise aggregate.AggregateResponseError(f"{label}: missing or duplicate snapshot fields")
-        if frame.empty or len(frame) >= STOCK_BASIC_ROW_GUARD:
-            raise aggregate.AggregateResponseError(f"{label}: empty or saturated snapshot")
-        codes = [_require_code(value, label) for value in frame["ts_code"]]
-        if len(codes) != len(set(codes)):
-            raise aggregate.AggregateResponseError(f"{label}: duplicate security codes")
-        for column, expected in (("list_status", status), ("snapshot_date", snapshot_date)):
-            if any(not isinstance(value, str) or value != expected for value in frame[column]):
-                raise aggregate.AggregateResponseError(f"{label}: invalid or stale {column}")
-        buckets.append(set(codes))
-    if buckets[0] & buckets[1]:
-        raise aggregate.AggregateResponseError("namechange stock_basic: overlapping L/D codes")
+    codes = stock_basic_security_codes(active, delisted, snapshot_date=snapshot_date)
     aggregate.require_retained_keys(retained, retained, "namechange", label="namechange retained")
-    all_codes = buckets[0] | buckets[1] | {
+    all_codes = codes | {
         _require_code(value, "namechange retained") for value in retained["ts_code"]
     }
     if len(all_codes) > MAX_NAMECHANGE_SECURITIES:

@@ -119,6 +119,8 @@ from src.data.tushare.namechange_history import (
     STOCK_BASIC_FIELDS,
     collect_namechange_history,
     namechange_security_universe,
+    stock_basic_security_codes,
+    validate_stock_basic_snapshot,
 )
 
 _logger = get_logger(__name__)
@@ -921,6 +923,8 @@ class TushareFetcher:
         rows = 0
         skipped = 0
         self._stock_basic_refreshed = set()
+        full_names = self._config.namechange_mode == "per_security_full"
+        pending: dict[str, pd.DataFrame] = {}
         for label, status in [("active_stocks", "L"), ("delisted_stocks", "D")]:
             path = self._config.output_dir / f"{label}.parquet"
             unit = f"list_status={status} ({label})"
@@ -942,6 +946,16 @@ class TushareFetcher:
             except FetchHoleError as hole:
                 self._record_hole("stock_basic", f"list_status={status} ({label})", hole)
                 continue
+            if full_names:
+                try:
+                    # Bound and validate the raw frame before allocating its stamp.
+                    validate_stock_basic_snapshot(df, status=status, snapshot_date=None)
+                except AggregateResponseError as exc:
+                    self._record_hole("stock_basic", unit, FetchHoleError(
+                        "stock_basic", reason_class="unusable_response", attempts=1,
+                        last_error=str(exc),
+                    ))
+                    continue
             # P3-5: embed the snapshot date IN the file (YYYYMMDD, one value for
             # every row). Downstream staleness guards previously had only the file
             # mtime — a weak proxy a sync/copy tool can silently refresh; an
@@ -951,12 +965,56 @@ class TushareFetcher:
                         if self._config.namechange_mode == "per_security_full"
                         else self._config.now if self._config.now is not None else date.today())
             df = df.assign(snapshot_date=snapshot.strftime("%Y%m%d"))
+            if full_names:
+                pending[status] = df
+                continue
             atomic_write_parquet(df, path)
             _logger.info("  wrote %d rows to %s", len(df), path)
             written += 1
             rows += len(df)
             self._stock_basic_refreshed.add(status)
+        if full_names and not self._config.dry_run:
+            if any(h.endpoint == "stock_basic" for h in self._holes):
+                self._stock_pair_holes("stock_basic pair withheld because a bucket failed")
+            elif pending:
+                try:
+                    pair = dict(pending)
+                    for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+                        if status not in pair:
+                            try:
+                                pair[status] = pd.read_parquet(self._config.output_dir / f"{label}.parquet")
+                            except Exception as exc:
+                                raise AggregateResponseError(
+                                    f"stock_basic {status}: retained snapshot is unreadable ({type(exc).__name__})"
+                                ) from exc
+                    stock_basic_security_codes(
+                        pair["L"], pair["D"], snapshot_date=self._namechange_snapshot_date.strftime("%Y%m%d"),
+                    )
+                except AggregateResponseError as exc:
+                    self._stock_pair_holes(str(exc))
+                else:
+                    # No API/validation failure can change either old snapshot.
+                    # Each write is atomic; an I/O failure is a hard abort, not
+                    # a claim of a two-file transaction or successful refresh.
+                    for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+                        if status in pending:
+                            path = self._config.output_dir / f"{label}.parquet"
+                            atomic_write_parquet(pending[status], path)
+                            _logger.info("  wrote %d rows to %s", len(pending[status]), path)
+                            written += 1
+                            rows += len(pending[status])
+                    self._stock_basic_refreshed.update(pending)
         return TushareFetchResult("stock_basic", written, rows, skipped)
+
+    def _stock_pair_holes(self, reason: str) -> None:
+        """Retry both withheld buckets; keep any original API failure evidence."""
+        recorded = {hole.unit for hole in self._holes if hole.endpoint == "stock_basic"}
+        for label, status in (("active_stocks", "L"), ("delisted_stocks", "D")):
+            unit = f"list_status={status} ({label})"
+            if unit not in recorded:
+                self._record_hole("stock_basic", unit, FetchHoleError(
+                    "stock_basic", reason_class="unusable_response", attempts=0, last_error=reason,
+                ))
 
     def _fetch_namechange(self) -> TushareFetchResult:
         """Pull the explicitly selected name-history strategy; never fall back."""
