@@ -222,6 +222,8 @@ def test_historical_empty_response_cannot_be_filled_by_ordinary_identity(tmp_pat
 @pytest.mark.parametrize("code", [
     "T600019.SH", "T600018.SZ", "T600018.BJ", "T00018.SH", "t600018.SH",
     "T600018.sh", " T600018.SH", "T600018.SH ", "T６０００１８.SH", "T600018.SH\n",
+    "X19364.SH", "X19363.SZ", "x19363.SH", "X19363.sh", " X19363.SH", "X19363.SH ",
+    "X１９３６３.SH", "X19363.SH\n",
 ])
 def test_unregistered_historical_ids_reject_in_all_full_history_contexts(code):
     from src.data.tushare.aggregate_response import AggregateResponseError

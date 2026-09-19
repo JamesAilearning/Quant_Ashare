@@ -19,6 +19,10 @@ class QlibToTsCodeTests(unittest.TestCase):
         self.assertEqual(qlib_to_ts_code("T600018.SH"), "T600018.SH")
         self.assertEqual(to_qlib_ticker("600018.SH"), "SH600018")
         self.assertEqual(qlib_to_ts_code("SH600018"), "600018.SH")
+        self.assertEqual(to_qlib_ticker("X19363.SH"), "X19363.SH")
+        self.assertEqual(qlib_to_ts_code("X19363.SH"), "X19363.SH")
+        self.assertEqual(to_qlib_ticker("019363.SH"), "SH019363")
+        self.assertEqual(qlib_to_ts_code("SH019363"), "019363.SH")
 
     def test_qlib_to_ts_code_exchanges(self) -> None:
         # The exact conversions the daily-recommend name lookup relied on.

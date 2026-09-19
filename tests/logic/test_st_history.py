@@ -107,6 +107,21 @@ class DedupAndAmbiguityTests(unittest.TestCase):
 
 
 class ComputeStMaskTests(unittest.TestCase):
+    def test_name_only_identity_does_not_mask_a_distinct_ordinary_security(self) -> None:
+        lk = build_st_lookup(_nc([
+            ("X19363.SH", "ST name history", "20000101"),
+            ("019363.SH", "Ordinary name", "20000101"),
+        ]))
+        mask, attr = compute_st_mask([
+            ("2000-06-01", "X19363.SH"), ("2000-06-01", "SH019363"),
+        ], lk)
+        self.assertEqual(mask, frozenset({("2000-06-01", "X19363.SH")}))
+        self.assertEqual(attr, [{
+            "date": "2000-06-01", "instrument": "X19363.SH",
+            "ts_code": "X19363.SH", "name": "ST name history",
+        }])
+        self.assertEqual(name_on(lk, "019363.SH", "2000-06-01"), "Ordinary name")
+
     def test_historical_vendor_id_does_not_mask_distinct_ordinary_security(self) -> None:
         lk = build_st_lookup(_nc([
             ("T600018.SH", "ST historical", "20000101"),

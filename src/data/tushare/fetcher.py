@@ -117,6 +117,7 @@ from src.data.tushare.fetch_types import (  # noqa: F401
     TushareFetchResult as TushareFetchResult,
 )
 from src.data.tushare.namechange_history import (
+    HISTORICAL_DELISTED_CODES,
     HISTORICAL_NAMECHANGE_CODES,
     STOCK_BASIC_FIELDS,
     collect_namechange_history,
@@ -1918,7 +1919,7 @@ class TushareFetcher:
             )
         except AggregateResponseError as exc:
             raise TushareFetcherError(f"{endpoint}: unusable full-mode stock snapshots: {exc}") from exc
-        historical = tickers & HISTORICAL_NAMECHANGE_CODES
+        historical = tickers & HISTORICAL_DELISTED_CODES
         if not historical:
             return tuple(sorted(tickers))
         if any(hole.endpoint == "stock_basic" for hole in self._holes):

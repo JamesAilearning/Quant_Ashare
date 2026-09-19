@@ -25,15 +25,19 @@ MAX_NAMECHANGE_SECURITIES = 10_000
 # Official stock_basic response cap; saturation cannot attest a full snapshot.
 STOCK_BASIC_ROW_GUARD = 6_000
 _CODE = re.compile(r"[0-9]{6}\.(SH|SZ|BJ)")
-# Observed opaque vendor identity, not a general T-prefix grammar or an alias
-# for 600018.SH. See fetch-namechange-per-security design decision 8.
-HISTORICAL_NAMECHANGE_CODES = frozenset({"T600018.SH"})
+# Exact observed identities, not prefix grammars or aliases for numeric codes.
+# The name-only exception must never authorize membership in a stock snapshot.
+# See fetch-namechange-per-security design decisions 8 and 10.
+HISTORICAL_DELISTED_CODES = frozenset({"T600018.SH"})
+HISTORICAL_NAMECHANGE_CODES = HISTORICAL_DELISTED_CODES | frozenset({"X19363.SH"})
 
 
-def _require_code(value: object, label: str, *, allow_historical: bool = False) -> str:
+def _require_code(
+    value: object, label: str, *, historical_codes: frozenset[str] = frozenset(),
+) -> str:
     if not isinstance(value, str) or (
         _CODE.fullmatch(value) is None
-        and not (allow_historical and value in HISTORICAL_NAMECHANGE_CODES)
+        and value not in historical_codes
     ):
         raise aggregate.AggregateResponseError(f"{label}: invalid security code")
     return value
@@ -54,7 +58,7 @@ def validate_stock_basic_snapshot(
     if frame.empty or len(frame) >= STOCK_BASIC_ROW_GUARD:
         raise aggregate.AggregateResponseError(f"{label}: empty or saturated snapshot")
     codes = [
-        _require_code(value, label, allow_historical=status == "D")
+        _require_code(value, label, historical_codes=HISTORICAL_DELISTED_CODES if status == "D" else frozenset())
         for value in frame["ts_code"]
     ]
     if len(codes) != len(set(codes)):
@@ -88,7 +92,7 @@ def namechange_security_universe(
     codes = stock_basic_security_codes(active, delisted, snapshot_date=snapshot_date)
     aggregate.require_retained_keys(retained, retained, "namechange", label="namechange retained")
     all_codes = codes | {
-        _require_code(value, "namechange retained", allow_historical=True)
+        _require_code(value, "namechange retained", historical_codes=HISTORICAL_NAMECHANGE_CODES)
         for value in retained["ts_code"]
     }
     if len(all_codes) > MAX_NAMECHANGE_SECURITIES:
@@ -108,7 +112,7 @@ def collect_namechange_history(
     if not securities or len(securities) > MAX_NAMECHANGE_SECURITIES:
         raise aggregate.AggregateResponseError("namechange: empty set or security/call budget exceeded")
     validated = [
-        _require_code(code, "namechange request", allow_historical=True)
+        _require_code(code, "namechange request", historical_codes=HISTORICAL_NAMECHANGE_CODES)
         for code in securities
     ]
     if len(set(validated)) != len(validated):
