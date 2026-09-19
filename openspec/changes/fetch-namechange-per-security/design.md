@@ -131,6 +131,29 @@ raw/manifest schema changes; automatic production deployment or scheduler change
    `date_range` generic behavior is untouched. This preflight does not roll back
    aggregate endpoints that completed earlier in the same run.
 
+10. The second isolated attempt passed the stock pair but rejected the retained
+    name-only identity `X19363.SH`. An exact, unbounded six-field query at
+    `2026-09-18T22:06:24Z` returned one row with this exact code and preserved
+    its business key independently against both retained generations. Response
+    JSON SHA-256: `58f78c128122959a91cc0e576e68cfc68326c2a07ab25bc4d5e84a34464a66d7`.
+    The live and old name-file SHA-256 values were respectively
+    `ccce3fb289cf96fe942d909c3c97373259a7b8f2c1e170b7c0f4408cfb06af7c` and
+    `e0647fd30ab227237763bb54e322fb5c90dc0759d49042c15c2096a60b42d000`.
+    This is diagnostic evidence, not a production acceptance or a vendor-wide
+    completeness claim. The same probe returned a schema-bearing empty response
+    for T600018.SH, which has no retained name keys in either generation.
+
+    Accept exactly X19363.SH in retained names and name requests, not in either
+    L or D stock snapshots. Separate the D-only exception set (T600018.SH) from
+    the name-history set (the D-only set plus X19363.SH). No X-prefix grammar,
+    mapping to 019363.SH, inferred listing status, old-row union or relaxed
+    response/retention validation is authorized. Generic prior/forced-hole
+    checks cover both name-history identities even when absent from current
+    stock snapshots; the existing stock lifespan exclusion still applies only
+    to validated D identities. Keep both failed recovery roots and runtime
+    helpers immutable; independently reviewed new helpers must apply the same
+    stock-versus-name distinction before any new full retry.
+
 ## Risks / Trade-offs
 
 - Thousands of calls → serial, bounded acquisition; no parallel heavy jobs.

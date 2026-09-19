@@ -19,8 +19,15 @@
 
 - [x] 3a.1 Specify the exact D/history-only `T600018.SH` exception and add synthetic failing regressions without remapping identities. Before fix: seven targeted cases fail because the historical ID is rejected before the expected name queries (153 pass).
 - [x] 3a.2 Apply the same contextual rule to raw D, existing D, retained names and frozen name requests; protect L and unknown identifiers.
-- [ ] 3a.3 Run serial targeted/full gates and local final-diff review; publish a focused follow-up PR, request Codex review, and merge only when clean.
-- [x] 3a.4 Address PR #495's cross-endpoint finding: prevent generic historical-ID requests without silently omitting in-window data, bypassing existing files or healing unprocessed holes. Before fix: 107 of 116 new scenarios fail; after fix: 116 pass. Data pipeline: 1,141 pass (one skip); logic/governance: 5,504 pass (33 skips); imports, lint, types, strict OpenSpec and two independent local reviews pass. Remote re-review and merge remain gated by 3a.3.
+- [x] 3a.3 Run serial targeted/full gates and local final-diff review; publish a focused follow-up PR, request Codex review, and merge only when clean. PR #495 merged as `cf8fb59` after clean Codex review on `be06cd6` and all seven CI checks.
+- [x] 3a.4 Address PR #495's cross-endpoint finding: prevent generic historical-ID requests without silently omitting in-window data, bypassing existing files or healing unprocessed holes. Before fix: 107 of 116 new scenarios fail; after fix: 116 pass. Data pipeline: 1,141 pass (one skip); logic/governance: 5,504 pass (33 skips); imports, lint, types, strict OpenSpec and two independent local reviews pass. Remote re-review and merge completed in 3a.3.
+
+## 3b. Retained-name-only identity discovered by complete identifier inventory
+
+- [x] 3b.1 Record the exact X19363.SH vendor/retention evidence and synthetic pre-fix failures. Before fix: 27 focused cases fail, 323 pass; invalid retained-code rejection prevents intended name calls and X generic holes are not refused.
+- [x] 3b.2 Separate stock-D and name-history exceptions; preserve generic pending holes, identity, retention and publication guards.
+- [x] 3b.3 Run serial targeted/full gates and independent final-diff review. Final focused: 354 pass; data pipeline: 1,194 pass (one skip); logic/governance: 5,505 pass (33 skips). Imports, lint, types (239 files), strict OpenSpec and two independent final-diff reviews pass. Existing 23 full-suite warnings remain visible; no runtime acceptance is claimed.
+- [ ] 3b.4 Publish, request Codex review and merge only after clean review and CI.
 
 ## 4. Operational acceptance (separate from code completion)
 
@@ -35,3 +42,8 @@ verified 257,566 unique rows, exact replay of 172 responses, and zero missing
 keys against each 5,000-row baseline; the whole attempt remains unaccepted.
 Keep its evidence immutable. A subsequent retry requires newly reviewed helpers
 and a new directory, and must revalidate the complete attempt.
+
+The second isolated attempt (`production_recovery_20260918b`) fetched valid
+L/D snapshots but rejected X19363.SH in retained names before any name query.
+It remains unaccepted; its suspension output is not a full acceptance. The
+subsequent read-only two-code diagnostic authorized no writes or deployment.
