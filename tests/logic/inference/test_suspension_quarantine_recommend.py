@@ -26,6 +26,45 @@ _CONTEXT_COLUMNS = [
 ]
 
 
+def test_conflict_policy_excludes_only_688005_and_discloses_matching_evidence(
+    run_recommend, monkeypatch, tmp_path,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    policy = "suspend-688005-20260116-conflict"
+    evidence = {**_evidence(), "policy_id": policy, "missing_dates": ["20260116"]}
+    monkeypatch.setattr(f"{__name__}._evidence", lambda: evidence)
+    scores = {"SH688005": 0.99, "SH688766": 0.9, "SH600000": 0.8}
+    result = run_recommend(scores=scores, policy=policy)
+    assert [pick.stock_code for pick in result.picks] == ["SH688766"]
+    audit = result.scored_frame.set_index("stock_code")
+    assert audit["predicted_score"].to_dict() == scores
+    assert audit.loc["SH688005", "unavailable_reason"] == "data_quarantine"
+    assert audit.loc["SH688766", "tradable_flag"]
+    assert result.run_meta["instruments"] == "csi300"
+    assert result.run_meta["suspension_quarantine"]["instrument"] == "SH688005"
+    projection = dr._quarantine_output_context(result)
+    assert projection["quarantined_instrument"] == "SH688005"
+    paths = dr.write_outputs(result, str(tmp_path / "out"))
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    for key in ("csv", "audit"):
+        with Path(paths[key]).open(encoding="utf-8-sig", newline="") as stream:
+            for row in csv.DictReader(stream):
+                assert row["suspension_quarantine_policy"] == policy
+                assert row["quarantined_instrument"] == "SH688005"
+    notice = quarantine_notice(payload)
+    assert "688005.SH" in notice and "冲突" in notice and "持仓" in notice
+    payload["meta"]["suspension_quarantine"]["policy_id"] = _POLICY
+    payload["meta"]["suspension_quarantine"]["instrument"] = _INSTRUMENT
+    with pytest.raises(ValueError):
+        quarantine_notice(payload)
+    bad = replace(result, run_meta={**result.run_meta, "suspension_quarantine":
+                                   payload["meta"]["suspension_quarantine"]})
+    with pytest.raises(dr.DailyRecommendationError):
+        dr.write_outputs(bad, str(tmp_path / "must-not-write"))
+    assert not (tmp_path / "must-not-write").exists()
+
+
 def _evidence():
     return {
         "policy_id": _POLICY,
@@ -174,9 +213,9 @@ def run_recommend(tmp_path, monkeypatch):
             missing_quarantine_name=False):
         _stamp(tmp_path / "bundle", clean=clean)
         names = pd.DataFrame({
-            "ts_code": ["688766.SH", "600000.SH", "000001.SZ"],
-            "name": ["*ST隔离" if overlap else "隔离样本", "浦发银行", "平安银行"],
-            "snapshot_date": ["20260922"] * 3,
+            "ts_code": ["688766.SH", "600000.SH", "000001.SZ", "688005.SH"],
+            "name": ["*ST隔离" if overlap else "隔离样本", "浦发银行", "平安银行", "冲突样本"],
+            "snapshot_date": ["20260922"] * 4,
         })
         if missing_quarantine_name:
             names = names[names["ts_code"] != "688766.SH"]

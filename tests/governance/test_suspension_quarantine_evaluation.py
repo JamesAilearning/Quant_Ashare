@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("qlib")
 
-from src.contracts.suspension_quarantine import POLICY_ID, SuspensionQuarantine
+from src.contracts.suspension_quarantine import POLICY_IDS, SuspensionQuarantine, incident_for_policy
 from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -22,11 +22,16 @@ from src.data.pit.bundle_integrity import write_bundle_integrity
 from src.data.tushare.fetch_types import FetchHole
 
 
-def _quarantined_provider(tmp_path):
+@pytest.fixture(params=POLICY_IDS)
+def quarantine_policy(request):
+    return request.param
+
+
+def _quarantined_provider(tmp_path, policy):
     provider = tmp_path / "provider"
     evidence = SuspensionQuarantine(
-        policy_id=POLICY_ID,
-        missing_dates=("20251127",),
+        policy_id=policy,
+        missing_dates=(min(incident_for_policy(policy).dates),),
         reference_sha256="a" * 64,
         retained_sha256="b" * 64,
         candidate_sha256="c" * 64,
@@ -78,11 +83,11 @@ def _gate_args(scope, provider, output):
 @pytest.mark.parametrize("metrics_purpose", ["official", "predictions_only"])
 @pytest.mark.parametrize("padding", ["", "  "])
 def test_initialized_backtest_refuses_quarantine_before_qlib_reads(
-    tmp_path, monkeypatch, metrics_purpose, padding,
+    tmp_path, monkeypatch, metrics_purpose, padding, quarantine_policy,
 ):
     from src.core import backtest_runner
 
-    provider = _quarantined_provider(tmp_path)
+    provider = _quarantined_provider(tmp_path, quarantine_policy)
     monkeypatch.setattr(backtest_runner, "is_canonical_qlib_initialized", lambda: True)
     monkeypatch.setattr(
         backtest_runner, "get_canonical_qlib_config",
@@ -102,10 +107,10 @@ def test_initialized_backtest_refuses_quarantine_before_qlib_reads(
 
 
 @pytest.mark.parametrize("padding", ["", "  "])
-def test_frozen_evaluation_refuses_quarantine_before_model_or_output(tmp_path, monkeypatch, padding):
+def test_frozen_evaluation_refuses_quarantine_before_model_or_output(tmp_path, monkeypatch, padding, quarantine_policy):
     from scripts import eval_frozen_model_oos
 
-    provider = _quarantined_provider(tmp_path)
+    provider = _quarantined_provider(tmp_path, quarantine_policy)
     output = tmp_path / "must-not-create" / "eval.json"
     heavy = Mock(side_effect=AssertionError("must not initialize qlib or load a model"))
     monkeypatch.setattr(eval_frozen_model_oos, "_predictions_over_window", heavy)
@@ -121,11 +126,11 @@ def test_frozen_evaluation_refuses_quarantine_before_model_or_output(tmp_path, m
 @pytest.mark.parametrize("scope", ["member", "ensemble"])
 @pytest.mark.parametrize("padding", ["", "  "])
 def test_retrain_gate_refuses_quarantine_before_measurement_or_output(
-    tmp_path, monkeypatch, scope, padding,
+    tmp_path, monkeypatch, scope, padding, quarantine_policy,
 ):
     from scripts import retrain_gate
 
-    provider = _quarantined_provider(tmp_path)
+    provider = _quarantined_provider(tmp_path, quarantine_policy)
     output = tmp_path / "must-not-create" / "gate.json"
     member = Mock(side_effect=AssertionError("must not load member or measure IC"))
     ensemble = Mock(side_effect=AssertionError("must not load ensemble or backtest"))
@@ -139,10 +144,12 @@ def test_retrain_gate_refuses_quarantine_before_measurement_or_output(
 
 
 @pytest.mark.parametrize("scope", ["member", "ensemble"])
-def test_quarantined_retrain_cli_reports_tool_error_not_gate_failure(tmp_path, monkeypatch, capsys, scope):
+def test_quarantined_retrain_cli_reports_tool_error_not_gate_failure(
+    tmp_path, monkeypatch, capsys, scope, quarantine_policy,
+):
     from scripts import retrain_gate
 
-    provider = _quarantined_provider(tmp_path)
+    provider = _quarantined_provider(tmp_path, quarantine_policy)
     output = tmp_path / "must-not-create" / "gate.json"
     heavy = Mock(side_effect=AssertionError("must not measure quarantine"))
     monkeypatch.setattr(retrain_gate, f"_{scope}_scope", heavy)

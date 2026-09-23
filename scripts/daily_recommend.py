@@ -41,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.contracts.suspension_quarantine import POLICY_ID as SUSPENSION_QUARANTINE_POLICY  # noqa: E402
+from src.contracts.suspension_quarantine import POLICY_IDS  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
@@ -318,7 +318,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "build-side --allow-holey-fetch: building partial data does not "
              "sanction trading on it, so this is a second explicit opt-in.")
     p.add_argument(
-        "--suspension-quarantine", choices=(SUSPENSION_QUARANTINE_POLICY,),
+        "--suspension-quarantine", choices=POLICY_IDS,
         default=RecommendationConfig.suspension_quarantine,
         help="Separately opt into the exact suspension-history incident. "
              "Its security is excluded from picks; data remains incomplete. "
