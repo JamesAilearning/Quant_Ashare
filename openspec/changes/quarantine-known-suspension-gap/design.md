@@ -46,6 +46,13 @@ automatic production switch, or granting historical performance certification.
    Only an explicit matching, non-dry suspension refresh may recover: an already
    committed pair needs journal cleanup; an uncommitted candidate is preserved
    as evidence and rolled back to the saved prior bytes before mandatory refetch.
+   Rollback durably changes the journal phase to `retry_required`, never clears
+   it. An explicit matching refresh alone can read the hash-bound prior manifest;
+   ordinary readers remain blocked across credential errors, network errors and
+   process restarts. Only preparation of a real successor candidate rebinds the
+   journal as `publishing`, and only its completed raw/manifest commit clears it.
+   This includes a successor that returns all eight keys before any quarantine
+   manifest was committed. Failed/no-write manifests cannot fulfill this obligation.
    Unknown bytes, corrupt journals or insufficient scope fail without mutation.
    Candidate bytes are fsynced before journal publication. This protocol covers
    process interruption and write failure; it does not claim arbitrary device or

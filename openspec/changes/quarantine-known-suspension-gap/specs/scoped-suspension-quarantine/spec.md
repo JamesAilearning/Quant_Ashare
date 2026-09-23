@@ -43,6 +43,15 @@ it MUST NOT infer completeness from whichever file happens to exist.
 - **WHEN** both published files match the recorded committed hashes
 - **THEN** the same explicit recovery may finish cleanup and continue safely
 
+#### Scenario: A restored prior pair still owes a real refresh
+- **WHEN** rollback succeeds but client construction, acquisition or subsequent
+  publication fails before a new raw/manifest pair commits
+- **THEN** durable `retry_required` state remains across process restarts;
+  ordinary reads/builds/reset refuse, and only the matching full-scope real
+  refresh can read the proven prior metadata without clearing the obligation
+- **AND** only a real successor candidate and matching manifest commit clear it,
+  including a candidate that genuinely restores every incident key
+
 #### Scenario: Recovery is unapproved or evidence changed
 - **WHEN** recovery is dry-run, default, reset, endpoint-subset or narrower than
   the recorded request, or a journal/file hash is unknown or corrupt

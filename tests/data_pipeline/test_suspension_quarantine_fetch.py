@@ -531,3 +531,30 @@ def test_candidate_fsync_failure_keeps_prior_pair_and_does_not_publish_pending(t
     assert (tmp_path / MANIFEST_FILENAME).read_bytes() == before_manifest
     assert not pending_quarantine_exists(tmp_path)
     assert read_manifest(tmp_path / MANIFEST_FILENAME).schema_version == 1
+
+
+def test_client_failure_after_rollback_keeps_durable_refetch_obligation(tmp_path, monkeypatch):
+    from src.data.tushare.client import TushareClientError
+
+    _seed(tmp_path)
+    candidate = pd.DataFrame([_row()], columns=FIELDS)
+    assert _fetch(tmp_path, candidate).fetch()[0].files_written == 1
+    cli = _cli()
+
+    def no_client():
+        raise TushareClientError("synthetic credentials unavailable")
+
+    monkeypatch.setattr(cli.TushareClient, "from_environment", no_client)
+    args = ["--output-dir", str(tmp_path), "--start-date", START, "--end-date", END,
+            "--endpoints", "suspend_d", "--rate-limit-sleep-ms", "0",
+            "--suspension-quarantine", POLICY]
+    assert cli.main(args) == 1
+    assert pending_quarantine_exists(tmp_path), "rollback must retain the durable real-refetch obligation"
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(tmp_path / MANIFEST_FILENAME)
+    retry_client = _client(candidate)
+    monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: retry_client)
+    assert cli.main(args) == 3
+    assert retry_client.call.call_count > 0
+    assert not pending_quarantine_exists(tmp_path)
+    assert read_manifest(tmp_path / MANIFEST_FILENAME).schema_version == 2

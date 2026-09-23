@@ -70,6 +70,7 @@ from src.data.tushare.fetch_manifest import (  # noqa: E402
     clear_manifest,
     merge_manifest,
     read_manifest,
+    read_manifest_for_quarantine_refresh,
     write_manifest,
 )
 from src.data.tushare.fetch_ranges import (  # noqa: E402
@@ -336,7 +337,13 @@ def main(argv: list[str] | None = None) -> int:
     # corrupt manifest stops the run — and per the P3-7b red line it is LEFT
     # IN PLACE for inspection: only an explicit --reset-manifest removes it.
     try:
-        prev_manifest = read_manifest(manifest_path)
+        prev_manifest = (
+            read_manifest_for_quarantine_refresh(
+                manifest_path, policy=config.suspension_quarantine,
+                start_date=config.effective_start_date("suspend_d"), end_date=config.end_date,
+                enabled=not config.dry_run and "suspend_d" in config.endpoints,
+            ) if suspension_recovered else read_manifest(manifest_path)
+        )
     except FetchManifestError as exc:
         _logger.error(
             "Fetch manifest unreadable at run start: %s — refusing to run "

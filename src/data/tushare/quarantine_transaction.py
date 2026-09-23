@@ -37,7 +37,7 @@ _MANIFEST_FILENAME = "fetch_manifest.json"
 _RAW_FILENAME = "suspend_d.parquet"
 _EVIDENCE_DIRECTORY = "_suspension_quarantine"
 _FIELDS = frozenset({
-    "schema_version", "policy_id", "retained_sha256", "candidate_sha256",
+    "schema_version", "phase", "policy_id", "retained_sha256", "candidate_sha256",
     "before_manifest_sha256", "after_manifest_sha256", "quarantine_after",
     "query_start_date", "query_end_date",
 })
@@ -150,9 +150,11 @@ def _bounds(start: object, end: object) -> tuple[str, str]:
 
 def _validate_journal(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != _FIELDS:
-        raise QuarantineTransactionError("pending quarantine journal must contain exactly its nine fields")
+        raise QuarantineTransactionError("pending quarantine journal must contain exactly its ten fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != JOURNAL_SCHEMA_VERSION:
         raise QuarantineTransactionError("unsupported pending quarantine journal schema")
+    if value["phase"] not in ("publishing", "retry_required"):
+        raise QuarantineTransactionError("unsupported pending quarantine publication phase")
     if validate_policy(value["policy_id"]) != POLICY_ID:
         raise QuarantineTransactionError("pending quarantine journal requires the explicit policy")
     for field in ("retained_sha256", "candidate_sha256", "before_manifest_sha256", "after_manifest_sha256"):
@@ -207,6 +209,37 @@ def _require_digest(path: Path, expected: str, *, limit: int = _MAX_RAW_BYTES) -
         raise QuarantineTransactionError(f"pending quarantine SHA mismatch: {path}")
 
 
+def _retry_journal(
+    raw_dir: Path, *, policy: str | None, start_date: str, end_date: str, enabled: bool,
+) -> dict[str, Any]:
+    """Authorize only the exact rolled-back pair for a real, selected refresh."""
+    if enabled is not True or validate_policy(policy) != POLICY_ID:
+        raise QuarantineTransactionError("pending quarantine requires an explicit matching non-dry suspend_d refresh")
+    start, end = _bounds(start_date, end_date)
+    journal = _read_pending(raw_dir)
+    if (journal["phase"] != "retry_required" or start > journal["query_start_date"]
+            or end < journal["query_end_date"]):
+        raise QuarantineTransactionError("pending quarantine is not a whole-range recovered refresh context")
+    _require_digest(raw_dir / _RAW_FILENAME, journal["retained_sha256"])
+    _require_digest(_snapshot(raw_dir, journal["retained_sha256"]), journal["retained_sha256"])
+    if _digest(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES, optional=True) != journal["before_manifest_sha256"]:
+        raise QuarantineTransactionError("pending quarantine recovered manifest SHA changed")
+    return journal
+
+
+def read_pending_refresh_manifest(
+    raw_dir: Path, *, policy: str | None, start_date: str, end_date: str, enabled: bool,
+) -> dict[str, Any] | None:
+    """Read bound prior metadata only for retry; never discharge the journal."""
+    raw_dir = Path(raw_dir)
+    journal = _retry_journal(raw_dir, policy=policy, start_date=start_date, end_date=end_date, enabled=enabled)
+    result = (_read_json(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES)
+              if journal["before_manifest_sha256"] is not None else None)
+    if _retry_journal(raw_dir, policy=policy, start_date=start_date, end_date=end_date, enabled=enabled) != journal:
+        raise QuarantineTransactionError("pending quarantine retry context changed while reading")
+    return result
+
+
 def begin_quarantine_publication(
     raw_dir: Path, *, retained_sha256: str, candidate_sha256: str,
     quarantine_after: SuspensionQuarantine | None,
@@ -214,20 +247,29 @@ def begin_quarantine_publication(
 ) -> None:
     """Bind the transition BEFORE raw replacement; retained archive is required."""
     raw_dir = Path(raw_dir)
-    assert_no_pending_quarantine(raw_dir)
+    previous = (_retry_journal(raw_dir, policy=POLICY_ID, start_date=query_start_date,
+                               end_date=query_end_date, enabled=True)
+                if pending_quarantine_exists(raw_dir) else None)
+    if previous is not None and previous["retained_sha256"] != retained_sha256:
+        raise QuarantineTransactionError("pending quarantine retry changed retained input")
     if quarantine_after is not None and not isinstance(quarantine_after, SuspensionQuarantine):
         raise QuarantineTransactionError("quarantine_after must be typed evidence or None")
     journal = _validate_journal({
-        "schema_version": JOURNAL_SCHEMA_VERSION, "policy_id": POLICY_ID,
+        "schema_version": JOURNAL_SCHEMA_VERSION, "phase": "publishing", "policy_id": POLICY_ID,
         "retained_sha256": retained_sha256, "candidate_sha256": candidate_sha256,
-        "before_manifest_sha256": _digest(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES, optional=True),
+        "before_manifest_sha256": (previous["before_manifest_sha256"] if previous is not None else
+                                   _digest(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES, optional=True)),
         "after_manifest_sha256": None,
         "quarantine_after": quarantine_after.to_dict() if quarantine_after is not None else None,
         "query_start_date": query_start_date, "query_end_date": query_end_date,
     })
     _require_digest(raw_dir / _RAW_FILENAME, retained_sha256)
     _require_digest(_snapshot(raw_dir, retained_sha256), retained_sha256)
-    _write_pending(raw_dir, journal, create=True)
+    if previous is not None and _retry_journal(
+        raw_dir, policy=POLICY_ID, start_date=query_start_date, end_date=query_end_date, enabled=True,
+    ) != previous:
+        raise QuarantineTransactionError("pending quarantine retry changed before new publication")
+    _write_pending(raw_dir, journal, create=previous is None)
 
 
 def _validate_manifest_target(manifest: Mapping[str, Any], journal: dict[str, Any]) -> None:
@@ -260,6 +302,8 @@ def prepare_quarantine_manifest_commit(
     if not pending_quarantine_exists(raw_dir):
         return None
     journal = _read_pending(raw_dir)
+    if journal["phase"] != "publishing":
+        raise QuarantineTransactionError("pending quarantine still requires a successful real suspension refresh")
     _validate_manifest_target(manifest, journal)
     _require_digest(raw_dir / _RAW_FILENAME, journal["candidate_sha256"])
     _require_digest(_snapshot(raw_dir, journal["retained_sha256"]), journal["retained_sha256"])
@@ -286,6 +330,8 @@ def finish_quarantine_manifest_commit(raw_dir: Path, journal: dict[str, Any] | N
     """A failed check or deletion deliberately leaves the blocking marker."""
     if journal is None:
         return
+    if journal["phase"] != "publishing":
+        raise QuarantineTransactionError("pending quarantine retry cannot finish before actual publication")
     raw_dir = Path(raw_dir)
     _require_digest(raw_dir / _RAW_FILENAME, journal["candidate_sha256"])
     after = journal["after_manifest_sha256"]
@@ -346,7 +392,7 @@ def recover_quarantine_publication(
     retained = journal["retained_sha256"]
     candidate = journal["candidate_sha256"]
     _require_digest(_snapshot(raw_dir, retained), retained)
-    if (raw_hash == candidate and journal["after_manifest_sha256"] is not None
+    if (journal["phase"] == "publishing" and raw_hash == candidate and journal["after_manifest_sha256"] is not None
             and manifest_hash == journal["after_manifest_sha256"]):
         _validate_manifest_target(_read_json(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES), journal)
         finish_quarantine_manifest_commit(raw_dir, journal)
@@ -366,6 +412,9 @@ def recover_quarantine_publication(
     _require_digest(raw_dir / _RAW_FILENAME, retained)
     if _digest(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES, optional=True) != journal["before_manifest_sha256"]:
         raise QuarantineTransactionError("pending quarantine manifest changed during rollback")
-    _remove_pending(raw_dir, journal)
-    _logger.warning("Recovered uncommitted suspension quarantine publication to retained bytes; forcing real refresh.")
+    if _read_pending(raw_dir) != journal:
+        raise QuarantineTransactionError("pending quarantine journal changed during rollback")
+    if journal["phase"] != "retry_required":
+        _write_pending(raw_dir, {**journal, "phase": "retry_required"}, create=False)
+    _logger.warning("Recovered retained suspension bytes; durable pending state requires a successful real refresh.")
     return True

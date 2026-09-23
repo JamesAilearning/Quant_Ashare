@@ -107,6 +107,7 @@ from src.data.tushare.fetch_manifest import (
     FetchManifest,
     FetchManifestError,
     read_manifest,
+    read_manifest_for_quarantine_refresh,
 )
 from src.data.tushare.fetch_ranges import (
     resolve_aggregate_start_dates,
@@ -729,8 +730,13 @@ class TushareFetcher:
         """Read prior evidence once; never turn unreadable provenance into holes."""
         if not self._aggregate_manifest_loaded:
             try:
-                self._aggregate_manifest = read_manifest(
-                    self._config.output_dir / MANIFEST_FILENAME,
+                path = self._config.output_dir / MANIFEST_FILENAME
+                self._aggregate_manifest = (
+                    read_manifest_for_quarantine_refresh(
+                        path, policy=self._config.suspension_quarantine,
+                        start_date=self._config.effective_start_date("suspend_d"), end_date=self._config.end_date,
+                        enabled=not self._config.dry_run and "suspend_d" in self._config.endpoints,
+                    ) if self._suspension_recovered else read_manifest(path)
                 )
             except FetchManifestError as exc:
                 raise TushareFetcherError(guidance) from exc

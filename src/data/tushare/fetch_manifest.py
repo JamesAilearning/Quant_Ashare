@@ -73,6 +73,7 @@ from src.data.tushare.quarantine_transaction import (
     finish_quarantine_manifest_commit,
     pending_quarantine_exists,
     prepare_quarantine_manifest_commit,
+    read_pending_refresh_manifest,
 )
 
 SCHEMA_VERSION = 1
@@ -381,6 +382,32 @@ def read_manifest(path: Path) -> FetchManifest | None:
             "refusing to parse — delete it to rebuild."
         )
     return _manifest_from_dict(raw)
+
+
+def read_manifest_for_quarantine_refresh(
+    path: Path, *, policy: str | None, start_date: str, end_date: str, enabled: bool,
+) -> FetchManifest | None:
+    """Selected refresh only: read the proven old pair, keeping readers blocked.
+
+    This does not recover or clear pending state, and is not a consumer override.
+    A rolled-back journal still requires actual raw and manifest publication.
+    """
+    try:
+        if not pending_quarantine_exists(path.parent):
+            return read_manifest(path)
+        if path.name != MANIFEST_FILENAME:
+            raise ValueError("pending quarantine refresh requires fetch_manifest.json")
+        raw = read_pending_refresh_manifest(
+            path.parent, policy=policy, start_date=start_date, end_date=end_date, enabled=enabled,
+        )
+        if raw is None:
+            return None
+        version = raw.get("schema_version")
+        if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError("unknown pending quarantine prior manifest schema")
+        return _manifest_from_dict(raw)
+    except (ValueError, OSError) as exc:
+        raise FetchManifestError(str(exc)) from exc
 
 
 def write_manifest(path: Path, manifest: FetchManifest) -> None:

@@ -103,3 +103,36 @@ source files, and strict OpenSpec validation passed. Independent final diff
 review found no remaining P0/P1/P2; the missing-manifest coverage suggestion was
 implemented, so no P3 was accepted instead of fixing it. All checks remain serial;
 the full suite's measured process-tree peak was 564 MiB.
+
+## Durable retry follow-up (PR #497, second review)
+
+The next review found that rollback cleared the journal before the mandatory
+real refetch had succeeded. A credential-construction error at that point left
+only an in-memory retry flag, which a later ordinary invocation could lose.
+The first interruption suite proved rollback and completed retry separately;
+it missed failure after rollback and before the next real publication.
+
+Actual RED: `test_client_failure_after_rollback_keeps_durable_refetch_obligation`
+failed with `rollback must retain the durable real-refetch obligation` (one
+failed test). After the fix the focused transaction/fetch/update run passed 142
+cases. The journal now distinguishes `publishing` and `retry_required`, and only
+an exact hash-verified selected refresh can read the prior manifest while the
+durable block remains. A real prepared successor rebinds publication; failed or
+manifest-only attempts cannot clear it. The previously complete old manifest
+does not authorize blind resume after rollback, including across another failure.
+Additional token/network/default refusal, absent-manifest, identical-byte retry,
+complete-restoration and bad-phase cases are coverage additions, not claimed RED.
+
+Independent local re-review also found that a retry rebind could adopt externally
+changed prior-manifest bytes after its first check. Actual RED:
+`test_retry_begin_cannot_adopt_manifest_changed_after_restored_pair_check` failed
+with `DID NOT RAISE ValueError`. The rebind now keeps the original manifest hash
+and rechecks the whole restored context before replacing its journal. After this
+fix all 143 focused transaction/fetch/update cases passed. Both independent
+reviewers then found no remaining P0/P1/P2 in the follow-up diff.
+
+Final durable-retry gates: required logic/governance 5,609 passed / 33 skipped /
+2,087 subtests (264 seconds, 23 unchanged warnings, 639 MiB process-tree peak);
+data pipeline 1,460 passed / one skipped / 94 subtests. Ruff and real imports of
+the changed source/CLI modules passed. Fresh strict mypy passed all 244 source
+files, and strict OpenSpec validation passed. No production acceptance is claimed.

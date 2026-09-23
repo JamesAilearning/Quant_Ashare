@@ -18,7 +18,9 @@ from src.contracts.suspension_quarantine import (
     SuspensionQuarantine,
 )
 from src.data.pit.qlib_bin_builder import QlibBinBuilder, QlibBinBuilderError
+from src.data.tushare import fetch_manifest as manifest_module
 from src.data.tushare import quarantine_transaction as transaction
+from src.data.tushare.client import KIND_AUTH, KIND_ENVIRONMENT, TushareClientError
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
     FetchManifestError,
@@ -29,7 +31,7 @@ from src.data.tushare.fetch_manifest import (
     write_manifest,
 )
 from src.data.tushare.fetch_types import FetchHole, TushareFetchResult
-from src.data.tushare.fetcher import TushareFetcher, TushareFetcherConfig
+from src.data.tushare.fetcher import TushareFetcher, TushareFetcherConfig, TushareFetcherError
 
 START, END = "20251101", "20251231"
 FIELDS = ["ts_code", "trade_date", "suspend_timing", "suspend_type"]
@@ -82,7 +84,7 @@ def _case(tmp_path, *, full_recovery=False):
     before_manifest = _manifest(old_evidence)
     write_manifest(raw / MANIFEST_FILENAME, before_manifest)
     return SimpleNamespace(
-        raw=raw, path=path, reference=reference, short=short, before=before, candidate=candidate,
+        raw=raw, path=path, reference=reference, complete=complete, short=short, before=before, candidate=candidate,
         before_manifest=before_manifest, before_manifest_bytes=(raw / MANIFEST_FILENAME).read_bytes(),
         evidence_after=None if full_recovery else _evidence(reference, before, candidate),
         pending=raw / transaction.PENDING_FILENAME,
@@ -107,6 +109,13 @@ def _recover(case, **overrides):
     options = dict(policy=POLICY_ID, start_date=START, end_date=END, enabled=True)
     options.update(overrides)
     return transaction.recover_quarantine_publication(case.raw, **options)
+
+
+def _refresh_manifest(case, **overrides):
+    options = dict(policy=POLICY_ID, start_date=START, end_date=END, enabled=True)
+    options.update(overrides)
+    # Deliberately resolved at call time: pre-fix RED must not prevent collection.
+    return manifest_module.read_manifest_for_quarantine_refresh(case.raw / MANIFEST_FILENAME, **options)
 
 
 def _bytes_under(raw):
@@ -165,7 +174,7 @@ def test_manifest_read_with_pending_still_enforces_strict_transaction_path_rules
 
 
 @pytest.mark.parametrize("raw_replaced", [False, True])
-def test_interrupted_publication_recovers_exact_previous_pair(tmp_path, raw_replaced):
+def test_interrupted_publication_restores_old_pair_but_keeps_durable_retry(tmp_path, raw_replaced):
     case = _case(tmp_path)
     _begin(case)
     if raw_replaced:
@@ -175,9 +184,15 @@ def test_interrupted_publication_recovers_exact_previous_pair(tmp_path, raw_repl
     assert _recover(case) is True
     assert case.path.read_bytes() == case.before
     assert (case.raw / MANIFEST_FILENAME).read_bytes() == case.before_manifest_bytes
-    assert not case.pending.exists()
-    assert read_manifest(case.raw / MANIFEST_FILENAME).schema_version == 1
-    assert _recover(case) is False
+    assert case.pending.exists()
+    assert json.loads(case.pending.read_text(encoding="utf-8"))["phase"] == "retry_required"
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(case.raw / MANIFEST_FILENAME)
+    journal = case.pending.read_bytes()
+    assert _recover(case) is True
+    assert case.pending.read_bytes() == journal
+    assert _refresh_manifest(case) == case.before_manifest
+    assert case.pending.read_bytes() == journal
 
 
 @pytest.mark.parametrize("outcome", ["rollback", "commit"])
@@ -197,15 +212,18 @@ def test_initially_absent_manifest_is_bound_as_absence_through_recovery(tmp_path
 
     assert _recover(case) is True
 
-    assert not case.pending.exists()
     if outcome == "commit":
+        assert not case.pending.exists()
         assert case.path.read_bytes() == case.candidate
         assert manifest_path.read_bytes() == committed_bytes
         assert read_manifest(manifest_path).endpoints["suspend_d"].holes[0].quarantine == case.evidence_after
     else:
+        assert case.pending.exists()
         assert case.path.read_bytes() == case.before
         assert not manifest_path.exists()
-        assert read_manifest(manifest_path) is None
+        with pytest.raises(FetchManifestError, match="pending"):
+            read_manifest(manifest_path)
+        assert _refresh_manifest(case) is None
         assert (case.raw / "_suspension_quarantine" / f"{_sha(case.candidate)}.parquet").read_bytes() == case.candidate
     assert (case.raw / "_suspension_quarantine" / f"{_sha(case.reference)}.parquet").read_bytes() == case.reference
 
@@ -245,20 +263,20 @@ def test_manifest_commit_with_failed_marker_cleanup_is_recognized_without_rollba
     assert (case.raw / "_suspension_quarantine" / f"{_sha(case.reference)}.parquet").read_bytes() == case.reference
 
 
-def test_rollback_then_marker_cleanup_failure_can_be_retried_without_fabricating_state(tmp_path, monkeypatch):
+def test_rollback_never_removes_retry_marker_and_repeated_recovery_is_idempotent(tmp_path, monkeypatch):
     case = _case(tmp_path)
     _begin(case)
     _replace_candidate(case)
-    journal_before = case.pending.read_bytes()
-    with monkeypatch.context() as scoped:
-        scoped.setattr(transaction, "_remove_pending", _fail_marker_cleanup)
-        with pytest.raises(OSError, match="marker cleanup"):
-            _recover(case)
+    cleanup = Mock(side_effect=AssertionError("rollback must not discharge the retry obligation"))
+    monkeypatch.setattr(transaction, "_remove_pending", cleanup)
+    assert _recover(case) is True
     assert case.path.read_bytes() == case.before
     assert (case.raw / MANIFEST_FILENAME).read_bytes() == case.before_manifest_bytes
-    assert case.pending.read_bytes() == journal_before
+    journal_after = case.pending.read_bytes()
+    assert json.loads(journal_after)["phase"] == "retry_required"
     assert _recover(case) is True
-    assert not case.pending.exists()
+    assert case.pending.read_bytes() == journal_after
+    cleanup.assert_not_called()
     assert case.path.read_bytes() == case.before
 
 
@@ -306,7 +324,9 @@ def test_interrupted_full_history_recovery_preserves_old_quarantine_for_fresh_re
     assert _recover(case) is True
     assert case.path.read_bytes() == case.before
     assert (case.raw / MANIFEST_FILENAME).read_bytes() == case.before_manifest_bytes
-    restored = read_manifest(case.raw / MANIFEST_FILENAME)
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(case.raw / MANIFEST_FILENAME)
+    restored = _refresh_manifest(case)
     assert restored.schema_version == 2
     assert restored.endpoints["suspend_d"].holes[0].quarantine.reference_sha256 == _sha(case.reference)
 
@@ -366,13 +386,14 @@ def test_byte_identical_repeated_quarantine_uses_manifest_identity_to_recover(
     assert _recover(case) is True
     assert case.path.read_bytes() == case.before == case.candidate
     assert (case.raw / MANIFEST_FILENAME).read_bytes() == expected_manifest
-    parsed = read_manifest(case.raw / MANIFEST_FILENAME)
+    parsed = read_manifest(case.raw / MANIFEST_FILENAME) if manifest_committed else _refresh_manifest(case)
     assert parsed.schema_version == 2
     assert parsed.endpoints["suspend_d"].holes[0].quarantine.reference_sha256 == _sha(case.reference)
-    assert not case.pending.exists()
+    assert case.pending.exists() is not manifest_committed
 
 
-@pytest.mark.parametrize("damage", ["broken_json", "wrong_schema", "oversized", "unknown_field"])
+@pytest.mark.parametrize("damage", ["broken_json", "wrong_schema", "oversized", "unknown_field",
+                                   "missing_phase", "wrong_phase", "nonstring_phase"])
 def test_bad_or_oversized_journal_is_fail_closed_without_changing_evidence(tmp_path, damage):
     case = _case(tmp_path)
     _begin(case)
@@ -382,7 +403,12 @@ def test_bad_or_oversized_journal_is_fail_closed_without_changing_evidence(tmp_p
         case.pending.write_bytes(b" " * (transaction.MAX_JOURNAL_BYTES + 1))
     else:
         journal = json.loads(case.pending.read_text(encoding="utf-8"))
-        journal["schema_version" if damage == "wrong_schema" else "unknown_field"] = 99
+        if damage == "missing_phase":
+            journal.pop("phase", None)
+        elif damage in {"wrong_phase", "nonstring_phase"}:
+            journal["phase"] = "clean" if damage == "wrong_phase" else True
+        else:
+            journal["schema_version" if damage == "wrong_schema" else "unknown_field"] = 99
         case.pending.write_text(json.dumps(journal), encoding="utf-8")
     before = _bytes_under(case.raw)
     assert transaction.pending_quarantine_exists(case.raw)
@@ -402,6 +428,41 @@ def test_second_begin_cannot_overwrite_an_unfinished_transaction(tmp_path):
     assert _bytes_under(case.raw) == before
 
 
+def test_retry_begin_cannot_adopt_manifest_changed_after_restored_pair_check(tmp_path, monkeypatch):
+    case = _case(tmp_path)
+    _begin(case)
+    _replace_candidate(case)
+    assert _recover(case) is True
+    journal_before = case.pending.read_bytes()
+    raw_before = case.path.read_bytes()
+    manifest_path = case.raw / MANIFEST_FILENAME
+    changed_manifest = case.before_manifest_bytes + b"\n"
+    original_digest = transaction._digest
+    manifest_reads = 0
+
+    def change_before_new_manifest_binding(path, *, limit, optional=False):
+        nonlocal manifest_reads
+        if path == manifest_path:
+            manifest_reads += 1
+            if manifest_reads == 2:
+                # The first read proved the restored pair. The next read must
+                # not adopt unknown bytes as the successor's before-manifest.
+                manifest_path.write_bytes(changed_manifest)
+        return original_digest(path, limit=limit, optional=optional)
+
+    monkeypatch.setattr(transaction, "_digest", change_before_new_manifest_binding)
+    with pytest.raises(ValueError):
+        transaction.begin_quarantine_publication(
+            case.raw, retained_sha256=_sha(case.before), candidate_sha256=_sha(case.candidate),
+            quarantine_after=case.evidence_after, query_start_date=START, query_end_date=END,
+        )
+
+    assert manifest_reads >= 2
+    assert manifest_path.read_bytes() == changed_manifest
+    assert case.path.read_bytes() == raw_before
+    assert case.pending.read_bytes() == journal_before
+
+
 def test_begin_publishes_complete_regular_journal_without_temporary_links(tmp_path):
     case = _case(tmp_path)
     _begin(case)
@@ -409,6 +470,7 @@ def test_begin_publishes_complete_regular_journal_without_temporary_links(tmp_pa
     assert case.pending.stat().st_nlink == 1
     journal = json.loads(case.pending.read_text(encoding="utf-8"))
     assert journal["schema_version"] == transaction.JOURNAL_SCHEMA_VERSION
+    assert journal["phase"] == "publishing"
     assert journal["retained_sha256"] == _sha(case.before)
     assert journal["candidate_sha256"] == _sha(case.candidate)
     assert journal["before_manifest_sha256"] == _sha(case.before_manifest_bytes)
@@ -507,12 +569,13 @@ def test_cli_cannot_recover_implicitly_or_mutate_pending_data_before_refusal(tmp
     assert _bytes_under(case.raw) == before
 
 
-def _client(case):
+def _client(case, *, frame=None):
     client = Mock()
+    response_frame = case.short if frame is None else frame
 
     def response(endpoint, **params):
         assert endpoint == "suspend_d"
-        return case.short.loc[case.short["trade_date"].between(
+        return response_frame.loc[response_frame["trade_date"].between(
             params["start_date"], params["end_date"],
         )].copy()
 
@@ -548,3 +611,165 @@ def test_selected_recovery_forces_actual_refetch_even_without_refresh_flag(tmp_p
     assert evidence.candidate_sha256 == _sha(case.path.read_bytes())
     pd.testing.assert_frame_equal(pd.read_parquet(case.path), case.short)
     assert not case.pending.exists()
+
+
+def _assert_retry_remains_blocked(case, monkeypatch):
+    assert case.pending.exists()
+    assert json.loads(case.pending.read_text(encoding="utf-8"))["phase"] == "retry_required"
+    before = _bytes_under(case.raw)
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(case.raw / MANIFEST_FILENAME)
+    with pytest.raises(FetchManifestError, match="pending"):
+        clear_manifest(case.raw / MANIFEST_FILENAME)
+    default_client = Mock()
+    with pytest.raises(TushareFetcherError, match="pending"):
+        TushareFetcher(default_client, TushareFetcherConfig(
+            output_dir=case.raw, endpoints=("suspend_d",), start_date=START, end_date=END,
+            rate_limit_sleep_ms=0,
+        )).fetch()
+    default_client.call.assert_not_called()
+    cli = _cli()
+    factory = Mock(side_effect=AssertionError("default CLI cannot construct a client while retry is required"))
+    monkeypatch.setattr(cli.TushareClient, "from_environment", factory)
+    assert cli.main(_cli_args(case)) == 1
+    factory.assert_not_called()
+    for policy in (None, POLICY_ID):
+        provider = case.raw.parent / "refused_provider"
+        builder = QlibBinBuilder(
+            tushare_dir=case.raw, delisted_registry_path=case.raw / "unused_registry.parquet",
+            output_dir=provider, allow_holey_fetch=True, suspension_quarantine=policy,
+        )
+        with pytest.raises(QlibBinBuilderError, match="pending"):
+            builder.build()
+        assert not provider.exists()
+    assert _bytes_under(case.raw) == before
+
+
+def test_cli_token_construction_failure_after_rollback_keeps_durable_retry(tmp_path, monkeypatch):
+    case = _case(tmp_path)
+    _begin(case)
+    _replace_candidate(case)
+    cli = _cli()
+    factory = Mock(side_effect=TushareClientError("synthetic token environment missing", kind=KIND_ENVIRONMENT))
+    monkeypatch.setattr(cli.TushareClient, "from_environment", factory)
+
+    assert cli.main(_cli_args(case) + ["--suspension-quarantine", POLICY_ID]) == 1
+
+    factory.assert_called_once()
+    assert case.path.read_bytes() == case.before
+    assert (case.raw / MANIFEST_FILENAME).read_bytes() == case.before_manifest_bytes
+    _assert_retry_remains_blocked(case, monkeypatch)
+
+
+@pytest.mark.parametrize("entrypoint", ["library", "cli"])
+@pytest.mark.parametrize("fully_restored", [False, True])
+def test_nonretry_failure_keeps_obligation_until_selected_real_refresh_commits(
+    tmp_path, monkeypatch, entrypoint, fully_restored,
+):
+    case = _case(tmp_path)
+    _begin(case)
+    _replace_candidate(case)
+    failing = Mock()
+    failing.call.side_effect = TushareClientError("synthetic permission refusal", kind=KIND_AUTH)
+    config = TushareFetcherConfig(
+        output_dir=case.raw, endpoints=("suspend_d",), start_date=START, end_date=END,
+        rate_limit_sleep_ms=0, suspension_quarantine=POLICY_ID,
+    )
+    if entrypoint == "library":
+        with pytest.raises(TushareClientError, match="permission refusal"):
+            TushareFetcher(failing, config).fetch()
+    else:
+        cli = _cli()
+        monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: failing)
+        assert cli.main(_cli_args(case) + ["--suspension-quarantine", POLICY_ID]) == 1
+    assert failing.call.call_count == 1
+    assert case.path.read_bytes() == case.before
+    assert (case.raw / MANIFEST_FILENAME).read_bytes() == case.before_manifest_bytes
+    _assert_retry_remains_blocked(case, monkeypatch)
+
+    frame = case.complete if fully_restored else case.short
+    successful = _client(case, frame=frame)
+    if entrypoint == "library":
+        fetcher = TushareFetcher(successful, config)
+        result = fetcher.fetch()
+        assert result[0].files_written == 1
+        # Fetch alone cannot release the obligation, including the full-eight
+        # path where both original clean-manifest prior and new evidence are None.
+        assert case.pending.exists()
+        journal = json.loads(case.pending.read_text(encoding="utf-8"))
+        assert journal["phase"] == "publishing"
+        assert (journal["quarantine_after"] is None) is fully_restored
+        with pytest.raises(FetchManifestError, match="pending"):
+            read_manifest(case.raw / MANIFEST_FILENAME)
+        current = build_manifest(result, fetcher.holes, START, END)
+        write_manifest(case.raw / MANIFEST_FILENAME, merge_manifest(case.before_manifest, current))
+    else:
+        cli = _cli()
+        monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: successful)
+        assert cli.main(_cli_args(case) + ["--suspension-quarantine", POLICY_ID]) == (0 if fully_restored else 3)
+    assert successful.call.call_count > 0
+    assert not case.pending.exists()
+    parsed = read_manifest(case.raw / MANIFEST_FILENAME)
+    assert parsed.schema_version == (1 if fully_restored else 2)
+    assert bool(parsed.endpoints["suspend_d"].holes) is not fully_restored
+    pd.testing.assert_frame_equal(pd.read_parquet(case.path), frame)
+    assert (case.raw / "_suspension_quarantine" / f"{_sha(case.reference)}.parquet").read_bytes() == case.reference
+
+
+@pytest.mark.parametrize("options", [
+    {"policy": None}, {"policy": "other-policy"}, {"enabled": False},
+    {"start_date": "20251102"}, {"end_date": "20251230"},
+])
+def test_refresh_only_reader_does_not_waive_explicit_retry_authorization(tmp_path, options):
+    case = _case(tmp_path)
+    _begin(case)
+    _replace_candidate(case)
+    assert _recover(case) is True
+    before = _bytes_under(case.raw)
+    with pytest.raises((FetchManifestError, ValueError)):
+        _refresh_manifest(case, **options)
+    assert _bytes_under(case.raw) == before
+
+
+@pytest.mark.parametrize("state", ["publishing_old", "publishing_new", "changed_raw", "changed_manifest"])
+def test_refresh_only_reader_requires_retry_phase_and_exact_restored_pair(tmp_path, state):
+    case = _case(tmp_path)
+    _begin(case)
+    if state != "publishing_old":
+        _replace_candidate(case)
+    if state.startswith("changed"):
+        assert _recover(case) is True
+        if state == "changed_raw":
+            case.path.write_bytes(case.before + b"unknown newer raw")
+        else:
+            (case.raw / MANIFEST_FILENAME).write_bytes(case.before_manifest_bytes + b"\n")
+    before = _bytes_under(case.raw)
+    with pytest.raises((FetchManifestError, ValueError)):
+        _refresh_manifest(case)
+    assert _bytes_under(case.raw) == before
+
+
+@pytest.mark.parametrize("replacement", ["old_complete", "failed_hole", "claimed_success"])
+def test_retry_phase_cannot_be_discharged_by_manifest_only_write(tmp_path, replacement):
+    case = _case(tmp_path, full_recovery=True)
+    # Equal before/after bytes make the phase essential: hashes alone would
+    # permit the old already-quarantined file to satisfy a fresh success claim.
+    case.candidate = case.before
+    case.evidence_after = _evidence(case.reference, case.before, case.candidate)
+    _begin(case)
+    _replace_candidate(case)
+    assert _recover(case) is True
+    before = _bytes_under(case.raw)
+    if replacement == "old_complete":
+        proposed = case.before_manifest
+    elif replacement == "failed_hole":
+        current = build_manifest(
+            [TushareFetchResult("suspend_d", 0, 0)],
+            (FetchHole("suspend_d", "file", "transient", 1, "failed retry"),), START, END,
+        )
+        proposed = merge_manifest(case.before_manifest, current)
+    else:
+        proposed = _manifest(case.evidence_after)
+    with pytest.raises(FetchManifestError):
+        write_manifest(case.raw / MANIFEST_FILENAME, proposed)
+    assert _bytes_under(case.raw) == before

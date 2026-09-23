@@ -29,6 +29,7 @@ from src.data.tushare.aggregate_response import AggregateResponseError
 from src.data.tushare.quarantine_transaction import (
     QuarantineTransactionError,
     begin_quarantine_publication,
+    pending_quarantine_exists,
 )
 
 EVIDENCE_DIRECTORY = "_suspension_quarantine"
@@ -249,7 +250,7 @@ def publish_suspension_candidate(
             raise AggregateResponseError("suspension quarantine retained source changed before publication")
         if prior is not None:
             verify_quarantine_evidence(raw_dir, prior)
-        if evidence is not None or prior is not None:
+        if evidence is not None or prior is not None or pending_quarantine_exists(raw_dir):
             if retained_hash is None:
                 raise AggregateResponseError("suspension quarantine transaction requires retained bytes")
             # Flush this owned candidate before committing its journal. Do not
