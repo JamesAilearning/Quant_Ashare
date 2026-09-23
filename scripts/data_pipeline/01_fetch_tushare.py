@@ -85,6 +85,10 @@ from src.data.tushare.fetcher import (  # noqa: E402
     TushareFetcherConfig,
     TushareFetcherError,
 )
+from src.data.tushare.quarantine_transaction import (  # noqa: E402
+    pending_quarantine_exists,
+    recover_quarantine_publication,
+)
 
 # `setup_logging` only attaches a handler to the ``src.*`` logger
 # namespace; using ``__name__`` here (which resolves to ``__main__`` when
@@ -128,7 +132,7 @@ def _reset_manifest(manifest_path: Path) -> int:
     fail-loud if the file cannot be removed."""
     try:
         clear_manifest(manifest_path)
-    except OSError as exc:
+    except (FetchManifestError, OSError) as exc:
         _logger.error(
             "--reset-manifest could not remove %s: %s", manifest_path, exc,
         )
@@ -292,6 +296,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     manifest_path = args.output_dir / MANIFEST_FILENAME
+    # Never erase or ignore a two-file publication that did not finish. Only a
+    # matching, real suspension refresh may recover its hash-bound prior state.
+    try:
+        if args.reset_manifest and pending_quarantine_exists(args.output_dir):
+            _logger.error("Refusing --reset-manifest while suspension publication is pending.")
+            return 1
+        suspension_recovered = recover_quarantine_publication(
+            args.output_dir, policy=config.suspension_quarantine,
+            start_date=config.effective_start_date("suspend_d"), end_date=config.end_date,
+            enabled=not config.dry_run and "suspend_d" in config.endpoints,
+        )
+    except (ValueError, OSError) as exc:
+        _logger.error("Refusing pending suspension publication: %s", exc)
+        return 1
     if args.reset_manifest:
         try:
             reset_source = read_manifest(manifest_path)
@@ -336,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
         if prev_manifest is not None
         else frozenset()
     )
+    if suspension_recovered:
+        # The recovered prior manifest may be clean; that does not authorize
+        # blind resume over the interrupted attempt. Refetch the actual unit.
+        force_retry_units = force_retry_units | frozenset({("suspend_d", "file")})
     if force_retry_units:
         _logger.info(
             "Prior manifest records %d hole(s); forcing those units past the "
@@ -436,7 +458,11 @@ def main(argv: list[str] | None = None) -> int:
         # MUST surface as a clean non-zero exit, not an escaping traceback after
         # the fetch already ran (codex P2).
         try:
-            prev_manifest = read_manifest(manifest_path)
+            if not pending_quarantine_exists(config.output_dir):
+                prev_manifest = read_manifest(manifest_path)
+            # A pending transaction blocks ordinary readers. Its commit writer
+            # verifies that the pre-fetch manifest above still matches the
+            # journal and that this result binds the actual candidate bytes.
             current_manifest = build_manifest(
                 results, fetcher.holes, config.start_date, config.end_date,
                 endpoint_start_dates=config.aggregate_start_dates(),
@@ -445,19 +471,14 @@ def main(argv: list[str] | None = None) -> int:
             write_manifest(manifest_path, resulting_manifest)
         except (FetchManifestError, OSError) as exc:
             _logger.error("Fetch manifest update failed: %s", exc)
-            # P3-7b red line: a refused merge (narrower / disjoint scope) or a
-            # failed write exits 1 with the manifest LEFT BYTE-FOR-BYTE as it
-            # was. The prior manifest still truthfully describes the units it
-            # recorded — a refused merge means THIS run's scope could not
-            # extend it, not that it became wrong; this run's writes only made
-            # recorded units fresher (over-recorded holes are re-attempted by
-            # force-retry and self-heal on the next full-range run). The old
-            # auto-clear turned a refusal whose purpose is to PRESERVE hole
-            # records into the deletion of those records (fail-forget).
+            # A pending transaction may have committed the manifest but failed
+            # journal cleanup. Do not claim the old bytes are unchanged: leave
+            # both files and the journal for exact-state recovery, never reset.
             _logger.error(
-                "fetch_manifest.json was left untouched. Re-run the full "
-                "range to extend it, or pass --reset-manifest for a "
-                "deliberate fresh start."
+                "Preserve fetch_manifest.json, raw files and any pending "
+                "quarantine publication record. Re-run the full range with "
+                "the matching explicit policy when quarantine is pending; "
+                "do not reset or remove pending evidence."
             )
             return 1
         _logger.info("Wrote fetch manifest: %s", manifest_path)

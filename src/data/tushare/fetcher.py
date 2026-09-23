@@ -131,6 +131,7 @@ from src.data.tushare.namechange_history import (
     stock_basic_security_codes,
     validate_stock_basic_snapshot,
 )
+from src.data.tushare.quarantine_transaction import recover_quarantine_publication
 from src.data.tushare.suspension_quarantine import (
     publish_suspension_candidate,
     validate_quarantine_query,
@@ -593,6 +594,7 @@ class TushareFetcher:
         self._aggregate_manifest_loaded = False
         self._suspension_prior: SuspensionQuarantine | None = None
         self._quarantine_preflight_done = False
+        self._suspension_recovered = False
         self._stock_basic_refreshed: set[str] = set()
         self._namechange_snapshot_date = config.now if config.now is not None else date.today()
         # SSE trading calendar (sorted YYYYMMDD), fetched once per run and used
@@ -668,6 +670,7 @@ class TushareFetcher:
         self._aggregate_manifest_loaded = False
         self._suspension_prior = None
         self._quarantine_preflight_done = False
+        self._suspension_recovered = False
         self._stock_basic_refreshed = set()
         self._namechange_snapshot_date = (
             self._config.now if self._config.now is not None else date.today()
@@ -716,7 +719,7 @@ class TushareFetcher:
         """
         if not path.exists():
             return False
-        if endpoint == "suspend_d" and self._suspension_prior is not None:
+        if endpoint == "suspend_d" and (self._suspension_prior is not None or self._suspension_recovered):
             return False  # A shortened file is never evidence of healed history.
         if honor_refresh_current and self._config.refresh_current:
             return False
@@ -738,6 +741,15 @@ class TushareFetcher:
         """Validate prior incident evidence before any endpoint writes or calls."""
         if self._quarantine_preflight_done:
             return
+        try:
+            self._suspension_recovered = recover_quarantine_publication(
+                self._config.output_dir, policy=self._config.suspension_quarantine,
+                start_date=self._config.effective_start_date("suspend_d"),
+                end_date=self._config.end_date,
+                enabled=not self._config.dry_run and "suspend_d" in self._config.endpoints,
+            )
+        except (ValueError, OSError) as exc:
+            raise TushareFetcherError(f"Refusing pending suspension publication: {exc}") from exc
         manifest_path = self._config.output_dir / MANIFEST_FILENAME
         manifest = (
             self._load_aggregate_manifest(

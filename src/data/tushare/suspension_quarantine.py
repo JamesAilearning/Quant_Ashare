@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pandas as pd
@@ -24,6 +26,10 @@ from src.contracts.suspension_quarantine import (
 from src.data._atomic_io import atomic_write_parquet
 from src.data.tushare import aggregate_response as aggregate
 from src.data.tushare.aggregate_response import AggregateResponseError
+from src.data.tushare.quarantine_transaction import (
+    QuarantineTransactionError,
+    begin_quarantine_publication,
+)
 
 EVIDENCE_DIRECTORY = "_suspension_quarantine"
 _DATES = frozenset(key[1] for key in APPROVED_KEYS)
@@ -81,7 +87,11 @@ def _read_frame(path: Path, expected: str | None = None) -> tuple[pd.DataFrame, 
         before = _sha256(path)
         if expected is not None and before != expected:
             raise AggregateResponseError(f"suspension quarantine evidence SHA mismatch: {path.name}")
-        with pq.ParquetFile(  # type: ignore[no-untyped-call]
+        # PyArrow releases differ in whether this constructor carries typing
+        # metadata. Keep the dynamic library boundary explicit without a
+        # version-dependent suppression of strict type-checking errors.
+        parquet_file: Callable[..., Any] = pq.ParquetFile
+        with parquet_file(
             path, thrift_string_size_limit=1024 * 1024, thrift_container_size_limit=100_000,
         ) as parquet:
             metadata = parquet.metadata
@@ -239,9 +249,21 @@ def publish_suspension_candidate(
             raise AggregateResponseError("suspension quarantine retained source changed before publication")
         if prior is not None:
             verify_quarantine_evidence(raw_dir, prior)
+        if evidence is not None or prior is not None:
+            if retained_hash is None:
+                raise AggregateResponseError("suspension quarantine transaction requires retained bytes")
+            # Flush this owned candidate before committing its journal. Do not
+            # strengthen the generic writer or claim filesystem-wide power-loss
+            # atomicity: the journal handles process interruption/write failure.
+            with prepared.open("rb+") as stream:
+                os.fsync(stream.fileno())
+            begin_quarantine_publication(
+                raw_dir, retained_sha256=retained_hash, candidate_sha256=candidate_hash,
+                quarantine_after=evidence, query_start_date=start_date, query_end_date=end_date,
+            )
         prepared.replace(path)
         return evidence
-    except OSError as exc:
+    except (OSError, QuarantineTransactionError) as exc:
         raise AggregateResponseError("suspension quarantine evidence publication failed; preserve retained data") from exc
     finally:
         prepared.unlink(missing_ok=True)

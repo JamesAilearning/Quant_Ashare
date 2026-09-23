@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,12 +16,14 @@ from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
     EndpointCoverage,
     FetchManifest,
+    FetchManifestError,
     build_manifest,
     merge_manifest,
     read_manifest,
     write_manifest,
 )
 from src.data.tushare.fetcher import TushareFetcher, TushareFetcherConfig, TushareFetcherError
+from src.data.tushare.quarantine_transaction import pending_quarantine_exists
 from src.data.tushare.suspension_quarantine import verify_quarantine_evidence
 
 POLICY = "suspend-688766-20251127-20251209"
@@ -78,7 +81,10 @@ def _fetch(root, candidate, *, policy=POLICY, **kwargs):
 def _persist(root, fetcher, results):
     path = root / MANIFEST_FILENAME
     config = fetcher._config
-    manifest = merge_manifest(read_manifest(path), build_manifest(
+    # Library callers retain their pre-fetch manifest, exactly like the CLI;
+    # pending candidates must not be exposed through ordinary manifest reads.
+    previous = fetcher._aggregate_manifest if pending_quarantine_exists(root) else read_manifest(path)
+    manifest = merge_manifest(previous, build_manifest(
         results, fetcher.holes, config.start_date, config.end_date,
         endpoint_start_dates=config.aggregate_start_dates(),
     ))
@@ -426,3 +432,102 @@ def test_subset_fetch_still_returns_incomplete_when_existing_quarantine_is_not_s
     manifest = read_manifest(tmp_path / MANIFEST_FILENAME)
     assert manifest.endpoints["suspend_d"].holes[0].quarantine == original
     verify_quarantine_evidence(tmp_path, original)
+
+
+def test_candidate_cannot_be_read_as_clean_before_manifest_commit(tmp_path):
+    _seed(tmp_path)
+    fetcher = _fetch(tmp_path, pd.DataFrame([_row()], columns=FIELDS))
+    assert fetcher.fetch()[0].files_written == 1
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(tmp_path / MANIFEST_FILENAME)
+
+
+def test_manifest_write_failure_blocks_consumers_until_selected_retry(tmp_path, monkeypatch):
+    _seed(tmp_path)
+    cli = _cli()
+    candidate = pd.DataFrame([_row()], columns=FIELDS)
+    monkeypatch.setattr(cli.TushareClient, "from_environment", lambda: _client(candidate))
+    original_writer = cli.write_manifest
+
+    def failed_write(*args, **kwargs):
+        raise OSError("synthetic manifest publication failure")
+
+    monkeypatch.setattr(cli, "write_manifest", failed_write)
+    args = ["--output-dir", str(tmp_path), "--start-date", START, "--end-date", END,
+            "--endpoints", "suspend_d", "--rate-limit-sleep-ms", "0", "--refresh-current",
+            "--suspension-quarantine", POLICY]
+    assert cli.main(args) == 1
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(tmp_path / MANIFEST_FILENAME)
+    monkeypatch.setattr(cli, "write_manifest", original_writer)
+    assert cli.main(args) == 3
+    manifest = read_manifest(tmp_path / MANIFEST_FILENAME)
+    evidence = manifest.endpoints["suspend_d"].holes[0].quarantine
+    assert evidence.missing_dates == APPROVED_DATES
+    verify_quarantine_evidence(tmp_path, evidence)
+
+
+def test_interrupted_full_recovery_cannot_erase_original_reference_on_retry(tmp_path):
+    original = _quarantined(tmp_path)
+    interrupted = _fetch(tmp_path, _complete())
+    assert interrupted.fetch()[0].files_written == 1
+    with pytest.raises(FetchManifestError, match="pending"):
+        read_manifest(tmp_path / MANIFEST_FILENAME)
+    retry = _fetch(tmp_path, _complete())
+    restored = _persist(tmp_path, retry, retry.fetch())
+    assert restored.schema_version == 1
+    assert restored.endpoints["suspend_d"].holes == ()
+    assert (tmp_path / "_suspension_quarantine" / f"{original.reference_sha256}.parquet").exists()
+
+
+@pytest.mark.parametrize("full_recovery", [False, True])
+def test_prepared_candidate_is_fsynced_before_publication_journal(tmp_path, monkeypatch, full_recovery):
+    from src.data.tushare import suspension_quarantine as quarantine_io
+
+    if full_recovery:
+        _quarantined(tmp_path)
+        candidate = _complete()
+    else:
+        _seed(tmp_path)
+        candidate = pd.DataFrame([_row()], columns=FIELDS)
+    synced = set()
+    real_sync, real_begin = os.fsync, quarantine_io.begin_quarantine_publication
+
+    def observed_sync(fd):
+        info = os.fstat(fd)
+        real_sync(fd)
+        synced.add((info.st_dev, info.st_ino))
+
+    def observed_begin(*args, **kwargs):
+        prepared, = tmp_path.glob(".suspend_d.*.parquet")
+        info = prepared.stat()
+        assert (info.st_dev, info.st_ino) in synced, "candidate bytes were not fsynced before pending publication"
+        return real_begin(*args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", observed_sync)
+    monkeypatch.setattr(quarantine_io, "begin_quarantine_publication", observed_begin)
+    fetcher = _fetch(tmp_path, candidate)
+    assert fetcher.fetch()[0].files_written == 1
+
+
+def test_candidate_fsync_failure_keeps_prior_pair_and_does_not_publish_pending(tmp_path, monkeypatch):
+    _seed(tmp_path)
+    before_raw = (tmp_path / "suspend_d.parquet").read_bytes()
+    before_manifest = (tmp_path / MANIFEST_FILENAME).read_bytes()
+    real_sync = os.fsync
+
+    def failed_candidate_sync(fd):
+        info = os.fstat(fd)
+        candidate_inodes = {(path.stat().st_dev, path.stat().st_ino)
+                            for path in tmp_path.glob(".suspend_d.*.parquet")}
+        if (info.st_dev, info.st_ino) in candidate_inodes:
+            raise OSError("synthetic candidate sync failure")
+        return real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", failed_candidate_sync)
+    fetcher = _fetch(tmp_path, pd.DataFrame([_row()], columns=FIELDS))
+    assert fetcher.fetch()[0].files_written == 0
+    assert (tmp_path / "suspend_d.parquet").read_bytes() == before_raw
+    assert (tmp_path / MANIFEST_FILENAME).read_bytes() == before_manifest
+    assert not pending_quarantine_exists(tmp_path)
+    assert read_manifest(tmp_path / MANIFEST_FILENAME).schema_version == 1

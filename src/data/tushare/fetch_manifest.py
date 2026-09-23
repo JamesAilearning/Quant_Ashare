@@ -68,6 +68,12 @@ from src.contracts.suspension_quarantine import (
 )
 from src.data.tushare.fetch_ranges import validate_aggregate_start_dates
 from src.data.tushare.fetch_types import FetchHole, TushareFetchResult
+from src.data.tushare.quarantine_transaction import (
+    assert_no_pending_quarantine,
+    finish_quarantine_manifest_commit,
+    pending_quarantine_exists,
+    prepare_quarantine_manifest_commit,
+)
 
 SCHEMA_VERSION = 1
 QUARANTINE_SCHEMA_VERSION = 2
@@ -346,6 +352,10 @@ def read_manifest(path: Path) -> FetchManifest | None:
     ``schema_version`` or malformed JSON → :class:`FetchManifestError` (fail-loud:
     never silently parse an unrecognized shape).
     """
+    try:
+        assert_no_pending_quarantine(path.parent)
+    except (ValueError, OSError) as exc:
+        raise FetchManifestError(str(exc)) from exc
     if not path.exists():
         return None
     try:
@@ -377,18 +387,35 @@ def write_manifest(path: Path, manifest: FetchManifest) -> None:
     """Atomically write ``manifest`` to ``path`` (temp file + :func:`os.replace`)
     so a crash mid-write never leaves a half-written / corrupt manifest — the old
     file stays intact until the rename swaps the complete new one in."""
-    payload = json.dumps(_manifest_to_dict(manifest), indent=2, ensure_ascii=False)
+    document = _manifest_to_dict(manifest)
+    # Preserve write_text's platform newline bytes, but bind the bytes actually
+    # written rather than hashing a pre-translation Unicode string on Windows.
+    payload = json.dumps(document, indent=2, ensure_ascii=False).replace("\n", os.linesep).encode("utf-8")
+    try:
+        if path.name != MANIFEST_FILENAME and pending_quarantine_exists(path.parent):
+            raise ValueError("pending quarantine can commit only fetch_manifest.json")
+        pending = prepare_quarantine_manifest_commit(path.parent, document, payload)
+    except ValueError as exc:
+        raise FetchManifestError(str(exc)) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        payload,
-        encoding="utf-8",
-    )
+    with tmp.open("wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(tmp, path)
+    try:
+        finish_quarantine_manifest_commit(path.parent, pending)
+    except ValueError as exc:
+        raise FetchManifestError(str(exc)) from exc
 
 
 def clear_manifest(path: Path) -> None:
     """Remove the manifest entirely (for a fresh full rebuild). No-op if absent."""
+    try:
+        assert_no_pending_quarantine(path.parent)
+    except ValueError as exc:
+        raise FetchManifestError(str(exc)) from exc
     path.unlink(missing_ok=True)
 
 

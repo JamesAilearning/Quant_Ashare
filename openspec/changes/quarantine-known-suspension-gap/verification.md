@@ -54,3 +54,52 @@ fresh rollback backup, supervised first update and scheduler restoration remain
 unchecked production tasks. Synthetic green tests do not discharge those tasks.
 UI verification covers pure readers and page wiring; no browser session or live
 Streamlit server was started for this change.
+
+## Publication-interruption follow-up (PR #497)
+
+The first remote review found a real P1: replacing suspension raw bytes before
+publishing their quarantine manifest could leave a shortened candidate beside a
+clean v1 manifest after an interruption. Original fault injection covered
+partition/preparation errors, but did not cover this inter-file commit boundary.
+Evidence hashes alone could not protect the ordinary clean-manifest reader.
+
+The fix records a bounded, hash-bound pending transaction before raw replacement.
+Readers/builders/reset refuse a pending transaction, including when the manifest
+is absent. Only an explicit matching real suspension refresh may recover it:
+prove committed raw/manifest bytes, or preserve the candidate and restore retained
+bytes, then force a real refresh. Candidate, journal and manifest writes are
+fsynced; this does not claim a general multi-file or power-loss-atomic filesystem.
+
+Observed fault-injection RED/GREEN results:
+
+- Three publication regressions failed before the journal fix (3 failed / 72
+  passed), because a clean manifest was readable across an unfinished write.
+  The same focused run then passed all 75 cases.
+- Initial-quarantine and full-restoration candidate durability tests both failed
+  before candidate fsync was added (2 failed / 75 passed), with the explicit
+  assertion that candidate bytes were not fsynced before pending publication.
+  Both pass after the fix. These are actual observed failures, not inferred RED.
+- Additional tests cover cleanup interruption, repeat recovery, malformed and
+  oversized journals, mismatched hashes/ranges/policies, reset/dry/subset refusal,
+  missing manifest, exclusive initial creation, and changes before rollback.
+  These coverage additions are not claimed as pre-fix RED observations.
+- The first full follow-up regression run found only the missing governance
+  rationale on an optional absent-manifest digest (1 failed / 5,608 passed).
+  Absence is an explicit recorded pre-publication state; unreadable/corrupt
+  files still raise. The rationale is now stated at that return, not bypassed
+  by weakening the governance test.
+
+The initial Ubuntu CI also exposed a dependency-sensitive unused PyArrow type
+suppression. The same constructor now has an explicit dynamic callable boundary;
+runtime behavior is unchanged, and fresh local mypy passed all 244 source files.
+The follow-up will be re-reviewed and receive a fresh Codex review request after
+push. Production acceptance remains separate and unchecked.
+
+Follow-up local gates: required logic/governance 5,609 passed / 33 skipped /
+2,087 subtests (265 seconds, 23 unchanged warnings); data pipeline 1,438 passed /
+one skipped / 94 subtests. Ruff passed after ordering the new imports, all six
+changed source/CLI modules imported successfully, fresh strict mypy passed 244
+source files, and strict OpenSpec validation passed. Independent final diff
+review found no remaining P0/P1/P2; the missing-manifest coverage suggestion was
+implemented, so no P3 was accepted instead of fixing it. All checks remain serial;
+the full suite's measured process-tree peak was 564 MiB.

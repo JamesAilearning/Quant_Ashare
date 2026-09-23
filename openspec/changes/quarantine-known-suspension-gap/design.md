@@ -36,7 +36,20 @@ automatic production switch, or granting historical performance certification.
 
 3. Preserve the retained and reference Parquets under
    `_suspension_quarantine/<sha256>.parquet` without replacing existing evidence.
-   Hash and prepare the candidate before atomically replacing `suspend_d.parquet`.
+   Hash and prepare the candidate before replacing `suspend_d.parquet`. Before
+   the data rename, durably record a pending publication journal binding old/new
+   raw bytes, the prior manifest, the intended quarantine or full recovery, and
+   the query interval. Ordinary manifest readers/builders and reset refuse while
+   pending, including missing-manifest and broad-hole-override cases. The final
+   manifest writer first binds its intended byte hash in the journal, fsyncs and
+   replaces the manifest, verifies both published hashes, then clears pending.
+   Only an explicit matching, non-dry suspension refresh may recover: an already
+   committed pair needs journal cleanup; an uncommitted candidate is preserved
+   as evidence and rolled back to the saved prior bytes before mandatory refetch.
+   Unknown bytes, corrupt journals or insufficient scope fail without mutation.
+   Candidate bytes are fsynced before journal publication. This protocol covers
+   process interruption and write failure; it does not claim arbitrary device or
+   filesystem power-loss atomicity for directory/link/rename operations.
    Append one `FetchHole(endpoint='suspend_d', unit='file',
    reason_class='quarantined_history')` carrying optional typed `quarantine`
    metadata: policy_id, missing_dates, reference_sha256, retained_sha256,
@@ -85,8 +98,9 @@ automatic production switch, or granting historical performance certification.
 - Operator readers could hide the exception -> show it on current and historical
   baseline artifacts independently, reject malformed disclosure, and never
   advertise the broad hole override as authorization for this incident.
-- Crash between data and ledger publication -> existing failed-run semantics remain;
-  candidate hash checks reject stale quarantine evidence, rerun before acceptance.
+- Crash between data and manifest publication -> durable pending state blocks all
+  readers; hash-bound recovery preserves the interrupted candidate and original
+  reference, requires an actual refetch, and also covers full restoration to v1.
 - This is a known-incident policy, not proof of vendor-wide completeness; no extra
   tickers or dates are inferred safe. Other data failures remain blocking.
 

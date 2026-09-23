@@ -9,6 +9,7 @@ from src.contracts.suspension_quarantine import (
     validate_policy,
 )
 from src.data.tushare.fetch_manifest import FetchManifest, all_holes, covered_endpoints
+from src.data.tushare.quarantine_transaction import assert_no_pending_quarantine
 from src.data.tushare.suspension_quarantine import verify_quarantine_evidence
 
 
@@ -25,6 +26,7 @@ def validate_scoped_quarantine(
     policy selected for a clean, repaired manifest is a no-op, not an override.
     """
     validate_policy(policy)
+    assert_no_pending_quarantine(raw_dir)
     if manifest is None:
         if policy is not None:
             raise ValueError("suspension quarantine cannot authorize a missing manifest")

@@ -24,6 +24,35 @@ original complete incident reference until all keys are returned.
 - **WHEN** every approved key returns and all other checks pass
 - **THEN** a refreshed/rebuilt bundle clears quarantine but retains audit evidence
 
+### Requirement: Quarantine publication SHALL be recoverable and fail closed
+Every transition into, within or out of quarantine SHALL durably bind its prior
+and candidate raw bytes and manifest state before exposing candidate bytes.
+While this publication is pending, normal manifest reads, builds and manifest
+reset SHALL refuse even under broad hole overrides or with a missing manifest.
+The final manifest SHALL be durably committed and bound before pending state is
+cleared. Recovery MUST verify the exact recorded hashes and preserve evidence;
+it MUST NOT infer completeness from whichever file happens to exist.
+
+#### Scenario: Process stops between the raw and manifest publication
+- **WHEN** candidate raw bytes are present but the prior manifest remains
+- **THEN** consumers refuse, and an explicitly selected full-scope real refresh
+  preserves the interrupted candidate, restores the recorded prior bytes and
+  actually refetches instead of blind-skipping the restored file
+
+#### Scenario: Manifest commit succeeds but journal cleanup is interrupted
+- **WHEN** both published files match the recorded committed hashes
+- **THEN** the same explicit recovery may finish cleanup and continue safely
+
+#### Scenario: Recovery is unapproved or evidence changed
+- **WHEN** recovery is dry-run, default, reset, endpoint-subset or narrower than
+  the recorded request, or a journal/file hash is unknown or corrupt
+- **THEN** recovery refuses without changing files or calling the vendor
+
+#### Scenario: All eight incident keys return
+- **WHEN** a candidate restores all eight keys but publication is interrupted
+- **THEN** the same pending and recovery rules apply; neither a premature clean
+  manifest nor a lost original reference is permitted
+
 ### Requirement: Qualified serving SHALL isolate rather than rewrite the universe
 Daily recommendations SHALL require a separate matching policy opt-in for a
 quarantined bundle. All other holes and missing prerequisites MUST still refuse.
