@@ -263,7 +263,15 @@ class QlibBinBuilder:
         output_dir: Path,
         *,
         allow_holey_fetch: bool = False,
+        suspension_quarantine: str | None = None,
     ) -> None:
+        from src.contracts.suspension_quarantine import validate_policy
+
+        try:
+            validate_policy(suspension_quarantine)
+        except ValueError as exc:
+            raise QlibBinBuilderError(str(exc)) from exc
+        self._suspension_quarantine = suspension_quarantine
         self._tushare_dir = tushare_dir
         self._delisted_registry_path = delisted_registry_path
         self._output_dir = output_dir
@@ -330,7 +338,16 @@ class QlibBinBuilder:
         built_from_holey_fetch = (
             manifest is None or not is_complete(manifest) or bool(missing_required)
         )
-        if built_from_holey_fetch and not self._allow_holey_fetch:
+        from src.data.pit.quarantine_gate import validate_scoped_quarantine
+
+        try:
+            quarantine = validate_scoped_quarantine(
+                manifest, self._suspension_quarantine, self._tushare_dir,
+                required_endpoints=BUNDLE_REQUIRED_ENDPOINTS,
+            )
+        except (ValueError, OSError) as exc:
+            raise QlibBinBuilderError(f"Refusing suspension quarantine: {exc}") from exc
+        if built_from_holey_fetch and not self._allow_holey_fetch and quarantine is None:
             if manifest is None:
                 detail = "no fetch_manifest.json found (cannot confirm the fetch is complete)"
             elif fetch_holes:
@@ -446,7 +463,7 @@ class QlibBinBuilder:
             # ever shipped).
             _dated = [ep for ep in BUNDLE_REQUIRED_ENDPOINTS
                       if ep in _DATE_SCOPED_ENDPOINTS]
-            if manifest is not None and not built_from_holey_fetch:
+            if manifest is not None and (not built_from_holey_fetch or quarantine is not None):
                 starts = [
                     manifest.endpoints[ep].coverage_start_date
                     for ep in _dated

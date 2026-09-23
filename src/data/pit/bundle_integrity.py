@@ -8,6 +8,8 @@ override (``--allow-holey-fetch``). The stamp propagates the FACT (was the fetch
 holey?) ONLY, never the authorization: building a holey bundle for research /
 inspection does not sanction trading on its recommendations. Each downstream
 boundary must opt in to partial data on its own.
+Structured suspension quarantine uses schema v2; ordinary stamps remain v1.
+Neither version nor evidence grants authorization by itself.
 
 This is a deliberately MINIMAL completeness contract. The richer bundle-provenance
 manifest + atomic-swap orchestration is P3-6, which may fold this stamp into a
@@ -24,9 +26,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from src.contracts.suspension_quarantine import (
+    SuspensionQuarantine,
+    has_quarantine,
+)
 from src.data.tushare.fetch_types import FetchHole
 
 SCHEMA_VERSION = 1
+QUARANTINE_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, QUARANTINE_SCHEMA_VERSION})
 INTEGRITY_FILENAME = "_fetch_integrity.json"
 
 
@@ -146,9 +154,15 @@ def write_bundle_integrity(
     ``identity`` (PR-G+I) is the bundle's content identity; when omitted the
     ``identity`` key is left out entirely (byte-stable for pre-PR-G+I callers and
     tests)."""
+    try:
+        quarantine_present = has_quarantine(holes)
+    except ValueError as exc:
+        raise BundleIntegrityError(f"invalid suspension quarantine: {exc}") from exc
+    if quarantine_present and built_from_holey_fetch is not True:
+        raise BundleIntegrityError("suspension quarantine cannot be stamped as a clean fetch")
     stamp = (now if now is not None else datetime.now(tz=timezone.utc)).isoformat()
     payload: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": QUARANTINE_SCHEMA_VERSION if quarantine_present else SCHEMA_VERSION,
         "built_from_holey_fetch": built_from_holey_fetch,
         "built_at": stamp,
         "holes": [
@@ -158,6 +172,8 @@ def write_bundle_integrity(
                 "reason_class": h.reason_class,
                 "attempts": h.attempts,
                 "last_error": h.last_error,
+                **({"quarantine": h.quarantine.to_dict()}
+                   if h.quarantine is not None else {}),
             }
             for h in holes
         ],
@@ -206,25 +222,37 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
             f"(got {type(raw).__name__}); refusing to parse."
         )
     version = raw.get("schema_version")
-    if version != SCHEMA_VERSION:
+    if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
         raise BundleIntegrityError(
             f"unknown bundle-integrity schema_version {version!r} in {path} "
-            f"(expected {SCHEMA_VERSION}); refusing to parse."
+            f"(expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}); refusing to parse."
         )
     # codex P2: validate each field's TYPE, not just presence — a hand-edited /
     # corrupt stamp with e.g. "built_from_holey_fetch": 0 must fail loud, not be
     # read as a clean (falsy) bundle.
     ctx = f"bundle integrity stamp {path}"
-    holes = tuple(
-        FetchHole(
-            endpoint=_require(h, "endpoint", str, ctx),
-            unit=_require(h, "unit", str, ctx),
-            reason_class=_require(h, "reason_class", str, ctx),
-            attempts=_require(h, "attempts", int, ctx),
-            last_error=_require(h, "last_error", str, ctx),
+    try:
+        holes = tuple(
+            FetchHole(
+                endpoint=_require(h, "endpoint", str, ctx),
+                unit=_require(h, "unit", str, ctx),
+                reason_class=_require(h, "reason_class", str, ctx),
+                attempts=_require(h, "attempts", int, ctx),
+                last_error=_require(h, "last_error", str, ctx),
+                quarantine=(SuspensionQuarantine.from_dict(h["quarantine"])
+                            if "quarantine" in h else None),
+            )
+            for h in _require(raw, "holes", list, ctx)
         )
-        for h in _require(raw, "holes", list, ctx)
-    )
+        quarantine_present = has_quarantine(holes)
+    except ValueError as exc:
+        raise BundleIntegrityError(f"{ctx}: invalid suspension quarantine: {exc}") from exc
+    expected_version = QUARANTINE_SCHEMA_VERSION if quarantine_present else SCHEMA_VERSION
+    if version != expected_version:
+        raise BundleIntegrityError(
+            f"{ctx}: schema_version {version} is inconsistent with quarantine "
+            f"evidence (expected {expected_version})"
+        )
     built_from_holey_fetch = _require(raw, "built_from_holey_fetch", bool, ctx)
     # codex P2: a "clean" stamp that nonetheless lists holes is internally
     # inconsistent (a hand edit, or a buggy write_bundle_integrity caller). The
@@ -252,7 +280,7 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
     cov = _validated_stamp_date(raw, "data_coverage_start", ctx)
     expected = _validated_stamp_date(raw, "expected_first_session", ctx)
     return BundleIntegrity(
-        schema_version=SCHEMA_VERSION,  # already validated equal above
+        schema_version=version,  # already validated against the actual evidence
         built_from_holey_fetch=built_from_holey_fetch,
         built_at=_require(raw, "built_at", str, ctx),
         holes=holes,
@@ -260,6 +288,21 @@ def read_bundle_integrity(bundle_dir: Path) -> BundleIntegrity | None:
         data_coverage_start=cov,
         expected_first_session=expected,
     )
+
+
+def assert_no_suspension_quarantine(provider_dir: str | Path) -> None:
+    """Ordinary historical engines cannot reinterpret today's incident policy.
+
+    Missing/ordinary legacy stamps retain their existing engine behavior. A
+    corrupt stamp still raises; neither a serving opt-in nor a prior qlib init
+    grants this separate historical boundary permission to ignore quarantine.
+    """
+    integrity = read_bundle_integrity(Path(provider_dir))
+    if integrity is not None and has_quarantine(integrity.holes):
+        raise BundleIntegrityError(
+            "suspension quarantine forbids ordinary historical training/backtest runs; "
+            "verify a complete refresh and rebuild before historical certification"
+        )
 
 
 def _validated_stamp_date(raw: Any, key: str, ctx: str) -> str | None:

@@ -69,6 +69,7 @@ from src.core.pipeline_result_artifacts import (
 )
 from src.core.qlib_runtime import (
     QlibRuntimeConfig,
+    _normalize_provider_uri,
     init_qlib_canonical,
     provider_uri_guard_message,
 )
@@ -441,6 +442,12 @@ class Pipeline:
         guard_message = provider_uri_guard_message(config.provider_uri)
         if guard_message is not None:
             raise PipelineError(guard_message)
+        from src.data.pit.bundle_integrity import BundleIntegrityError, assert_no_suspension_quarantine
+
+        try:
+            assert_no_suspension_quarantine(Path(_normalize_provider_uri(config.provider_uri)))
+        except BundleIntegrityError as exc:
+            raise PipelineError(str(exc)) from exc
         # Per-run output directory: output/runs/{timestamp}_{fingerprint}/
         # Prevents successive runs from silently overwriting each other.
         # The fingerprint is computed from the config so re-running with

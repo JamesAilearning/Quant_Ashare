@@ -55,6 +55,7 @@ from web.operator_ui.incumbent import (
 from web.operator_ui.incumbent import (
     unusable_path_reason as unusable_path_reason,
 )
+from web.operator_ui.pages._suspension_quarantine import quarantine_notice
 
 # The inference producer currently writes this exact artifact schema.  Keep the
 # read-only pages on one contract boundary instead of letting each page accept
@@ -590,6 +591,10 @@ def producer_shape_violation(
     ``entry_date`` 非空、schema 版本受支持、meta 不是 corrupt-v2。本函数
     从**清单**与**节奏**两组字段往下验，两者正是读侧真正据以下结论的东西。
     """
+    try:
+        quarantine_notice(payload)
+    except ValueError as exc:
+        return str(exc)
     # 两个顶层日期都必须落在**可能是交易日**的那些天上。产出器的 as_of 是
     # 一个真实会话的数据截止,entry 是 qlib 日历上的下一个交易会话——周六周日
     # 两者都产不出。上游的 ``artifact_entry_timing_is_valid`` 只验「严格 ISO

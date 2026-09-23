@@ -78,6 +78,12 @@ from typing import Any
 import pandas as pd
 from pyarrow.parquet import read_metadata
 
+from src.contracts.suspension_quarantine import (
+    QUARANTINE_REASON,
+    SuspensionQuarantine,
+    has_quarantine,
+    validate_policy,
+)
 from src.core.logger import get_logger
 from src.data._atomic_io import atomic_write_parquet
 from src.data._trade_cal import calendar_frame_defect
@@ -96,11 +102,12 @@ from src.data.tushare.client import (
 )
 from src.data.tushare.fetch_manifest import (
     MANIFEST_FILENAME,
-    SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     EndpointCoverage,
     FetchManifest,
     FetchManifestError,
     read_manifest,
+    read_manifest_for_quarantine_refresh,
 )
 from src.data.tushare.fetch_ranges import (
     resolve_aggregate_start_dates,
@@ -124,6 +131,12 @@ from src.data.tushare.namechange_history import (
     namechange_security_universe,
     stock_basic_security_codes,
     validate_stock_basic_snapshot,
+)
+from src.data.tushare.quarantine_transaction import recover_quarantine_publication
+from src.data.tushare.suspension_quarantine import (
+    publish_suspension_candidate,
+    validate_quarantine_query,
+    verify_quarantine_evidence,
 )
 
 _logger = get_logger(__name__)
@@ -370,9 +383,11 @@ class TushareFetcherConfig:
     suspend_d_start_date: str | None = None
     index_weight_start_date: str | None = None
     namechange_mode: str = "date_range"
+    suspension_quarantine: str | None = None
 
     def __post_init__(self) -> None:
         try:
+            validate_policy(self.suspension_quarantine)
             validate_namechange_mode(self.namechange_mode)
             if self.namechange_mode == "per_security_full":
                 start = self.namechange_start_date if self.namechange_start_date is not None else self.start_date
@@ -578,6 +593,9 @@ class TushareFetcher:
         self._holes: list[FetchHole] = []
         self._aggregate_manifest: FetchManifest | None = None
         self._aggregate_manifest_loaded = False
+        self._suspension_prior: SuspensionQuarantine | None = None
+        self._quarantine_preflight_done = False
+        self._suspension_recovered = False
         self._stock_basic_refreshed: set[str] = set()
         self._namechange_snapshot_date = config.now if config.now is not None else date.today()
         # SSE trading calendar (sorted YYYYMMDD), fetched once per run and used
@@ -651,10 +669,14 @@ class TushareFetcher:
         self._holes = []
         self._aggregate_manifest = None
         self._aggregate_manifest_loaded = False
+        self._suspension_prior = None
+        self._quarantine_preflight_done = False
+        self._suspension_recovered = False
         self._stock_basic_refreshed = set()
         self._namechange_snapshot_date = (
             self._config.now if self._config.now is not None else date.today()
         )
+        self._quarantine_preflight()
         # Honour --dry-run: do NOT create output_dir (Codex review #99
         # PR comment). dry-run promises no filesystem side-effects.
         if not self._config.dry_run:
@@ -698,6 +720,8 @@ class TushareFetcher:
         """
         if not path.exists():
             return False
+        if endpoint == "suspend_d" and (self._suspension_prior is not None or self._suspension_recovered):
+            return False  # A shortened file is never evidence of healed history.
         if honor_refresh_current and self._config.refresh_current:
             return False
         return not self._must_retry(endpoint, unit)
@@ -706,13 +730,55 @@ class TushareFetcher:
         """Read prior evidence once; never turn unreadable provenance into holes."""
         if not self._aggregate_manifest_loaded:
             try:
-                self._aggregate_manifest = read_manifest(
-                    self._config.output_dir / MANIFEST_FILENAME,
+                path = self._config.output_dir / MANIFEST_FILENAME
+                self._aggregate_manifest = (
+                    read_manifest_for_quarantine_refresh(
+                        path, policy=self._config.suspension_quarantine,
+                        start_date=self._config.effective_start_date("suspend_d"), end_date=self._config.end_date,
+                        enabled=not self._config.dry_run and "suspend_d" in self._config.endpoints,
+                    ) if self._suspension_recovered else read_manifest(path)
                 )
             except FetchManifestError as exc:
                 raise TushareFetcherError(guidance) from exc
             self._aggregate_manifest_loaded = True
         return self._aggregate_manifest
+
+    def _quarantine_preflight(self) -> None:
+        """Validate prior incident evidence before any endpoint writes or calls."""
+        if self._quarantine_preflight_done:
+            return
+        try:
+            self._suspension_recovered = recover_quarantine_publication(
+                self._config.output_dir, policy=self._config.suspension_quarantine,
+                start_date=self._config.effective_start_date("suspend_d"),
+                end_date=self._config.end_date,
+                enabled=not self._config.dry_run and "suspend_d" in self._config.endpoints,
+            )
+        except (ValueError, OSError) as exc:
+            raise TushareFetcherError(f"Refusing pending suspension publication: {exc}") from exc
+        manifest_path = self._config.output_dir / MANIFEST_FILENAME
+        manifest = (
+            self._load_aggregate_manifest(
+                "Refusing fetch against unreadable suspension quarantine provenance; preserve the manifest."
+            ) if manifest_path.exists() or manifest_path.is_symlink() else None
+        )
+        holes = tuple(hole for ep in manifest.endpoints.values() for hole in ep.holes) if manifest else ()
+        try:
+            if has_quarantine(holes):
+                if self._config.suspension_quarantine is None:
+                    raise ValueError("existing suspension quarantine requires an explicit matching policy")
+                quarantines = [hole.quarantine for hole in holes if hole.quarantine is not None]
+                if len(quarantines) != 1:
+                    raise ValueError("suspension quarantine requires one unambiguous original reference")
+                self._suspension_prior = quarantines[0]
+                verify_quarantine_evidence(self._config.output_dir, self._suspension_prior)
+            if self._config.suspension_quarantine is not None and "suspend_d" in self._config.endpoints:
+                validate_quarantine_query(
+                    self._config.effective_start_date("suspend_d"), self._config.end_date,
+                )
+        except ValueError as exc:
+            raise TushareFetcherError(str(exc)) from exc
+        self._quarantine_preflight_done = True
 
     def _prior_aggregate_coverage(self, path: Path, endpoint: str) -> EndpointCoverage:
         """Validate the shared prior evidence used by replacement and resume."""
@@ -724,7 +790,7 @@ class TushareFetcher:
         )
         manifest = self._load_aggregate_manifest(guidance)
         if (manifest is None or type(manifest.schema_version) is not int
-                or manifest.schema_version != SCHEMA_VERSION):
+                or manifest.schema_version not in SUPPORTED_SCHEMA_VERSIONS):
             raise TushareFetcherError(guidance)
         previous = manifest.endpoints.get(endpoint)
         if (previous is None or not isinstance(previous.status, str)
@@ -830,7 +896,9 @@ class TushareFetcher:
         the manifest coverage fields, not the unit — codex P2).
         """
         path = self._config.output_dir / filename
+        self._quarantine_preflight()
         start_date = self._config.effective_start_date(endpoint)
+        selected_quarantine = endpoint == "suspend_d" and self._config.suspension_quarantine is not None
         full_names = endpoint == "namechange" and self._config.namechange_mode == "per_security_full"
         if self._aggregate_can_skip(path, endpoint, "file"):
             if full_names and not self._config.dry_run:
@@ -862,9 +930,20 @@ class TushareFetcher:
                     end_date=self._config.end_date,
                     call=self._safe_call,
                 )
-                if path.exists():
+                if path.exists() and not selected_quarantine:
                     retained = self._read_retained_aggregate(path, endpoint)
                     require_retained_keys(df, retained, endpoint, label=f"{endpoint}: retained file")
+            if selected_quarantine:
+                evidence = publish_suspension_candidate(
+                    self._config.output_dir, df, prior=self._suspension_prior,
+                    start_date=start_date, end_date=self._config.end_date,
+                )
+                if evidence is not None:
+                    self._add_hole(
+                        endpoint, "file", reason_class=QUARANTINE_REASON, attempts=1,
+                        last_error="Known suspension history remains missing; explicit isolation required.",
+                        quarantine=evidence,
+                    )
         except FetchHoleError as hole:
             self._record_hole(endpoint, "file", hole)
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
@@ -872,7 +951,8 @@ class TushareFetcher:
             self._add_hole(endpoint, "file", reason_class="unusable_response",
                            attempts=1, last_error=str(exc))
             return TushareFetchResult(endpoint, 0, 0, skipped=0)
-        atomic_write_parquet(df, path)
+        if not selected_quarantine:
+            atomic_write_parquet(df, path)
         _logger.info("  wrote %d rows to %s", len(df), path)
         return TushareFetchResult(endpoint, 1, len(df))
 
@@ -2049,6 +2129,7 @@ class TushareFetcher:
     def _add_hole(
         self, endpoint: str, unit: str, *,
         reason_class: str, attempts: int, last_error: str,
+        quarantine: SuspensionQuarantine | None = None,
     ) -> None:
         """Append a :class:`FetchHole` and log it loudly so the operator sees it
         as it happens (the CLI also reports the full set + a non-zero exit at the
@@ -2058,6 +2139,7 @@ class TushareFetcher:
         self._holes.append(FetchHole(
             endpoint=endpoint, unit=unit, reason_class=reason_class,
             attempts=attempts, last_error=last_error,
+            quarantine=quarantine,
         ))
         _logger.warning(
             "  HOLE: %s [%s] (%s, %d attempts) — continuing. %s",

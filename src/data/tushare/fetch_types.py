@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.contracts.suspension_quarantine import SuspensionQuarantine
+
 
 @dataclass(frozen=True)
 class TushareFetchResult:
@@ -55,6 +57,9 @@ class FetchHole:
     reason_class: str
     attempts: int
     last_error: str
+    # Only the exact reviewed suspension incident carries structured evidence.
+    # None retains legacy constructor ordering and on-disk serialization.
+    quarantine: SuspensionQuarantine | None = None
 
 
 __all__ = ["FetchHole", "TushareFetchResult"]

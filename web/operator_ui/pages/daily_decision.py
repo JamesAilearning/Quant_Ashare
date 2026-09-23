@@ -75,6 +75,7 @@ from web.operator_ui.pages._daily_review_progress_helpers import (
     summarise_daily_review_progress,
     validate_review_candidate_codes,
 )
+from web.operator_ui.pages._suspension_quarantine import quarantine_notice
 
 _ACTION_LABELS = {"adopt": "采纳", "reject": "拒绝", "watch": "观望"}
 
@@ -243,6 +244,13 @@ if _read.issue is not None or not isinstance(_read.value, dict):
     )
     st.stop()
 _payload: dict[str, Any] = _read.value
+try:
+    _quarantine_notice = quarantine_notice(_payload)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
+if _quarantine_notice is not None:
+    st.warning(_quarantine_notice)
 
 # Filename ↔ payload date consistency: a renamed/copied artifact whose payload
 # as_of_date disagrees with the filename date would record the decision under
@@ -412,8 +420,10 @@ _baseline = find_nominal_baseline(
 )
 _baseline_roster: tuple[str, ...] = ()
 _baseline_unreadable = ""
+_baseline_quarantine_notice: str | None = None
 if _baseline.found:
     try:
+        _baseline_quarantine_notice = quarantine_notice(_baseline.baseline_payload)
         _baseline_roster = baseline_roster(_baseline.baseline_payload)
     except ValueError as _roster_exc:
         # 损坏的名单**不是**空名单。退成 `()` 会让页面接着说「名义上跟的是
@@ -423,6 +433,8 @@ if _baseline.found:
         _baseline_unreadable = str(_roster_exc)
 
 if _baseline.found and not _baseline_unreadable:
+    if _baseline_quarantine_notice is not None:
+        st.warning(f"名义持仓基准工件：{_baseline_quarantine_notice}")
     _baseline_meta = _baseline.baseline_payload.get("meta")
     _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
     st.info(

@@ -131,6 +131,15 @@ class WalkForwardEngine:
                 "Canonical qlib runtime must be initialized before walk-forward."
             )
 
+        from src.data.pit.bundle_integrity import BundleIntegrityError, assert_no_suspension_quarantine
+
+        canonical_cfg = get_canonical_qlib_config()
+        if canonical_cfg is not None:
+            try:
+                assert_no_suspension_quarantine(Path(canonical_cfg.provider_uri))
+            except BundleIntegrityError as exc:
+                raise WalkForwardError(str(exc)) from exc
+
         output_dir = Path(config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now(tz=timezone.utc).isoformat()
@@ -150,7 +159,6 @@ class WalkForwardEngine:
         pit_provider = None
         if str(config.delisted_registry_path or "").strip():
             from src.core.pit_wiring import build_pit_provider
-            from src.core.qlib_runtime import get_canonical_qlib_config
 
             canonical_cfg = get_canonical_qlib_config()
             if canonical_cfg is None:

@@ -41,6 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.contracts.suspension_quarantine import POLICY_ID as SUSPENSION_QUARANTINE_POLICY  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
@@ -316,6 +317,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "(or lacks a fetch-integrity stamp) (P3-4c). SEPARATE from the "
              "build-side --allow-holey-fetch: building partial data does not "
              "sanction trading on it, so this is a second explicit opt-in.")
+    p.add_argument(
+        "--suspension-quarantine", choices=(SUSPENSION_QUARANTINE_POLICY,),
+        default=RecommendationConfig.suspension_quarantine,
+        help="Separately opt into the exact suspension-history incident. "
+             "Its security is excluded from picks; data remains incomplete. "
+             "This never enables --allow-holey-recommend.")
     return p
 
 
@@ -375,21 +382,28 @@ def main(argv: list[str] | None = None) -> int:
         bundle_max_age_days=args.bundle_max_age_days,
         out_dir=args.out_dir,
         allow_holey_recommend=args.allow_holey_recommend,
+        suspension_quarantine=args.suspension_quarantine,
         rebalance_cadence_days=params["rebalance_cadence_days"],
         ensemble_manifest_path=args.ensemble_manifest,
     )
 
     try:
         result = recommend(config)
+        paths = write_outputs(result, config.out_dir)
     except DailyRecommendationError as exc:
         _logger.error("Daily recommendation failed: %s", exc)
         return 1
 
-    paths = write_outputs(result, config.out_dir)
-
     # Terminal print — both time points always shown.
     print("=" * 64)
     print("  DAILY STOCK RECOMMENDATION")
+    if "suspension_quarantine" in result.run_meta:
+        quarantine = result.run_meta["suspension_quarantine"]
+        print("  !! DATA QUARANTINE — incomplete data / 数据仍不完整")
+        print(f"  !! policy={quarantine['policy_id']} "
+              f"active_security={quarantine['instrument']} (1 security)")
+        print(f"  !! n_quarantined={result.n_quarantined} scored row(s) excluded; "
+              "existing holdings are NOT represented as sold.")
     # Cadence-aware HOLD notice (DP-2): a non-rebalance-day artifact is a
     # monitoring view, NOT an entry instruction — say so before the list.
     if result.rebalance_day is False:

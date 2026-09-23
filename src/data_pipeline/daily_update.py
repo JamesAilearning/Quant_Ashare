@@ -75,6 +75,7 @@ from uuid import uuid4
 
 import pandas as pd
 
+from src.contracts.suspension_quarantine import validate_policy
 from src.core.logger import get_logger
 from src.data.active_stocks_snapshot import SnapshotDateError, embedded_snapshot_date
 from src.data.tushare.fetch_ranges import (
@@ -634,8 +635,10 @@ class DailyUpdateConfig:
     suspend_d_start_date: str | None = None
     index_weight_start_date: str | None = None
     namechange_mode: str = "date_range"
+    suspension_quarantine: str | None = None
 
     def __post_init__(self) -> None:
+        validate_policy(self.suspension_quarantine)
         validate_namechange_mode(self.namechange_mode)
         self.aggregate_start_dates()
         if self.namechange_mode == "per_security_full":
@@ -878,6 +881,8 @@ def build_plan(
         fetch += [f"--{endpoint.replace('_', '-')}-start-date", start]
     if config.namechange_mode != "date_range":
         fetch += ["--namechange-mode", config.namechange_mode]
+    if config.suspension_quarantine is not None:
+        fetch += ["--suspension-quarantine", config.suspension_quarantine]
     bins = [
         "--tushare-dir", str(config.tushare_dir),
         "--delisted-registry", str(config.delisted_registry),
@@ -885,6 +890,8 @@ def build_plan(
     ]
     if config.allow_holey_fetch:
         bins.append("--allow-holey-fetch")
+    if config.suspension_quarantine is not None:
+        bins += ["--suspension-quarantine", config.suspension_quarantine]
     return DailyUpdatePlan(
         fetch=fetch,
         registry=[
@@ -1240,7 +1247,31 @@ def _execute_daily_update(
     # Stage 1: fetch (01 --refresh-current). Exit 3 = completed-with-holes.
     with _capture_stage_errors() as stage_errors:
         rc = active["fetch"](plan.fetch)
-    if rc == 3 and not config.allow_holey_fetch:
+    quarantine = None
+    # Re-read actual provenance, not merely exit 3 or the presence of a flag.
+    # A broad research override cannot erase a structured isolation obligation.
+    if rc in (0, 3) and (rc == 3 or config.suspension_quarantine is not None):
+        from src.data.pit.qlib_bin_builder import BUNDLE_REQUIRED_ENDPOINTS
+        from src.data.pit.quarantine_gate import validate_scoped_quarantine
+        from src.data.tushare.fetch_manifest import FetchManifestError, read_manifest
+
+        try:
+            quarantine = validate_scoped_quarantine(
+                read_manifest(config.tushare_dir / "fetch_manifest.json"),
+                config.suspension_quarantine, config.tushare_dir,
+                required_endpoints=BUNDLE_REQUIRED_ENDPOINTS,
+            )
+            requested_end = plan.fetch[plan.fetch.index("--end-date") + 1]
+            if quarantine is not None and (
+                rc != 3 or quarantine.query_end_date != requested_end
+                or quarantine.query_start_date != config.aggregate_start_dates(end_date=requested_end).get(
+                    "suspend_d", config.start_date)
+            ):
+                raise ValueError("quarantine evidence/exit does not match this update's requested interval")
+        except (FetchManifestError, ValueError, OSError) as exc:
+            _logger.error("Fetch quarantine verification refused: %s", exc)
+            return EXIT_FETCH_HOLES, "fetch", f"suspension quarantine refused: {exc}"
+    if rc == 3 and not config.allow_holey_fetch and quarantine is None:
         _logger.error(
             "Fetch completed WITH HOLES (exit 3) and --allow-holey-fetch was "
             "not given. The build gate would refuse this dump; stopping here. "
@@ -1299,6 +1330,22 @@ def _execute_daily_update(
             f"validation failed (exit {rc}) on the staged bundle; not swapping",
             stage_errors)
 
+    # A qualified fetch must remain qualified in the actual staged provider.
+    if quarantine is not None:
+        from src.contracts.suspension_quarantine import qualified_quarantine
+        from src.data.pit.bundle_integrity import BundleIntegrityError, read_bundle_integrity
+        from src.data.tushare.suspension_quarantine import verify_quarantine_evidence
+
+        try:
+            staged_stamp = read_bundle_integrity(new_dir(config.provider_dir))
+            if (staged_stamp is None or not staged_stamp.built_from_holey_fetch
+                    or qualified_quarantine(staged_stamp.holes, config.suspension_quarantine) != quarantine):
+                raise ValueError("staged provider lost or changed the verified suspension quarantine")
+            verify_quarantine_evidence(config.tushare_dir, quarantine)
+        except (BundleIntegrityError, ValueError, OSError) as exc:
+            _logger.error("Staged quarantine verification refused: %s", exc)
+            return EXIT_VALIDATE, "validate", f"staged suspension quarantine refused: {exc}"
+
     # Stage 5: atomic two-stage swap.
     try:
         swap(config.provider_dir)
@@ -1306,4 +1353,6 @@ def _execute_daily_update(
         _logger.error("Swap FAILED: %s", exc)
         return EXIT_SWAP, "swap", f"swap failed: {exc}"
     _logger.info("Daily update complete: %s is live.", config.provider_dir)
-    return EXIT_OK, None, f"daily update complete; {config.provider_dir} is live"
+    qualification = (f"; suspension quarantine active: {quarantine.policy_id}; data remains incomplete"
+                     if quarantine is not None else "")
+    return EXIT_OK, None, f"daily update complete; {config.provider_dir} is live{qualification}"

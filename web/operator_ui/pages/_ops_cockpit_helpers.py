@@ -730,6 +730,16 @@ def recommender_integrity_check(
             known=True, accepted=allow_holey,
             reason=("缺 _fetch_integrity.json——无法确认 bundle 建自完整 fetch;"
                     "出单侧拒绝(除非显式 --allow-holey-recommend)"))
+    from src.contracts.suspension_quarantine import has_quarantine
+
+    if has_quarantine(stamp.holes):
+        return BundleIntegrityCheck(
+            known=True, accepted=False, holey=True,
+            built_at=stamp.built_at,
+            identity_tag=stamp.identity.tag if stamp.identity else None,
+            reason=("存在历史停复牌隔离，数据仍不完整；当前默认出单入口拒绝。"
+                    "仅可经独立核验后显式使用 --suspension-quarantine，"
+                    "通用缺口开关不能代替隔离授权。"))
     if stamp.built_from_holey_fetch:
         return BundleIntegrityCheck(
             known=True, accepted=allow_holey, holey=True,

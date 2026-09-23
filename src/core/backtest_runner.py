@@ -42,6 +42,7 @@ from src.core.microstructure_mask import (
     ts_to_iso_date,
 )
 from src.core.qlib_runtime import (
+    _normalize_provider_uri,
     get_canonical_qlib_config,
     is_canonical_qlib_initialized,
 )
@@ -51,6 +52,7 @@ from src.core.risk_constraints import (
     RiskConstraintMode,
 )
 from src.data._feature_dataset_cache import read_bundle_build_identity, read_bundle_tag
+from src.data.pit.bundle_integrity import BundleIntegrityError, assert_no_suspension_quarantine
 from src.data.st_history import (
     StHistoryError,
     assert_covers,
@@ -279,6 +281,13 @@ class BacktestRunner:
                 "Canonical qlib runtime reports initialized but has no "
                 "recorded config; refusing to produce official metrics."
             )
+        # Direct replay/gate callers bypass Pipeline and WalkForward. Prior
+        # canonical init (or captured clean identities) is not permission to
+        # certify history from a provider carrying today's incident policy.
+        try:
+            assert_no_suspension_quarantine(_normalize_provider_uri(runtime_config.provider_uri))
+        except BundleIntegrityError as exc:
+            raise BacktestRunnerError(str(exc)) from exc
         if request.adjust_mode != runtime_config.data_adjust_mode:
             raise BacktestRunnerError(
                 "Canonical backtest adjust_mode does not match initialized "
