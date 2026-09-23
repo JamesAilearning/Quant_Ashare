@@ -46,6 +46,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     recommender_integrity_check,
     retrain_window,
 )
+from web.operator_ui.pages._suspension_quarantine import quarantine_notice
 from web.operator_ui.pages._today_decision_queue_helpers import (
     TodayQueueItem,
     build_today_decision_queue,
@@ -457,6 +458,14 @@ with signal_col:
             current_model_sha=None,
         )
     _render_signal_summary(signal)
+    if signal_payload is not None:
+        try:
+            _quarantine_notice = quarantine_notice(signal_payload)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            if _quarantine_notice is not None:
+                st.warning(_quarantine_notice)
 
 # 回填顶部的合成句（UI 已批序列④，P0）：三态 + 如实边缘，判定全部来自
 # 上面已算好的裁决——helper 零自造（见 todays_buy_answer docstring）。

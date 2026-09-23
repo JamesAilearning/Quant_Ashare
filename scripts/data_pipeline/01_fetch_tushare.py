@@ -59,11 +59,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.contracts.suspension_quarantine import has_quarantine  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.tushare.client import TushareClient, TushareClientError  # noqa: E402
 from src.data.tushare.fetch_manifest import (  # noqa: E402
     MANIFEST_FILENAME,
     FetchManifestError,
+    all_holes,
     build_manifest,
     clear_manifest,
     merge_manifest,
@@ -168,6 +170,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--namechange-mode", choices=NAMECHANGE_MODES, default="date_range",
                    help="Explicit name-history strategy; per_security_full requires fresh "
                         "stock_basic snapshots and refresh of an existing name file.")
+    p.add_argument("--suspension-quarantine", default=None,
+                   help="Explicit known-incident policy only; keeps structured holes and exit 3. "
+                        "Never a general permission to discard suspension history.")
     p.add_argument(
         "--endpoints", default=",".join(ENDPOINTS),
         help=f"Comma-separated endpoint names. Default: all 7. Valid: {','.join(ENDPOINTS)}",
@@ -280,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             suspend_d_start_date=args.suspend_d_start_date,
             index_weight_start_date=args.index_weight_start_date,
             namechange_mode=args.namechange_mode,
+            suspension_quarantine=args.suspension_quarantine,
         )
     except TushareFetcherError as exc:
         _logger.error("Config invalid: %s", exc)
@@ -287,6 +293,20 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest_path = args.output_dir / MANIFEST_FILENAME
     if args.reset_manifest:
+        try:
+            reset_source = read_manifest(manifest_path)
+        except FetchManifestError:
+            # Preserve the established explicit repair path for legacy malformed
+            # manifests, but never erase a saved quarantine evidence chain.
+            if (args.output_dir / "_suspension_quarantine").exists():
+                _logger.error("Refusing --reset-manifest with saved quarantine evidence; inspect a separate staging rebuild.")
+                return 1
+            reset_source = None
+        if reset_source is not None and has_quarantine(
+            tuple(hole for ep in reset_source.endpoints.values() for hole in ep.holes)
+        ):
+            _logger.error("Refusing --reset-manifest: suspension quarantine requires its original reference metadata.")
+            return 1
         rc = _reset_manifest(manifest_path)
         if rc != 0:
             return rc
@@ -406,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     # with the prior run so a unit re-fetched this run self-heals its hole (and a
     # still-failing unit's hole stays). Skipped under --dry-run (no side effects).
     # Downstream gating on a holey manifest is P3-4c; this only records.
+    resulting_manifest = prev_manifest
     if not config.dry_run:
         manifest_path = config.output_dir / MANIFEST_FILENAME
         # The whole read → build → merge → write is fail-loud: read_manifest
@@ -420,7 +441,8 @@ def main(argv: list[str] | None = None) -> int:
                 results, fetcher.holes, config.start_date, config.end_date,
                 endpoint_start_dates=config.aggregate_start_dates(),
             )
-            write_manifest(manifest_path, merge_manifest(prev_manifest, current_manifest))
+            resulting_manifest = merge_manifest(prev_manifest, current_manifest)
+            write_manifest(manifest_path, resulting_manifest)
         except (FetchManifestError, OSError) as exc:
             _logger.error("Fetch manifest update failed: %s", exc)
             # P3-7b red line: a refused merge (narrower / disjoint scope) or a
@@ -449,6 +471,13 @@ def main(argv: list[str] | None = None) -> int:
     # --output-dir to fill them (file-existence resume re-fetches only the
     # missing units).
     holes = fetcher.holes
+    # An endpoint-subset run (or dry run) cannot report clean success while
+    # the published directory still carries this incident. Use the resulting
+    # manifest, not only the units attempted today; a genuine recovery clears it.
+    if resulting_manifest is not None:
+        persisted_holes = all_holes(resulting_manifest)
+        if has_quarantine(persisted_holes):
+            holes = persisted_holes
     if holes:
         _log_hole_report(holes)
         return 3

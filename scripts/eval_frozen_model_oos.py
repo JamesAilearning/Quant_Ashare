@@ -60,7 +60,11 @@ from src.core.canonical_backtest_contract import (  # noqa: E402
     CanonicalExchangeConfig,
     CanonicalExchangeCostModel,
 )
-from src.core.qlib_runtime import QlibRuntimeConfig, init_qlib_canonical  # noqa: E402
+from src.core.qlib_runtime import (  # noqa: E402
+    QlibRuntimeConfig,
+    _normalize_provider_uri,
+    init_qlib_canonical,
+)
 from src.core.risk_constraints import (  # noqa: E402
     RiskConstraintError,
     campaign_risk_constraints_v1,
@@ -70,6 +74,10 @@ from src.core.walk_forward.aggregate import extract_cost_metrics  # noqa: E402
 from src.data.feature_dataset_builder import (  # noqa: E402
     FeatureDatasetBuilder,
     FeatureDatasetConfig,
+)
+from src.data.pit.bundle_integrity import (  # noqa: E402
+    BundleIntegrityError,
+    assert_no_suspension_quarantine,
 )
 
 _BENCHMARK_TR = "SH000300TR"  # canonical total-return basis (PR-2)
@@ -366,6 +374,13 @@ def main(argv: list[str] | None = None) -> int:
                 "forbids scoring it on the csi800 universe. Pass the "
                 "candidate pkl explicitly.")
         args.model = "D:/stock/phase_b_artifacts/alpha158_lgb_pit.pkl"
+
+    # Refuse before dataset/model work or signal metrics, not only when the
+    # later shared backtest runner checks the initialized provider.
+    try:
+        assert_no_suspension_quarantine(_normalize_provider_uri(args.provider))
+    except BundleIntegrityError as exc:
+        raise SystemExit(str(exc)) from exc
 
     print(f"[oos-eval] model={args.model}")
     print(f"[oos-eval] profile={args.profile}  "

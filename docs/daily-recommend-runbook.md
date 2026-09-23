@@ -19,6 +19,14 @@ runs the **data update** (`scripts/daily_update.py`); it never runs recommend.
   0 with a buy list is a run whose guards all passed** — that is the core
   trust signal (see [How to judge the list](#how-to-judge-the-list)).
 
+For the one explicitly approved 688766 suspension-history incident, read the
+[scoped quarantine runbook](suspension-quarantine-runbook.md) before proceeding.
+A successful explicitly qualified run still uses incomplete data and excludes
+that security; exit 0 is not a completeness or production-certification claim.
+Ordinary fetch manifests/provider integrity stamps remain schema v1; only
+incident-bearing ones use v2, which old readers refuse. This is separate from
+the recommendation JSON's existing schema v2.
+
 ## Prerequisite: the data update must have completed first
 
 `daily_recommend` scores on whatever the live qlib bundle holds; it does not
@@ -90,6 +98,7 @@ Flags you will actually reach for (defaults in parentheses):
 | `--bundle-max-age-days` | `14` | Max calendar days the bundle's last day may lag *today* before it is refused as stale. |
 | `--st-max-age-days` | `7` | Max days the ST/active-stocks snapshot may lag T before it is refused as stale. |
 | `--allow-holey-recommend` | off | **Last resort.** Recommend even on a bundle built from an incomplete fetch (or one with no integrity stamp). See the warnings below. |
+| `--suspension-quarantine` | unset | Only `suspend-688766-20251127-20251209`; separate explicit authorization for the one verified incident, with mandatory security exclusion and incomplete-data disclosure. The broad override cannot replace it. |
 
 `--model` / `--provider-uri` / `--delisted-registry` / `--name-source` /
 `--fit-start` / `--fit-end` exist for non-default layouts; the fit window MUST
@@ -147,11 +156,17 @@ continues to show the explicit HOLD notice.
 
 Empty CSVs keep their headers and **zero stock rows**; they cannot encode the
 run's actual boolean/date values, so read the sibling JSON for that context.
-Daily-mode CSV columns and content are unchanged. Older cadence CSVs also lack
-these columns: absence in a CSV alone does not prove a daily/rebalance run—check
+Daily-mode CSV columns and content without active quarantine are unchanged.
+Older cadence CSVs also lack these columns: absence in a CSV alone does not prove a daily/rebalance run—check
 its JSON. Consumers matching CSV headers exactly must allow the two appended
 columns in new cadence exports. JSON remains schema v2 with unchanged pick rows;
 no historical exports are rewritten.
+
+With active quarantine, both CSVs additionally append policy/security,
+incomplete-data and exclusion-count fields; JSON includes the evidence and
+`n_quarantined`. The audit reason is `data_quarantine`. CLI and both operator
+decision views warn even when the affected security was not scored. Read the
+[exact fields and zero-row behavior](suspension-quarantine-runbook.md#荐股与人工阅读).
 
 The terminal header echoes both time points and the funnel:
 
@@ -186,7 +201,9 @@ means none of them fired:
 - **Incomplete-fetch provenance** — refuses if the bundle has no
   `_fetch_integrity.json` stamp or the stamp records a holey fetch — **unless** you
   pass `--allow-holey-recommend`, which waives exactly this check (a corrupt /
-  unreadable stamp still refuses regardless).
+  unreadable stamp still refuses regardless). A structured quarantine is not
+  waived by that broad flag: it requires its separate matching policy and no
+  additional holes, and still remains explicitly incomplete.
 
 **Row filters — these drop names but the run still succeeds (exit 0).** Their
 counts are reported, not errors, so a nonzero count is normal, not a problem:
@@ -196,9 +213,14 @@ counts are reported, not errors, so a nonzero count is normal, not a problem:
   masking) are dropped and counted in `untradable_masked`.
 - **Currently ST/\*ST** — current-ST names are dropped *before* the Top-K slice
   (counted in `st_excluded`), so the list holds K tradable, non-ST picks.
+- **Explicit data quarantine** — the one affected security is excluded before
+  Top-K and counted separately in `n_quarantined`; this reason takes precedence
+  over ST and microstructure labels without changing its score or any holdings.
 
 So a clean run rules out look-ahead, weeks-old prices, a stale/missing ST source,
-and — *unless* you passed `--allow-holey-recommend` — an unstamped/holey bundle. It
+and — *unless* you passed `--allow-holey-recommend` or explicitly qualified the
+known quarantine — an unstamped/holey bundle. A qualified quarantine is not a
+clean-data result. A successful run
 does **not** by itself prove that today's update ran, nor that the entry day is the
 upcoming session (see [Which session is the list for?](#which-session-is-the-list-for))
 — confirm those from the printed `entry_date` and the `daily_update` result. Nor
@@ -215,6 +237,8 @@ Quick sanity read on the summary line:
   "dropped N NaN-score names", *not* in the audit CSV), and names with no data in the
   bundle never enter the count. So don't expect the three to sum to exactly 300 —
   read them against the audit CSV row count, and use the log for the NaN-score drop.
+  With active quarantine, add `n_quarantined` as a fourth, disjoint term; zero
+  scored exclusions do not mean the run's one-security quarantine was cleared.
 - **`st_excluded` undercounts the overlap.** A name that is both currently ST *and*
   suspended / one-price-locked is labelled by its untradable reason and counted in
   `untradable_masked`, not `st_excluded` (untradable status is checked first). So a

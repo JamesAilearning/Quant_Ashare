@@ -38,6 +38,18 @@ from typing import Any, Final
 
 import pandas as pd
 
+from src.contracts.suspension_quarantine import (
+    INSTRUMENT as QUARANTINED_INSTRUMENT,
+)
+from src.contracts.suspension_quarantine import (
+    POLICY_ID as SUSPENSION_QUARANTINE_POLICY,
+)
+from src.contracts.suspension_quarantine import (
+    SuspensionQuarantine,
+    has_quarantine,
+    qualified_quarantine,
+    validate_policy,
+)
 from src.core.logger import get_logger
 from src.core.microstructure_mask import (
     MicrostructureMaskError,
@@ -171,6 +183,8 @@ class RecommendationConfig:
     # (--allow-holey-fetch): building a partial research bundle does not sanction
     # trading on it. See _assert_bundle_fetch_complete.
     allow_holey_recommend: bool = False
+    # Separate, exact-incident opt-in. It never enables the broad hole override.
+    suspension_quarantine: str | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +223,8 @@ class DailyRecommendationResult:
     # under cadence=5 (disclosed, never fabricated).
     rebalance_day: bool | None = None
     next_rebalance_date: str | None = None
+    # Actual scored rows excluded, not the number of securities under policy.
+    n_quarantined: int = 0
 
 
 # --------------------------------------------------------------------------
@@ -457,6 +473,7 @@ def _assert_st_snapshot_consistent_with_bundle(
 
 def _assert_bundle_fetch_complete(
     provider_uri: str, *, allow_holey_recommend: bool,
+    suspension_quarantine: str | None = None,
 ) -> BundleIntegrity | None:
     """Fail-loud guard (P3-4c Layer 2): refuse to recommend from a bundle built
     from a HOLEY tushare fetch, or one lacking a fetch-integrity stamp.
@@ -484,6 +501,10 @@ def _assert_bundle_fetch_complete(
     # override — `--allow-holey-recommend` accepts incompleteness, not corruption
     # (codex P2).
     try:
+        validate_policy(suspension_quarantine)
+    except ValueError as exc:
+        raise DailyRecommendationError(f"invalid suspension quarantine policy: {exc}") from exc
+    try:
         integrity = read_bundle_integrity(Path(_normalize_provider_uri(provider_uri)))
     except BundleIntegrityError as exc:
         raise DailyRecommendationError(
@@ -491,6 +512,22 @@ def _assert_bundle_fetch_complete(
             "Refusing to recommend on corrupt provenance — a holey or missing stamp "
             "can be overridden with --allow-holey-recommend, a corrupt one cannot."
         ) from exc
+    # A structured incident is never an ordinary broad-override hole. Keep
+    # isolation mandatory, including when both options were supplied.
+    if integrity is not None:
+        try:
+            quarantined = has_quarantine(integrity.holes)
+            evidence = qualified_quarantine(integrity.holes, suspension_quarantine)
+        except ValueError as exc:
+            raise DailyRecommendationError(
+                f"invalid suspension quarantine evidence: {exc}") from exc
+        if quarantined:
+            if evidence is None:
+                raise DailyRecommendationError(
+                    "suspension quarantine requires its explicit matching policy "
+                    "and exactly the approved incident hole; additional holes or "
+                    "--allow-holey-recommend cannot bypass isolation.")
+            return integrity
     if allow_holey_recommend:
         return integrity
     if integrity is None:
@@ -852,6 +889,10 @@ def _assemble_run_meta(
 def recommend(
     config: RecommendationConfig, *, now: date | None = None,
 ) -> DailyRecommendationResult:
+    try:
+        validate_policy(config.suspension_quarantine)
+    except ValueError as exc:
+        raise DailyRecommendationError(f"invalid suspension quarantine policy: {exc}") from exc
     # Cadence value-domain guard FIRST (PR-A, DP-2; pure precondition,
     # no qlib needed): only daily (1) and the certified N5 weekly
     # cadence (5) exist. STRICT int check before the membership test
@@ -952,6 +993,11 @@ def recommend(
     # reused for the artifact's provenance bundle_tag (single read).
     integrity = _assert_bundle_fetch_complete(
         config.provider_uri, allow_holey_recommend=config.allow_holey_recommend,
+        suspension_quarantine=config.suspension_quarantine,
+    )
+    quarantine = (
+        qualified_quarantine(integrity.holes, config.suspension_quarantine)
+        if integrity is not None else None
     )
 
     _logger.info(
@@ -1011,6 +1057,14 @@ def recommend(
             model_universe=model_universe,
         )
 
+    if quarantine is not None:
+        run_meta["suspension_quarantine"] = {
+            "policy_id": quarantine.policy_id,
+            "instrument": QUARANTINED_INSTRUMENT,
+            "built_from_holey_fetch": True,
+            "evidence": quarantine.to_dict(),
+        }
+
     # 2. Build as-of-T features ONCE (dataset reused for predict below).
     dataset, feature_frame = _build_asof_dataset(config, as_of_date)
     if feature_frame.empty:
@@ -1060,6 +1114,10 @@ def recommend(
     # lag=1 (signal stamped T, filled T+1 via qlib's built-in shift), so
     # backtested and live behavior coincide by construction.
     score_by_inst = _scores_to_inst_map(scores, expected_date=as_of_date)
+    quarantined_instruments = {
+        inst for inst in score_by_inst
+        if quarantine is not None and _is_quarantined_instrument(inst)
+    }
 
     # 3. Tradability mask (suspension / one-price-lock) on the ENTRY day —
     # the day the recommendation would actually fill (codex P1 round 4 on
@@ -1119,13 +1177,15 @@ def recommend(
         suspended=suspended,
         one_price=one_price,
         st_excluded=st_excluded,
+        quarantined=quarantined_instruments,
         name_fn=_name,
         as_of_date=as_of_date,
         entry_date=entry_date,
         topk=config.topk,
     )
     n_st = int((scored_frame["unavailable_reason"] == "st").sum())
-    n_masked = n_excluded - n_st
+    n_quarantined = int((scored_frame["unavailable_reason"] == "data_quarantine").sum())
+    n_masked = n_excluded - n_st - n_quarantined
     _logger.info(
         "scored=%d, masked(untradable)=%d, st-excluded=%d, buy-list=%d",
         len(scored_frame), n_masked, n_st, len(picks),
@@ -1135,6 +1195,7 @@ def recommend(
         n_scored=len(scored_frame) - n_excluded, n_masked=n_masked,
         n_st_excluded=n_st, scored_frame=scored_frame, run_meta=run_meta,
         rebalance_day=rebalance_day, next_rebalance_date=next_reb_date,
+        n_quarantined=n_quarantined,
     )
 
 
@@ -1229,6 +1290,12 @@ def _scores_to_inst_map(
     return dict(zip(instruments, values, strict=True))
 
 
+def _is_quarantined_instrument(instrument: Any) -> bool:
+    """Recognise the same security using the existing ticker conversion only."""
+    return (isinstance(instrument, str)
+            and qlib_to_ts_code(instrument) == qlib_to_ts_code(QUARANTINED_INSTRUMENT))
+
+
 def build_recommendation(
     *,
     score_by_inst: dict[str, float],
@@ -1240,6 +1307,7 @@ def build_recommendation(
     entry_date: str,
     topk: int,
     st_excluded: frozenset[str] | set[str] = frozenset(),
+    quarantined: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[tuple[RecommendationPick, ...], pd.DataFrame, int]:
     """Pure ranking + tradability + Top-K assembly (no qlib, no IO).
 
@@ -1249,8 +1317,9 @@ def build_recommendation(
     names are dropped from the candidate pool BEFORE the Top-K slice (so the
     list keeps K tradable, non-ST picks) and carry reason ``"st"`` in the audit
     frame. Microstructure masking takes precedence over the ST label when a
-    name is both. Returns ``(picks, scored_frame, n_excluded)`` where
-    ``n_excluded`` counts every not-tradable row (masked OR ST). Sorting is
+    name is both. An explicitly quarantined row takes precedence over both
+    reasons without changing its score. Returns ``(picks, scored_frame, n_excluded)`` where
+    ``n_excluded`` counts every not-tradable row. Sorting is
     stable so equal scores keep input order.
     """
     if topk < 0:
@@ -1260,7 +1329,10 @@ def build_recommendation(
         )
     rows = []
     for inst, score in score_by_inst.items():
-        if inst in masked_pairs:
+        if inst in quarantined:
+            tradable = False
+            reason = "data_quarantine"
+        elif inst in masked_pairs:
             tradable = False
             if inst in suspended:
                 reason = "suspended"
@@ -1352,6 +1424,76 @@ _BUY_LIST_COLUMNS = [
 ]
 
 
+def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, Any]:
+    """Validate the isolation contract before I/O; return its CSV projection.
+
+    The full stamped evidence stays in JSON metadata. Empty CSVs stay empty:
+    their headers disclose this projection and their sibling JSON carries state.
+    """
+    count = result.n_quarantined
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise DailyRecommendationError("quarantine count must be a non-negative int")
+    frame = result.scored_frame
+    if "suspension_quarantine" not in result.run_meta:
+        if count or ("unavailable_reason" in frame
+                     and frame["unavailable_reason"].eq("data_quarantine").any()):
+            raise DailyRecommendationError("quarantine rows/count require active metadata")
+        return {}
+    context = result.run_meta["suspension_quarantine"]
+    if not isinstance(context, dict) or set(context) != {
+        "policy_id", "instrument", "built_from_holey_fetch", "evidence",
+    }:
+        raise DailyRecommendationError("quarantine metadata has an invalid shape")
+    if (not isinstance(context["policy_id"], str)
+            or context["policy_id"] != SUSPENSION_QUARANTINE_POLICY
+            or not isinstance(context["instrument"], str)
+            or context["instrument"] != QUARANTINED_INSTRUMENT
+            or context["built_from_holey_fetch"] is not True):
+        raise DailyRecommendationError("quarantine metadata must identify the exact incomplete incident")
+    try:
+        SuspensionQuarantine.from_dict(context["evidence"])
+    except ValueError as exc:
+        raise DailyRecommendationError(f"quarantine evidence is invalid: {exc}") from exc
+    for pick in result.picks:
+        if (not isinstance(pick.stock_code, str) or not pick.stock_code
+                or pick.stock_code != pick.stock_code.strip()):
+            raise DailyRecommendationError("quarantine picks contain a malformed security identity")
+        if _is_quarantined_instrument(pick.stock_code):
+            raise DailyRecommendationError("quarantine security cannot appear in recommendation picks")
+    columns = ["stock_code", "tradable_flag", "unavailable_reason"]
+    if not set(columns).issubset(frame.columns):
+        raise DailyRecommendationError("quarantine audit is missing required columns")
+    expected = {"n_quarantined": 0, "n_scored": 0, "n_masked": 0, "n_st_excluded": 0}
+    for code, tradable, reason in frame[columns].itertuples(index=False, name=None):
+        if (not isinstance(code, str) or not code or code != code.strip()
+                or not pd.api.types.is_bool(tradable) or not isinstance(reason, str)):
+            raise DailyRecommendationError("quarantine audit contains malformed identity/status")
+        if _is_quarantined_instrument(code):
+            if tradable or reason != "data_quarantine":
+                raise DailyRecommendationError("quarantine security must remain excluded in the audit")
+            expected["n_quarantined"] += 1
+        elif reason == "data_quarantine":
+            raise DailyRecommendationError("quarantine reason cannot identify another security")
+        elif tradable and reason == "":
+            expected["n_scored"] += 1
+        elif not tradable and reason == "st":
+            expected["n_st_excluded"] += 1
+        elif not tradable and reason in {"suspended", "one_price_lock", "unavailable"}:
+            expected["n_masked"] += 1
+        else:
+            raise DailyRecommendationError("quarantine audit has inconsistent tradability/reason")
+    for key, value in expected.items():
+        actual = getattr(result, key)
+        if isinstance(actual, bool) or not isinstance(actual, int) or actual != value:
+            raise DailyRecommendationError(f"quarantine audit disagrees with {key}")
+    return {
+        "suspension_quarantine_policy": SUSPENSION_QUARANTINE_POLICY,
+        "quarantined_instrument": QUARANTINED_INSTRUMENT,
+        "built_from_holey_fetch": True,
+        "n_quarantined": count,
+    }
+
+
 def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, str]:
     """Write buy-list csv + json and the full scored audit csv. Returns
     the written paths."""
@@ -1402,6 +1544,8 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
             "rebalance_day": result.rebalance_day,
             "next_rebalance_date": result.next_rebalance_date,
         }
+    quarantine_context = _quarantine_output_context(result)
+    csv_context = {**cadence_context, **quarantine_context}
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     stamp = result.as_of_date
@@ -1424,7 +1568,7 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
 
     # Explicit columns so an empty buy list (e.g. --topk 0, or every
     # candidate masked) still writes a header row downstream readers expect.
-    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).assign(**cadence_context).to_csv(
+    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).assign(**csv_context).to_csv(
         csv_path, index=False, encoding="utf-8-sig",
     )
     payload: dict[str, Any] = {
@@ -1441,9 +1585,11 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         "meta": dict(result.run_meta),
     }
     payload.update(cadence_context)
+    if quarantine_context:
+        payload["n_quarantined"] = result.n_quarantined
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    result.scored_frame.assign(**cadence_context).to_csv(
+    result.scored_frame.assign(**csv_context).to_csv(
         audit_path, index=False, encoding="utf-8-sig",
     )
     return {"csv": str(csv_path), "json": str(json_path), "audit": str(audit_path)}

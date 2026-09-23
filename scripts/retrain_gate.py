@@ -97,6 +97,7 @@ from src.core.performance_attribution import (  # noqa: E402
 )
 from src.core.qlib_runtime import (  # noqa: E402
     QlibRuntimeConfig,
+    _normalize_provider_uri,
     init_qlib_canonical,
 )
 from src.core.risk_constraints import (  # noqa: E402
@@ -110,6 +111,10 @@ from src.core.signal_analyzer import (  # noqa: E402
 from src.data.model_training_provenance import (  # noqa: E402
     ModelTrainingProvenanceError,
     check_member_gate_provenance,
+)
+from src.data.pit.bundle_integrity import (  # noqa: E402
+    BundleIntegrityError,
+    assert_no_suspension_quarantine,
 )
 from src.inference.ensemble_serving import (  # noqa: E402
     EnsembleServingError,
@@ -736,6 +741,13 @@ def main(argv: list[str] | None = None) -> int:
             f"--scope {args.scope} requires: "
             + ", ".join("--" + name.replace("_", "-")
                         for name in missing))
+
+    # A historical IC/rotation gate is not authorized by the daily-serving
+    # incident policy. _cli maps this producer error to 2, with no verdict.
+    try:
+        assert_no_suspension_quarantine(_normalize_provider_uri(args.provider))
+    except BundleIntegrityError as exc:
+        raise SystemExit(str(exc)) from exc
 
     artifact = (_member_scope(args, profile)
                 if args.scope == SCOPE_MEMBER

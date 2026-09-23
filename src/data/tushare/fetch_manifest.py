@@ -8,6 +8,8 @@ downstream gate (P3-4c) can refuse a holey dump.
 
 This module deliberately does NOT gate any consumer (that is P3-4c) and does NOT
 drive incremental fetches (that is P3-6). It is pure manifest CRUD + merge.
+Ordinary documents retain schema v1; only structured suspension quarantine uses
+v2, which old readers refuse rather than silently discarding incident evidence.
 
 Schema
 ------
@@ -60,10 +62,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.contracts.suspension_quarantine import (
+    SuspensionQuarantine,
+    has_quarantine,
+)
 from src.data.tushare.fetch_ranges import validate_aggregate_start_dates
 from src.data.tushare.fetch_types import FetchHole, TushareFetchResult
 
 SCHEMA_VERSION = 1
+QUARANTINE_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, QUARANTINE_SCHEMA_VERSION})
 MANIFEST_FILENAME = "fetch_manifest.json"
 
 # Endpoints whose holes are DATE-scoped: a narrower-range re-run does not
@@ -130,6 +138,12 @@ def build_manifest(
     (``recommend(..., now=...)``); the production default is the system clock.
     """
     try:
+        quarantine_present = has_quarantine(holes)
+        if quarantine_present and any(
+            h.quarantine is not None and h.endpoint not in {r.endpoint for r in results}
+            for h in holes
+        ):
+            raise ValueError("quarantine hole has no matching endpoint result")
         starts = validate_aggregate_start_dates(
             endpoint_start_dates if endpoint_start_dates is not None else {},
             coverage_end_date,
@@ -173,7 +187,7 @@ def build_manifest(
             holes=ep_holes,
             units_verified=r.units_verified,
         )
-    return FetchManifest(SCHEMA_VERSION, stamp, endpoints)
+    return FetchManifest(_quarantine_schema(endpoints), stamp, endpoints)
 
 
 def merge_manifest(
@@ -184,8 +198,10 @@ def merge_manifest(
     ``prev`` is ``None`` on the first run (no manifest yet) → ``current`` is
     returned unchanged.
     """
+    _validate_manifest_quarantine(current)
     if prev is None:
         return current
+    _validate_manifest_quarantine(prev)
     # Start from prev so endpoints that did NOT run this run are preserved.
     merged: dict[str, EndpointCoverage] = dict(prev.endpoints)
     for ep, cur in current.endpoints.items():
@@ -262,13 +278,37 @@ def merge_manifest(
                 f"Re-run with a range that overlaps or extends the existing "
                 f"coverage, or pass --reset-manifest for a deliberate fresh start."
             )
-        prev_holes = {h.unit: h for h in (prev_ep.holes if prev_ep else ())}
+        previous_holes = prev_ep.holes if prev_ep else ()
+        # A failed refresh must preserve both the old incident reference and the
+        # new ordinary failure. They share the stable "file" unit but are not
+        # the same retry: otherwise a transient failure either erases quarantine
+        # or incorrectly becomes an authorized incident-only outcome.
+        quarantine_units = {
+            h.unit for h in (*previous_holes, *cur.holes) if h.quarantine is not None
+        }
+        prev_holes = {
+            (h.unit, h.reason_class if h.unit in quarantine_units else None): h
+            for h in previous_holes
+        }
         carried: list[FetchHole] = []
         for h in cur.holes:
             # A still-failing unit carries its cumulative attempt count forward.
-            prior = prev_holes.get(h.unit)
+            prior = prev_holes.get(
+                (h.unit, h.reason_class if h.unit in quarantine_units else None),
+            )
             attempts = prior.attempts + h.attempts if prior else h.attempts
             carried.append(replace(h, attempts=attempts))
+        previous_quarantine = tuple(h for h in previous_holes if h.quarantine is not None)
+        if previous_quarantine and cur.units_written == 0:
+            for h in cur.holes:
+                if h.quarantine is not None and not any(
+                    old.quarantine == h.quarantine for old in previous_quarantine
+                ):
+                    raise FetchManifestError(
+                        "cannot replace suspension quarantine evidence without a successful file write"
+                    )
+            carried = [h for h in carried if h.quarantine is None]
+            carried.extend(previous_quarantine)
         # codex P1-B: coverage reflects what was ACTUALLY fetched (or, P3-7b,
         # freshness-VERIFIED), not what was requested. A run that established
         # NOTHING for this endpoint (every file blind-skipped by resume — e.g.
@@ -279,6 +319,10 @@ def merge_manifest(
         # run's range, so extending over them is truthful (codex P2 on #240).
         if prev_ep is None:
             cov_start, cov_end = cur.coverage_start_date, cur.coverage_end_date
+        elif previous_quarantine and cur.units_written == 0:
+            # Verification alone cannot extend or retire this incident: only a
+            # real refresh rechecks the original reference and publishes bytes.
+            cov_start, cov_end = prev_ep.coverage_start_date, prev_ep.coverage_end_date
         elif cur.units_written > 0 or cur.units_verified > 0:
             cov_start = _min_yyyymmdd(prev_ep.coverage_start_date, cur.coverage_start_date)
             cov_end = _max_yyyymmdd(prev_ep.coverage_end_date, cur.coverage_end_date)
@@ -292,7 +336,7 @@ def merge_manifest(
             holes=tuple(carried),
             units_verified=cur.units_verified,
         )
-    return FetchManifest(SCHEMA_VERSION, current.fetched_at, merged)
+    return FetchManifest(_quarantine_schema(merged), current.fetched_at, merged)
 
 
 def read_manifest(path: Path) -> FetchManifest | None:
@@ -320,10 +364,11 @@ def read_manifest(path: Path) -> FetchManifest | None:
             f"refusing to parse — delete it to rebuild."
         )
     version = raw.get("schema_version")
-    if version != SCHEMA_VERSION:
+    if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
         raise FetchManifestError(
             f"unknown fetch-manifest schema_version {version!r} in {path} "
-            f"(expected {SCHEMA_VERSION}); refusing to parse — delete it to rebuild."
+            f"(expected one of {sorted(SUPPORTED_SCHEMA_VERSIONS)}); "
+            "refusing to parse — delete it to rebuild."
         )
     return _manifest_from_dict(raw)
 
@@ -332,10 +377,11 @@ def write_manifest(path: Path, manifest: FetchManifest) -> None:
     """Atomically write ``manifest`` to ``path`` (temp file + :func:`os.replace`)
     so a crash mid-write never leaves a half-written / corrupt manifest — the old
     file stays intact until the rename swaps the complete new one in."""
+    payload = json.dumps(_manifest_to_dict(manifest), indent=2, ensure_ascii=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(
-        json.dumps(_manifest_to_dict(manifest), indent=2, ensure_ascii=False),
+        payload,
         encoding="utf-8",
     )
     os.replace(tmp, path)
@@ -399,6 +445,7 @@ def _days_between(a_yyyymmdd: str, b_yyyymmdd: str) -> int:
 
 
 def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
+    _validate_manifest_quarantine(m)
     return {
         "schema_version": m.schema_version,
         "fetched_at": m.fetched_at,
@@ -415,6 +462,8 @@ def _manifest_to_dict(m: FetchManifest) -> dict[str, Any]:
                         "reason_class": h.reason_class,
                         "attempts": h.attempts,
                         "last_error": h.last_error,
+                        **({"quarantine": h.quarantine.to_dict()}
+                           if h.quarantine is not None else {}),
                     }
                     for h in cov.holes
                 ],
@@ -439,6 +488,8 @@ def _manifest_from_dict(raw: dict[str, Any]) -> FetchManifest:
                     reason_class=h["reason_class"],
                     attempts=h["attempts"],
                     last_error=h["last_error"],
+                    quarantine=(SuspensionQuarantine.from_dict(h["quarantine"])
+                                if "quarantine" in h else None),
                 )
                 for h in cov["holes"]
             )
@@ -453,13 +504,41 @@ def _manifest_from_dict(raw: dict[str, Any]) -> FetchManifest:
                 # readable without a schema bump.
                 units_verified=cov.get("units_verified", 0),
             )
-        return FetchManifest(
+        manifest = FetchManifest(
             schema_version=raw["schema_version"],
             fetched_at=raw["fetched_at"],
             endpoints=endpoints,
         )
-    except (KeyError, TypeError, AttributeError) as exc:
+        _validate_manifest_quarantine(manifest)
+        return manifest
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
         raise FetchManifestError(
             f"malformed fetch manifest (missing or invalid field: {exc}); "
             "refusing to parse — delete it to rebuild."
         ) from exc
+
+
+def _quarantine_schema(endpoints: Mapping[str, EndpointCoverage]) -> int:
+    """Version only incident-bearing documents; preserve legacy clean bytes."""
+    try:
+        present = has_quarantine(h for coverage in endpoints.values() for h in coverage.holes)
+    except ValueError as exc:
+        raise FetchManifestError(f"invalid suspension quarantine: {exc}") from exc
+    for endpoint, coverage in endpoints.items():
+        for hole in coverage.holes:
+            if hole.quarantine is not None and (
+                hole.endpoint != endpoint or coverage.status != "holes"
+            ):
+                raise FetchManifestError(
+                    "quarantine must belong to its suspend_d endpoint with status='holes'"
+                )
+    return QUARANTINE_SCHEMA_VERSION if present else SCHEMA_VERSION
+
+
+def _validate_manifest_quarantine(manifest: FetchManifest) -> None:
+    expected = _quarantine_schema(manifest.endpoints)
+    if type(manifest.schema_version) is not int or manifest.schema_version != expected:
+        raise FetchManifestError(
+            f"fetch-manifest schema_version {manifest.schema_version!r} is inconsistent "
+            f"with quarantine evidence (expected {expected})"
+        )

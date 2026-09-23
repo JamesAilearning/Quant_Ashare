@@ -33,6 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.contracts.suspension_quarantine import POLICY_ID  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.data.pit.qlib_bin_builder import (  # noqa: E402
     QlibBinBuilder,
@@ -49,6 +50,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--tushare-dir", required=True, type=Path)
     p.add_argument("--delisted-registry", required=True, type=Path)
     p.add_argument("--output-dir", required=True, type=Path)
+    p.add_argument("--suspension-quarantine", choices=[POLICY_ID], default=None,
+                   help="Explicit known-incident isolation; all other data gaps still refuse.")
     p.add_argument(
         "--allow-holey-fetch", action="store_true",
         help="Build even if the tushare fetch_manifest is holey/missing (P3-4c). "
@@ -67,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         delisted_registry_path=args.delisted_registry,
         output_dir=args.output_dir,
         allow_holey_fetch=args.allow_holey_fetch,
+        suspension_quarantine=args.suspension_quarantine,
     )
     try:
         result = builder.build()
