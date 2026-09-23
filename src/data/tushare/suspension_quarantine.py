@@ -1,4 +1,4 @@
-"""Byte-bound evidence for the single approved suspension-history incident.
+"""Byte-bound evidence for one explicitly selected suspension incident.
 
 This is a final-publication exception, never an API, partition or generic
 retention bypass. Old rows are evidence only and are never merged into a reply.
@@ -19,9 +19,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from src.contracts.suspension_quarantine import (
-    APPROVED_KEYS,
     POLICY_ID,
     SuspensionQuarantine,
+    incident_for_policy,
 )
 from src.data._atomic_io import atomic_write_parquet
 from src.data.tushare import aggregate_response as aggregate
@@ -33,11 +33,9 @@ from src.data.tushare.quarantine_transaction import (
 )
 
 EVIDENCE_DIRECTORY = "_suspension_quarantine"
-_DATES = frozenset(key[1] for key in APPROVED_KEYS)
-_AFFECTED_DAYS = frozenset((key[0], key[1]) for key in APPROVED_KEYS)
 
 
-def validate_quarantine_query(start_date: str, end_date: str) -> None:
+def validate_quarantine_query(start_date: str, end_date: str, *, policy: str = POLICY_ID) -> None:
     """Do not accept a request that cannot observe the entire known incident."""
     for value in (start_date, end_date):
         if (not isinstance(value, str) or len(value) != 8
@@ -47,8 +45,10 @@ def validate_quarantine_query(start_date: str, end_date: str) -> None:
             datetime.strptime(value, "%Y%m%d")
         except ValueError as exc:
             raise AggregateResponseError("suspension quarantine requires real YYYYMMDD bounds") from exc
-    if start_date > min(_DATES) or end_date < max(_DATES):
-        raise AggregateResponseError("suspension quarantine query must cover all eight approved keys")
+    dates = incident_for_policy(policy).dates
+    if start_date > min(dates) or end_date < max(dates):
+        scope = "all eight approved keys" if policy == POLICY_ID else "the approved conflict date"
+        raise AggregateResponseError(f"suspension quarantine query must cover {scope}")
 
 
 def _check_path(path: Path, *, directory: bool = False) -> None:
@@ -124,24 +124,37 @@ def _keys(frame: pd.DataFrame) -> set[tuple[str | None, ...]]:
     }
 
 
-def _validate_history(candidate: pd.DataFrame, reference: pd.DataFrame, retained: pd.DataFrame) -> tuple[str, ...]:
-    """Allow missing approved keys only; reject replacement payloads at those dates."""
+def _validate_history(
+    candidate: pd.DataFrame, reference: pd.DataFrame, retained: pd.DataFrame, *, policy: str = POLICY_ID,
+) -> tuple[str, ...]:
+    """Allow only the selected incident; all other history remains lossless."""
+    incident = incident_for_policy(policy)
+    approved = incident.reference_keys
+    affected_days = incident.affected_days
+    incident_keys = approved | incident.conflict_keys
     for label, frame in (("candidate", candidate), ("reference", reference), ("retained", retained)):
         aggregate.validate_aggregate_frame(frame, "suspend_d", label=f"quarantine {label}")
-        if any((key[0], key[1]) in _AFFECTED_DAYS and key not in APPROVED_KEYS for key in _keys(frame)):
+        affected = {key for key in _keys(frame) if (key[0], key[1]) in affected_days}
+        if incident.conflict_keys:
+            allowed = ((approved,) if label == "reference" else
+                       (incident.conflict_keys,) if label == "candidate" else
+                       (approved, incident.conflict_keys))
+            if not any(affected == expected for expected in allowed):
+                raise AggregateResponseError(f"suspension quarantine {label} has unapproved conflict payload")
+        elif not affected.issubset(approved):
             raise AggregateResponseError(f"suspension quarantine {label} has conflicting affected-date keys")
-    if not APPROVED_KEYS.issubset(_keys(reference)):
+    if not approved.issubset(_keys(reference)):
         raise AggregateResponseError("suspension quarantine reference does not contain all eight approved keys")
     for label, frame in (("original reference", reference), ("retained file", retained)):
         # The unchanged generic guard still owns all keys outside this exact set.
-        other = frame.loc[[key not in APPROVED_KEYS for key in (
+        other = frame.loc[[key not in incident_keys for key in (
             tuple(None if pd.isna(value) else value for value in row)
             for row in frame.loc[:, list(aggregate.AGGREGATE_FIELDS["suspend_d"])].itertuples(index=False, name=None)
         )]]
         aggregate.require_retained_keys(candidate, other, "suspend_d", label=f"quarantine {label}")
         if label == "original reference":
             aggregate.require_retained_keys(retained, other, "suspend_d", label="quarantine retained lineage")
-    return tuple(sorted(key[1] for key in APPROVED_KEYS - _keys(candidate)))
+    return tuple(sorted(key[1] for key in approved - _keys(candidate)))
 
 
 def _evidence_path(raw_dir: Path, digest: str) -> Path:
@@ -164,7 +177,7 @@ def verify_quarantine_evidence(raw_dir: Path, evidence: SuspensionQuarantine) ->
         candidate, "suspend_d", label="quarantine candidate",
         start_date=evidence.query_start_date, end_date=evidence.query_end_date,
     )
-    if _validate_history(candidate, reference, retained) != evidence.missing_dates:
+    if _validate_history(candidate, reference, retained, policy=evidence.policy_id) != evidence.missing_dates:
         raise AggregateResponseError("suspension quarantine missing dates disagree with actual bytes")
 
 
@@ -204,15 +217,18 @@ def _preserve(raw_dir: Path, source: Path, digest: str) -> None:
 
 def publish_suspension_candidate(
     raw_dir: Path, candidate: pd.DataFrame, *, prior: SuspensionQuarantine | None,
-    start_date: str, end_date: str,
+    start_date: str, end_date: str, policy: str = POLICY_ID,
 ) -> SuspensionQuarantine | None:
     """Publish exact checked vendor rows, returning evidence only while incomplete."""
-    validate_quarantine_query(start_date, end_date)
+    incident = incident_for_policy(policy)
+    validate_quarantine_query(start_date, end_date, policy=policy)
     aggregate.validate_aggregate_frame(candidate, "suspend_d", label="quarantine candidate",
                                        start_date=start_date, end_date=end_date)
     _check_path(raw_dir, directory=True)
     path = raw_dir / "suspend_d.parquet"
     if prior is not None:
+        if prior.policy_id != policy:
+            raise AggregateResponseError("suspension quarantine requires matching prior policy")
         verify_quarantine_evidence(raw_dir, prior)
     retained, retained_hash = (_read_frame(path) if path.exists() or path.is_symlink() else (
         pd.DataFrame(columns=list(aggregate.AGGREGATE_FIELDS["suspend_d"])), None,
@@ -222,14 +238,16 @@ def publish_suspension_candidate(
         reference, reference_hash = _read_frame(_evidence_path(raw_dir, prior.reference_sha256), prior.reference_sha256)
     else:
         reference, reference_hash = retained, retained_hash
-    if prior is None and APPROVED_KEYS.issubset(_keys(candidate)):
+    if prior is None and incident.reference_keys.issubset(_keys(candidate)):
         # No exception is needed for a complete first acquisition.
         aggregate.require_retained_keys(candidate, retained, "suspend_d", label="suspend_d: retained file")
-        if any((key[0], key[1]) in _AFFECTED_DAYS and key not in APPROVED_KEYS for key in _keys(candidate)):
+        affected_days = incident.affected_days
+        if any((key[0], key[1]) in affected_days and key not in incident.reference_keys
+               for key in _keys(candidate)):
             raise AggregateResponseError("suspension quarantine candidate has conflicting affected-date keys")
         missing: tuple[str, ...] = ()
     else:
-        missing = _validate_history(candidate, reference, retained)
+        missing = _validate_history(candidate, reference, retained, policy=policy)
     prepared = path.with_name(f".suspend_d.{uuid4().hex}.parquet")
     try:
         atomic_write_parquet(candidate, prepared)
@@ -242,7 +260,7 @@ def publish_suspension_candidate(
                 raise AggregateResponseError("suspension quarantine requires original retained evidence")
             _preserve(raw_dir, path, retained_hash)
             evidence = SuspensionQuarantine(
-                policy_id=POLICY_ID, missing_dates=missing,
+                policy_id=policy, missing_dates=missing,
                 reference_sha256=reference_hash, retained_sha256=retained_hash,
                 candidate_sha256=candidate_hash, query_start_date=start_date, query_end_date=end_date,
             )
@@ -260,7 +278,7 @@ def publish_suspension_candidate(
                 os.fsync(stream.fileno())
             begin_quarantine_publication(
                 raw_dir, retained_sha256=retained_hash, candidate_sha256=candidate_hash,
-                quarantine_after=evidence, query_start_date=start_date, query_end_date=end_date,
+                quarantine_after=evidence, query_start_date=start_date, query_end_date=end_date, policy=policy,
             )
         prepared.replace(path)
         return evidence
