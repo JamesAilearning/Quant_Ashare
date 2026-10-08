@@ -24,6 +24,12 @@ _CONTEXT_COLUMNS = [
     "suspension_quarantine_policy", "quarantined_instrument",
     "built_from_holey_fetch", "n_quarantined",
 ]
+_COMBINED_POLICY = "suspend-688005-688766-observed-20261008"
+_COMBINED_INSTRUMENTS = ["SH688005", "SH688766"]
+_COMBINED_CONTEXT_COLUMNS = [
+    "suspension_quarantine_policy", "quarantined_instruments",
+    "built_from_holey_fetch", "n_quarantined",
+]
 
 
 def test_conflict_policy_excludes_only_688005_and_discloses_matching_evidence(
@@ -213,9 +219,11 @@ def run_recommend(tmp_path, monkeypatch):
             missing_quarantine_name=False):
         _stamp(tmp_path / "bundle", clean=clean)
         names = pd.DataFrame({
-            "ts_code": ["688766.SH", "600000.SH", "000001.SZ", "688005.SH"],
-            "name": ["*ST隔离" if overlap else "隔离样本", "浦发银行", "平安银行", "冲突样本"],
-            "snapshot_date": ["20260922"] * 4,
+            "ts_code": ["688766.SH", "600000.SH", "000001.SZ", "688005.SH",
+                        "600036.SH", "300001.SZ"],
+            "name": ["*ST隔离" if overlap else "隔离样本", "浦发银行", "平安银行", "冲突样本",
+                     "普通样本一", "普通样本二"],
+            "snapshot_date": ["20260922"] * 6,
         })
         if missing_quarantine_name:
             names = names[names["ts_code"] != "688766.SH"]
@@ -471,3 +479,323 @@ def test_cli_rejects_unknown_policy_without_running_recommend(monkeypatch):
         cli.main(["--suspension-quarantine", "other-policy"])
     assert exc.value.code == 2
     recommend.assert_not_called()
+
+
+@pytest.fixture
+def run_combined_recommend(run_recommend, monkeypatch):
+    evidence = {**_evidence(), "policy_id": _COMBINED_POLICY}
+    monkeypatch.setattr(f"{__name__}._evidence", lambda: evidence)
+
+    def run(**updates):
+        updates.setdefault("policy", _COMBINED_POLICY)
+        return run_recommend(**updates)
+
+    return run
+
+
+def _combined_ui_payload(result):
+    return {
+        "meta": dict(result.run_meta), "n_quarantined": result.n_quarantined,
+        "picks": [{"stock_code": pick.stock_code} for pick in result.picks],
+    }
+
+
+@pytest.mark.parametrize("identities", [
+    ("SH688005", "SH688766"), ("688005.SH", "688766.SH"), ("sh688005", "sh688766"),
+])
+@pytest.mark.parametrize("overlap", [False, True])
+def test_combined_isolation_excludes_both_before_topk_without_rewriting_score_audit(
+    run_combined_recommend, tmp_path, identities, overlap,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    scores = {identities[0]: 0.99, identities[1]: 0.98, "SH600000": 0.8, "SZ000001": 0.7}
+    result = run_combined_recommend(scores=scores, overlap=overlap, topk=2)
+    assert [pick.stock_code for pick in result.picks] == ["SH600000", "SZ000001"]
+    audit = result.scored_frame.set_index("stock_code")
+    assert audit["predicted_score"].to_dict() == scores
+    for identity in identities:
+        assert audit.loc[identity, "unavailable_reason"] == "data_quarantine"
+        assert not audit.loc[identity, "tradable_flag"]
+    assert audit.loc["SH600000", "tradable_flag"]
+    assert audit.loc["SZ000001", "tradable_flag"]
+    assert (result.n_scored, result.n_masked, result.n_st_excluded, result.n_quarantined) == (2, 0, 0, 2)
+    assert result.run_meta["instruments"] == "csi300"
+    assert result.run_meta["suspension_quarantine"] == {
+        "policy_id": _COMBINED_POLICY, "instruments": _COMBINED_INSTRUMENTS,
+        "built_from_holey_fetch": True, "evidence": _evidence(),
+    }
+    assert dr._quarantine_output_context(result) == {
+        "suspension_quarantine_policy": _COMBINED_POLICY,
+        "quarantined_instruments": "SH688005;SH688766",
+        "built_from_holey_fetch": True, "n_quarantined": 2,
+    }
+    paths = dr.write_outputs(result, str(tmp_path / "combined"))
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    assert payload["n_quarantined"] == 2
+    assert payload["meta"]["suspension_quarantine"] == result.run_meta["suspension_quarantine"]
+    for key in ("csv", "audit"):
+        with Path(paths[key]).open(encoding="utf-8-sig", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        assert len(rows) == (2 if key == "csv" else 4)
+        assert all(row["quarantined_instruments"] == "SH688005;SH688766" for row in rows)
+        assert all(row["n_quarantined"] == "2" for row in rows)
+    notice = quarantine_notice(payload)
+    assert "688005.SH" in notice and "688766.SH" in notice
+    assert "数据不完整" in notice and "持仓" in notice
+
+
+@pytest.mark.parametrize("identity", _COMBINED_INSTRUMENTS)
+def test_combined_scope_discloses_both_securities_when_only_one_has_a_score(
+    run_combined_recommend, identity,
+):
+    result = run_combined_recommend(scores={identity: 0.99, "SH600000": 0.8})
+    assert [pick.stock_code for pick in result.picks] == ["SH600000"]
+    assert result.n_quarantined == 1
+    assert result.run_meta["suspension_quarantine"]["instruments"] == _COMBINED_INSTRUMENTS
+    assert dr._quarantine_output_context(result)["n_quarantined"] == 1
+
+
+@pytest.mark.parametrize("nan_affected", [False, True])
+def test_combined_disclosure_remains_active_with_zero_scored_exclusions(
+    run_combined_recommend, nan_affected,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    scores = {"SH600000": 0.8}
+    if nan_affected:
+        scores.update({identity: float("nan") for identity in _COMBINED_INSTRUMENTS})
+    result = run_combined_recommend(scores=scores)
+    assert result.n_quarantined == 0
+    assert result.run_meta["suspension_quarantine"]["instruments"] == _COMBINED_INSTRUMENTS
+    assert "instrument" not in result.run_meta["suspension_quarantine"]
+    assert result.run_meta["suspension_quarantine"]["built_from_holey_fetch"] is True
+    projection = dr._quarantine_output_context(result)
+    assert projection["quarantined_instruments"] == "SH688005;SH688766"
+    assert projection["n_quarantined"] == 0
+    notice = quarantine_notice(_combined_ui_payload(result))
+    assert "688005.SH" in notice and "688766.SH" in notice
+
+
+@pytest.mark.parametrize("row_count", [0, 1, 2, 4])
+def test_combined_plural_csv_projection_is_scalar_for_empty_and_variable_row_exports(
+    run_combined_recommend, tmp_path, row_count,
+):
+    eligible = {"SH600000": 0.8, "SZ000001": 0.7, "SH600036": 0.6, "SZ300001": 0.5}
+    scores = dict(list(eligible.items())[:max(row_count, 1)])
+    result = run_combined_recommend(scores=scores, topk=row_count)
+    if row_count == 0:
+        # A valid empty serialization boundary, not a fabricated runtime score.
+        result = replace(result, picks=(), n_scored=0,
+                         scored_frame=result.scored_frame.iloc[:0].copy())
+    original = result.scored_frame.copy(deep=True)
+    paths = dr.write_outputs(result, str(tmp_path / "combined_rows"))
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    assert payload["meta"]["suspension_quarantine"]["instruments"] == _COMBINED_INSTRUMENTS
+    assert payload["n_quarantined"] == 0
+    assert len(payload["picks"]) == row_count
+    for key in ("csv", "audit"):
+        with Path(paths[key]).open(encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            assert reader.fieldnames[-4:] == _COMBINED_CONTEXT_COLUMNS
+            assert "quarantined_instrument" not in reader.fieldnames
+            rows = list(reader)
+        assert len(rows) == row_count
+        for row in rows:
+            assert row["suspension_quarantine_policy"] == _COMBINED_POLICY
+            assert row["quarantined_instruments"] == "SH688005;SH688766"
+            assert row["built_from_holey_fetch"] == "True"
+            assert row["n_quarantined"] == "0"
+    pd.testing.assert_frame_equal(result.scored_frame, original)
+
+
+@pytest.mark.parametrize("corruption", [
+    "missing_field", "missing_security", "extra_security", "reordered", "string",
+    "tuple", "null", "null_member", "bool", "pd_na", "singular", "both_shapes",
+    "outer_legacy", "inner_legacy", "outer_conflict", "inner_conflict",
+    "incomplete_false", "incomplete_int", "no_evidence", "no_meta",
+])
+def test_combined_export_and_readonly_ui_refuse_malformed_context_before_output(
+    run_combined_recommend, tmp_path, corruption,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    result = run_combined_recommend(scores={
+        "SH688005": 0.99, "SH688766": 0.98, "SH600000": 0.8,
+    })
+    context = dict(result.run_meta["suspension_quarantine"])
+    context["evidence"] = dict(context["evidence"])
+    meta = {**result.run_meta, "suspension_quarantine": context}
+    if corruption == "missing_field":
+        del context["instruments"]
+    elif corruption == "missing_security":
+        context["instruments"] = ["SH688005"]
+    elif corruption == "extra_security":
+        context["instruments"] = [*_COMBINED_INSTRUMENTS, "SH600000"]
+    elif corruption == "reordered":
+        context["instruments"] = list(reversed(_COMBINED_INSTRUMENTS))
+    elif corruption == "string":
+        context["instruments"] = "SH688005;SH688766"
+    elif corruption == "tuple":
+        context["instruments"] = tuple(_COMBINED_INSTRUMENTS)
+    elif corruption == "null":
+        context["instruments"] = None
+    elif corruption == "null_member":
+        context["instruments"] = ["SH688005", None]
+    elif corruption == "bool":
+        context["instruments"] = True
+    elif corruption == "pd_na":
+        context["instruments"] = pd.NA
+    elif corruption == "singular":
+        del context["instruments"]
+        context["instrument"] = "SH688005"
+    elif corruption == "both_shapes":
+        context["instrument"] = "SH688005"
+    elif corruption == "outer_legacy":
+        context["policy_id"] = _POLICY
+    elif corruption == "inner_legacy":
+        context["evidence"]["policy_id"] = _POLICY
+    elif corruption == "outer_conflict":
+        context["policy_id"] = "suspend-688005-20260116-conflict"
+    elif corruption == "inner_conflict":
+        context["evidence"]["policy_id"] = "suspend-688005-20260116-conflict"
+        context["evidence"]["missing_dates"] = ["20260116"]
+    elif corruption == "incomplete_false":
+        context["built_from_holey_fetch"] = False
+    elif corruption == "incomplete_int":
+        context["built_from_holey_fetch"] = 1
+    elif corruption == "no_evidence":
+        context["evidence"] = None
+    else:
+        del meta["suspension_quarantine"]
+    forged = replace(result, run_meta=meta)
+    output = tmp_path / "combined_must_not_create"
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr.write_outputs(forged, str(output))
+    assert not output.exists()
+    with pytest.raises(ValueError):
+        quarantine_notice(_combined_ui_payload(forged))
+
+
+@pytest.mark.parametrize("identity", [
+    "SH688005", "SH688766", "688005.SH", "688766.SH", "sh688005", "sh688766",
+])
+def test_combined_writer_and_ui_reject_either_security_leaking_into_picks(
+    run_combined_recommend, tmp_path, identity,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    result = run_combined_recommend(scores={
+        "SH688005": 0.99, "SH688766": 0.98, "SH600000": 0.8,
+    })
+    output = tmp_path / "combined_existing"
+    paths = dr.write_outputs(result, str(output))
+    old_bytes = {key: Path(path).read_bytes() for key, path in paths.items()}
+    forged = replace(result, picks=(replace(result.picks[0], stock_code=identity),))
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr.write_outputs(forged, str(output))
+    assert {key: Path(path).read_bytes() for key, path in paths.items()} == old_bytes
+    with pytest.raises(ValueError):
+        quarantine_notice(_combined_ui_payload(forged))
+
+
+@pytest.mark.parametrize("identity", _COMBINED_INSTRUMENTS)
+def test_combined_writer_refuses_either_quarantined_audit_row_becoming_tradable(
+    run_combined_recommend, tmp_path, identity,
+):
+    result = run_combined_recommend(scores={
+        "SH688005": 0.99, "SH688766": 0.98, "SH600000": 0.8,
+    })
+    frame = result.scored_frame.copy(deep=True)
+    frame.loc[frame["stock_code"].eq(identity), "tradable_flag"] = True
+    forged = replace(result, scored_frame=frame)
+    output = tmp_path / "combined_bad_audit"
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr.write_outputs(forged, str(output))
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("selected", [None, _POLICY, "suspend-688005-20260116-conflict"])
+@pytest.mark.parametrize("broad", [False, True])
+def test_combined_bundle_refuses_absent_or_wrong_opt_in_before_model_work(
+    run_combined_recommend, tmp_path, monkeypatch, selected, broad,
+):
+    _stamp(tmp_path / "bundle")
+    model = Mock(side_effect=AssertionError("model must not load"))
+    features = Mock(side_effect=AssertionError("features must not build"))
+    monkeypatch.setattr(dr, "_load_model", model)
+    monkeypatch.setattr(dr, "_build_asof_dataset", features)
+    config = _config(tmp_path, suspension_quarantine=selected, allow_holey_recommend=broad)
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr.recommend(config, now=date(2026, 9, 22))
+    model.assert_not_called()
+    features.assert_not_called()
+
+
+@pytest.mark.parametrize("broad", [False, True])
+def test_combined_authorization_never_accepts_an_additional_generic_fetch_hole(
+    run_combined_recommend, tmp_path, broad,
+):
+    extra = {"endpoint": "daily", "unit": "20260922", "reason_class": "timeout",
+             "attempts": 3, "last_error": "unapproved missing data"}
+    _stamp(tmp_path / "bundle", holes=[_hole(), extra])
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr._assert_bundle_fetch_complete(
+            str(tmp_path / "bundle"), allow_holey_recommend=broad,
+            suspension_quarantine=_COMBINED_POLICY,
+        )
+
+
+@pytest.mark.parametrize("policy,instrument", [
+    (_POLICY, _INSTRUMENT), ("suspend-688005-20260116-conflict", "SH688005"),
+])
+def test_existing_single_security_policies_refuse_plural_context_substitution(
+    run_recommend, tmp_path, monkeypatch, policy, instrument,
+):
+    from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+
+    evidence = {**_evidence(), "policy_id": policy}
+    if policy != _POLICY:
+        evidence["missing_dates"] = ["20260116"]
+    monkeypatch.setattr(f"{__name__}._evidence", lambda: evidence)
+    result = run_recommend(policy=policy)
+    context = dict(result.run_meta["suspension_quarantine"])
+    assert context["instrument"] == instrument
+    assert "instruments" not in context
+    del context["instrument"]
+    context["instruments"] = [instrument]
+    forged = replace(result, run_meta={**result.run_meta, "suspension_quarantine": context})
+    output = tmp_path / "old_policy_plural_must_not_create"
+    with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
+        dr.write_outputs(forged, str(output))
+    assert not output.exists()
+    with pytest.raises(ValueError):
+        quarantine_notice(_combined_ui_payload(forged))
+
+
+@pytest.mark.parametrize("scored_affected", [False, True])
+def test_combined_cli_forwards_only_explicit_authority_and_discloses_both_securities(
+    run_combined_recommend, tmp_path, monkeypatch, capsys, scored_affected,
+):
+    from scripts import daily_recommend as cli
+
+    scores = {"SH600000": 0.8}
+    if scored_affected:
+        scores.update({"SH688005": 0.99, "SH688766": 0.98})
+    result = run_combined_recommend(scores=scores)
+    recommend = Mock(return_value=result)
+    monkeypatch.setattr(cli, "setup_logging", lambda: None)
+    monkeypatch.setattr(cli, "recommend", recommend)
+    assert cli.main([
+        "--model", "synthetic.pkl", "--fit-start", "2020-01-01",
+        "--fit-end", "2025-01-01", "--suspension-quarantine", _COMBINED_POLICY,
+        "--out-dir", str(tmp_path / "combined_cli"),
+    ]) == 0
+    config = recommend.call_args.args[0]
+    assert config.suspension_quarantine == _COMBINED_POLICY
+    assert config.allow_holey_recommend is False
+    output = capsys.readouterr().out
+    assert _COMBINED_POLICY in output
+    assert all(identity in output for identity in _COMBINED_INSTRUMENTS)
+    assert "incomplete" in output.lower()
+    assert f"n_quarantined={2 if scored_affected else 0}" in output

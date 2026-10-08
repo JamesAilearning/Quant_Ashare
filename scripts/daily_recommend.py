@@ -41,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.contracts.suspension_quarantine import POLICY_IDS  # noqa: E402
+from src.contracts.suspension_quarantine import POLICY_IDS, incident_for_policy  # noqa: E402
 from src.core.logger import get_logger, setup_logging  # noqa: E402
 from src.inference.daily_recommend import (  # noqa: E402
     DailyRecommendationError,
@@ -399,9 +399,10 @@ def main(argv: list[str] | None = None) -> int:
     print("  DAILY STOCK RECOMMENDATION")
     if "suspension_quarantine" in result.run_meta:
         quarantine = result.run_meta["suspension_quarantine"]
+        incident = incident_for_policy(quarantine["policy_id"])
         print("  !! DATA QUARANTINE — incomplete data / 数据仍不完整")
         print(f"  !! policy={quarantine['policy_id']} "
-              f"active_security={quarantine['instrument']} (1 security)")
+              f"active_security={';'.join(incident.instruments)} ({len(incident.instruments)} security)")
         print(f"  !! n_quarantined={result.n_quarantined} scored row(s) excluded; "
               "existing holdings are NOT represented as sold.")
     # Cadence-aware HOLD notice (DP-2): a non-rebalance-day artifact is a

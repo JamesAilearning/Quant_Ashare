@@ -213,8 +213,10 @@ def test_journal_rejects_cross_policy_embedded_evidence(tmp_path):
 @pytest.mark.parametrize("module", [
     "scripts.daily_update", "scripts.daily_recommend", "scripts.data_pipeline.05_build_qlib_bins",
 ])
-def test_operator_cli_lists_both_explicit_policies_but_defaults_to_no_waiver(module):
+def test_operator_cli_lists_closed_explicit_policies_but_defaults_to_no_waiver(module):
     parser = importlib.import_module(module)._build_arg_parser()
     action = next(item for item in parser._actions if item.dest == "suspension_quarantine")
-    assert tuple(action.choices) == ("suspend-688766-20251127-20251209", POLICY)
+    assert tuple(action.choices) == (
+        "suspend-688766-20251127-20251209", POLICY, "suspend-688005-688766-observed-20261008",
+    )
     assert action.default is None

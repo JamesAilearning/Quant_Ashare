@@ -19,6 +19,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from src.contracts.suspension_quarantine import (
+    APPROVED_KEYS,
+    COMBINED_POLICY_ID,
     POLICY_ID,
     SuspensionQuarantine,
     incident_for_policy,
@@ -135,7 +137,15 @@ def _validate_history(
     for label, frame in (("candidate", candidate), ("reference", reference), ("retained", retained)):
         aggregate.validate_aggregate_frame(frame, "suspend_d", label=f"quarantine {label}")
         affected = {key for key in _keys(frame) if (key[0], key[1]) in affected_days}
-        if incident.conflict_keys:
+        if policy == COMBINED_POLICY_ID:
+            # This separately approved combination is exact, not two composable
+            # waivers: eight omissions AND the recorded R+S pair must coexist.
+            observed = (approved - APPROVED_KEYS) | incident.conflict_keys
+            allowed = ((approved,) if label == "reference" else
+                       (observed,) if label == "candidate" else (approved, observed))
+            if not any(affected == expected for expected in allowed):
+                raise AggregateResponseError(f"suspension quarantine {label} has unapproved combined payload")
+        elif incident.conflict_keys:
             allowed = ((approved,) if label == "reference" else
                        (incident.conflict_keys,) if label == "candidate" else
                        (approved, incident.conflict_keys))
@@ -238,7 +248,8 @@ def publish_suspension_candidate(
         reference, reference_hash = _read_frame(_evidence_path(raw_dir, prior.reference_sha256), prior.reference_sha256)
     else:
         reference, reference_hash = retained, retained_hash
-    if prior is None and incident.reference_keys.issubset(_keys(candidate)):
+    if (policy != COMBINED_POLICY_ID and prior is None
+            and incident.reference_keys.issubset(_keys(candidate))):
         # No exception is needed for a complete first acquisition.
         aggregate.require_retained_keys(candidate, retained, "suspend_d", label="suspend_d: retained file")
         affected_days = incident.affected_days
