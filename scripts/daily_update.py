@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.contracts.suspension_quarantine import POLICY_ID  # noqa: E402
+from src.contracts.suspension_quarantine import POLICY_IDS  # noqa: E402
 from src.core.logger import setup_logging  # noqa: E402
 from src.data.tushare.fetch_ranges import AGGREGATE_START_ENDPOINTS, NAMECHANGE_MODES  # noqa: E402
 from src.data_pipeline.daily_update import (  # noqa: E402
@@ -72,7 +72,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         )
     p.add_argument("--namechange-mode", choices=NAMECHANGE_MODES, default="date_range",
                    help="Explicit name-history strategy passed to the fetch stage.")
-    p.add_argument("--suspension-quarantine", choices=[POLICY_ID], default=None,
+    p.add_argument("--suspension-quarantine", choices=POLICY_IDS, default=None,
                    help="Isolate the approved historical suspension incident; no other hole is waived.")
     p.add_argument("--rate-limit-sleep-ms", type=int, default=None,
                    help="Passed through to 01 (default: 01's own default).")

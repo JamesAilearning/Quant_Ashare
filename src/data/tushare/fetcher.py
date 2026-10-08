@@ -771,10 +771,13 @@ class TushareFetcher:
                 if len(quarantines) != 1:
                     raise ValueError("suspension quarantine requires one unambiguous original reference")
                 self._suspension_prior = quarantines[0]
+                if self._suspension_prior.policy_id != self._config.suspension_quarantine:
+                    raise ValueError("existing suspension quarantine requires an explicit matching policy")
                 verify_quarantine_evidence(self._config.output_dir, self._suspension_prior)
             if self._config.suspension_quarantine is not None and "suspend_d" in self._config.endpoints:
                 validate_quarantine_query(
                     self._config.effective_start_date("suspend_d"), self._config.end_date,
+                    policy=self._config.suspension_quarantine,
                 )
         except ValueError as exc:
             raise TushareFetcherError(str(exc)) from exc
@@ -934,9 +937,11 @@ class TushareFetcher:
                     retained = self._read_retained_aggregate(path, endpoint)
                     require_retained_keys(df, retained, endpoint, label=f"{endpoint}: retained file")
             if selected_quarantine:
+                assert self._config.suspension_quarantine is not None
                 evidence = publish_suspension_candidate(
                     self._config.output_dir, df, prior=self._suspension_prior,
                     start_date=start_date, end_date=self._config.end_date,
+                    policy=self._config.suspension_quarantine,
                 )
                 if evidence is not None:
                     self._add_hole(

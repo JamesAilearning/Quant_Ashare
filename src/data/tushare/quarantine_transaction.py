@@ -21,10 +21,10 @@ from typing import Any
 from uuid import uuid4
 
 from src.contracts.suspension_quarantine import (
-    APPROVED_KEYS,
     POLICY_ID,
     QUARANTINE_REASON,
     SuspensionQuarantine,
+    incident_for_policy,
     validate_policy,
 )
 
@@ -133,7 +133,7 @@ def _read_json(path: Path, *, limit: int) -> dict[str, Any]:
     return value
 
 
-def _bounds(start: object, end: object) -> tuple[str, str]:
+def _bounds(start: object, end: object, *, policy: str = POLICY_ID) -> tuple[str, str]:
     for value in (start, end):
         if not isinstance(value, str) or re.fullmatch(r"[0-9]{8}", value) is None:
             raise QuarantineTransactionError("pending quarantine dates must be ASCII YYYYMMDD")
@@ -142,9 +142,9 @@ def _bounds(start: object, end: object) -> tuple[str, str]:
         except ValueError as exc:
             raise QuarantineTransactionError("pending quarantine dates must be real dates") from exc
     assert isinstance(start, str) and isinstance(end, str)
-    dates = {key[1] for key in APPROVED_KEYS}
+    dates = incident_for_policy(policy).dates
     if start > min(dates) or end < max(dates):
-        raise QuarantineTransactionError("pending quarantine range must cover all eight approved dates")
+        raise QuarantineTransactionError("pending quarantine range must cover all approved dates")
     return start, end
 
 
@@ -155,7 +155,7 @@ def _validate_journal(value: object) -> dict[str, Any]:
         raise QuarantineTransactionError("unsupported pending quarantine journal schema")
     if value["phase"] not in ("publishing", "retry_required"):
         raise QuarantineTransactionError("unsupported pending quarantine publication phase")
-    if validate_policy(value["policy_id"]) != POLICY_ID:
+    if validate_policy(value["policy_id"]) is None:
         raise QuarantineTransactionError("pending quarantine journal requires the explicit policy")
     for field in ("retained_sha256", "candidate_sha256", "before_manifest_sha256", "after_manifest_sha256"):
         digest = value[field]
@@ -163,10 +163,11 @@ def _validate_journal(value: object) -> dict[str, Any]:
             continue
         if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise QuarantineTransactionError(f"pending quarantine {field} must be lowercase SHA256")
-    start, end = _bounds(value["query_start_date"], value["query_end_date"])
+    start, end = _bounds(value["query_start_date"], value["query_end_date"], policy=value["policy_id"])
     if value["quarantine_after"] is not None:
         evidence = SuspensionQuarantine.from_dict(value["quarantine_after"])
-        if (evidence.retained_sha256 != value["retained_sha256"]
+        if (evidence.policy_id != value["policy_id"]
+                or evidence.retained_sha256 != value["retained_sha256"]
                 or evidence.candidate_sha256 != value["candidate_sha256"]
                 or evidence.query_start_date != start or evidence.query_end_date != end):
             raise QuarantineTransactionError("pending quarantine evidence does not bind the publication")
@@ -213,11 +214,12 @@ def _retry_journal(
     raw_dir: Path, *, policy: str | None, start_date: str, end_date: str, enabled: bool,
 ) -> dict[str, Any]:
     """Authorize only the exact rolled-back pair for a real, selected refresh."""
-    if enabled is not True or validate_policy(policy) != POLICY_ID:
+    if enabled is not True or validate_policy(policy) is None:
         raise QuarantineTransactionError("pending quarantine requires an explicit matching non-dry suspend_d refresh")
-    start, end = _bounds(start_date, end_date)
+    assert policy is not None
+    start, end = _bounds(start_date, end_date, policy=policy)
     journal = _read_pending(raw_dir)
-    if (journal["phase"] != "retry_required" or start > journal["query_start_date"]
+    if (journal["policy_id"] != policy or journal["phase"] != "retry_required" or start > journal["query_start_date"]
             or end < journal["query_end_date"]):
         raise QuarantineTransactionError("pending quarantine is not a whole-range recovered refresh context")
     _require_digest(raw_dir / _RAW_FILENAME, journal["retained_sha256"])
@@ -243,11 +245,11 @@ def read_pending_refresh_manifest(
 def begin_quarantine_publication(
     raw_dir: Path, *, retained_sha256: str, candidate_sha256: str,
     quarantine_after: SuspensionQuarantine | None,
-    query_start_date: str, query_end_date: str,
+    query_start_date: str, query_end_date: str, policy: str = POLICY_ID,
 ) -> None:
     """Bind the transition BEFORE raw replacement; retained archive is required."""
     raw_dir = Path(raw_dir)
-    previous = (_retry_journal(raw_dir, policy=POLICY_ID, start_date=query_start_date,
+    previous = (_retry_journal(raw_dir, policy=policy, start_date=query_start_date,
                                end_date=query_end_date, enabled=True)
                 if pending_quarantine_exists(raw_dir) else None)
     if previous is not None and previous["retained_sha256"] != retained_sha256:
@@ -255,7 +257,7 @@ def begin_quarantine_publication(
     if quarantine_after is not None and not isinstance(quarantine_after, SuspensionQuarantine):
         raise QuarantineTransactionError("quarantine_after must be typed evidence or None")
     journal = _validate_journal({
-        "schema_version": JOURNAL_SCHEMA_VERSION, "phase": "publishing", "policy_id": POLICY_ID,
+        "schema_version": JOURNAL_SCHEMA_VERSION, "phase": "publishing", "policy_id": policy,
         "retained_sha256": retained_sha256, "candidate_sha256": candidate_sha256,
         "before_manifest_sha256": (previous["before_manifest_sha256"] if previous is not None else
                                    _digest(raw_dir / _MANIFEST_FILENAME, limit=_MAX_MANIFEST_BYTES, optional=True)),
@@ -266,7 +268,7 @@ def begin_quarantine_publication(
     _require_digest(raw_dir / _RAW_FILENAME, retained_sha256)
     _require_digest(_snapshot(raw_dir, retained_sha256), retained_sha256)
     if previous is not None and _retry_journal(
-        raw_dir, policy=POLICY_ID, start_date=query_start_date, end_date=query_end_date, enabled=True,
+        raw_dir, policy=policy, start_date=query_start_date, end_date=query_end_date, enabled=True,
     ) != previous:
         raise QuarantineTransactionError("pending quarantine retry changed before new publication")
     _write_pending(raw_dir, journal, create=previous is None)
@@ -381,10 +383,13 @@ def recover_quarantine_publication(
     raw_dir = Path(raw_dir)
     if not pending_quarantine_exists(raw_dir):
         return False
-    if enabled is not True or validate_policy(policy) != POLICY_ID:
+    if enabled is not True or validate_policy(policy) is None:
         raise QuarantineTransactionError("pending quarantine requires an explicit matching non-dry suspend_d refresh")
-    start, end = _bounds(start_date, end_date)
+    assert policy is not None
+    start, end = _bounds(start_date, end_date, policy=policy)
     journal = _read_pending(raw_dir)
+    if journal["policy_id"] != policy:
+        raise QuarantineTransactionError("pending quarantine recovery requires a matching policy")
     if start > journal["query_start_date"] or end < journal["query_end_date"]:
         raise QuarantineTransactionError("pending quarantine recovery cannot narrow the recorded query range")
     raw_hash = _digest(raw_dir / _RAW_FILENAME, limit=_MAX_RAW_BYTES)
