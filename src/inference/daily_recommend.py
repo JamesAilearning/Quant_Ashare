@@ -39,11 +39,12 @@ from typing import Any, Final
 import pandas as pd
 
 from src.contracts.suspension_quarantine import (
-    SuspensionQuarantine,
     has_quarantine,
     incident_for_policy,
     qualified_quarantine,
+    quarantine_context,
     validate_policy,
+    validate_quarantine_context,
 )
 from src.core.logger import get_logger
 from src.core.microstructure_mask import (
@@ -1053,12 +1054,7 @@ def recommend(
         )
 
     if quarantine is not None:
-        run_meta["suspension_quarantine"] = {
-            "policy_id": quarantine.policy_id,
-            "instrument": incident_for_policy(quarantine.policy_id).instrument,
-            "built_from_holey_fetch": True,
-            "evidence": quarantine.to_dict(),
-        }
+        run_meta["suspension_quarantine"] = quarantine_context(quarantine)
 
     # 2. Build as-of-T features ONCE (dataset reused for predict below).
     dataset, feature_frame = _build_asof_dataset(config, as_of_date)
@@ -1288,7 +1284,7 @@ def _scores_to_inst_map(
 def _is_quarantined_instrument(instrument: Any, policy: str) -> bool:
     """Recognise the same security using the existing ticker conversion only."""
     return (isinstance(instrument, str)
-            and qlib_to_ts_code(instrument) == incident_for_policy(policy).ts_code)
+            and qlib_to_ts_code(instrument) in incident_for_policy(policy).ts_codes)
 
 
 def build_recommendation(
@@ -1435,19 +1431,11 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
             raise DailyRecommendationError("quarantine rows/count require active metadata")
         return {}
     context = result.run_meta["suspension_quarantine"]
-    if not isinstance(context, dict) or set(context) != {
-        "policy_id", "instrument", "built_from_holey_fetch", "evidence",
-    }:
-        raise DailyRecommendationError("quarantine metadata has an invalid shape")
     try:
-        evidence = SuspensionQuarantine.from_dict(context["evidence"])
-        incident = incident_for_policy(context["policy_id"])
+        evidence = validate_quarantine_context(context)
+        incident = incident_for_policy(evidence.policy_id)
     except ValueError as exc:
         raise DailyRecommendationError(f"quarantine evidence is invalid: {exc}") from exc
-    if (context["policy_id"] != evidence.policy_id or not isinstance(context["instrument"], str)
-            or context["instrument"] != incident.instrument
-            or context["built_from_holey_fetch"] is not True):
-        raise DailyRecommendationError("quarantine metadata must identify the exact incomplete incident")
     for pick in result.picks:
         if (not isinstance(pick.stock_code, str) or not pick.stock_code
                 or pick.stock_code != pick.stock_code.strip()):
@@ -1480,9 +1468,13 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
         actual = getattr(result, key)
         if isinstance(actual, bool) or not isinstance(actual, int) or actual != value:
             raise DailyRecommendationError(f"quarantine audit disagrees with {key}")
+    identity = (
+        {"quarantined_instrument": incident.instruments[0]} if len(incident.instruments) == 1
+        else {"quarantined_instruments": ";".join(incident.instruments)}
+    )
     return {
         "suspension_quarantine_policy": evidence.policy_id,
-        "quarantined_instrument": incident.instrument,
+        **identity,
         "built_from_holey_fetch": True,
         "n_quarantined": count,
     }

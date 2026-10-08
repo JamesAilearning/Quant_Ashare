@@ -7,7 +7,12 @@ import pytest
 
 pytest.importorskip("qlib")
 
-from src.contracts.suspension_quarantine import POLICY_IDS, SuspensionQuarantine, incident_for_policy
+from src.contracts.suspension_quarantine import (
+    COMBINED_POLICY_ID,
+    POLICY_IDS,
+    SuspensionQuarantine,
+    incident_for_policy,
+)
 from src.core.backtest_runner import BacktestRunner, BacktestRunnerError
 from src.core.canonical_backtest_contract import (
     ADJUST_MODE_PRE,
@@ -31,7 +36,8 @@ def _quarantined_provider(tmp_path, policy):
     provider = tmp_path / "provider"
     evidence = SuspensionQuarantine(
         policy_id=policy,
-        missing_dates=(min(incident_for_policy(policy).dates),),
+        missing_dates=(tuple(sorted(incident_for_policy(policy).missing_dates))
+                       if policy == COMBINED_POLICY_ID else (min(incident_for_policy(policy).dates),)),
         reference_sha256="a" * 64,
         retained_sha256="b" * 64,
         candidate_sha256="c" * 64,

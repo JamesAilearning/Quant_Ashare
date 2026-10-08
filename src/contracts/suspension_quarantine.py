@@ -28,7 +28,8 @@ APPROVED_KEYS: frozenset[tuple[str, str, None, str]] = frozenset({
     (TS_CODE, "20251209", None, "R"),
 })
 CONFLICT_POLICY_ID = "suspend-688005-20260116-conflict"
-POLICY_IDS = (POLICY_ID, CONFLICT_POLICY_ID)
+COMBINED_POLICY_ID = "suspend-688005-688766-observed-20261008"
+POLICY_IDS = (POLICY_ID, CONFLICT_POLICY_ID, COMBINED_POLICY_ID)
 BusinessKey = tuple[str, str, str | None, str]
 
 
@@ -37,14 +38,22 @@ class SuspensionIncident:
     """Closed, immutable reviewed policy; never loaded from operator config."""
 
     policy_id: str
-    ts_code: str
-    instrument: str
+    ts_codes: tuple[str, ...]
+    instruments: tuple[str, ...]
     reference_keys: frozenset[BusinessKey]
     conflict_keys: frozenset[BusinessKey] = frozenset()
 
     @property
     def dates(self) -> frozenset[str]:
+        """Required query dates, including non-missing conflicting records."""
         return frozenset(key[1] for key in self.reference_keys)
+
+    @property
+    def missing_dates(self) -> frozenset[str]:
+        """Permitted missing-date domain, not a shortcut for query coverage."""
+        if self.policy_id == COMBINED_POLICY_ID:
+            return frozenset(key[1] for key in APPROVED_KEYS)
+        return self.dates
 
     @property
     def affected_days(self) -> frozenset[tuple[str, str]]:
@@ -52,10 +61,15 @@ class SuspensionIncident:
 
 
 _INCIDENTS = (
-    SuspensionIncident(POLICY_ID, TS_CODE, INSTRUMENT, APPROVED_KEYS),
+    SuspensionIncident(POLICY_ID, (TS_CODE,), (INSTRUMENT,), APPROVED_KEYS),
     SuspensionIncident(
-        CONFLICT_POLICY_ID, "688005.SH", "SH688005",
+        CONFLICT_POLICY_ID, ("688005.SH",), ("SH688005",),
         frozenset({("688005.SH", "20260116", None, "R")}),
+        frozenset({("688005.SH", "20260116", "09:30-09:30", "S")}),
+    ),
+    SuspensionIncident(
+        COMBINED_POLICY_ID, ("688005.SH", TS_CODE), ("SH688005", INSTRUMENT),
+        APPROVED_KEYS | frozenset({("688005.SH", "20260116", None, "R")}),
         frozenset({("688005.SH", "20260116", "09:30-09:30", "S")}),
     ),
 )
@@ -109,12 +123,15 @@ class SuspensionQuarantine:
         incident = incident_for_policy(self.policy_id)
         dates = self.missing_dates
         if (not isinstance(dates, tuple) or not dates
-                or any(not isinstance(day, str) or day not in incident.dates for day in dates)
+                or any(not isinstance(day, str) or day not in incident.missing_dates for day in dates)
                 or dates != tuple(sorted(set(dates)))):
             raise ValueError(
                 "suspension quarantine missing_dates must be a nonempty sorted unique "
                 "tuple drawn from the selected incident's approved dates"
             )
+        if (self.policy_id == COMBINED_POLICY_ID
+                and dates != tuple(sorted(incident.missing_dates))):
+            raise ValueError("combined suspension quarantine requires exactly all eight missing dates")
         for field in ("reference_sha256", "retained_sha256", "candidate_sha256"):
             value = getattr(self, field)
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
@@ -150,6 +167,41 @@ class SuspensionQuarantine:
             candidate_sha256=value["candidate_sha256"],
             query_start_date=value["query_start_date"], query_end_date=value["query_end_date"],
         )
+
+
+def quarantine_context(evidence: SuspensionQuarantine) -> dict[str, Any]:
+    """Construct the policy's exact serving shape, retaining old single-ID JSON."""
+    evidence.__post_init__()
+    incident = incident_for_policy(evidence.policy_id)
+    identity: dict[str, Any] = (
+        {"instrument": incident.instruments[0]} if len(incident.instruments) == 1
+        else {"instruments": list(incident.instruments)}
+    )
+    return {"policy_id": evidence.policy_id, **identity,
+            "built_from_holey_fetch": True, "evidence": evidence.to_dict()}
+
+
+def validate_quarantine_context(value: object) -> SuspensionQuarantine:
+    """Reject cross-policy, singular/plural and nullable/coerced identities."""
+    if not isinstance(value, dict) or "evidence" not in value:
+        raise ValueError("quarantine metadata has an invalid shape")
+    evidence = SuspensionQuarantine.from_dict(value["evidence"])
+    expected = quarantine_context(evidence)
+    if set(value) != set(expected):
+        raise ValueError("quarantine metadata has an invalid shape")
+    if (not isinstance(value["policy_id"], str) or value["policy_id"] != evidence.policy_id
+            or value["built_from_holey_fetch"] is not True):
+        raise ValueError("quarantine metadata must identify the exact incomplete incident")
+    identity = "instrument" if "instrument" in expected else "instruments"
+    codes = value[identity]
+    if identity == "instrument":
+        valid = isinstance(codes, str) and codes == expected[identity]
+    else:
+        valid = (isinstance(codes, list) and all(isinstance(code, str) for code in codes)
+                 and codes == expected[identity])
+    if not valid:
+        raise ValueError("quarantine metadata must identify the exact incomplete incident")
+    return evidence
 
 
 class _Hole(Protocol):
