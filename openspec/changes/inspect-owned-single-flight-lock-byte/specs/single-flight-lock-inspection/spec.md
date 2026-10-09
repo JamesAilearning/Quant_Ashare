@@ -27,6 +27,9 @@ containing lock_path, byte, device, inode, size, mtime_ns and owner_pid.
 On Windows the opt-in descriptor SHALL be opened in binary mode from the first
 open to preserve every possible byte without CRT translation or truncation.
 The legacy entry's open flags SHALL remain unchanged in the same acquisition body.
+Opt-in inspection SHALL bind pre-open path identity/metadata. Missing, empty or
+changed pre-open files SHALL NOT become evidence through acquisition-time
+initialization; canonical admission and exclusion for these resources remain unchanged.
 
 #### Scenario: Windows second-handle denial does not prevent owner inspection
 - **WHEN** a real Windows byte lock denies a second-handle read of an existing one-byte coordination file
@@ -39,6 +42,11 @@ The legacy entry's open flags SHALL remain unchanged in the same acquisition bod
 #### Scenario: Translation-sensitive bytes remain actual bytes
 - **WHEN** opt-in inspection holds any of the 256 single-byte values including Ctrl-Z
 - **THEN** the initial open and repeated reads preserve that exact byte without translation or truncation
+
+#### Scenario: Bootstrap bytes are not pre-existing evidence
+- **WHEN** a missing or empty lock is initialized during canonical acquisition, or its pre-open identity is replaced
+- **THEN** inspection refuses before descriptor read for the entire context while that resource remains locked
+- **AND** pre-existing eligible resources in the same context remain inspectable
 
 ### Requirement: Invalid inspection SHALL fail closed before returning evidence
 

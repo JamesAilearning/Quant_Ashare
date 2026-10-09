@@ -73,6 +73,104 @@ def test_legacy_open_flags_unchanged_and_optin_binary_from_first_open(tmp_path, 
     assert opened == [legacy, optin]
 
 
+@pytest.mark.parametrize("initial", ["missing", "empty"])
+def test_missing_or_empty_lock_cannot_become_preexisting_byte_evidence(tmp_path, monkeypatch, initial) -> None:
+    resource, existing = tmp_path / "fresh", tmp_path / "existing"
+    lock = sf.lock_path_for(resource)
+    if initial == "empty":
+        lock.write_bytes(b"")
+    sf.lock_path_for(existing).write_bytes(b"\xa5")
+    with sf.single_flight_with_inspection(resource, existing) as inspector:
+        assert inspector.read_byte(existing).byte == b"\xa5"
+        with monkeypatch.context() as scoped:
+            scoped.setattr(sf.os, "read", lambda *args: pytest.fail("Synthesized byte reached an owner read"))
+            with pytest.raises(sf.LockInspectionError, match="pre-existing"):
+                inspector.read_byte(resource)
+        with pytest.raises(sf.AlreadyRunningError):
+            with sf.single_flight(resource):
+                pytest.fail("Rejected byte evidence must not release the actual lock")
+    # Preserve canonical bootstrap, not pretend acquisition was read-only:
+    # Windows initialized the lock; POSIX left it empty. Neither was evidence.
+    assert lock.read_bytes() == (b"\0" if sys.platform == "win32" else b"")
+    with sf.single_flight(resource) as value:
+        assert value is None
+
+
+def test_empty_lock_filled_before_actual_acquisition_remains_ineligible(tmp_path, monkeypatch) -> None:
+    resource = tmp_path / "resource"
+    lock = sf.lock_path_for(resource)
+    lock.write_bytes(b"")
+    original_try = sf._try_lock_exclusive
+
+    def fill_then_lock(fd):
+        os.write(fd, b"Z")
+        return original_try(fd)  # Real OS exclusion; only the pre-lock write is injected.
+
+    monkeypatch.setattr(sf, "_try_lock_exclusive", fill_then_lock)
+    with sf.single_flight_with_inspection(resource) as inspector:
+        with pytest.raises(sf.LockInspectionError, match="pre-existing"):
+            inspector.read_byte(resource)
+    assert lock.read_bytes() == b"Z"
+
+
+def test_path_replaced_during_open_cannot_supply_preexisting_evidence(tmp_path, monkeypatch) -> None:
+    resource = tmp_path / "resource"
+    lock, replacement = sf.lock_path_for(resource), tmp_path / "replacement"
+    lock.write_bytes(b"A")
+    replacement.write_bytes(b"B")
+    original_open = os.open
+
+    def replace_then_open(path, *args, **kwargs):
+        if Path(path) == lock:
+            os.replace(replacement, lock)  # Real inode replacement before acquiring any OS lock.
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(sf.os, "open", replace_then_open)
+    with sf.single_flight_with_inspection(resource) as inspector:
+        with pytest.raises(sf.LockInspectionError, match="pre-existing"):
+            inspector.read_byte(resource)
+    assert lock.read_bytes() == b"B"
+
+
+def test_legacy_acquisition_does_not_read_preopen_inspection_metadata(tmp_path, monkeypatch) -> None:
+    resource = tmp_path / "resource"
+    sf.lock_path_for(resource).write_bytes(b"\xa5")
+    monkeypatch.setattr(sf, "_inspection_initial_state", lambda *args: pytest.fail("Legacy added evidence IO"))
+    with sf.single_flight(resource) as value:
+        assert value is None
+
+
+def test_initial_metadata_failure_is_typed_and_releases_earlier_lock_without_opening_failed_one(
+    tmp_path, monkeypatch,
+) -> None:
+    first, failed = tmp_path / "a-first", tmp_path / "z-failed"
+    first_lock, failed_lock = sf.lock_path_for(first), sf.lock_path_for(failed)
+    first_lock.write_bytes(b"\xa5")
+    failed_lock.write_bytes(b"Z")
+    original_lstat, original_open = Path.lstat, os.open
+    opened = []
+
+    def deny_metadata(path, *args, **kwargs):
+        if path == failed_lock:
+            raise PermissionError("synthetic pre-open failure")
+        return original_lstat(path, *args, **kwargs)
+
+    def capture_open(path, *args, **kwargs):
+        opened.append(Path(path))
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "lstat", deny_metadata)
+        scoped.setattr(sf.os, "open", capture_open)
+        with pytest.raises(sf.LockInspectionError, match="pre-existing"):
+            with sf.single_flight_with_inspection(first, failed):
+                pytest.fail("Unavailable initial metadata yielded evidence")
+    assert opened == [first_lock]
+    with sf.single_flight(first, failed) as value:
+        assert value is None
+    assert first_lock.read_bytes() == b"\xa5" and failed_lock.read_bytes() == b"Z"
+
+
 @pytest.fixture
 def owned_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep real acquisition/OS locks; observe only the actual owning descriptor."""

@@ -29,6 +29,13 @@ UI authorization, or alter production tasks. No general-purpose file reader.
   late because a text-mode O_RDWR open can strip trailing Ctrl-Z. The legacy
   entry retains its original open flags. All 256 byte values receive real-lock
   regression coverage, not just an ordinary nonzero example.
+- Only opt-in inspection records pre-open path identity/metadata. Missing, empty
+  or changed pre-open files remain ineligible for the whole context even when
+  canonical acquisition initializes them. These resources still acquire/release
+  normally, so mixed bootstrap and pre-existing locks remain mutually exclusive.
+  Initial evidence state is invalidated before unlocking. Legacy acquisition
+  performs no added pre-open state read; unreadable initial state fails closed
+  before opening a new descriptor.
 - `read_byte(resource)` is valid only in the owning process and thread during
   the live context, for an acquired resource whose lock is an ordinary,
   non-linked, single-link file of exactly one byte. No FD is returned.

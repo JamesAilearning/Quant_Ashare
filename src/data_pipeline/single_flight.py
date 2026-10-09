@@ -78,6 +78,16 @@ def _inspection_state(info: os.stat_result) -> tuple[int, int, int, int, int, in
             info.st_mode, info.st_nlink, int(getattr(info, "st_file_attributes", 0)))
 
 
+def _inspection_initial_state(path: Path) -> tuple[int, int, int, int, int, int, int] | None:
+    """Record the pre-open inode; absence is ineligible, not assumed-zero evidence."""
+    try:
+        return _inspection_state(path.lstat())
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise LockInspectionError("Cannot establish pre-existing lock inspection state") from exc
+
+
 def _inspection_ordinary_byte(info: os.stat_result) -> None:
     if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 1
             or int(getattr(info, "st_file_attributes", 0)) & _REPARSE_POINT):
@@ -108,14 +118,18 @@ class SingleFlightLockInspection:
         self._owner_pid = os.getpid()
         self._owner_thread = threading.current_thread()
         self._descriptors: dict[Path, int] = {}
+        self._initial_states: dict[Path, tuple[int, int, int, int, int, int, int] | None] = {}
 
-    def _activate(self, descriptors: dict[Path, int]) -> None:
+    def _activate(self, descriptors: dict[Path, int],
+                  initial_states: dict[Path, tuple[int, int, int, int, int, int, int] | None]) -> None:
         self._descriptors = descriptors.copy()
+        self._initial_states = initial_states.copy()
         self._active = True
 
     def _invalidate(self) -> None:
         self._active = False
         self._descriptors.clear()
+        self._initial_states.clear()
 
     def _check_owner(self) -> None:
         if (not self._active or os.getpid() != self._owner_pid
@@ -136,12 +150,17 @@ class SingleFlightLockInspection:
             raise LockInspectionError("Invalid lock-inspection resource") from exc
         if path not in self._descriptors:
             raise LockInspectionError("Lock inspection resource was not acquired by this context")
+        initial = self._initial_states.get(path)
+        if initial is None or initial[2] != 1:
+            raise LockInspectionError("Lock inspection requires a pre-existing one-byte file")
         fd = self._descriptors[path]
         try:
             before_path = _inspection_path_state(path)
             before_fd = os.fstat(fd)
             _inspection_ordinary_byte(before_fd)
             before = _inspection_state(before_fd)
+            if before != initial:
+                raise LockInspectionError("Lock inspection pre-existing identity or metadata changed")
             if _inspection_state(before_path) != before:
                 raise LockInspectionError("Lock inspection path no longer identifies its owning descriptor")
             position = os.lseek(fd, 0, os.SEEK_CUR)
@@ -246,9 +265,14 @@ def _single_flight(*resources: Path, inspect_bytes: bool) -> Iterator[SingleFlig
     paths = sorted({lock_path_for(Path(os.path.abspath(r))) for r in resources}, key=str)
     held: list[int] = []
     descriptors: dict[Path, int] = {}
+    initial_states: dict[Path, tuple[int, int, int, int, int, int, int] | None] = {}
     inspection = SingleFlightLockInspection()
     try:
         for path in paths:
+            if inspect_bytes:
+                # Canonical acquisition can initialize fresh/empty Windows locks.
+                # They still exclude normally, but cannot become original-byte evidence.
+                initial_states[path] = _inspection_initial_state(path)
             # Fresh-machine bootstrap: the parent may not exist yet. A real run needs it.
             with contextlib.suppress(OSError):
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +298,7 @@ def _single_flight(*resources: Path, inspect_bytes: bool) -> Iterator[SingleFlig
                 )
             held.append(fd)
             descriptors[path] = fd
-        inspection._activate(descriptors)
+        inspection._activate(descriptors, initial_states)
         yield inspection
     finally:
         inspection._invalidate()
