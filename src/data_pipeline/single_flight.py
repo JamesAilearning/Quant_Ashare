@@ -223,7 +223,7 @@ def single_flight(*resources: Path) -> Iterator[None]:
     lock when the holder exits — including on a crash or kill — so nothing wedges the next
     run. Paths are normalized (absolute) so spelling differences map to the same lock.
     """
-    with single_flight_with_inspection(*resources):
+    with _single_flight(*resources, inspect_bytes=False):
         yield
 
 
@@ -234,6 +234,13 @@ def single_flight_with_inspection(*resources: Path) -> Iterator[SingleFlightLock
     Inspection does not change lock admission, authorize a data retry or accept
     data. Invalid inspection fails closed without releasing the held locks.
     """
+    with _single_flight(*resources, inspect_bytes=True) as inspection:
+        yield inspection
+
+
+@contextlib.contextmanager
+def _single_flight(*resources: Path, inspect_bytes: bool) -> Iterator[SingleFlightLockInspection]:
+    """Sole acquisition body; only opt-in Windows descriptors use binary mode."""
     if not resources:
         raise ValueError("single_flight requires at least one resource path")
     paths = sorted({lock_path_for(Path(os.path.abspath(r))) for r in resources}, key=str)
@@ -246,7 +253,12 @@ def single_flight_with_inspection(*resources: Path) -> Iterator[SingleFlightLock
             with contextlib.suppress(OSError):
                 path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                fd = os.open(str(path), os.O_CREAT | os.O_RDWR, 0o644)
+                flags = os.O_CREAT | os.O_RDWR
+                if sys.platform == "win32" and inspect_bytes:
+                    # Binary must be selected at OPEN, not just at read: the CRT
+                    # can strip a trailing Ctrl-Z during a text-mode O_RDWR open.
+                    flags |= os.O_BINARY
+                fd = os.open(str(path), flags, 0o644)
             except OSError as exc:
                 # Unwritable lock path / read-only fs / permission — a SETUP failure, not
                 # contention. Surface a typed error the CLI maps to a defined exit code.

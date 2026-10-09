@@ -20,10 +20,15 @@ UI authorization, or alter production tasks. No general-purpose file reader.
 ## Decisions
 
 - Add `single_flight_with_inspection(*resources)` yielding a
-  `SingleFlightLockInspection`. Existing `single_flight(*resources)` delegates
-  to that one acquisition implementation and continues yielding None. Retain
+  `SingleFlightLockInspection`. Both public APIs delegate to one private
+  acquisition body; existing `single_flight(*resources)` continues yielding None. Retain
   identical sorting, path normalization, parent setup, OS primitives, exceptions,
   partial-acquisition cleanup and final unlocking/closing. Do not duplicate locks.
+  On Windows only the opt-in descriptor adds O_BINARY at its initial open, so
+  every byte is preserved before inspection; switching mode only at read is too
+  late because a text-mode O_RDWR open can strip trailing Ctrl-Z. The legacy
+  entry retains its original open flags. All 256 byte values receive real-lock
+  regression coverage, not just an ordinary nonzero example.
 - `read_byte(resource)` is valid only in the owning process and thread during
   the live context, for an acquired resource whose lock is an ordinary,
   non-linked, single-link file of exactly one byte. No FD is returned.

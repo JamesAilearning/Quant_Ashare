@@ -37,6 +37,42 @@ def test_real_locked_coordination_byte_is_read_by_actual_owner(tmp_path: Path) -
     assert lock.read_bytes() == b"\xa5"
 
 
+@pytest.mark.parametrize("value", range(256))
+def test_every_single_byte_value_is_read_without_crt_translation(tmp_path: Path, value: int) -> None:
+    resource = tmp_path / "registry.parquet"
+    lock = sf.lock_path_for(resource)
+    actual = bytes([value])
+    lock.write_bytes(actual)
+    before = lock.stat()
+    with sf.single_flight_with_inspection(resource) as inspector:
+        assert inspector.read_byte(resource).byte == actual
+        assert inspector.read_byte(resource).byte == actual
+    after = lock.stat()
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (before.st_ino, 1, before.st_mtime_ns)
+    assert lock.read_bytes() == actual
+
+
+def test_legacy_open_flags_unchanged_and_optin_binary_from_first_open(tmp_path, monkeypatch) -> None:
+    resource = tmp_path / "resource"
+    lock = sf.lock_path_for(resource)
+    lock.write_bytes(b"\xa5")
+    original_open = os.open
+    opened = []
+
+    def capture_flags(path, flags, mode):
+        opened.append(flags)
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(sf.os, "open", capture_flags)
+    with sf.single_flight(resource) as value:
+        assert value is None
+    with sf.single_flight_with_inspection(resource) as inspector:
+        assert inspector.read_byte(resource).byte == b"\xa5"
+    legacy = os.O_CREAT | os.O_RDWR
+    optin = legacy | os.O_BINARY if sys.platform == "win32" else legacy
+    assert opened == [legacy, optin]
+
+
 @pytest.fixture
 def owned_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Keep real acquisition/OS locks; observe only the actual owning descriptor."""

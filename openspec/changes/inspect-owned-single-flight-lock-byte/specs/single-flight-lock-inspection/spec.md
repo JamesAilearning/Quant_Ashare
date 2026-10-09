@@ -24,6 +24,9 @@ single-link file of exactly one byte. The inspector SHALL read that byte through
 the actual owning descriptor, preserve its seek position, verify path/descriptor
 identity and size/mtime before and after, and return a frozen `LockedByteSnapshot`
 containing lock_path, byte, device, inode, size, mtime_ns and owner_pid.
+On Windows the opt-in descriptor SHALL be opened in binary mode from the first
+open to preserve every possible byte without CRT translation or truncation.
+The legacy entry's open flags SHALL remain unchanged in the same acquisition body.
 
 #### Scenario: Windows second-handle denial does not prevent owner inspection
 - **WHEN** a real Windows byte lock denies a second-handle read of an existing one-byte coordination file
@@ -32,6 +35,10 @@ containing lock_path, byte, device, inode, size, mtime_ns and owner_pid.
 #### Scenario: Cursor and bytes are unchanged
 - **WHEN** a snapshot is produced successfully
 - **THEN** the descriptor's prior seek position and the file's bytes, identity, size and mtime are unchanged
+
+#### Scenario: Translation-sensitive bytes remain actual bytes
+- **WHEN** opt-in inspection holds any of the 256 single-byte values including Ctrl-Z
+- **THEN** the initial open and repeated reads preserve that exact byte without translation or truncation
 
 ### Requirement: Invalid inspection SHALL fail closed before returning evidence
 
