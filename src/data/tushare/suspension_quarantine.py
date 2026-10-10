@@ -141,14 +141,16 @@ def _validate_history(
             # This separately approved combination is exact, not two composable
             # waivers: eight omissions AND the recorded R+S pair must coexist.
             observed = (approved - APPROVED_KEYS) | incident.conflict_keys
-            allowed = ((approved,) if label == "reference" else
+            allowed: tuple[frozenset[tuple[str, str, str | None, str]], ...] = ((approved,) if label == "reference" else
                        (observed,) if label == "candidate" else (approved, observed))
             if not any(affected == expected for expected in allowed):
                 raise AggregateResponseError(f"suspension quarantine {label} has unapproved combined payload")
         elif incident.conflict_keys:
-            allowed = ((approved,) if label == "reference" else
+            # The exact original R+S pair remains whole audit evidence;
+            # only S is permitted as the newly observed candidate payload.
+            allowed = ((approved, incident_keys) if label == "reference" else
                        (incident.conflict_keys,) if label == "candidate" else
-                       (approved, incident.conflict_keys))
+                       (approved, incident.conflict_keys, incident_keys))
             if not any(affected == expected for expected in allowed):
                 raise AggregateResponseError(f"suspension quarantine {label} has unapproved conflict payload")
         elif not affected.issubset(approved):
