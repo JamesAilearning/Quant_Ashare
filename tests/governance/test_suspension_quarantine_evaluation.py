@@ -10,6 +10,8 @@ pytest.importorskip("qlib")
 from src.contracts.suspension_quarantine import (
     COMBINED_POLICY_ID,
     POLICY_IDS,
+    SECURITY_POLICY_ID,
+    SecuritySuspensionQuarantine,
     SuspensionQuarantine,
     incident_for_policy,
 )
@@ -34,15 +36,21 @@ def quarantine_policy(request):
 
 def _quarantined_provider(tmp_path, policy):
     provider = tmp_path / "provider"
-    evidence = SuspensionQuarantine(
+    evidence_type = SecuritySuspensionQuarantine if policy == SECURITY_POLICY_ID else SuspensionQuarantine
+    extra = ({"quarantined_ts_codes": ("600036.SH",), "history_sha256": (), "predecessor_sha256": None}
+             if policy == SECURITY_POLICY_ID else {})
+    dates = (("20260116",) if policy == SECURITY_POLICY_ID else
+             tuple(sorted(incident_for_policy(policy).missing_dates)) if policy == COMBINED_POLICY_ID else
+             (min(incident_for_policy(policy).dates),))
+    evidence = evidence_type(
         policy_id=policy,
-        missing_dates=(tuple(sorted(incident_for_policy(policy).missing_dates))
-                       if policy == COMBINED_POLICY_ID else (min(incident_for_policy(policy).dates),)),
+        missing_dates=dates,
         reference_sha256="a" * 64,
         retained_sha256="b" * 64,
         candidate_sha256="c" * 64,
         query_start_date="20151001",
         query_end_date="20260922",
+        **extra,
     )
     hole = FetchHole(
         endpoint="suspend_d", unit="file", reason_class="quarantined_history",

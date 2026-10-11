@@ -176,7 +176,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="Explicit name-history strategy; per_security_full requires fresh "
                         "stock_basic snapshots and refresh of an existing name file.")
     p.add_argument("--suspension-quarantine", default=None,
-                   help="Explicit known-incident policy only; keeps structured holes and exit 3. "
+                   help="Explicit evidence-backed suspension policy; keeps structured holes and exit 3. "
                         "Never a general permission to discard suspension history.")
     p.add_argument(
         "--endpoints", default=",".join(ENDPOINTS),

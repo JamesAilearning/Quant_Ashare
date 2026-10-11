@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.contracts.suspension_quarantine import incident_for_policy, validate_quarantine_context
+from src.contracts.suspension_quarantine import (
+    SECURITY_POLICY_ID,
+    incident_for_policy,
+    quarantine_ts_codes,
+    validate_quarantine_context,
+)
 from src.data.pit._common import qlib_to_ts_code
 
 
@@ -18,7 +23,7 @@ def quarantine_notice(payload: dict[str, Any]) -> str | None:
     context = meta["suspension_quarantine"]
     try:
         evidence = validate_quarantine_context(context)
-        incident = incident_for_policy(evidence.policy_id)
+        codes = quarantine_ts_codes(evidence)
     except ValueError as exc:
         raise ValueError(f"隔离证据不合法：{exc}") from exc
     count = payload.get("n_quarantined")
@@ -31,13 +36,17 @@ def quarantine_notice(payload: dict[str, Any]) -> str | None:
         code = pick.get("stock_code")
         if not isinstance(code, str) or not code or code != code.strip():
             raise ValueError("隔离工件候选代码不合法，需核查工件。")
-        if qlib_to_ts_code(code) in incident.ts_codes:
+        if qlib_to_ts_code(code) in codes:
             raise ValueError(f"被隔离的 {code} 出现在候选列表中，禁止据此操作。")
-    problem = ("存在已记录的缺失与冲突" if len(incident.instruments) > 1 else
-               "存在已记录的冲突" if incident.conflict_keys else "仍缺失")
+    if evidence.policy_id == SECURITY_POLICY_ID:
+        problem = "存在经原始证据验证的缺失或修订"
+    else:
+        incident = incident_for_policy(evidence.policy_id)
+        problem = ("存在已记录的缺失与冲突" if len(codes) > 1 else
+                   "存在已记录的冲突" if incident.conflict_keys else "仍缺失")
     return (
-        f"数据不完整：{'、'.join(incident.ts_codes)} 的指定历史停复牌记录{problem}，"
-        f"已启用 {len(incident.instruments)} 只股票的"
+        f"数据不完整：{'、'.join(codes)} 的指定历史停复牌记录{problem}，"
+        f"已启用 {len(codes)} 只股票的"
         f"明确隔离，本次评分中排除 {count} 条。其余候选仍须按常规核验；"
         "本状态不代表历史验证通过，也不会自动清除或卖出已有持仓。"
     )

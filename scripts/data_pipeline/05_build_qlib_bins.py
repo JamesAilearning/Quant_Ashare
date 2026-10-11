@@ -51,7 +51,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--delisted-registry", required=True, type=Path)
     p.add_argument("--output-dir", required=True, type=Path)
     p.add_argument("--suspension-quarantine", choices=POLICY_IDS, default=None,
-                   help="Explicit known-incident isolation; all other data gaps still refuse.")
+                   help="Explicit evidence-backed suspension isolation; all other data gaps still refuse.")
     p.add_argument(
         "--allow-holey-fetch", action="store_true",
         help="Build even if the tushare fetch_manifest is holey/missing (P3-4c). "

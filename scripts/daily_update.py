@@ -73,7 +73,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--namechange-mode", choices=NAMECHANGE_MODES, default="date_range",
                    help="Explicit name-history strategy passed to the fetch stage.")
     p.add_argument("--suspension-quarantine", choices=POLICY_IDS, default=None,
-                   help="Isolate the approved historical suspension incident; no other hole is waived.")
+                   help="Select evidence-backed suspension isolation; no other endpoint hole is waived.")
     p.add_argument("--rate-limit-sleep-ms", type=int, default=None,
                    help="Passed through to 01 (default: 01's own default).")
     p.add_argument("--allow-holey-fetch", action="store_true",

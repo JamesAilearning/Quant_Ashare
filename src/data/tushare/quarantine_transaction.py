@@ -23,10 +23,13 @@ from uuid import uuid4
 from src.contracts.suspension_quarantine import (
     POLICY_ID,
     QUARANTINE_REASON,
+    SECURITY_POLICY_ID,
+    SecuritySuspensionQuarantine,
     SuspensionQuarantine,
     incident_for_policy,
     validate_policy,
 )
+from src.data.tushare.quarantine_lineage import verify_security_lineage
 
 PENDING_FILENAME = "_suspension_quarantine_pending.json"
 JOURNAL_SCHEMA_VERSION = 1
@@ -142,8 +145,8 @@ def _bounds(start: object, end: object, *, policy: str = POLICY_ID) -> tuple[str
         except ValueError as exc:
             raise QuarantineTransactionError("pending quarantine dates must be real dates") from exc
     assert isinstance(start, str) and isinstance(end, str)
-    dates = incident_for_policy(policy).dates
-    if start > min(dates) or end < max(dates):
+    dates = incident_for_policy(policy).dates if policy != SECURITY_POLICY_ID else frozenset()
+    if start > end or (dates and (start > min(dates) or end < max(dates))):
         raise QuarantineTransactionError("pending quarantine range must cover all approved dates")
     return start, end
 
@@ -307,6 +310,7 @@ def prepare_quarantine_manifest_commit(
     if journal["phase"] != "publishing":
         raise QuarantineTransactionError("pending quarantine still requires a successful real suspension refresh")
     _validate_manifest_target(manifest, journal)
+    _verify_journal_lineage(raw_dir, journal)
     _require_digest(raw_dir / _RAW_FILENAME, journal["candidate_sha256"])
     _require_digest(_snapshot(raw_dir, journal["retained_sha256"]), journal["retained_sha256"])
     after = hashlib.sha256(payload).hexdigest()
@@ -340,7 +344,20 @@ def finish_quarantine_manifest_commit(raw_dir: Path, journal: dict[str, Any] | N
     if after is None:
         raise QuarantineTransactionError("pending quarantine manifest has no committed byte binding")
     _require_digest(raw_dir / _MANIFEST_FILENAME, after, limit=_MAX_MANIFEST_BYTES)
+    _verify_journal_lineage(raw_dir, journal)
     _remove_pending(raw_dir, journal)
+
+
+def _verify_journal_lineage(raw_dir: Path, journal: dict[str, Any]) -> None:
+    """Do not discharge pending dynamic publication with a broken evidence chain."""
+    if journal["quarantine_after"] is None:
+        return
+    evidence = SuspensionQuarantine.from_dict(journal["quarantine_after"])
+    if isinstance(evidence, SecuritySuspensionQuarantine):
+        try:
+            verify_security_lineage(raw_dir, evidence)
+        except (OSError, ValueError) as exc:
+            raise QuarantineTransactionError("pending quarantine predecessor lineage is invalid") from exc
 
 
 def _copy_fsynced(source: Path, target: Path, digest: str, *, exclusive: bool) -> None:

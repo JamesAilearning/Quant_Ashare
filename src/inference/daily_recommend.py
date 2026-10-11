@@ -39,10 +39,12 @@ from typing import Any, Final
 import pandas as pd
 
 from src.contracts.suspension_quarantine import (
+    SuspensionQuarantine,
     has_quarantine,
-    incident_for_policy,
     qualified_quarantine,
     quarantine_context,
+    quarantine_instruments,
+    quarantine_ts_codes,
     validate_policy,
     validate_quarantine_context,
 )
@@ -1107,7 +1109,7 @@ def recommend(
     score_by_inst = _scores_to_inst_map(scores, expected_date=as_of_date)
     quarantined_instruments = {
         inst for inst in score_by_inst
-        if quarantine is not None and _is_quarantined_instrument(inst, quarantine.policy_id)
+        if quarantine is not None and _is_quarantined_instrument(inst, quarantine)
     }
 
     # 3. Tradability mask (suspension / one-price-lock) on the ENTRY day —
@@ -1281,10 +1283,10 @@ def _scores_to_inst_map(
     return dict(zip(instruments, values, strict=True))
 
 
-def _is_quarantined_instrument(instrument: Any, policy: str) -> bool:
+def _is_quarantined_instrument(instrument: Any, evidence: SuspensionQuarantine) -> bool:
     """Recognise the same security using the existing ticker conversion only."""
     return (isinstance(instrument, str)
-            and qlib_to_ts_code(instrument) in incident_for_policy(policy).ts_codes)
+            and qlib_to_ts_code(instrument) in quarantine_ts_codes(evidence))
 
 
 def build_recommendation(
@@ -1433,14 +1435,14 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
     context = result.run_meta["suspension_quarantine"]
     try:
         evidence = validate_quarantine_context(context)
-        incident = incident_for_policy(evidence.policy_id)
+        instruments = quarantine_instruments(evidence)
     except ValueError as exc:
         raise DailyRecommendationError(f"quarantine evidence is invalid: {exc}") from exc
     for pick in result.picks:
         if (not isinstance(pick.stock_code, str) or not pick.stock_code
                 or pick.stock_code != pick.stock_code.strip()):
             raise DailyRecommendationError("quarantine picks contain a malformed security identity")
-        if _is_quarantined_instrument(pick.stock_code, evidence.policy_id):
+        if _is_quarantined_instrument(pick.stock_code, evidence):
             raise DailyRecommendationError("quarantine security cannot appear in recommendation picks")
     columns = ["stock_code", "tradable_flag", "unavailable_reason"]
     if not set(columns).issubset(frame.columns):
@@ -1450,7 +1452,7 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
         if (not isinstance(code, str) or not code or code != code.strip()
                 or not pd.api.types.is_bool(tradable) or not isinstance(reason, str)):
             raise DailyRecommendationError("quarantine audit contains malformed identity/status")
-        if _is_quarantined_instrument(code, evidence.policy_id):
+        if _is_quarantined_instrument(code, evidence):
             if tradable or reason != "data_quarantine":
                 raise DailyRecommendationError("quarantine security must remain excluded in the audit")
             expected["n_quarantined"] += 1
@@ -1469,8 +1471,8 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
         if isinstance(actual, bool) or not isinstance(actual, int) or actual != value:
             raise DailyRecommendationError(f"quarantine audit disagrees with {key}")
     identity = (
-        {"quarantined_instrument": incident.instruments[0]} if len(incident.instruments) == 1
-        else {"quarantined_instruments": ";".join(incident.instruments)}
+        {"quarantined_instrument": instruments[0]} if "instrument" in context
+        else {"quarantined_instruments": ";".join(instruments)}
     )
     return {
         "suspension_quarantine_policy": evidence.policy_id,

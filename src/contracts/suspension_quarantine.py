@@ -1,4 +1,4 @@
-"""Separately approved suspension incidents, never a general waiver.
+"""Explicit, evidence-backed suspension isolation, never a general waiver.
 
 This module validates evidence structure only. Raw byte/key verification belongs
 to the acquisition/build boundary; selecting this policy is not proof that those
@@ -29,7 +29,10 @@ APPROVED_KEYS: frozenset[tuple[str, str, None, str]] = frozenset({
 })
 CONFLICT_POLICY_ID = "suspend-688005-20260116-conflict"
 COMBINED_POLICY_ID = "suspend-688005-688766-observed-20261008"
-POLICY_IDS = (POLICY_ID, CONFLICT_POLICY_ID, COMBINED_POLICY_ID)
+SECURITY_POLICY_ID = "suspend-security-anomalies-v1"
+MAX_QUARANTINED_SECURITIES = 10
+MAX_HISTORY_WITNESSES = 32
+POLICY_IDS = (POLICY_ID, CONFLICT_POLICY_ID, COMBINED_POLICY_ID, SECURITY_POLICY_ID)
 BusinessKey = tuple[str, str, str | None, str]
 
 
@@ -77,10 +80,11 @@ _EVIDENCE_FIELDS = frozenset({
     "policy_id", "missing_dates", "reference_sha256", "retained_sha256",
     "candidate_sha256", "query_start_date", "query_end_date",
 })
+_SECURITY_EVIDENCE_FIELDS = _EVIDENCE_FIELDS | {"quarantined_ts_codes", "history_sha256", "predecessor_sha256"}
 
 
 def validate_policy(value: object) -> str | None:
-    """None means no authorization; select one reviewed exact ID only."""
+    """None means no authorization; select one explicitly approved policy."""
     if value is None:
         return None
     if not isinstance(value, str) or value not in POLICY_IDS:
@@ -156,6 +160,22 @@ class SuspensionQuarantine:
     @classmethod
     def from_dict(cls, value: object) -> SuspensionQuarantine:
         """Reject missing/unknown keys, null evidence and scalar coercion."""
+        if (isinstance(value, dict) and isinstance(value.get("policy_id"), str)
+                and value["policy_id"] == SECURITY_POLICY_ID):
+            if (set(value) != _SECURITY_EVIDENCE_FIELDS
+                    or not isinstance(value["missing_dates"], list)
+                    or not isinstance(value["quarantined_ts_codes"], list)
+                    or not isinstance(value["history_sha256"], list)):
+                raise ValueError("security suspension quarantine evidence requires exactly its ten typed fields")
+            return SecuritySuspensionQuarantine(
+                policy_id=value["policy_id"], missing_dates=tuple(value["missing_dates"]),
+                reference_sha256=value["reference_sha256"], retained_sha256=value["retained_sha256"],
+                candidate_sha256=value["candidate_sha256"], query_start_date=value["query_start_date"],
+                query_end_date=value["query_end_date"],
+                quarantined_ts_codes=tuple(value["quarantined_ts_codes"]),
+                history_sha256=tuple(value["history_sha256"]),
+                predecessor_sha256=value["predecessor_sha256"],
+            )
         if not isinstance(value, dict) or set(value) != _EVIDENCE_FIELDS:
             raise ValueError("suspension quarantine evidence must contain exactly its seven fields")
         if not isinstance(value["missing_dates"], list):
@@ -169,13 +189,84 @@ class SuspensionQuarantine:
         )
 
 
+@dataclass(frozen=True)
+class SecuritySuspensionQuarantine(SuspensionQuarantine):
+    """Derived security identities; earlier actual files prove later-added loss.
+
+    The extra required fields exist only for the new policy. The immutable old
+    seven-field DTO and the old policies' incident-specific semantics remain
+    unchanged. Raw verification, not this structural parser, proves key loss.
+    """
+
+    quarantined_ts_codes: tuple[str, ...]
+    history_sha256: tuple[str, ...]
+    predecessor_sha256: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy_id, str) or self.policy_id != SECURITY_POLICY_ID:
+            raise ValueError("security suspension quarantine requires its explicit policy")
+        codes = self.quarantined_ts_codes
+        if (not isinstance(codes, tuple) or not 1 <= len(codes) <= MAX_QUARANTINED_SECURITIES
+                or any(not isinstance(code, str) or re.fullmatch(r"[0-9]{6}\.(SH|SZ|BJ)", code) is None
+                       for code in codes)
+                or codes != tuple(sorted(set(codes)))):
+            raise ValueError("security suspension quarantine requires sorted unique valid stock codes within its limit")
+        dates = self.missing_dates
+        if (not isinstance(dates, tuple) or not dates
+                or any(not isinstance(day, str) for day in dates)
+                or dates != tuple(sorted(set(dates)))):
+            raise ValueError("security suspension quarantine requires sorted unique missing dates")
+        for day in dates:
+            _date(day, "missing_dates")
+        for field in ("reference_sha256", "retained_sha256", "candidate_sha256"):
+            digest = getattr(self, field)
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ValueError(f"suspension quarantine {field} must be lowercase SHA256")
+        history = self.history_sha256
+        if (not isinstance(history, tuple) or len(history) > MAX_HISTORY_WITNESSES
+                or any(not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                       for digest in history)
+                or history != tuple(sorted(set(history)))
+                or set(history) & {self.reference_sha256, self.retained_sha256, self.candidate_sha256}):
+            raise ValueError("security suspension quarantine history requires bounded unique nonredundant SHA256 witnesses")
+        predecessor = self.predecessor_sha256
+        if predecessor is not None and (
+            not isinstance(predecessor, str) or re.fullmatch(r"[0-9a-f]{64}", predecessor) is None
+        ):
+            raise ValueError("security suspension quarantine predecessor must be null or lowercase SHA256")
+        start = _date(self.query_start_date, "query_start_date")
+        end = _date(self.query_end_date, "query_end_date")
+        if start > min(dates) or end < max(dates) or start > end:
+            raise ValueError("security suspension quarantine query must cover all missing dates")
+
+    def to_dict(self) -> dict[str, Any]:
+        result = super().to_dict()
+        result["quarantined_ts_codes"] = list(self.quarantined_ts_codes)
+        result["history_sha256"] = list(self.history_sha256)
+        result["predecessor_sha256"] = self.predecessor_sha256
+        return result
+
+
+def quarantine_ts_codes(evidence: SuspensionQuarantine) -> tuple[str, ...]:
+    """Resolve identities from typed evidence, never from a dynamic policy ID."""
+    evidence.__post_init__()
+    if isinstance(evidence, SecuritySuspensionQuarantine):
+        return evidence.quarantined_ts_codes
+    return incident_for_policy(evidence.policy_id).ts_codes
+
+
+def quarantine_instruments(evidence: SuspensionQuarantine) -> tuple[str, ...]:
+    """Use the existing six-digit exchange-prefixed qlib security identity."""
+    return tuple(code[-2:] + code[:6] for code in quarantine_ts_codes(evidence))
+
+
 def quarantine_context(evidence: SuspensionQuarantine) -> dict[str, Any]:
     """Construct the policy's exact serving shape, retaining old single-ID JSON."""
     evidence.__post_init__()
-    incident = incident_for_policy(evidence.policy_id)
+    instruments = quarantine_instruments(evidence)
     identity: dict[str, Any] = (
-        {"instrument": incident.instruments[0]} if len(incident.instruments) == 1
-        else {"instruments": list(incident.instruments)}
+        {"instrument": instruments[0]} if len(instruments) == 1 and evidence.policy_id != SECURITY_POLICY_ID
+        else {"instruments": list(instruments)}
     )
     return {"policy_id": evidence.policy_id, **identity,
             "built_from_holey_fetch": True, "evidence": evidence.to_dict()}
