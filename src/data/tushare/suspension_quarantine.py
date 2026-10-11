@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
+import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +23,11 @@ import pyarrow.parquet as pq
 from src.contracts.suspension_quarantine import (
     APPROVED_KEYS,
     COMBINED_POLICY_ID,
+    MAX_HISTORY_WITNESSES,
+    MAX_QUARANTINED_SECURITIES,
     POLICY_ID,
+    SECURITY_POLICY_ID,
+    SecuritySuspensionQuarantine,
     SuspensionQuarantine,
     incident_for_policy,
 )
@@ -47,6 +53,10 @@ def validate_quarantine_query(start_date: str, end_date: str, *, policy: str = P
             datetime.strptime(value, "%Y%m%d")
         except ValueError as exc:
             raise AggregateResponseError("suspension quarantine requires real YYYYMMDD bounds") from exc
+    if policy == SECURITY_POLICY_ID:
+        if start_date > end_date:
+            raise AggregateResponseError("security suspension quarantine refuses reversed query bounds")
+        return
     dates = incident_for_policy(policy).dates
     if start_date > min(dates) or end_date < max(dates):
         scope = "all eight approved keys" if policy == POLICY_ID else "the approved conflict date"
@@ -84,9 +94,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_frame(path: Path, expected: str | None = None) -> tuple[pd.DataFrame, str]:
+def _read_frame(
+    path: Path, expected: str | None = None, *, witness_budget: dict[str, int] | None = None,
+) -> tuple[pd.DataFrame, str]:
     """Bound compressed bytes, footer, row count, decoded bytes and final frame."""
     try:
+        if witness_budget is not None:
+            _check_path(path)
+            _consume_witness_budget(witness_budget, "compressed", path.stat().st_size)
         before = _sha256(path)
         if expected is not None and before != expected:
             raise AggregateResponseError(f"suspension quarantine evidence SHA mismatch: {path.name}")
@@ -106,7 +121,11 @@ def _read_frame(path: Path, expected: str | None = None) -> tuple[pd.DataFrame, 
             decoded_size = sum(metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups))
             if decoded_size > aggregate.MAX_CANDIDATE_BYTES:
                 raise AggregateResponseError("suspension quarantine evidence decoded budget exceeded")
+            if witness_budget is not None:
+                _consume_witness_budget(witness_budget, "footer", decoded_size)
             frame = parquet.read(use_threads=False).to_pandas(use_threads=False)
+        if witness_budget is not None:
+            _consume_witness_budget(witness_budget, "decoded", int(frame.memory_usage(index=True, deep=True).sum()))
         aggregate.validate_aggregate_frame(frame, "suspend_d", label="suspension quarantine evidence")
         if _sha256(path) != before:
             raise AggregateResponseError("suspension quarantine evidence changed while reading")
@@ -173,6 +192,106 @@ def _evidence_path(raw_dir: Path, digest: str) -> Path:
     return raw_dir / EVIDENCE_DIRECTORY / f"{digest}.parquet"
 
 
+def _consume_witness_budget(budget: dict[str, int], kind: str, size: int) -> None:
+    budget[kind] += size
+    if budget[kind] > aggregate.MAX_CANDIDATE_BYTES:
+        raise AggregateResponseError(f"security suspension quarantine cumulative witness {kind} budget exceeded")
+
+
+def _read_security_witnesses(raw_dir: Path, hashes: tuple[str, ...]) -> dict[str, pd.DataFrame]:
+    # A transition can inspect at most 32 previous witnesses plus the previous
+    # retained snapshot before pruning. Persisted evidence still permits only 32.
+    if len(hashes) > MAX_HISTORY_WITNESSES + 1:
+        raise AggregateResponseError("security suspension quarantine witness count exceeded")
+    budget = {"compressed": 0, "footer": 0, "decoded": 0}
+    return {
+        digest: _read_frame(_evidence_path(raw_dir, digest), digest, witness_budget=budget)[0]
+        for digest in hashes
+    }
+
+
+def _security_key_sets(
+    candidate: pd.DataFrame, reference: pd.DataFrame, retained: pd.DataFrame,
+    witnesses: dict[str, pd.DataFrame],
+) -> tuple[set[tuple[str | None, ...]], set[tuple[str | None, ...]]]:
+    """Bound the complete key comparison, not just each decoded input frame."""
+    candidate_keys: set[tuple[str | None, ...]] = set()
+    required_keys: set[tuple[str | None, ...]] = set()
+    unique_rows = key_bytes = 0
+    for frame, target in (
+        (candidate, candidate_keys), (reference, required_keys), (retained, required_keys),
+        *((frame, required_keys) for frame in witnesses.values()),
+    ):
+        for row in frame.loc[:, list(aggregate.AGGREGATE_FIELDS["suspend_d"])].itertuples(index=False, name=None):
+            key = tuple(None if pd.isna(value) else value for value in row)
+            if key in target:
+                continue
+            if key not in candidate_keys and key not in required_keys:
+                unique_rows += 1
+            target.add(key)
+            key_bytes += sys.getsizeof(key) + sum(sys.getsizeof(value) for value in key)
+            if (unique_rows > aggregate.MAX_CANDIDATE_ROWS
+                    or key_bytes + sys.getsizeof(candidate_keys) + sys.getsizeof(required_keys)
+                    > aggregate.MAX_CANDIDATE_BYTES):
+                raise AggregateResponseError("security suspension quarantine combined key budget exceeded")
+    return candidate_keys, required_keys
+
+
+def _validate_security_history(
+    candidate: pd.DataFrame, reference: pd.DataFrame, retained: pd.DataFrame,
+    witnesses: dict[str, pd.DataFrame], *, start_date: str, end_date: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Derive attributable loss from actual frames, never a supplied allowlist."""
+    for label, frame in (
+        ("candidate", candidate), ("reference", reference), ("retained", retained),
+        *((f"witness {digest}", frame) for digest, frame in witnesses.items()),
+    ):
+        aggregate.validate_aggregate_frame(
+            frame, "suspend_d", label=f"security quarantine {label}",
+            start_date=start_date, end_date=end_date,
+        )
+        if any(re.fullmatch(r"[0-9]{6}\.(?:SH|SZ|BJ)", code) is None for code in frame["ts_code"]):
+            raise AggregateResponseError(f"security suspension quarantine {label} has invalid stock identity")
+    if candidate.empty:
+        raise AggregateResponseError("security suspension quarantine refuses an empty candidate")
+    candidate_keys, required_keys = _security_key_sets(candidate, reference, retained, witnesses)
+    missing = required_keys - candidate_keys
+    # Additions, including a legal R+S pair or historical backfill, are not loss.
+    codes = tuple(sorted({str(key[0]) for key in missing}))
+    baseline_codes = {key[0] for key in required_keys}
+    if len(codes) > MAX_QUARANTINED_SECURITIES or (codes and 2 * len(codes) >= len(baseline_codes)):
+        raise AggregateResponseError("security suspension quarantine refuses systemic/count/minority loss")
+    return tuple(sorted({str(key[1]) for key in missing})), codes
+
+
+def _security_transition(
+    raw_dir: Path, candidate: pd.DataFrame, reference: pd.DataFrame, retained: pd.DataFrame,
+    prior: SuspensionQuarantine | None, *, reference_hash: str | None, retained_hash: str | None,
+    start_date: str, end_date: str,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    pool: tuple[str, ...] = ()
+    if prior is not None:
+        if not isinstance(prior, SecuritySuspensionQuarantine):
+            raise AggregateResponseError("security suspension quarantine requires matching typed prior evidence")
+        pool = tuple(sorted(set((*prior.history_sha256, prior.retained_sha256)) - {reference_hash, retained_hash}))
+    witnesses = _read_security_witnesses(raw_dir, pool)
+    # Validate every inspected historical input before selecting required proofs.
+    _validate_security_history(
+        candidate, reference, retained, witnesses, start_date=start_date, end_date=end_date,
+    )
+    covered = _keys(reference) | _keys(retained) | _keys(candidate)
+    history = tuple(digest for digest, frame in witnesses.items() if _keys(frame) - covered)
+    if len(history) > MAX_HISTORY_WITNESSES:
+        raise AggregateResponseError("security suspension quarantine witness count exceeded")
+    # Only the evidence that will actually be persisted defines the minority
+    # denominator; discarded historical files cannot inflate it.
+    missing, codes = _validate_security_history(
+        candidate, reference, retained, {digest: witnesses[digest] for digest in history},
+        start_date=start_date, end_date=end_date,
+    )
+    return missing, codes, history
+
+
 def verify_quarantine_evidence(raw_dir: Path, evidence: SuspensionQuarantine) -> None:
     """Recheck actual bytes and business keys independently at each consumer gate."""
     try:
@@ -189,7 +308,20 @@ def verify_quarantine_evidence(raw_dir: Path, evidence: SuspensionQuarantine) ->
         candidate, "suspend_d", label="quarantine candidate",
         start_date=evidence.query_start_date, end_date=evidence.query_end_date,
     )
-    if _validate_history(candidate, reference, retained, policy=evidence.policy_id) != evidence.missing_dates:
+    if isinstance(evidence, SecuritySuspensionQuarantine):
+        witnesses = _read_security_witnesses(raw_dir, evidence.history_sha256)
+        missing, codes = _validate_security_history(
+            candidate, reference, retained, witnesses,
+            start_date=evidence.query_start_date, end_date=evidence.query_end_date,
+        )
+        covered = _keys(reference) | _keys(retained) | _keys(candidate)
+        if any(not (_keys(frame) - covered) for frame in witnesses.values()):
+            raise AggregateResponseError("security suspension quarantine contains an unnecessary witness")
+        if codes != evidence.quarantined_ts_codes:
+            raise AggregateResponseError("security suspension quarantine securities disagree with actual bytes")
+    else:
+        missing = _validate_history(candidate, reference, retained, policy=evidence.policy_id)
+    if missing != evidence.missing_dates:
         raise AggregateResponseError("suspension quarantine missing dates disagree with actual bytes")
 
 
@@ -232,7 +364,7 @@ def publish_suspension_candidate(
     start_date: str, end_date: str, policy: str = POLICY_ID,
 ) -> SuspensionQuarantine | None:
     """Publish exact checked vendor rows, returning evidence only while incomplete."""
-    incident = incident_for_policy(policy)
+    incident = None if policy == SECURITY_POLICY_ID else incident_for_policy(policy)
     validate_quarantine_query(start_date, end_date, policy=policy)
     aggregate.validate_aggregate_frame(candidate, "suspend_d", label="quarantine candidate",
                                        start_date=start_date, end_date=end_date)
@@ -250,7 +382,15 @@ def publish_suspension_candidate(
         reference, reference_hash = _read_frame(_evidence_path(raw_dir, prior.reference_sha256), prior.reference_sha256)
     else:
         reference, reference_hash = retained, retained_hash
-    if (policy != COMBINED_POLICY_ID and prior is None
+    history: tuple[str, ...] = ()
+    codes: tuple[str, ...] = ()
+    if policy == SECURITY_POLICY_ID:
+        missing, codes, history = _security_transition(
+            raw_dir, candidate, reference, retained, prior,
+            reference_hash=reference_hash, retained_hash=retained_hash,
+            start_date=start_date, end_date=end_date,
+        )
+    elif (incident is not None and policy != COMBINED_POLICY_ID and prior is None
             and incident.reference_keys.issubset(_keys(candidate))):
         # No exception is needed for a complete first acquisition.
         aggregate.require_retained_keys(candidate, retained, "suspend_d", label="suspend_d: retained file")
@@ -258,25 +398,33 @@ def publish_suspension_candidate(
         if any((key[0], key[1]) in affected_days and key not in incident.reference_keys
                for key in _keys(candidate)):
             raise AggregateResponseError("suspension quarantine candidate has conflicting affected-date keys")
-        missing: tuple[str, ...] = ()
+        missing = ()
     else:
         missing = _validate_history(candidate, reference, retained, policy=policy)
     prepared = path.with_name(f".suspend_d.{uuid4().hex}.parquet")
     try:
         atomic_write_parquet(candidate, prepared)
         candidate_hash = _sha256(prepared)
-        evidence = None
+        evidence: SuspensionQuarantine | None = None
         if prior is not None and retained_hash is not None:
             _preserve(raw_dir, path, retained_hash)
         if missing:
             if reference_hash is None or retained_hash is None:
                 raise AggregateResponseError("suspension quarantine requires original retained evidence")
             _preserve(raw_dir, path, retained_hash)
-            evidence = SuspensionQuarantine(
-                policy_id=policy, missing_dates=missing,
-                reference_sha256=reference_hash, retained_sha256=retained_hash,
-                candidate_sha256=candidate_hash, query_start_date=start_date, query_end_date=end_date,
-            )
+            if policy == SECURITY_POLICY_ID:
+                evidence = SecuritySuspensionQuarantine(
+                    policy_id=policy, missing_dates=missing,
+                    reference_sha256=reference_hash, retained_sha256=retained_hash,
+                    candidate_sha256=candidate_hash, query_start_date=start_date, query_end_date=end_date,
+                    quarantined_ts_codes=codes, history_sha256=history,
+                )
+            else:
+                evidence = SuspensionQuarantine(
+                    policy_id=policy, missing_dates=missing,
+                    reference_sha256=reference_hash, retained_sha256=retained_hash,
+                    candidate_sha256=candidate_hash, query_start_date=start_date, query_end_date=end_date,
+                )
         if retained_hash is not None and _sha256(path) != retained_hash:
             raise AggregateResponseError("suspension quarantine retained source changed before publication")
         if prior is not None:

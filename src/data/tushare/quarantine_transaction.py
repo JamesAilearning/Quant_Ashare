@@ -23,6 +23,7 @@ from uuid import uuid4
 from src.contracts.suspension_quarantine import (
     POLICY_ID,
     QUARANTINE_REASON,
+    SECURITY_POLICY_ID,
     SuspensionQuarantine,
     incident_for_policy,
     validate_policy,
@@ -142,8 +143,8 @@ def _bounds(start: object, end: object, *, policy: str = POLICY_ID) -> tuple[str
         except ValueError as exc:
             raise QuarantineTransactionError("pending quarantine dates must be real dates") from exc
     assert isinstance(start, str) and isinstance(end, str)
-    dates = incident_for_policy(policy).dates
-    if start > min(dates) or end < max(dates):
+    dates = incident_for_policy(policy).dates if policy != SECURITY_POLICY_ID else frozenset()
+    if start > end or (dates and (start > min(dates) or end < max(dates))):
         raise QuarantineTransactionError("pending quarantine range must cover all approved dates")
     return start, end
 
