@@ -26,15 +26,16 @@ def _evidence(**changes):
         "candidate_sha256": "c" * 64, "query_start_date": "20151001",
         "query_end_date": "20261008", "quarantined_ts_codes": ("300001.SZ", "600036.SH"),
         "history_sha256": (),
+        "predecessor_sha256": None,
     }
     payload.update(changes)
     return SecuritySuspensionQuarantine(**payload)
 
 
-def test_nine_field_variant_roundtrips_without_aliasing_or_fixed_incident():
+def test_ten_field_variant_roundtrips_without_aliasing_or_fixed_incident():
     evidence = _evidence(history_sha256=("d" * 64,))
     payload = evidence.to_dict()
-    assert len(payload) == 9
+    assert len(payload) == 10
     assert SuspensionQuarantine.from_dict(payload) == evidence
     assert isinstance(evidence, SuspensionQuarantine)
     payload["quarantined_ts_codes"].append("688005.SH")
@@ -63,6 +64,8 @@ def test_nine_field_variant_roundtrips_without_aliasing_or_fixed_incident():
     {"history_sha256": ("b" * 64,)}, {"history_sha256": ("a" * 64,)},
     {"history_sha256": ("c" * 64,)},
     {"history_sha256": tuple(f"{i:064x}" for i in range(33))},
+    {"predecessor_sha256": "A" * 64}, {"predecessor_sha256": "d" * 63},
+    {"predecessor_sha256": []}, {"predecessor_sha256": 1},
     {"policy_id": POLICY_ID},
 ])
 def test_malformed_or_unbounded_dynamic_evidence_is_refused(changes):
@@ -70,13 +73,17 @@ def test_malformed_or_unbounded_dynamic_evidence_is_refused(changes):
         _evidence(**changes)
 
 
-@pytest.mark.parametrize("mutation", ["missing_codes", "missing_history", "extra", "codes_scalar", "history_scalar"])
-def test_json_variant_requires_exact_nine_field_shape(mutation):
+@pytest.mark.parametrize("mutation", [
+    "missing_codes", "missing_history", "missing_predecessor", "extra", "codes_scalar", "history_scalar",
+])
+def test_json_variant_requires_exact_ten_field_shape(mutation):
     payload = _evidence().to_dict()
     if mutation == "missing_codes":
         del payload["quarantined_ts_codes"]
     elif mutation == "missing_history":
         del payload["history_sha256"]
+    elif mutation == "missing_predecessor":
+        del payload["predecessor_sha256"]
     elif mutation == "extra":
         payload["allow_holes"] = True
     elif mutation == "codes_scalar":
@@ -97,7 +104,7 @@ def test_old_incident_evidence_keeps_seven_fields_and_refuses_dynamic_extras(pol
     assert SuspensionQuarantine.from_dict(payload) == evidence
     assert quarantine_ts_codes(evidence) == incident.ts_codes
     assert quarantine_instruments(evidence) == incident.instruments
-    for field in ("quarantined_ts_codes", "history_sha256"):
+    for field in ("quarantined_ts_codes", "history_sha256", "predecessor_sha256"):
         extra = {**payload, field: []}
         with pytest.raises(ValueError):
             SuspensionQuarantine.from_dict(extra)

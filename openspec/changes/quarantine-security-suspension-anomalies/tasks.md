@@ -1,7 +1,7 @@
 ## 1. Contract and regression
 
 - [x] 1.1 Record an independently literal before-fix failing regression for the genuine original pair plus eight omissions.
-- [x] 1.2 Add the strict nine-field evidence subtype, stable policy and common identity helpers without changing legacy semantics.
+- [x] 1.2 Add the strict typed evidence subtype, stable policy and common identity helpers without changing legacy semantics.
 
 ## 2. Publication and consumers
 
@@ -12,6 +12,11 @@
 
 ## 3. Verification and publication
 
-- [x] 3.1 Converge independent local review with no P0/P1/P2 findings.
-- [x] 3.2 Pass targeted and required full logic/governance/data tests, touched imports, lint/types and strict OpenSpec serially.
+- [x] 3.1 Converge independent local review with no P0/P1/P2 findings, including the remote predecessor-lineage finding.
+- [x] 3.2 Pass targeted and required full logic/governance/data tests, touched imports, lint/types and strict OpenSpec serially after the lineage fix.
 - [ ] 3.3 Publish one coherent PR, request Codex review and verify current-head review/CI before authorized merge.
+
+## 4. Review follow-up
+
+- [x] 4.1 Capture foreign-archive rejection before-fix failures, bind immutable predecessor publication lineage and migrate all draft-schema callers/tests.
+- [x] 4.2 Cover lineage tamper, root/edge, missing record, budgets, repeat/repair and crash-closed publication boundaries.

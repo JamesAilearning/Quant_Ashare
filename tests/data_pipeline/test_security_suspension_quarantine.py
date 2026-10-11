@@ -283,7 +283,7 @@ def test_one_typed_hole_preserves_new_evidence_through_manifest_and_provider_gat
     encoded = evidence.to_dict()
     assert set(encoded) == {
         "policy_id", "missing_dates", "reference_sha256", "retained_sha256", "candidate_sha256",
-        "query_start_date", "query_end_date", "quarantined_ts_codes", "history_sha256",
+        "query_start_date", "query_end_date", "quarantined_ts_codes", "history_sha256", "predecessor_sha256",
     }
     assert SuspensionQuarantine.from_dict(encoded) == evidence
     manifest = _commit(tmp_path, evidence)
@@ -412,7 +412,7 @@ def test_witness_content_change_is_not_reinterpreted_as_a_new_baseline(tmp_path)
         acquisition.verify_quarantine_evidence(tmp_path, third)
 
 
-def test_correctly_hashed_but_unnecessary_history_cannot_inflate_verified_scope(tmp_path):
+def test_correctly_hashed_but_unpublished_history_cannot_inflate_verified_scope(tmp_path):
     _seed(tmp_path)
     evidence = _publish(tmp_path, _frame(*HEALTHY, S))
     path = tmp_path / "redundant.parquet"
@@ -420,5 +420,5 @@ def test_correctly_hashed_but_unnecessary_history_cannot_inflate_verified_scope(
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     path.rename(tmp_path / "_suspension_quarantine" / f"{sha}.parquet")
     altered = replace(evidence, history_sha256=(sha,))
-    with pytest.raises(ValueError, match="unnecessary witness"):
+    with pytest.raises(ValueError, match="lineage"):
         acquisition.verify_quarantine_evidence(tmp_path, altered)

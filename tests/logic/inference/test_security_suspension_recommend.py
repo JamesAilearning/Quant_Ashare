@@ -38,6 +38,7 @@ def _evidence():
         "query_end_date": "20260922",
         "quarantined_ts_codes": list(_CODES),
         "history_sha256": [],
+        "predecessor_sha256": None,
     }
 
 

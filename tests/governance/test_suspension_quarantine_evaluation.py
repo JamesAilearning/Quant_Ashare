@@ -37,7 +37,8 @@ def quarantine_policy(request):
 def _quarantined_provider(tmp_path, policy):
     provider = tmp_path / "provider"
     evidence_type = SecuritySuspensionQuarantine if policy == SECURITY_POLICY_ID else SuspensionQuarantine
-    extra = {"quarantined_ts_codes": ("600036.SH",), "history_sha256": ()} if policy == SECURITY_POLICY_ID else {}
+    extra = ({"quarantined_ts_codes": ("600036.SH",), "history_sha256": (), "predecessor_sha256": None}
+             if policy == SECURITY_POLICY_ID else {})
     dates = (("20260116",) if policy == SECURITY_POLICY_ID else
              tuple(sorted(incident_for_policy(policy).missing_dates)) if policy == COMBINED_POLICY_ID else
              (min(incident_for_policy(policy).dates),))

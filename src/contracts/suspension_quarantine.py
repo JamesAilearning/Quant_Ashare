@@ -80,7 +80,7 @@ _EVIDENCE_FIELDS = frozenset({
     "policy_id", "missing_dates", "reference_sha256", "retained_sha256",
     "candidate_sha256", "query_start_date", "query_end_date",
 })
-_SECURITY_EVIDENCE_FIELDS = _EVIDENCE_FIELDS | {"quarantined_ts_codes", "history_sha256"}
+_SECURITY_EVIDENCE_FIELDS = _EVIDENCE_FIELDS | {"quarantined_ts_codes", "history_sha256", "predecessor_sha256"}
 
 
 def validate_policy(value: object) -> str | None:
@@ -166,7 +166,7 @@ class SuspensionQuarantine:
                     or not isinstance(value["missing_dates"], list)
                     or not isinstance(value["quarantined_ts_codes"], list)
                     or not isinstance(value["history_sha256"], list)):
-                raise ValueError("security suspension quarantine evidence requires exactly its nine typed fields")
+                raise ValueError("security suspension quarantine evidence requires exactly its ten typed fields")
             return SecuritySuspensionQuarantine(
                 policy_id=value["policy_id"], missing_dates=tuple(value["missing_dates"]),
                 reference_sha256=value["reference_sha256"], retained_sha256=value["retained_sha256"],
@@ -174,6 +174,7 @@ class SuspensionQuarantine:
                 query_end_date=value["query_end_date"],
                 quarantined_ts_codes=tuple(value["quarantined_ts_codes"]),
                 history_sha256=tuple(value["history_sha256"]),
+                predecessor_sha256=value["predecessor_sha256"],
             )
         if not isinstance(value, dict) or set(value) != _EVIDENCE_FIELDS:
             raise ValueError("suspension quarantine evidence must contain exactly its seven fields")
@@ -199,6 +200,7 @@ class SecuritySuspensionQuarantine(SuspensionQuarantine):
 
     quarantined_ts_codes: tuple[str, ...]
     history_sha256: tuple[str, ...]
+    predecessor_sha256: str | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_id, str) or self.policy_id != SECURITY_POLICY_ID:
@@ -227,6 +229,11 @@ class SecuritySuspensionQuarantine(SuspensionQuarantine):
                 or history != tuple(sorted(set(history)))
                 or set(history) & {self.reference_sha256, self.retained_sha256, self.candidate_sha256}):
             raise ValueError("security suspension quarantine history requires bounded unique nonredundant SHA256 witnesses")
+        predecessor = self.predecessor_sha256
+        if predecessor is not None and (
+            not isinstance(predecessor, str) or re.fullmatch(r"[0-9a-f]{64}", predecessor) is None
+        ):
+            raise ValueError("security suspension quarantine predecessor must be null or lowercase SHA256")
         start = _date(self.query_start_date, "query_start_date")
         end = _date(self.query_end_date, "query_end_date")
         if start > min(dates) or end < max(dates) or start > end:
@@ -236,6 +243,7 @@ class SecuritySuspensionQuarantine(SuspensionQuarantine):
         result = super().to_dict()
         result["quarantined_ts_codes"] = list(self.quarantined_ts_codes)
         result["history_sha256"] = list(self.history_sha256)
+        result["predecessor_sha256"] = self.predecessor_sha256
         return result
 
 

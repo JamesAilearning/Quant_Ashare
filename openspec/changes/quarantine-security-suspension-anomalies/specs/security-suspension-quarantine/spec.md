@@ -2,7 +2,7 @@
 
 ### Requirement: Stable per-security authorization SHALL preserve legacy exact policies
 
-The system SHALL support the explicit `suspend-security-anomalies-v1` policy with immutable typed evidence containing the existing seven fields, required sorted unique `quarantined_ts_codes`, and required sorted unique `history_sha256` (empty initially). Existing exact policies SHALL retain their original seven-field schema and behavior. Absent, unknown or mismatched authorization SHALL NOT admit dynamic quarantine.
+The system SHALL support the explicit `suspend-security-anomalies-v1` policy with immutable typed evidence containing the existing seven fields, required sorted unique `quarantined_ts_codes`, required sorted unique `history_sha256` (empty initially), and required nullable `predecessor_sha256`. Existing exact policies SHALL retain their original seven-field schema and behavior. Absent, unknown or mismatched authorization SHALL NOT admit dynamic quarantine. The unpublished nine-field draft SHALL NOT be silently upgraded.
 
 #### Scenario: New attributable loss does not require a new incident ID
 - **WHEN** a complete valid suspension response loses original keys of two individually identified securities under the new opt-in
@@ -33,6 +33,20 @@ Repeated acquisition SHALL reverify prior evidence and retain the original byte 
 #### Scenario: Later-added missing history cannot be forgotten by another update
 - **WHEN** a valid acquisition adds X history, a later candidate loses X, and the next candidate still lacks X
 - **THEN** X remains provably quarantined through preserved actual retained-file witnesses until the vendor truly restores all its keys
+
+#### Scenario: Foreign archived files cannot enter the quarantine chain
+- **WHEN** metadata names a valid Parquet digest from another policy or a different original-reference chain, even if it contributes uncovered keys and would inflate the minority denominator
+- **THEN** verification refuses before admitting that witness
+- **AND** every admitted witness is linked through immutable SHA-bound same-policy predecessor evidence to an initial reference-equals-retained record with empty history
+
+#### Scenario: Canonical synthetic ancestors cannot launder a refused raw transition
+- **WHEN** a forged canonical root and parent record would connect a foreign archive to the current evidence but an ancestor's real raw transition violates the minority, history, code/date or query contract
+- **THEN** acquisition/provider verification rejects that ancestor even when the immediate current transition alone would pass
+- **AND** all ancestor business checks and cumulative raw/decode work stay bounded, with only operation-local identical-transition reuse
+
+#### Scenario: Missing or corrupt publication lineage cannot be repaired implicitly
+- **WHEN** a predecessor record is missing, modified, linked, duplicated, cyclic, over budget or inconsistent with retained/candidate continuity
+- **THEN** verification and further publication refuse without synthesizing ancestors or changing the raw/manifest
 
 #### Scenario: Later attributable loss does not require another incident policy
 - **WHEN** a later valid candidate loses another original security's keys within the bounded minority
