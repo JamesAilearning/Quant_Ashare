@@ -7,6 +7,7 @@ import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -196,16 +197,110 @@ def test_calendar_identity_reads_only_registered_config_and_matches_same_buffer(
     assert not trading_calendar_matches(payload, identity)
 
 
-@pytest.mark.parametrize("kind", ["missing", "directory", "oversize"])
+@pytest.mark.parametrize("kind", ["missing", "directory", "empty", "oversize"])
 def test_missing_or_nonregular_calendar_never_claims_current(tmp_path, kind):
     path = tmp_path / "calendar.json"
     if kind == "directory":
         path.mkdir()
+    elif kind == "empty":
+        path.write_bytes(b"")
     elif kind == "oversize":
         path.write_bytes(b" " * (MAX_CALENDAR_BYTES + 1))
     identity = read_trading_calendar_identity(str(path))
     assert identity.sha256 is None
     assert identity.problem
+    assert not trading_calendar_matches(candidate_payload(), identity)
+
+
+@pytest.mark.parametrize("phase", ["before", "opened", "finished", "after"])
+def test_hard_linked_calendar_disables_current_candidate_even_when_bytes_match(tmp_path, monkeypatch, phase):
+    path, alias = tmp_path / "calendar.json", tmp_path / "calendar-alias.json"
+    raw = b'{"synthetic": true}'
+    path.write_bytes(raw)
+    payload = candidate_payload()
+    payload["meta"]["trading_calendar"].update(path=str(path), sha256=hashlib.sha256(raw).hexdigest())
+    assert trading_calendar_matches(payload, read_trading_calendar_identity(str(path)))
+    if phase == "before":
+        os.link(path, alias)
+    elif phase in {"opened", "finished"}:
+        original_fstat = os.fstat
+        calls = 0
+
+        def link_at_descriptor_check(descriptor):
+            nonlocal calls
+            calls += 1
+            if calls == (1 if phase == "opened" else 2):
+                os.link(path, alias)
+            return original_fstat(descriptor)
+
+        monkeypatch.setattr(os, "fstat", link_at_descriptor_check)
+    else:
+        original_lstat = Path.lstat
+        calls = 0
+
+        def link_at_final_path_check(self, *args, **kwargs):
+            nonlocal calls
+            if self == path:
+                calls += 1
+                if calls == 2:
+                    os.link(path, alias)
+            return original_lstat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", link_at_final_path_check)
+
+    identity = read_trading_calendar_identity(str(path))
+    assert identity.path is None and identity.sha256 is None and identity.problem
+    assert not trading_calendar_matches(payload, identity)
+    now = datetime(2026, 10, 8, 17, tzinfo=CN_TZ)
+    meta = payload["meta"]
+    fresh = BundleFreshness(
+        known=True, tail_date="2026-10-08", days_behind=0, max_age_days=14,
+        headroom_days=14, refuses_today=False, integrity_accepted=True,
+        provider_uri=meta["provider_uri"], identity_tag=meta["bundle_tag"], built_at=meta["bundle_built_at"],
+    )
+    signal = summarize(payload, now)
+    assert signal.kind == "rebalance"
+    bound, answer = bind_current_signal(signal, fresh, identity, now=now)
+    assert bound.kind == "needs_verification"
+    assert answer.state == "unanswerable"
+
+
+@pytest.mark.parametrize("phase", ["before", "opened", "finished", "after"])
+def test_reparse_calendar_metadata_is_unverifiable_at_every_read_boundary(tmp_path, monkeypatch, phase):
+    path = tmp_path / "calendar.json"
+    path.write_bytes(b'{"synthetic": true}')
+    original_lstat, original_fstat = Path.lstat, os.fstat
+    calls = 0
+
+    def flagged(info):
+        return SimpleNamespace(
+            **{name: getattr(info, name) for name in (
+                "st_mode", "st_nlink", "st_size", "st_dev", "st_ino", "st_mtime_ns",
+            )}, st_file_attributes=0x400,
+        )
+
+    if phase in {"before", "after"}:
+        def path_observation(self, *args, **kwargs):
+            nonlocal calls
+            info = original_lstat(self, *args, **kwargs)
+            if self == path:
+                calls += 1
+                if calls == (1 if phase == "before" else 2):
+                    return flagged(info)
+            return info
+
+        monkeypatch.setattr(Path, "lstat", path_observation)
+    else:
+        def descriptor_observation(descriptor):
+            nonlocal calls
+            calls += 1
+            info = original_fstat(descriptor)
+            return flagged(info) if calls == (1 if phase == "opened" else 2) else info
+
+        monkeypatch.setattr(os, "fstat", descriptor_observation)
+
+    identity = read_trading_calendar_identity(str(path))
+    assert identity.path is None and identity.sha256 is None and identity.problem
     assert not trading_calendar_matches(candidate_payload(), identity)
 
 
