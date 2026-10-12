@@ -6,7 +6,7 @@ score normalization, current-ST filtering and ranking execute normally.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src.inference import daily_recommend as dr
+from tests.logic.inference.candidate_test_helpers import CN_TZ, write_calendar
 
 _AS_OF = "2025-07-02"
 _ENTRY = "2025-07-03"
@@ -41,6 +42,9 @@ def run_recommend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(dr, "_build_asof_dataset", lambda *_args: (object(), features))
     monkeypatch.setattr(dr, "_build_pit_provider", lambda _config: object())
+    schedule = write_calendar(tmp_path / "calendar.json",
+                              now=datetime(2025, 7, 4, 18, tzinfo=CN_TZ),
+                              start_date="2025-06-30", end_date="2025-07-11")
 
     def run(
         records=None, *, scores=None, masked=(), suspended=(), one_price=(),
@@ -61,8 +65,9 @@ def run_recommend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             delisted_registry_path="synthetic_registry.parquet",
             fit_start="2020-01-01", fit_end="2024-12-31", as_of_date=_AS_OF,
             name_source_parquet=str(snapshot), topk=1, rebalance_cadence_days=cadence,
+            trading_calendar_path=schedule,
         )
-        return dr.recommend(config, now=date(2025, 7, 4))
+        return dr.recommend(config, now=datetime(2025, 7, 4, 18, tzinfo=CN_TZ))
 
     return run
 
@@ -101,14 +106,15 @@ def test_duplicate_required_code_refuses_independent_of_name_order(run_recommend
 ]])
 def test_authoritatively_masked_unknown_name_does_not_block(run_recommend, reason, bad_records):
     result = run_recommend(
-        bad_records + _NAMES[1:], masked=[(_ENTRY, "SH600000")],
+        bad_records + _NAMES[1:], masked=[(_AS_OF, "SH600000")],
         suspended=["SH600000"] if reason == "suspended" else [],
         one_price=["SH600000"] if reason == "one_price_lock" else [],
     )
     assert [pick.stock_code for pick in result.picks] == ["SH600001"]
     audit = result.scored_frame.set_index("stock_code")
     assert audit.loc["SH600000", "unavailable_reason"] == reason
-    assert not audit.loc["SH600000", "tradable_flag"]
+    assert not audit.loc["SH600000", "eligible_as_of"]
+    assert audit["tradable_flag"].map(lambda value: value is None).all()
     assert (result.n_scored, result.n_masked, result.n_st_excluded) == (2, 1, 0)
 
 
@@ -117,9 +123,9 @@ def test_reason_sets_alone_do_not_exempt_missing_candidate(run_recommend):
         run_recommend(_NAMES[1:], suspended=["SH600000"], one_price=["SH600000"])
 
 
-def test_mask_on_decision_day_does_not_exempt_entry_candidate(run_recommend):
+def test_mask_on_future_entry_day_does_not_exempt_as_of_candidate(run_recommend):
     with pytest.raises(dr.DailyRecommendationError, match="current-ST.*missing"):
-        run_recommend(_NAMES[1:], masked=[(_AS_OF, "SH600000")])
+        run_recommend(_NAMES[1:], masked=[(_ENTRY, "SH600000")])
 
 
 def test_nan_scored_and_unrelated_snapshot_rows_do_not_require_names(run_recommend):
@@ -134,7 +140,7 @@ def test_nan_scored_and_unrelated_snapshot_rows_do_not_require_names(run_recomme
 def test_complete_names_preserve_st_ranking_and_microstructure_precedence(run_recommend):
     result = run_recommend(
         [("600000.SH", "*ST示例"), ("600001.SH", "ST示例"), _NAMES[2]],
-        masked=[(_ENTRY, "SH600000")], suspended=["SH600000"],
+        masked=[(_AS_OF, "SH600000")], suspended=["SH600000"],
     )
     assert [pick.stock_code for pick in result.picks] == ["SZ000001"]
     assert [pick.rank for pick in result.picks] == [1]
@@ -150,7 +156,7 @@ def test_valid_names_preserve_hold_day_semantics(run_recommend):
 
 
 def test_all_masked_pool_needs_no_candidate_names_but_still_needs_snapshot(run_recommend):
-    masked = [(_ENTRY, inst) for inst in _SCORES]
+    masked = [(_AS_OF, inst) for inst in _SCORES]
     result = run_recommend([("999999.SH", "无关企业")], masked=masked)
     assert result.picks == ()
     assert (result.n_scored, result.n_masked, result.n_st_excluded) == (0, 3, 0)

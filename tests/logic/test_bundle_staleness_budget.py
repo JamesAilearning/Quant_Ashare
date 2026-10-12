@@ -84,6 +84,7 @@ class TheQueueUsesTheServingVerdictNotItsOwnArithmetic(unittest.TestCase):
         self.assertEqual(
             {"bundle_calendar_tail", "bundle_freshness",
              "recommender_integrity_check",
+             "resolve_trading_calendar",
              # P3（UI 序列③）：身份卡的模型时效行——同一条「复用集中裁决、
              # 不自造」纪律的新登记项，数据照抄生产运维页⑤的同一推导。
              "retrain_window"},

@@ -52,6 +52,7 @@ from src.inference.daily_recommend import (  # noqa: E402
     RecommendationConfig,
     _model_meta_paths,
     default_name_source,
+    default_trading_calendar,
     recommend,
     write_outputs,
 )
@@ -257,7 +258,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # explicitly to work around exactly this divergence (#431 r14).
     p = argparse.ArgumentParser(description="Daily stock recommendation (Alpha158 + LGB, PIT).")
     p.add_argument("--as-of", default=None,
-                   help="Decision date T (YYYY-MM-DD). Default = latest PIT trading day.")
+                   help="Decision date T (YYYY-MM-DD). Default = latest fully closed price session. "
+                        "An explicit past date recalculates candidates, not historical performance.")
     p.add_argument(
         "--topk", type=int, default=None,
         help="Buy-list size. Default: 50 in single-model mode; the "
@@ -279,6 +281,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              "(--model/--fit-start/--fit-end must not be passed). Any "
              "manifest/member problem refuses to emit a list.")
     p.add_argument("--provider-uri", default=_DEFAULT_PROVIDER, help="PIT qlib provider_uri.")
+    p.add_argument(
+        "--trading-calendar", default=default_trading_calendar(),
+        help="Provenance-bound SSE trade_cal JSON from fetch_recommendation_calendar.py; "
+             "required on disk, no online fetch or weekday fallback.")
     p.add_argument("--delisted-registry", default=_DEFAULT_REGISTRY,
                    help="PIT delisted registry parquet.")
     p.add_argument("--name-source", default=_DEFAULT_NAME_SOURCE,
@@ -380,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         fit_end=fit_end,
         instruments=params["instruments"],
         as_of_date=args.as_of,
+        trading_calendar_path=args.trading_calendar,
         topk=params["topk"],
         name_source_parquet=args.name_source,
         st_snapshot_max_age_days=args.st_max_age_days,
@@ -400,7 +407,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Terminal print — both time points always shown.
     print("=" * 64)
-    print("  DAILY STOCK RECOMMENDATION")
+    print("  NEXT-SESSION STOCK CANDIDATES / 下一交易日候选")
+    print("  !! Entry tradability UNCONFIRMED — 交易时人工核验停牌/涨跌停等条件")
+    print("  !! Candidate eligibility uses T bars + current ST/quarantine evidence; no automatic orders.")
     if "suspension_quarantine" in result.run_meta:
         quarantine = result.run_meta["suspension_quarantine"]
         instruments = quarantine_instruments(validate_quarantine_context(quarantine))
@@ -419,19 +428,19 @@ def main(argv: list[str] | None = None) -> int:
         print("  " + "!" * 60)
     elif result.rebalance_day is True:
         print(f"  REBALANCE DAY — 再平衡日(下一再平衡日 "
-              f"{result.next_rebalance_date}):列表为可执行 T+1 入场清单")
+              f"{result.next_rebalance_date}):仅为 T+1 候选，执行条件未确认")
     print(f"  as_of_date (data cutoff, T)   : {result.as_of_date}")
-    print(f"  entry_date (suggested buy, T+1): {result.entry_date}")
+    print(f"  entry_date (planned session, T+1): {result.entry_date}")
     print(f"  universe={config.instruments}  scored={result.n_scored}  "
-          f"untradable_masked={result.n_masked}  st_excluded={result.n_st_excluded}  "
-          f"buy_list={len(result.picks)}")
+          f"known_T_exclusions={result.n_masked}  st_excluded={result.n_st_excluded}  "
+          f"candidates={len(result.picks)}")
     print("=" * 64)
     print(f"  {'rank':>4}  {'code':<10} {'score':>10}  name")
     for p in result.picks:
         print(f"  {p.rank:>4}  {p.stock_code:<10} {p.predicted_score:>10.5f}  {p.stock_name}")
     print("=" * 64)
-    print(f"  buy-list csv : {paths['csv']}")
-    print(f"  buy-list json: {paths['json']}")
+    print(f"  candidate csv : {paths['csv']}")
+    print(f"  candidate json: {paths['json']}")
     print(f"  full scored  : {paths['audit']}")
     print("=" * 64)
     return 0

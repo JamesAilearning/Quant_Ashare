@@ -15,6 +15,7 @@ Boundary reminders (machine-enforced by tests/logic):
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -23,6 +24,7 @@ import pandas as pd
 import streamlit as st
 
 from web.operator_ui.artifact_reader import read_json_artifact
+from web.operator_ui.bundle_health import resolve_default_provider_uri, summarise_bundle_health
 from web.operator_ui.components import render_empty_state
 from web.operator_ui.daily_signal_navigation import (
     DAILY_DECISION_REQUESTED_DATE_KEY,
@@ -36,8 +38,10 @@ from web.operator_ui.decision_journal import (
     make_entry,
     read_journal,
 )
+from web.operator_ui.incumbent import unusable_path_reason
 from web.operator_ui.page_header import render_page_header
 from web.operator_ui.pages._daily_decision_helpers import (
+    BASELINE_BLOCK_CANDIDATE,
     BASELINE_BLOCK_HISTORY_GAP,
     CERTIFIED_SLIPPAGE_BPS,
     COST_REFERENCE_COLUMN,
@@ -65,6 +69,7 @@ from web.operator_ui.pages._daily_decision_helpers import (
     load_promotion_meta,
     load_trainer_sidecar_sha,
     picks_table_rows,
+    producer_shape_violation,
     provenance_verdict,
     resolve_incumbent,
     resolve_model_path,
@@ -75,7 +80,15 @@ from web.operator_ui.pages._daily_review_progress_helpers import (
     summarise_daily_review_progress,
     validate_review_candidate_codes,
 )
+from web.operator_ui.pages._ops_cockpit_helpers import (
+    bundle_calendar_tail,
+    bundle_freshness,
+    recommender_integrity_check,
+    resolve_trading_calendar,
+)
 from web.operator_ui.pages._suspension_quarantine import quarantine_notice
+from web.operator_ui.pages._today_workbench_helpers import bind_current_signal, summarise_daily_signal
+from web.operator_ui.recommendation_calendar import read_trading_calendar_identity
 
 _ACTION_LABELS = {"adopt": "采纳", "reject": "拒绝", "watch": "观望"}
 
@@ -104,7 +117,7 @@ def _render_review_progress(progress: DailyReviewProgress) -> None:
 render_page_header(
     "日度信号与人工决策",
     "只读检视日度信号工件 + 记录人工决策(采纳/拒绝/观望)。"
-    "本页不重跑推断、不触发任何作业;工件由 scripts/daily_recommend.py 晨间产出。",
+    "本页不重跑推断、不触发任何作业；候选由 scripts/daily_recommend.py 在完整收盘后产出。",
 )
 
 # ---------------------------------------------------------------------------
@@ -344,7 +357,7 @@ elif _verdict == VERDICT_V1_UNKNOWN:
     # (codex #430 r2).
     st.warning(
         "⚠ 旧版工件(v1,无 meta 块):无生成语境,无法确认它出自当前生产模型。"
-        "重跑 scripts/daily_recommend.py 可产出自描述的 v2 工件。"
+        "重跑 scripts/daily_recommend.py 可产出自描述的 v3 候选工件。"
     )
 elif _verdict == VERDICT_SHAPE_SINGLE_UNDER_ENSEMBLE:
     st.warning(
@@ -403,7 +416,7 @@ if _hold.is_hold:
 # 不设缓冲带、不给任何形如下单指令的东西。工件里本来也只有 rank / 评分 /
 # 可交易标志——没有权重、没有股数、没有金额,所以名单只能是代码集合。
 # ---------------------------------------------------------------------------
-st.markdown("#### 名义持仓基准")
+st.markdown("#### 历史名义清单对照（不是实际持仓）")
 
 
 def _read_baseline_payload(path: Path) -> dict[str, Any] | None:
@@ -438,14 +451,14 @@ if _baseline.found and not _baseline_unreadable:
     _baseline_meta = _baseline.baseline_payload.get("meta")
     _baseline_meta = _baseline_meta if isinstance(_baseline_meta, dict) else {}
     st.info(
-        f"截至 **{_selected_date}**,名义上跟的是 **{_baseline.baseline_date}** "
+        f"历史截至 **{_selected_date}**，名义清单对照为 **{_baseline.baseline_date}** "
         f"那次再平衡的清单(共 **{len(_baseline_roster)}** 只 · "
         f"topk={_baseline_meta.get('topk', '—')} · "
         f"universe={_baseline_meta.get('instruments', '—')})。"
     )
     st.caption(
-        "「名义」= 按那张单**应当**持有的代码集合。这里不知道你的实际账户持仓,"
-        "也不产生任何调仓指令——本页只做只读对照。"
+        "这里只展示旧 v2 历史清单之间的只读对照，不是当前候选、当前目标持仓或实际账户持仓，"
+        "这里不知道你的实际账户持仓，也不产生任何调仓指令。"
     )
     if _baseline_roster:
         st.dataframe(
@@ -473,7 +486,12 @@ elif _baseline.unknowable:
     # 总说明**不替两种成因下同一个结论**（codex #472 上学到的同一课）:
     # 「这一份回答不了它自己是不是再平衡日」对**缺口**那一种是假话——缺口停
     # 下时那一份恰恰是一个经过校验的 HOLD,问题在它与更早那份之间那几天。
-    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:
+    if _blocked.reason == BASELINE_BLOCK_CANDIDATE:
+        st.caption(
+            "候选的交易资格未确认，不能作为名义持仓基准；也不能跳过它，"
+            "用更早的清单冒充当前持仓。"
+        )
+    elif _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:
         st.caption(
             "为什么不继续往回翻:经过校验的 HOLD 只证明了**那一天**没换手,"
             "证明不了**那一段**。中间那些没有工件的交易日各自都可能是一次"
@@ -538,19 +556,43 @@ st.caption(
     f"n_scored={_payload.get('n_scored', '—')} · n_masked={_payload.get('n_masked', '—')} · "
     f"n_st_excluded={_payload.get('n_st_excluded', '—')}"
 )
-# runbook 红线(docs/daily-recommend-runbook.md「Which session is the list
-# for?」):entry 按契约是 T+1 交易日,而可交易性筛选(停牌/一字板)需要该日
-# 真实 bar,所以它必在 bundle 内、必是**已收盘**会话——工具永远出不了面向
-# 未开盘会话的单。这里只纠正**时点**上的误读("按明早开盘价买"),不谈
-# 这张单该不该执行:那由 rebalance_day 决定,上方 HOLD 横幅已单独承载
-# (codex #443 r1:笼统否定会让该执行的清单被误当成不该执行)。
-#
-# 缺 entry_date 的工件不得走这条路:那样会渲染出「entry — 是已收盘会话」
-# ——把一份**违约的**数据当成可信引导来背书(codex #443 r2)。
+# Versioned disclosure: old confirmation lists are historical-only; v3 does
+# not know future-session tradability. The workbench's shared currentness
+# verdict also gates this page's form and journal-derived review projection.
 _entry_date = _payload.get("entry_date")
 _entry_date_is_valid = artifact_entry_timing_is_valid(_payload)
 _artifact_schema_supported = artifact_schema_is_supported(_payload)
-_artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported
+_shape_problem = (
+    producer_shape_violation(_payload, as_of_date=_payload_as_of, entry_date=str(_entry_date))
+    if _entry_date_is_valid and _artifact_schema_supported else "工件契约被违反"
+)
+_artifact_contract_valid = False
+_signal = summarise_daily_signal(
+    _selected_date, _payload, incumbent=_incumbent, current_model_sha=_current_sha,
+)
+if _signal.kind in {"rebalance", "daily", "hold"}:
+    _provider = anchored_to_repo(resolve_default_provider_uri())
+    _provider_problem = (
+        unusable_path_reason(_provider) if _provider.strip() else "未配置 provider"
+    )
+    if _provider_problem:
+        _signal = replace(_signal, kind="needs_verification", detail=_provider_problem)
+    else:
+        _health = summarise_bundle_health(_provider)
+        _tail = bundle_calendar_tail(_provider)
+        _integrity = recommender_integrity_check(_provider)
+        _freshness = bundle_freshness(
+            tail_date=_tail.tail.isoformat() if _tail.known and _tail.tail else None,
+            provider_uri=_health.provider_uri,
+            message=_tail.reason if not _tail.known else _health.message,
+            health_status=_health.status, health_warnings=_health.warnings,
+            integrity_accepted=_integrity.accepted, integrity_reason=_integrity.reason,
+            identity_tag=_integrity.identity_tag, built_at=_integrity.built_at,
+        )
+        _signal, _answer = bind_current_signal(
+            _signal, _freshness, read_trading_calendar_identity(resolve_trading_calendar()),
+        )
+        _artifact_contract_valid = _signal.kind in {"rebalance", "daily", "hold"}
 if not _entry_date_is_valid:
     st.error(
         "⚠ 工件 `entry_date`/`as_of_date` 缺失、格式错误或非前向会话——"
@@ -558,14 +600,19 @@ if not _entry_date_is_valid:
         "本页拒绝据此给出任何入场时点结论。请核查产出该工件的那次运行"
         "(scripts/daily_recommend.py 正常写出该字段)。"
     )
-else:
+elif _payload.get("artifact_schema_version") == 2:
     st.caption(
-        f"⏱ **entry {_entry_date} 是已收盘会话**"
-        "(契约上的 T+1;可交易性校验需要该日真实 bar,故必在 bundle 内)。"
-        "因此**不要读成「明早开盘按市价买入」**——它是该会话收盘口径的"
-        "目标持仓;实际下单如何向它靠拢由操作人的执行约定决定(观察期正在"
-        "记录这段偏离)。**是否构成入场指令**看上方再平衡/HOLD 披露。"
+        f"⏱ 旧 v2 工件的 entry {_entry_date} 是历史已收盘会话；"
+        "仅供历史只读，不是当前候选、当前指令或实际持仓。"
     )
+elif _shape_problem is None:
+    st.caption(
+        f"⏱ 计划 entry {_entry_date}：下一交易日候选，交易资格未确认。"
+        "截至信号日资格只表示 T 日已知筛选；实际停牌、涨跌停和可成交性"
+        "须在交易时人工核对。候选不等于订单或持仓；HOLD 日仍只监控。"
+    )
+if not _artifact_contract_valid:
+    st.warning(f"当前候选核验未通过：{_signal.detail} 不开放决策记录或审阅完成度。")
 if not _artifact_schema_supported:
     st.error(
         "⚠ 工件 `artifact_schema_version` 缺失、格式错误或不受当前页面支持——"
@@ -587,7 +634,7 @@ _candidate_table_slot = st.empty()
 with _candidate_table_slot:
     if _rows:
         st.dataframe(
-            pd.DataFrame(_rows), use_container_width=True, hide_index=True,
+            pd.DataFrame(_rows), width="stretch", hide_index=True,
         )
     else:
         st.info("该工件买入清单为空(topk=0 或全部被掩)。")
@@ -627,6 +674,8 @@ else:
     _candidate_codes_valid = True
 if not _candidate_codes_valid:
     st.info("当前候选标识无法唯一映射；不显示决策表单或人工审阅进度。")
+elif not _artifact_contract_valid:
+    st.info("历史、过期或未核验的工件只读；下方历史日志仍可查看。")
 elif _hold.is_hold:
     # spec(v2-daily-decision-page HOLD reader): 入场表单 SHALL 被禁用或
     # 等效阻断 — HOLD 日不渲染表单控件,监控视图不受理入场决策。
@@ -761,7 +810,7 @@ with _candidate_table_slot:
             ]
         st.dataframe(
             pd.DataFrame(_candidate_display_rows),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -782,7 +831,7 @@ st.caption("下方为该日期的全部有效 append-only 日志记录；与当�
 st.subheader(f"{_selected_date} 的有效日志记录({len(_today_entries)})")
 if _today_entries:
     st.dataframe(
-        pd.DataFrame(_today_entries), use_container_width=True, hide_index=True,
+        pd.DataFrame(_today_entries), width="stretch", hide_index=True,
     )
 else:
     st.caption("该交易日尚无决策记录。")

@@ -1,284 +1,213 @@
-# Daily recommendation runbook (manual morning step)
+# Daily recommendation runbook (manual candidate generation)
 
-Operator runbook for the **every-morning manual stock-recommendation run**. This
-is the one step that stays in human hands: the scheduler (阶段5 PR-P) only ever
-runs the **data update** (`scripts/daily_update.py`); it never runs recommend.
+This is the manual recommendation step. The scheduler runs data updates only;
+it must never place orders or automatically run recommendation. A successful
+candidate run is not a production-acceptance or future-execution certificate.
 
-## Scope and red line
+## What the list means
 
-- **This step is manual, every morning, by the fund manager.** It is NOT
-  scheduled and MUST NOT be put into any automated chain.
-- **The output is a decision aid, not an order.** `daily_recommend` produces a
-  ranked candidate buy list for the entry session after its decision day T (see
-  [Which session is the list for?](#which-session-is-the-list-for) — by default
-  that entry day is the bundle's most recent session, not a future one). It places
-  no trades, sends nothing to a broker, and makes no sizing/portfolio decision. The
-  buy/sell decision is always made by a human after reading the list.
-- The run is **fail-closed**: every freshness / completeness / look-ahead guard
-  refuses to emit rather than print a silently-wrong list. So **a run that exits
-  0 with a buy list is a run whose guards all passed** — that is the core
-  trust signal (see [How to judge the list](#how-to-judge-the-list)).
+Schema v3 uses the latest closed, recorded price session **T** and a separate
+Tushare SSE trading-arrangement snapshot to plan **T+1**. It never creates
+future price bars or reads entry-day OHLCV to choose candidates.
 
-For the one explicitly approved 688766 suspension-history incident, read the
-[scoped quarantine runbook](suspension-quarantine-runbook.md) before proceeding.
-A successful explicitly qualified run still uses incomplete data and excludes
-that security; exit 0 is not a completeness or production-certification claim.
-Ordinary fetch manifests/provider integrity stamps remain schema v1; only
-incident-bearing ones use v2, which old readers refuse. This is separate from
-the recommendation JSON's existing schema v2.
+- Features, scores and the canonical microstructure exclusion use data through
+  T only. Current ST names and explicitly qualified data-quarantined securities
+  are excluded before Top-K.
+- Every row has `eligible_as_of` describing known candidate eligibility at T.
+  Every row's `tradable_flag` is **null**, including excluded audit rows:
+  future suspension, limit conditions and actual execution remain unknown.
+- The run declares `recommendation_mode="next_session_candidate"` and
+  `entry_tradability_status="unconfirmed"`. A human checks entry-day conditions,
+  portfolio/risk limits and sizing before any trade. There are no broker orders.
+- N5 remains anchored on decision T and the recorded price calendar. A HOLD
+  result is monitoring only, not a rebalance instruction. A missing next N5
+  anchor stays null; the planned entry date must not replace it.
+- Schema v2 and older files remain historical/read-only. They do not become
+  current candidates. A v3 candidate is not a holding or an executed rebalance,
+  and blocks nominal-baseline scanning rather than falling through to an older
+  list. Historical nominal-list comparisons are not actual holdings.
 
-## Prerequisite: the data update must have completed first
+This is an explicitly approved serving-timing change. It does not change
+training, model/ensemble weights, the stock pool, Top50, N5 anchoring, holdings,
+execution logic or the single canonical qlib metrics path. Candidates are not
+new backtest or performance evidence.
 
-`daily_recommend` scores on whatever the live qlib bundle holds; it does not
-fetch. So the morning order is always **update first, recommend second**:
+## Separate schedule acquisition
 
-1. **Data update** — `scripts/daily_update.py` (run overnight/earlier, or by
-   hand). It fetches tushare → rebuilds the qlib bins into `<provider>.new` →
-   validates → atomic-swaps the live bundle. Its trading-calendar gate (PR-O)
-   makes it a clean `exit 0` no-op **only on weekends** (no fetch/build/swap), so
-   on a Saturday/Sunday there is no new bundle and the most recent list still
-   stands. An A-share **weekday holiday** does NOT take that branch: the run
-   proceeds through fetch → rebuild → swap, and although there is no new price
-   bar, the aggregates (stock_basic / namechange / suspend_d) can still refresh
-   and a rebuilt bundle can be swapped — so check the update's exit code / logs
-   rather than assuming nothing changed.
-2. **Recommend** — this runbook.
+Recommendation itself performs no online fetch. Acquire an SSE schedule with
+the existing canonical Tushare client using an explicit bounded range and a
+**new** output path:
 
-You do **not** need to clear any feature cache before recommending:
-`daily_recommend` builds its as-of-T Alpha158 cross-section fresh on every run
-(no `cache_dir`), so there is no stale-cache risk for this step.
-
-Confirm the update actually landed before trusting the list — **read the printed
-`entry_date` / bundle tail** (or check `daily_update`'s exit code and logs). The
-recommend run's bundle-freshness guard only refuses when the bundle's last trading
-day lags *today* by more than `--bundle-max-age-days` (default 14), so it catches a
-grossly stale bundle (weeks/months behind) but NOT a single missed daily update: a
-bundle 1–13 days behind still scores and exits 0 on yesterday's data. The guard is a
-backstop against stale prices, not proof that today's update ran.
-
-## The command
-
-```sh
-# Top 50, all defaults. Decision day T = the bundle's second-to-last trading day;
-# entry T+1 = the bundle tail (see "Which session is the list for?" below).
-python scripts/daily_recommend.py
+```powershell
+python scripts/fetch_recommendation_calendar.py --start-date 20260101 --end-date 20261231 --output D:/qlib_data/recommendation_calendar_20261012.json
 ```
 
-`scripts/daily_recommend.py` (NOT `python -m`; the `__main__` guard +
-`freeze_support()` are mandatory on Windows — a missing guard fork-bombs the
-joblib spawn workers). Paths default to the Phase B clean-PIT layout and are
-overridable per-flag or via the `QUANT_*` env vars documented in
-[operations-env-vars.md](operations-env-vars.md); the same vars drive the YAML
-configs, so setting e.g. `QUANT_PROVIDER_URI` once moves both. CLI flags take
-precedence over the env defaults.
+This example's range is explicit, not a rule for deriving exchange holidays.
+The command makes one `trade_cal` client call for
+`exchange,cal_date,is_open`, validates one row per calendar day over the entire
+requested range, and binds source, query, acquisition time and the same bytes'
+SHA-256. It never touches the raw update manifest, qlib price calendar or bins.
+A transport/client failure is not retried by this command or the canonical
+client. No new retry loop is added around the vendor SDK.
 
-Common variations:
+Snapshots must be ordinary single-link files, at most 1 MiB, with strict JSON
+fields and integer 0/1 open markers. Query spans are limited to three years.
+Missing days, duplicate keys/dates, wrong exchange, unknown fields, non-finite
+JSON, stale/future timestamps and file-read races refuse. Publication never
+overwrites an existing file; failed/old evidence is not deleted to retry.
 
-```sh
-# Score a specific (recent) historical decision day on the CURRENT bundle. No
-# extra flag needed — the freshness guard checks the bundle against TODAY, and a
-# current bundle is fresh whatever as-of you pick.
-python scripts/daily_recommend.py --as-of 2025-06-30 --topk 30
+Set `QUANT_TRADING_CALENDAR` for both CLI and the UI, or pass
+`--trading-calendar` explicitly to the CLI. The fallback path is
+`D:/qlib_data/recommendation_calendar.json`; **no bundled/default calendar
+content or weekday guess is supplied**. Missing/unreadable input refuses.
+Keep each acquired snapshot immutable. To refresh, acquire a new filename,
+review its receipt, then deliberately change the deployment configuration.
+A snapshot is accepted for at most seven elapsed days; no automatic refresh is
+added by this change.
+
+## Update first, then recommend
+
+1. Refresh the separate arrangement snapshot when needed.
+2. Complete and verify a genuine canonical data update through the latest
+   closed session. Read that update's report, native exit and final provider
+   result; a stale status file or successful recommendation does not prove the
+   update ran.
+3. Generate candidates manually using that provider, the explicitly selected
+   model/ensemble and the arrangement snapshot.
+4. Read the candidate date, HOLD/rebalance status and all incomplete-data
+   warnings. Check actual entry-day conditions at trade time.
+
+The serving clock is timezone-aware Shanghai time. An open day is conservatively
+treated as closed only at **15:30 +08:00**. Before that cutoff the previous
+scheduled open session is the latest closed one; holidays/weekends come only
+from the source snapshot. A 15:30 clock check does not prove vendor bars are
+final or that the update started after close. Production recovery must
+separately verify a real update fetched after the approved cutoff.
+
+By default the provider tail must equal that latest closed session. A lagging
+tail refuses, even within the old 14-day freshness tolerance. An intraday/future
+tail also refuses, even for an explicit historical request. All price sessions
+inside the schedule overlap must match it exactly. The snapshot must cover the
+clock date, T and a known next open session.
+
+For example, on Monday before the cutoff with Friday recorded, T is Friday and
+entry is the source-announced Monday, without any Monday price bars. After
+Monday's cutoff, default generation requires completed Monday prices and plans
+the next source-announced open session. Re-running does not turn the earlier
+candidate into an execution record.
+
+## Commands
+
+```powershell
+# Existing single-model defaults, with an explicit arrangement snapshot:
+python scripts/daily_recommend.py --trading-calendar D:/qlib_data/recommendation_calendar_20261012.json
+
+# Current approved ensemble layout: select the model explicitly.
+python scripts/daily_recommend.py --ensemble-manifest D:/stock/phase_b_artifacts/csi800_n5_ensemble_manifest.json --instruments csi800 --topk 50 --rebalance-cadence-days 5 --trading-calendar D:/qlib_data/recommendation_calendar_20261012.json
 ```
 
-`--bundle-max-age-days` only matters when the **bundle itself** is old — you are
-deliberately working off an archived bundle, not the live one. Then raise it above
-the bundle's actual age in days so the freshness guard does not refuse (e.g. a
-bundle whose tail is ~6 months back needs roughly `--bundle-max-age-days 200`).
-Never raise it to paper over a live bundle that simply was not updated.
+Use the script entry point rather than `python -m`; its main guard and
+`freeze_support()` are required on Windows. The ensemble manifest is never
+implicitly selected for writing, even when the UI knows the incumbent.
 
-Flags you will actually reach for (defaults in parentheses):
+If the provider carries an approved quarantine, supply the **matching explicit**
+`--suspension-quarantine` policy, follow the
+[security-anomaly isolation runbook](operations/security-anomaly-isolation.md)
+or the [688766-specific runbook](suspension-quarantine-runbook.md) for that
+specific policy, and retain its
+incomplete-data disclosure. The bounded `suspend-security-anomalies-v1` policy
+is not permission to ignore arbitrary missing APIs, calendar defects, model
+problems or corrupt evidence. `--allow-holey-recommend` does not authorize a
+structured quarantine. Existing UI buttons do **not** supply quarantine
+authorization; use the reviewed CLI for that case, and use UI to read results.
+This timing change adds no new UI authorization.
+
+A specific historical T is allowed only when it is a real recorded closed
+session covered by the snapshot:
+
+```powershell
+python scripts/daily_recommend.py --as-of 2026-10-08 --topk 30 --trading-calendar D:/qlib_data/recommendation_calendar_20261012.json
+```
+
+This recalculates candidates using the **current** ST/name source; it is not a
+historical PIT tradability or performance reconstruction. It cannot be shown
+as current when T is not the latest closed session.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--as-of` | latest PIT trading day with a following session | Decision day **T** (data cutoff); entry **T+1** = the next trading day in the bundle. With the default, T+1 is the bundle tail — see [Which session is the list for?](#which-session-is-the-list-for). |
-| `--topk` | `50` | Buy-list size (tradable, non-ST names). |
-| `--out-dir` | `output/daily_recommend` | Where the csv/json land. |
-| `--instruments` | `csi300` | Universe. |
-| `--bundle-max-age-days` | `14` | Max calendar days the bundle's last day may lag *today* before it is refused as stale. |
-| `--st-max-age-days` | `7` | Max days the ST/active-stocks snapshot may lag T before it is refused as stale. |
-| `--allow-holey-recommend` | off | **Last resort.** Recommend even on a bundle built from an incomplete fetch (or one with no integrity stamp). See the warnings below. |
-| `--suspension-quarantine` | unset | Only `suspend-688766-20251127-20251209`; separate explicit authorization for the one verified incident, with mandatory security exclusion and incomplete-data disclosure. The broad override cannot replace it. |
+| `--as-of` | latest closed, recorded session | Decision/data cutoff T, not the penultimate price day. |
+| `--trading-calendar` | `QUANT_TRADING_CALENDAR` or the path above | Separate authenticated arrangement snapshot; no online fallback. |
+| `--topk` | `50` | At most K eligible candidate names, not K confirmed tradable stocks. |
+| `--rebalance-cadence-days` | single-model `1`; ensemble's pinned serving configuration | Existing daily or approved N5 `5`; decision-T anchor unchanged. Explicit ensemble values must match the pinned configuration. |
+| `--instruments` | `csi300` | Must match the selected model/ensemble. Production CSI800 remains explicit. |
+| `--out-dir` | `output/daily_recommend` | JSON and two CSV outputs. |
+| `--bundle-max-age-days` | `14` | Coarse extra safeguard; cannot bypass latest-closed default equality. |
+| `--st-max-age-days` | `7` | Existing current-ST/name freshness guard. |
+| `--allow-holey-recommend` | off | Research-only broad incomplete-fetch override, not production approval. |
+| `--suspension-quarantine` | unset | Existing explicit policy with matching bounded evidence and exclusions. |
 
-`--model` / `--provider-uri` / `--delisted-registry` / `--name-source` /
-`--fit-start` / `--fit-end` exist for non-default layouts; the fit window MUST
-match the model that produced the artifact.
+Model/provider/name/registry/fit-window path flags remain available. CLI path
+flags override environment defaults; see
+[operations-env-vars.md](operations-env-vars.md). Do not relax guards to make
+a live stale or incomplete bundle appear healthy.
 
-## Which session is the list for?
+## Files and current display
 
-**Read the printed `entry_date` every time** — it tells you which session the list
-is actually for, and with the **default** (no `--as-of`) that is *not* a future
-session:
+Three files are stamped by T: `daily_recommendation_<T>.json`, the candidate
+`.csv` and `_scored_full.csv`. Existing filenames do not imply an executable
+buy list.
 
-- **Default (no `--as-of`)**: the decision day **T** is the *second-to-last*
-  trading day in the bundle and the entry day **T+1** is the **last** day in the
-  bundle (its calendar tail). So if you updated the bundle through the most recent
-  close, the entry day is that **already-completed** session — not tomorrow.
-- **Why it cannot look further forward**: each pick is screened for tradability
-  (suspension / one-price-lock) on the *entry* day, which requires that day's bars
-  to be on disk. A not-yet-traded session has no bars, so the tool refuses to treat
-  the bundle tail as a decision day (`--as-of <tail>` errors with "no next trading
-  day (T+1) to enter on"). It cannot emit a list for a session not yet in the
-  bundle.
+- JSON is schema **3**. It retains model/provider provenance and adds
+  `meta.trading_calendar` (path, SHA-256, source API, exchange, exact query,
+  fetched_at) plus `meta.latest_closed_session`.
+- Counts are `n_scored` (eligible pool), `n_masked` (known T microstructure
+  exclusions), `n_st_excluded` and `n_quarantined` (always present, including
+  zero). Their disjoint sum equals the scored audit's row count, not the stock
+  pool size; NaN scores are logged and dropped before that audit.
+- Pick/audit rows contain `as_of_date, entry_date, stock_code, stock_name,
+  predicted_score, eligible_as_of, tradable_flag, unavailable_reason`;
+  picks also carry contiguous `rank`.
+- Both CSVs repeat mode and unconfirmed entry status. Existing N5 fields and,
+  when active, quarantine disclosure columns remain. Null CSV entry tradability
+  is blank, not false. Empty CSVs keep headers and zero stock rows; the sibling
+  JSON carries the run context.
+- `unavailable_reason` reports known candidate exclusions only:
+  `data_quarantine`, `st`, `suspended`, `one_price_lock` or
+  `unavailable`. Quarantine takes priority; otherwise known T microstructure
+  takes priority over current ST. It never certifies T+1.
+- The writer validates mode, dates, provenance, strict eligibility/null status,
+  ranks, finite scores, counts and exact audited Top-K before creating output.
+  Direct output writes still are not an atomic multi-file transaction; the
+  operator runner retains its existing private-directory publication boundary.
 
-Operationally: with the default, the decision day T (the second-to-last bundle
-session) and the entry day (the bundle tail) are **both already-traded sessions**,
-and the command cannot emit a list for a not-yet-traded session. So read the default
-output as scored and tradability-validated against those past sessions — do **not**
-read it as "buy at tomorrow's open". To score a specific historical decision day,
-pass `--as-of <that day>` (entry then resolves to the next trading day after it that
-exists in the bundle).
+The UI cross-checks the incumbent model/provider identity and the **configured**
+calendar path/SHA, not an arbitrary artifact-supplied file. Current status also
+requires decision T equal to the current provider tail and recorded latest
+closed session, a nonfuture generation timestamp and a fresh calendar. The
+candidate expires at the planned entry day's 15:30 cutoff. Wrong identity,
+missing/changed source, invalid v3 or expiry disables new decision/review/queue
+actions while keeping history and existing journal entries readable. A matching
+current candidate still requires human execution checks.
 
-## What it writes
+## Refusals and safe recovery
 
-Three files under `--out-dir`, stamped by the as-of date `T`
-(`daily_recommendation_<T>.*`), plus a terminal summary:
+| Refusal | Operator response |
+|---|---|
+| Missing, stale, future or malformed arrangement snapshot | Acquire a new exact bounded snapshot; review and configure it. Never infer weekdays or extend price bins with future dates. |
+| Provider tail is not the latest closed session | Complete the genuine data update; do not raise the 14-day tolerance or relabel historical replay as production. |
+| Provider contains an intraday/future session | Stop and inspect update timing/provider provenance; do not force `--as-of` around it. |
+| Price and arrangement sessions disagree / no known next open | Inspect real source evidence and range; never guess an entry date. |
+| ST/name source missing, stale or inconsistent | Refresh the canonical source and inspect its embedded snapshot date. |
+| Missing/corrupt/incomplete fetch evidence | Repair the source or use only an already approved bounded quarantine with its explicit disclosure; do not silently waive unrelated holes. |
+| Model universe, fit window or ensemble mismatch | Correct the explicit model inputs; do not silently choose a different model. |
+| v3 writer validation failure | Preserve evidence and fix the producer/callers. Never downgrade to schema v2 to publish. |
 
-- **`daily_recommendation_<T>.csv`** — the buy list (`utf-8-sig`, opens cleanly
-  in Excel). Columns: `as_of_date, entry_date, rank, stock_code, stock_name,
-  predicted_score, tradable_flag, unavailable_reason`.
-- **`daily_recommendation_<T>.json`** — the same picks plus the run summary
-  counts (`n_scored, n_masked, n_st_excluded`).
-- **`daily_recommendation_<T>_scored_full.csv`** — the **full audit frame**:
-  every scored name including the ones dropped, with `tradable_flag` and the
-  `unavailable_reason` (`suspended` / `one_price_lock` / `unavailable` / `st`).
-  Read this when you want to know *why* a name you expected is missing.
+For production recovery, candidate validation is only one gate. Preserve
+independent fidelity/PIT evidence, same-point rollback backups, reviewed
+reversible fixed-path cutover and a first genuine post-cutoff production update.
+Restore the data scheduler last. Never overwrite a held raw root/registry lock
+inode or use isolated success as proof of a production execution.
 
-For cadence-enabled runs, **both CSVs append `rebalance_day` and
-`next_rebalance_date`**, mirroring the JSON top-level values. `False` means
-**HOLD / monitoring only, not an entry instruction**, even when a stock's
-`tradable_flag` is True. `True` identifies a scheduled rebalance result; it does
-not override the observed-session timing limitations above. An empty next-date
-cell means the calendar does not provide a known next anchor (JSON retains
-`null`); do not substitute `entry_date` or guess a date. Ranking, stock rows,
-`as_of_date` and `entry_date` are unchanged. The terminal/operator presentation
-continues to show the explicit HOLD notice.
-
-Empty CSVs keep their headers and **zero stock rows**; they cannot encode the
-run's actual boolean/date values, so read the sibling JSON for that context.
-Daily-mode CSV columns and content without active quarantine are unchanged.
-Older cadence CSVs also lack these columns: absence in a CSV alone does not prove a daily/rebalance run—check
-its JSON. Consumers matching CSV headers exactly must allow the two appended
-columns in new cadence exports. JSON remains schema v2 with unchanged pick rows;
-no historical exports are rewritten.
-
-With active quarantine, both CSVs additionally append policy/security,
-incomplete-data and exclusion-count fields; JSON includes the evidence and
-`n_quarantined`. The audit reason is `data_quarantine`. CLI and both operator
-decision views warn even when the affected security was not scored. Read the
-[exact fields and zero-row behavior](suspension-quarantine-runbook.md#荐股与人工阅读).
-
-The terminal header echoes both time points and the funnel:
-
-```
-  as_of_date (data cutoff, T)   : <T>
-  entry_date (suggested buy, T+1): <T+1>
-  universe=csi300  scored=<n>  untradable_masked=<n>  st_excluded=<n>  buy_list=<k>
-```
-
-Note on display: if Chinese names look garbled in the terminal that is a console
-code-page (GBK) display issue only — the csv/json are correct UTF-8.
-
-## How to judge the list
-
-Two different things happen on a run; keep them apart.
-
-**Run-level guards — these *refuse the whole run* (exit 1).** A clean `exit 0`
-means none of them fired:
-
-- **Look-ahead** — refuses if any feature row is dated after T (features for T use
-  only data `≤ T`; normalization is fit on the *training* window).
-- **Stale prices** — refuses if the bundle's last trading day is more than
-  `--bundle-max-age-days` (14) calendar days older than today. It does **not** check
-  that today's update landed — a 1–13-day-old bundle passes (see the prerequisite
-  section) — only that prices are not weeks old.
-- **Stale ST/name source** — refuses if the active-stocks snapshot is missing,
-  unreadable, schema-invalid, empty, more than `--st-max-age-days` (7) days older
-  than T, or more than `--bundle-max-age-days` (14) days older than the bundle tail.
-  A snapshot *newer* than T / the tail is allowed (current-ST is correct for a
-  historical `--as-of`), so a pass means the source is not stale — not that it was
-  captured in lock-step with the prices.
-- **Incomplete-fetch provenance** — refuses if the bundle has no
-  `_fetch_integrity.json` stamp or the stamp records a holey fetch — **unless** you
-  pass `--allow-holey-recommend`, which waives exactly this check (a corrupt /
-  unreadable stamp still refuses regardless). A structured quarantine is not
-  waived by that broad flag: it requires its separate matching policy and no
-  additional holes, and still remains explicitly incomplete.
-
-**Row filters — these drop names but the run still succeeds (exit 0).** Their
-counts are reported, not errors, so a nonzero count is normal, not a problem:
-
-- **Untradable on the entry day** — names suspended / one-price-locked on the entry
-  day T+1 (the session a lag=1 fill lands on, matching the backtest's execution-day
-  masking) are dropped and counted in `untradable_masked`.
-- **Currently ST/\*ST** — current-ST names are dropped *before* the Top-K slice
-  (counted in `st_excluded`), so the list holds K tradable, non-ST picks.
-- **Explicit data quarantine** — the one affected security is excluded before
-  Top-K and counted separately in `n_quarantined`; this reason takes precedence
-  over ST and microstructure labels without changing its score or any holdings.
-
-So a clean run rules out look-ahead, weeks-old prices, a stale/missing ST source,
-and — *unless* you passed `--allow-holey-recommend` or explicitly qualified the
-known quarantine — an unstamped/holey bundle. A qualified quarantine is not a
-clean-data result. A successful run
-does **not** by itself prove that today's update ran, nor that the entry day is the
-upcoming session (see [Which session is the list for?](#which-session-is-the-list-for))
-— confirm those from the printed `entry_date` and the `daily_update` result. Nor
-does it mean nothing was dropped: the row filters above run on every clean pass, so
-expect nonzero `untradable_masked` / `st_excluded` on days with suspensions or ST
-names.
-
-Quick sanity read on the summary line:
-
-- **The funnel.** `scored + untradable_masked + st_excluded` equals the audit CSV's
-  row count (`len(scored_frame)` — the names that received a non-NaN score), **not**
-  the universe size. It can sit **below** the nominal universe (≈300 for csi300):
-  names the model scored NaN are dropped beforehand (reported in the run's **log** as
-  "dropped N NaN-score names", *not* in the audit CSV), and names with no data in the
-  bundle never enter the count. So don't expect the three to sum to exactly 300 —
-  read them against the audit CSV row count, and use the log for the NaN-score drop.
-  With active quarantine, add `n_quarantined` as a fourth, disjoint term; zero
-  scored exclusions do not mean the run's one-security quarantine was cleared.
-- **`st_excluded` undercounts the overlap.** A name that is both currently ST *and*
-  suspended / one-price-locked is labelled by its untradable reason and counted in
-  `untradable_masked`, not `st_excluded` (untradable status is checked first). So a
-  low or zero `st_excluded` does **not** prove no ST names were dropped — check the
-  audit CSV's `unavailable_reason` column for the per-name truth.
-- `buy_list` equals `--topk` unless the tradable, non-ST pool was smaller.
-
-**Treat the list as NOT trustworthy for trading when:**
-
-- You had to pass **`--allow-holey-recommend`** — the bundle ranks on
-  survivorship-incomplete data. Fine for research, not for a real buy decision.
-- You raised **`--bundle-max-age-days`** beyond a normal holiday gap to get past
-  a staleness refusal instead of updating the data — you are then ranking on
-  knowingly stale prices.
-- The entry date `T+1` is far from `T` (a long gap implies you ran against an old
-  as-of).
-
-## When it refuses — what each failure means
-
-The run prints a domain error and exits `1` rather than emitting. The common
-ones and their fix:
-
-| Message (gist) | Cause | Fix |
-|---|---|---|
-| `Price/feature bundle is STALE: last trading day … lags today …` | The data update did not land (bundle behind > 14 cal days). | Re-run `scripts/daily_update.py`, then recommend. Only raise `--bundle-max-age-days` for a deliberate historical run. |
-| `Bundle … has no fetch-integrity stamp` / `was BUILT FROM A HOLEY tushare fetch` | Incomplete or unstamped bundle. | Re-fetch to fill holes and rebuild the bins. `--allow-holey-recommend` only for an intentional research run. |
-| `… UNREADABLE fetch-integrity stamp …` | Corrupt provenance. | Rebuild the bundle. This is NOT overridable by `--allow-holey-recommend` (the override accepts incompleteness, not corruption). |
-| `ST snapshot … is stale` / `is INCONSISTENT with the price bundle` | `active_stocks.parquet` was not refreshed with the prices. | Re-fetch tushare `stock_basic` (refreshes the snapshot), then recommend. |
-| `as-of date … is the last day in the PIT calendar; there is no next trading day (T+1)` | T has no entry session in the bundle. | Use an earlier `--as-of`, or extend the bundle. |
-| `as-of date … is not a trading day` | Bad explicit `--as-of`. | Pass a real trading day. |
-| `universe mismatch: model … was trained on … but --instruments requests …` | Single-model run with a universe the model was never trained on — zero certification evidence, cross-sectionally out-of-distribution. | Fix `--instruments` to the model's universe, or load the model actually certified for the requested universe. |
-| `No meta sidecar of model … carries a `universe` field` | The model's sidecar/promotion meta predates the universe-consistency guard. | Backfill the promotion meta with the certified universe (e.g. `"universe": "csi300"`) — an operator-signed edit, never a code default. |
-
-A refusal is the system doing its job — fix the underlying data and re-run, do
-**not** reach for an override to silence it unless you genuinely intend a
-research run on partial/old data.
-
-## Decision stays with the human
-
-The buy list is the model's ranked candidates with the untradable and ST names
-already removed. Position sizing, risk limits, how many of the Top-K to act on,
-and whether to act at all are the fund manager's call. Nothing in this pipeline
-places or sizes a trade.
+Rollback of this release restores the prior reviewed code/configuration and
+serving evidence; do not rewrite old JSON/CSV in place or label a legacy v2
+historical list as a current candidate. The buy/sell decision remains human.

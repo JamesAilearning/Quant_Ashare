@@ -18,13 +18,18 @@ from src.inference.daily_recommend import (
     build_recommendation,
     write_outputs,
 )
+from tests.logic.inference.candidate_test_helpers import calendar_context
 
 _BUY_COLUMNS = [
     "as_of_date", "entry_date", "rank", "stock_code", "stock_name",
-    "predicted_score", "tradable_flag", "unavailable_reason",
+    "predicted_score", "eligible_as_of", "tradable_flag", "unavailable_reason",
 ]
 _AUDIT_COLUMNS = [column for column in _BUY_COLUMNS if column != "rank"]
 _CADENCE_COLUMNS = ["rebalance_day", "next_rebalance_date"]
+_CANDIDATE_CONTEXT = {
+    "recommendation_mode": "next_session_candidate",
+    "entry_tradability_status": "unconfirmed",
+}
 _AS_OF = "2025-07-01"
 _ENTRY = "2025-07-02"
 
@@ -40,12 +45,14 @@ def _result(marker, next_date, shape):
         model_path="synthetic.pkl", provider_uri="synthetic_bundle",
         delisted_registry_path="registry.parquet", fit_start="2020-01-01",
         fit_end="2024-12-31",
+        topk=0 if shape == "no_picks" else 1,
     )
     return DailyRecommendationResult(
         as_of_date=_AS_OF, entry_date=_ENTRY, picks=picks,
         n_scored=len(scores) - excluded, n_masked=excluded, n_st_excluded=0,
         scored_frame=audit, run_meta=_assemble_run_meta(
-            config, model_pkl_sha256="a" * 64, bundle_tag=None,
+            config, trading_calendar=calendar_context("2025-07-02"),
+            latest_closed_session="2025-07-02", model_pkl_sha256="a" * 64, bundle_tag=None,
             generated_at="2025-07-02T18:00:00+08:00",
         ), rebalance_day=marker, next_rebalance_date=next_date,
     )
@@ -55,7 +62,7 @@ def _result(marker, next_date, shape):
     (None, None), (True, _AS_OF), (False, "2025-07-07"), (False, None),
 ])
 @pytest.mark.parametrize("shape", ["nonempty", "no_picks", "empty"])
-def test_csvs_mirror_cadence_without_changing_daily_bytes_or_json(
+def test_csvs_mirror_candidate_and_cadence_context_without_changing_audit_values(
     tmp_path, marker, next_date, shape,
 ):
     result = _result(marker, next_date, shape)
@@ -68,24 +75,29 @@ def test_csvs_mirror_cadence_without_changing_daily_bytes_or_json(
     for kind, frame in (("csv", buy_frame), ("audit", original)):
         base_columns = _BUY_COLUMNS if kind == "csv" else _AUDIT_COLUMNS
         read = pd.read_csv(paths[kind], dtype=str, keep_default_na=False)
-        suffix = [] if marker is None else _CADENCE_COLUMNS
+        suffix = list(_CANDIDATE_CONTEXT) + ([] if marker is None else _CADENCE_COLUMNS)
         assert list(read.columns) == base_columns + suffix
         assert len(read) == len(frame)
         assert Path(paths[kind]).read_bytes().startswith(b"\xef\xbb\xbf")
         if marker is None:
-            assert Path(paths[kind]).read_bytes() == frame.to_csv(index=False).encode("utf-8-sig")
+            assert Path(paths[kind]).read_bytes() == frame.assign(
+                **_CANDIDATE_CONTEXT).to_csv(index=False).encode("utf-8-sig")
         else:
             assert list(read["rebalance_day"]) == [str(marker)] * len(frame)
             assert list(read["next_rebalance_date"]) == [next_date or ""] * len(frame)
-            # Removing ONLY the two appended columns restores the old table.
+            # Removing disclosed context restores the unmodified score audit.
             assert read[base_columns].to_csv(index=False) == frame.to_csv(index=False)
+        assert all(read["recommendation_mode"] == "next_session_candidate")
+        assert all(read["entry_tradability_status"] == "unconfirmed")
+        assert all(read["tradable_flag"] == "")
 
     expected_json = {
-        "artifact_schema_version": 2, "as_of_date": _AS_OF, "entry_date": _ENTRY,
+        "artifact_schema_version": 3, "as_of_date": _AS_OF, "entry_date": _ENTRY,
         "n_scored": result.n_scored, "n_masked": result.n_masked,
-        "n_st_excluded": result.n_st_excluded, "picks": buy_rows,
+        "n_st_excluded": result.n_st_excluded, "n_quarantined": 0, "picks": buy_rows,
         "meta": dict(result.run_meta),
     }
+    expected_json.update(_CANDIDATE_CONTEXT)
     if marker is not None:
         expected_json.update(rebalance_day=marker, next_rebalance_date=next_date)
     expected_bytes = json.dumps(expected_json, ensure_ascii=False, indent=2).replace("\n", os.linesep).encode("utf-8")

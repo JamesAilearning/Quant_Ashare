@@ -44,6 +44,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     bundle_calendar_tail,
     bundle_freshness,
     recommender_integrity_check,
+    resolve_trading_calendar,
     retrain_window,
 )
 from web.operator_ui.pages._suspension_quarantine import quarantine_notice
@@ -55,12 +56,13 @@ from web.operator_ui.pages._today_decision_queue_helpers import (
 )
 from web.operator_ui.pages._today_workbench_helpers import (
     DailySignalSummary,
+    bind_current_signal,
     failed_update_summary,
     model_age_rows,
     summarise_daily_signal,
     summarise_operations,
-    todays_buy_answer,
 )
+from web.operator_ui.recommendation_calendar import read_trading_calendar_identity
 from web.operator_ui.update_ledger import (
     consecutive_failures,
     ledger_path_for_provider,
@@ -261,7 +263,7 @@ def _render_signal_summary(signal: DailySignalSummary) -> None:
     elif signal.kind == "rebalance":
         _render_card(
             "最新日度信号",
-            "再平衡日 · 待人工核对",
+            "再平衡日候选 · 交易资格未确认",
             signal.detail,
             color="warning",
             secondary=[
@@ -272,7 +274,7 @@ def _render_signal_summary(signal: DailySignalSummary) -> None:
     elif signal.kind == "daily":
         _render_card(
             "最新日度信号",
-            "日频工件 · 待人工核对",
+            "日频候选 · 交易资格未确认",
             signal.detail,
             color="warning",
             secondary=[
@@ -280,6 +282,8 @@ def _render_signal_summary(signal: DailySignalSummary) -> None:
                 ("entry", signal.entry_date or "未记录"),
             ],
         )
+    elif signal.kind == "historical":
+        _render_card("最新日度信号", "历史清单 · 非当前", signal.detail, color="warning")
     elif signal.kind == "missing":
         _render_card(
             "最新日度信号",
@@ -457,6 +461,9 @@ with signal_col:
             incumbent=incumbent,
             current_model_sha=None,
         )
+    signal, _answer = bind_current_signal(
+        signal, _freshness, read_trading_calendar_identity(resolve_trading_calendar()),
+    )
     _render_signal_summary(signal)
     if signal_payload is not None:
         try:
@@ -476,7 +483,6 @@ _ANSWER_COLORS: dict[str, _CardColor] = {
     "unanswerable": "negative",
 }
 with _answer_slot:
-    _answer = todays_buy_answer(signal, _freshness)
     _render_card(
         "今天要不要买",
         _answer.value,

@@ -36,6 +36,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     provider_is_resolved,
     resolve_delisted_registry,
     resolve_name_source,
+    resolve_trading_calendar,
     serving_bundle_max_age_days,
 )
 from web.operator_ui.pages._run_center_helpers import (
@@ -1273,6 +1274,7 @@ st.subheader("② 今日出单")
 _incumbent = resolve_incumbent()
 _registry_str = resolve_delisted_registry()
 _name_source = resolve_name_source()
+_trading_calendar = resolve_trading_calendar()
 _bundle_age = serving_bundle_max_age_days()
 _cmd = morning_command(
     _incumbent,
@@ -1280,6 +1282,7 @@ _cmd = morning_command(
     provider_uri=_provider,
     delisted_registry=_registry_str,
     name_source=_name_source,
+    trading_calendar=_trading_calendar,
     bundle_max_age_days=_bundle_age,
 )
 st.caption(
@@ -1331,13 +1334,14 @@ elif st.button(
             provider_uri=_provider,
             delisted_registry=_registry_str,
             name_source=_name_source,
+            trading_calendar=_trading_calendar,
             bundle_max_age_days=_bundle_age,
         )
     if _result.kind == "ok":
         st.success(
             f"出单完成(exit 0,{_result.elapsed_s:.0f}s)。清单与 HOLD 披露"
             "到「日度信号与人工决策」页查看;**每次必读打印的 entry_date**——它是"
-            "已收盘会话,不是「明早买入指令」。"
+            "计划会话，交易资格未确认；停牌、涨跌停等条件须在交易时人工核对。"
         )
         if _result.published:
             st.caption("已发布工件:" + "、".join(_result.published))

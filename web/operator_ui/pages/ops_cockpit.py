@@ -52,6 +52,7 @@ from web.operator_ui.pages._ops_cockpit_helpers import (
     resolve_delisted_registry,
     resolve_name_source,
     resolve_namechange_path,
+    resolve_trading_calendar,
     retrain_window,
     rotation_commands,
     serving_bundle_max_age_days,
@@ -147,6 +148,7 @@ _render_command(morning_command(
     provider_uri=_provider,
     delisted_registry=resolve_delisted_registry(),
     name_source=resolve_name_source(),
+    trading_calendar=resolve_trading_calendar(),
     # Bind the SAME threshold section ⑤ predicts against. The CLI's argparse
     # default now READS this field (it used to restate the literal — the
     # divergence this flag was added to route around, #431 r14), so the flag

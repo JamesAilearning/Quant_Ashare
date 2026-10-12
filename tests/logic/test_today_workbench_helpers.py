@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime
 from pathlib import Path
 
+from src.contracts.recommendation_timing import CN_TZ, SCHEMA_VERSION
 from web.operator_ui.incumbent import IncumbentIdentity
 from web.operator_ui.job_io import JobSummary
 from web.operator_ui.pages._ops_cockpit_helpers import BundleFreshness
@@ -15,8 +17,11 @@ from web.operator_ui.pages._today_workbench_helpers import (
     model_age_rows,
     summarise_daily_signal,
     summarise_operations,
-    todays_buy_answer,
 )
+from web.operator_ui.pages._today_workbench_helpers import (
+    todays_buy_answer as _todays_buy_answer,
+)
+from web.operator_ui.recommendation_calendar import TradingCalendarIdentity
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,15 +103,15 @@ class DailySignalSummaryTests(unittest.TestCase):
             kind="ensemble", manifest_sha256="manifest"
         )
 
-    def test_matching_rebalance_artifact_is_not_an_execution_instruction(self) -> None:
+    def test_matching_legacy_rebalance_artifact_is_historical_only(self) -> None:
         result = summarise_daily_signal(
             "2026-08-18",
             _ensemble_payload(),
             incumbent=self.incumbent,
             current_model_sha=None,
         )
-        self.assertEqual(result.kind, "rebalance")
-        self.assertIn("人工核对", result.detail)
+        self.assertEqual(result.kind, "historical")
+        self.assertIn("历史", result.detail)
         self.assertEqual(result.entry_date, "2026-08-19")
 
     def test_matching_hold_artifact_is_explicitly_non_actionable(self) -> None:
@@ -116,8 +121,8 @@ class DailySignalSummaryTests(unittest.TestCase):
             incumbent=self.incumbent,
             current_model_sha=None,
         )
-        self.assertEqual(result.kind, "hold")
-        self.assertIn("不构成入场指令", result.detail)
+        self.assertEqual(result.kind, "historical")
+        self.assertIn("不是当前候选", result.detail)
 
     def test_a_non_bool_cadence_field_is_never_summarised_as_a_signal(
         self,
@@ -201,14 +206,14 @@ class DailySignalSummaryTests(unittest.TestCase):
                 self.assertEqual(result.kind, "needs_verification")
                 self.assertIn("候选列表", result.detail)
 
-    def test_empty_picks_remains_a_valid_rebalance_artifact(self) -> None:
+    def test_empty_legacy_picks_remains_a_valid_historical_artifact(self) -> None:
         result = summarise_daily_signal(
             "2026-08-18",
             _ensemble_payload(),
             incumbent=self.incumbent,
             current_model_sha=None,
         )
-        self.assertEqual(result.kind, "rebalance")
+        self.assertEqual(result.kind, "historical")
 
     def test_the_verified_summary_carries_the_pick_cardinality(self) -> None:
         # 空清单是合法产出——但基数必须随核验结果**传出去**：丢掉它，
@@ -222,7 +227,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         two = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
-        self.assertEqual("rebalance", two.kind)
+        self.assertEqual("historical", two.kind)
         self.assertEqual(2, two.pick_count)
 
     def test_a_pick_row_off_contract_never_counts_as_a_candidate(self) -> None:
@@ -330,7 +335,7 @@ class DailySignalSummaryTests(unittest.TestCase):
             # 过去/当日值产出器产不出（codex P2）。
             ("过去日期", "2026-08-01", "needs_verification"),
             ("等于 as_of", "2026-08-18", "needs_verification"),
-            ("null 合法", None, "hold"),
+            ("null 合法", None, "historical"),
         ):
             with self.subTest(label=label):
                 payload = _ensemble_payload(rebalance_day=False)
@@ -384,7 +389,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
-        self.assertEqual("rebalance", got.kind, "并列分被误伤")
+        self.assertEqual("historical", got.kind, "历史并列分被误伤")
 
     def test_a_hold_next_date_before_entry_or_on_weekend_is_refused(
             self) -> None:
@@ -393,7 +398,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         # 的值产出器产不出（codex P2：周六在 as_of 之后照样是坏值）。
         for label, value, expect in (
             ("周六（as_of 后 entry 前）", "2026-08-22", "needs_verification"),
-            ("等于 entry 合法", "2026-08-19", "hold"),
+            ("等于 entry 合法", "2026-08-19", "historical"),
         ):
             with self.subTest(label=label):
                 payload = _ensemble_payload(rebalance_day=False)
@@ -431,7 +436,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
-        self.assertEqual("rebalance", got.kind, "legacy 缺键被误伤")
+        self.assertEqual("historical", got.kind, "legacy 缺键被误伤")
 
     def test_both_identity_modes_are_unverifiable(self) -> None:
         # canonical 契约：身份形态 XOR——同时携带 model_pkl_sha256 与
@@ -466,7 +471,7 @@ class DailySignalSummaryTests(unittest.TestCase):
              "meta.topk 缺失或非法"),
             ("N>topk", lambda m: m.update(topk=1), "needs_verification",
              "超出 meta.topk"),
-            ("N==topk 合法", lambda m: m.update(topk=2), "rebalance", ""),
+            ("N==topk 合法", lambda m: m.update(topk=2), "historical", ""),
         ):
             with self.subTest(label=label):
                 payload = _ensemble_payload()
@@ -520,7 +525,7 @@ class DailySignalSummaryTests(unittest.TestCase):
         got = summarise_daily_signal(
             "2026-08-18", payload,
             incumbent=self.incumbent, current_model_sha=None)
-        self.assertEqual("rebalance", got.kind,
+        self.assertEqual("historical", got.kind,
                          "再平衡日的 next==as_of 被误伤")
 
     def test_missing_or_unsupported_schema_never_becomes_current_signal(self) -> None:
@@ -550,9 +555,9 @@ class DailySignalSummaryTests(unittest.TestCase):
         producer = (
             _ROOT / "src" / "inference" / "daily_recommend.py"
         ).read_text(encoding="utf-8")
-        self.assertEqual(SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION, 2)
+        self.assertEqual(SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION, SCHEMA_VERSION)
         self.assertIn(
-            "DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2",
+            "DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = SCHEMA_VERSION",
             producer,
         )
         self.assertIn(
@@ -693,17 +698,23 @@ class ModelAgeRowsMirrorTheCockpitDerivation(unittest.TestCase):
 
 
 
-class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
-    """「今天要不要买」合成句（UI 已批序列④）——零自造、零时钟。
+def todays_buy_answer(signal, freshness):
+    """Fixed clock for the real shared-currentness contract, never live data."""
+    return _todays_buy_answer(
+        signal, freshness, now=datetime(2026, 8, 25, 22, tzinfo=CN_TZ),
+        calendar_identity=TradingCalendarIdentity(
+            os.path.normcase(str(_ROOT / "fixture-calendar.json")), "a" * 64,
+        ),
+    )
 
-    数据包前置=出单侧 usable 全额；节奏与候选基数=已核验信号分类；
-    「新不新」= entry_date（已收盘会话）对出单侧日历尾，不比挂钟。
-    """
+
+class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
+    """Candidate timing is shared; provider and model guards remain strict."""
 
     @staticmethod
     def _fresh(**overrides: object) -> BundleFreshness:
         base: dict[str, object] = dict(
-            known=True, tail_date="2026-08-26", days_behind=0,
+            known=True, tail_date="2026-08-25", days_behind=0,
             max_age_days=14, headroom_days=14, refuses_today=False,
             integrity_accepted=True, provider_uri=_PROV,
             identity_tag="tag-1", built_at="2026-08-25T21:00:00+08:00")
@@ -718,12 +729,41 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
             data_provider_uri=_PROV, data_bundle_tag="tag-1",
             data_bundle_built_at="2026-08-25T21:00:00+08:00")
         base.update(overrides)
+        count = base["pick_count"] if type(base["pick_count"]) is int else 0
+        payload = {
+            "artifact_schema_version": 3,
+            "recommendation_mode": "next_session_candidate",
+            "entry_tradability_status": "unconfirmed",
+            "as_of_date": base["as_of_date"], "entry_date": base["entry_date"],
+            "n_scored": count, "n_masked": 0, "n_st_excluded": 0, "n_quarantined": 0,
+            "meta": {"topk": 50, "latest_closed_session": base["as_of_date"],
+                     "generated_at": "2026-08-25T21:30:00+08:00",
+                     "model_path": str(_ROOT / "fixture-model.pkl"),
+                     "model_pkl_sha256": "b" * 64,
+                     "fit_start_for_inference": "2024-01-01",
+                     "fit_end_for_inference": "2025-12-31",
+                     "provider_uri": base["data_provider_uri"],
+                     "bundle_tag": base["data_bundle_tag"],
+                     "bundle_built_at": base["data_bundle_built_at"],
+                     "instruments": "csi800",
+                     "trading_calendar": {
+                         "path": str(_ROOT / "fixture-calendar.json"), "sha256": "a" * 64,
+                         "source_api": "trade_cal", "exchange": "SSE",
+                         "query": {"start_date": "20260101", "end_date": "20261231",
+                                   "fields": "exchange,cal_date,is_open"},
+                         "fetched_at": "2026-08-25T20:00:00+08:00"}},
+            "picks": [{"as_of_date": base["as_of_date"], "entry_date": base["entry_date"],
+                       "rank": i + 1, "stock_code": f"SH{600000 + i}", "stock_name": "示例",
+                       "predicted_score": 1.0 - i / 100, "eligible_as_of": True,
+                       "tradable_flag": None, "unavailable_reason": ""} for i in range(count)],
+        }
+        base["candidate_payload"] = payload
         return DailySignalSummary(**base)  # type: ignore[arg-type]
 
-    def test_a_current_rebalance_names_count_and_closed_session(self) -> None:
+    def test_a_current_rebalance_names_count_and_unconfirmed_entry(self) -> None:
         got = todays_buy_answer(self._signal("rebalance"), self._fresh())
         self.assertEqual("rebalance", got.state)
-        self.assertIn("有再平衡指令", got.value)
+        self.assertIn("有候选", got.value)
         self.assertIn("人工核对", got.detail, "指令态不许省掉人工核对义务")
         self.assertIn("5 只候选", got.detail, "候选数没如实说出")
 
@@ -736,12 +776,12 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         for signal in (self._signal("rebalance"),
                        self._signal("rebalance", pick_count=0),
                        self._signal("hold"),
-                       self._signal("rebalance", entry_date="2026-08-24")):
+                       self._signal("rebalance", as_of_date="2026-08-24")):
             got = todays_buy_answer(signal, self._fresh())
             with self.subTest(kind=signal.kind, picks=signal.pick_count,
                               entry=signal.entry_date):
-                self.assertIn("已收盘会话", got.detail,
-                              "已收盘披露没跟着工件走到本卡")
+                self.assertIn("交易资格未确认", got.detail,
+                              "候选不等于交易许可的披露必须贯穿各状态")
                 self.assertNotIn("执行日", got.detail,
                                  "把已收盘会话说成了执行日")
                 self.assertNotIn("今天（", got.detail,
@@ -840,20 +880,20 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
     def test_data_moving_past_the_instruction_is_a_flow_state(self) -> None:
         # 数据尾走到了最新指令之后 = 出单没跟上——流程态，两个日期点名。
         got = todays_buy_answer(
-            self._signal("rebalance", entry_date="2026-08-24"), self._fresh())
+            self._signal("rebalance", as_of_date="2026-08-24"), self._fresh())
         self.assertEqual("no_instruction", got.state)
         self.assertIn("2026-08-24", got.detail, "旧指令的会话没点名")
-        self.assertIn("2026-08-26", got.detail, "数据尾没点名")
+        self.assertIn("2026-08-25", got.detail, "数据尾没点名")
         self.assertIn("运行中心", got.detail)
 
     def test_an_instruction_ahead_of_the_data_tail_is_abnormal(self) -> None:
         # 产出器出不了未收盘会话的清单——工件声称的会话晚于数据尾，
         # 两侧必有一侧在说谎，拒答并点名两个日期。
         got = todays_buy_answer(
-            self._signal("rebalance", entry_date="2026-08-27"), self._fresh())
+            self._signal("rebalance", as_of_date="2026-08-27", entry_date="2026-08-28"), self._fresh())
         self.assertEqual("unanswerable", got.state)
         self.assertIn("2026-08-27", got.detail)
-        self.assertIn("2026-08-26", got.detail)
+        self.assertIn("2026-08-25", got.detail)
 
     def test_an_artifact_from_another_provider_is_refused(self) -> None:
         # 数据来源绑定（codex P1）：provider 切换后，旧 provider 的工件按
@@ -973,10 +1013,11 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         self.assertIn("2026-08-24T21:00:00+08:00", got.detail)
         self.assertIn("2026-08-25T21:00:00+08:00", got.detail)
 
-    def test_a_missing_built_at_degrades_honestly(self) -> None:
-        # 老工件无 bundle_built_at 键 / 无 stamp 无 built_at——合法缺席，
-        # 按已比对的 provider/tag 绑定放行，不因此拒答。
-        for overrides in ({"signal": {"data_bundle_built_at": None}},
+    def test_no_artifact_stamp_or_unknown_current_built_at_degrades_honestly(self) -> None:
+        # 工件无 stamp 时 tag/built_at 同时为 None；当前侧缺 built_at
+        # 仍如实按可确认的 provider/tag 比对，不冒充完成 nonce 比对。
+        for overrides in ({"signal": {"data_bundle_tag": None,
+                                      "data_bundle_built_at": None}},
                           {"fresh": {"built_at": None}}):
             with self.subTest(缺侧="工件" if "signal" in overrides else "当前"):
                 got = todays_buy_answer(
@@ -985,6 +1026,12 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
                     self._fresh(**overrides.get("fresh", {})))
                 self.assertEqual("rebalance", got.state,
                                  "合法缺席被当成了拒答理由")
+
+    def test_an_artifact_stamp_without_its_built_at_refuses_to_answer(self) -> None:
+        got = todays_buy_answer(
+            self._signal("rebalance", data_bundle_built_at=None), self._fresh())
+        self.assertEqual("unanswerable", got.state,
+                         "工件带 stamp tag 时不能省略重建 nonce")
 
     def test_a_missing_identity_tag_degrades_to_provider_binding(self) -> None:
         # 身份块是 stamp 的可选项（pre-PR-G+I 无块合法）——单侧缺 tag 时
@@ -1051,7 +1098,7 @@ class TheTodaysAnswerIsSynthesizedNotInvented(unittest.TestCase):
         # 已按 codex P1 移除），且四个状态都有显式配色。
         source = (Path(__file__).resolve().parents[2] / "web" / "operator_ui"
                   / "pages" / "today_workbench.py").read_text(encoding="utf-8")
-        self.assertIn("todays_buy_answer(signal, _freshness)",
+        self.assertIn("signal, _answer = bind_current_signal(",
                       source, "合成句没有接共享裁决")
         for state in ("rebalance", "watch", "no_instruction", "unanswerable"):
             self.assertIn(f'"{state}":', source,

@@ -30,6 +30,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from tests.logic.inference.candidate_test_helpers import calendar_context
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -682,7 +684,8 @@ def test_run_meta_carries_ensemble_provenance(tmp_path: Path) -> None:
     )
     manifest_sha = hashlib.sha256(mp.read_bytes()).hexdigest()
     meta = _assemble_run_meta(
-        config, model_pkl_sha256=None, bundle_tag=None,
+        config, trading_calendar=calendar_context("2026-07-21"),
+        latest_closed_session="2026-07-21", model_pkl_sha256=None, bundle_tag=None,
         generated_at="2026-07-22T09:00:00+08:00",
         ensemble={
             "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -717,11 +720,13 @@ def test_run_meta_requires_exactly_one_identity_source() -> None:
     )
     with pytest.raises(ValueError, match="exactly one identity"):
         _assemble_run_meta(
-            config, model_pkl_sha256=None, bundle_tag=None,
+            config, trading_calendar=calendar_context("2026-07-21"),
+            latest_closed_session="2026-07-21", model_pkl_sha256=None, bundle_tag=None,
             generated_at="2026-07-22T09:00:00+08:00")
     with pytest.raises(ValueError, match="exactly one identity"):
         _assemble_run_meta(
-            config, model_pkl_sha256="a" * 64, bundle_tag=None,
+            config, trading_calendar=calendar_context("2026-07-21"),
+            latest_closed_session="2026-07-21", model_pkl_sha256="a" * 64, bundle_tag=None,
             generated_at="2026-07-22T09:00:00+08:00",
             ensemble={"manifest_path": "Z:/m.json",
                       "manifest_sha256": "b" * 64})

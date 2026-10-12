@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from scripts.eval_profiles import EVAL_PROFILES
+from src.contracts.recommendation_timing import SCHEMA_VERSION, validate_candidate_context
 from web.operator_ui._path_guard import output_path
 from web.operator_ui.daily_signal_navigation import recommendation_artifact_date
 
@@ -60,7 +61,7 @@ from web.operator_ui.pages._suspension_quarantine import quarantine_notice
 # The inference producer currently writes this exact artifact schema.  Keep the
 # read-only pages on one contract boundary instead of letting each page accept
 # a different version vocabulary.
-SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = SCHEMA_VERSION
 
 
 def artifact_schema_is_supported(payload: dict[str, Any]) -> bool:
@@ -69,7 +70,7 @@ def artifact_schema_is_supported(payload: dict[str, Any]) -> bool:
     return (
         not isinstance(version, bool)
         and isinstance(version, int)
-        and version == SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION
+        and version in (2, SUPPORTED_DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION)
     )
 
 
@@ -436,6 +437,17 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "工件形状违约:predicted_score 数值超出 float 表示域"
                 "——文件可能损坏。"
             ) from exc
+        status_columns: dict[str, Any]
+        if payload.get("artifact_schema_version") == SCHEMA_VERSION:
+            problem = pick_row_violation(pick, schema_version=SCHEMA_VERSION)
+            if problem is not None:
+                raise ValueError(f"候选行违约：{problem}")
+            status_columns = {
+                "截至信号日资格": pick["eligible_as_of"],
+                "交易时核验": "未确认",
+            }
+        else:
+            status_columns = {"可交易": pick.get("tradable_flag")}
         rows.append({
             "rank": pick.get("rank"),
             "代码": pick.get("stock_code"),
@@ -444,7 +456,7 @@ def picks_table_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             COST_REFERENCE_COLUMN: (
                 cost_reference(score_val) if score_val is not None else None
             ),
-            "可交易": pick.get("tradable_flag"),
+            **status_columns,
             "不可用原因": pick.get("unavailable_reason"),
         })
     return rows
@@ -510,6 +522,7 @@ def hold_state(payload: dict[str, Any]) -> HoldState:
 
 def pick_row_violation(
     pick: dict[str, Any], *, as_of_date: str = "", entry_date: str = "",
+    schema_version: int = 2,
 ) -> str | None:
     """一行候选违约在哪——None = 合约内。
 
@@ -575,8 +588,16 @@ def pick_row_violation(
     # 构造前被过滤，构造器写死 True/""——src/inference/daily_recommend 的
     # _build_picks）。False/非空 reason 的行产出器产不出；只验布尔会让
     # 「工件自己标注不可交易」的行照样计入候选数（codex P2）。
-    if pick.get("tradable_flag") is not True:
-        return "tradable_flag 缺失或非 True（产出器只落可交易行）"
+    if schema_version == SCHEMA_VERSION:
+        if pick.get("eligible_as_of") is not True:
+            return "eligible_as_of 缺失或非 True（入选候选必须具有已知资格）"
+        if "tradable_flag" not in pick or pick["tradable_flag"] is not None:
+            return "tradable_flag 必须显式 null（交易时可交易性尚未确认）"
+    elif schema_version == 2:
+        if pick.get("tradable_flag") is not True:
+            return "tradable_flag 缺失或非 True（旧产出器只落可交易行）"
+    else:
+        return "不支持的候选行版本"
     if pick.get("unavailable_reason") != "":
         return "unavailable_reason 非空串（产出器对入选行恒写空串）"
     return None
@@ -591,6 +612,11 @@ def producer_shape_violation(
     ``entry_date`` 非空、schema 版本受支持、meta 不是 corrupt-v2。本函数
     从**清单**与**节奏**两组字段往下验，两者正是读侧真正据以下结论的东西。
     """
+    if payload.get("artifact_schema_version") == SCHEMA_VERSION:
+        try:
+            validate_candidate_context(payload)
+        except ValueError as exc:
+            return f"候选时点/形状契约不合法：{exc}"
     try:
         quarantine_notice(payload)
     except ValueError as exc:
@@ -632,7 +658,8 @@ def producer_shape_violation(
     # 违约=需核查，不做静默缩数。
     for index, pick in enumerate(payload["picks"]):
         problem = pick_row_violation(
-            pick, as_of_date=as_of_date, entry_date=entry_date)
+            pick, as_of_date=as_of_date, entry_date=entry_date,
+            schema_version=payload["artifact_schema_version"])
         if problem is not None:
             return (
                 f"工件候选第 {index + 1} 行违约：{problem}（产出器恒写六键，"
@@ -979,6 +1006,7 @@ BASELINE_BLOCK_UNREADABLE = "unreadable"
 BASELINE_BLOCK_SHAPE = "shape_violation"
 #: 两份相邻工件之间有**没有工件**的交易日——那几天里可能发生过再平衡。
 BASELINE_BLOCK_HISTORY_GAP = "history_gap"
+BASELINE_BLOCK_CANDIDATE = "candidate_not_holding"
 
 #: 向后兼容的别名（首版把这些都叫 SKIP，语义已改为 BLOCK）。
 BASELINE_SKIP_NO_CADENCE = BASELINE_BLOCK_NO_CADENCE
@@ -1050,6 +1078,12 @@ def _baseline_block(
     可信基准」的由来。
     """
 
+    if (type(payload.get("artifact_schema_version")) is int
+            and payload["artifact_schema_version"] == SCHEMA_VERSION):
+        return SkippedCandidate(
+            artifact_date, BASELINE_BLOCK_CANDIDATE,
+            "本工件是交易资格未确认的候选，不是持仓；不能越过它把旧清单当当前持仓。",
+        )
     if not artifact_schema_is_supported(payload):
         return SkippedCandidate(
             artifact_date, BASELINE_BLOCK_UNSUPPORTED_SCHEMA,
