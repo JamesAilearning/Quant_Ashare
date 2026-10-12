@@ -260,6 +260,11 @@ def build_today_decision_queue(
             source_time=signal.as_of_date or "", destination="daily_decision",
             context=signal.as_of_date,
         ))
+    elif signal.kind == "historical":
+        items.append(_item(
+            "attention", "signal:historical", "只有历史清单，请生成当前候选", signal.detail,
+            source_time=signal.as_of_date or "", destination="run_center",
+        ))
 
     if jobs_error:
         items.append(_item(
@@ -315,7 +320,7 @@ def build_today_decision_queue(
             source_time=signal.as_of_date or "", destination="daily_decision",
             context=signal.as_of_date,
         ))
-    elif review is not None and review.unreviewed_count:
+    elif signal.kind in {"daily", "rebalance"} and review is not None and review.unreviewed_count:
         items.append(_item(
             "review", f"review:{review.trade_date}", "可完成人工审阅",
             f"{review.unreviewed_count}/{review.candidate_count} 个候选尚无有效人工记录。",

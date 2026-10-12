@@ -6,7 +6,7 @@ import copy
 import csv
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,6 +14,7 @@ import pytest
 
 from src.inference import daily_recommend as dr
 from tests.logic.inference import test_suspension_quarantine_recommend as legacy
+from tests.logic.inference.candidate_test_helpers import CN_TZ, write_calendar
 
 run_recommend = legacy.run_recommend
 
@@ -53,9 +54,9 @@ def test_dynamic_two_securities_are_excluded_before_topk_and_disclosed(
     audit = result.scored_frame.set_index("stock_code")
     assert audit["predicted_score"].to_dict() == scores
     for instrument in _INSTRUMENTS:
-        assert not audit.loc[instrument, "tradable_flag"]
+        assert not audit.loc[instrument, "eligible_as_of"]
         assert audit.loc[instrument, "unavailable_reason"] == "data_quarantine"
-    assert audit.loc["SH688766", "tradable_flag"]
+    assert audit.loc["SH688766", "eligible_as_of"]
     assert (result.n_scored, result.n_masked, result.n_st_excluded, result.n_quarantined) == (2, 0, 0, 2)
     context = result.run_meta["suspension_quarantine"]
     assert context["instruments"] == _INSTRUMENTS
@@ -135,6 +136,35 @@ def test_one_dynamic_security_keeps_plural_context_and_csv_projection(
             assert all(row["quarantined_instruments"] == "SH600036" for row in reader)
 
 
+def test_ten_security_context_counts_only_actual_scored_quarantine_rows(
+    run_security_recommend, tmp_path,
+):
+    codes = ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ", "000005.SZ",
+             "000006.SZ", "000007.SZ", "000008.SZ", "300001.SZ", "600036.SH"]
+    scores = {"SZ300001": 0.99, "SH600036": 0.98, "SH688766": 0.8}
+    result = run_security_recommend(codes=codes, scores=scores)
+    assert result.n_quarantined == 2  # not the ten-code evidence-list length
+    assert len(result.run_meta["suspension_quarantine"]["instruments"]) == 10
+    assert [pick.stock_code for pick in result.picks] == ["SH688766"]
+    assert all(pick.eligible_as_of is True and pick.tradable_flag is None for pick in result.picks)
+    assert result.scored_frame["tradable_flag"].map(lambda value: value is None).all()
+    paths = dr.write_outputs(result, str(tmp_path / "ten_dynamic"))
+    payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
+    assert payload["n_quarantined"] == 2
+    assert payload["recommendation_mode"] == "next_session_candidate"
+    assert payload["entry_tradability_status"] == "unconfirmed"
+    assert payload["meta"]["suspension_quarantine"]["evidence"]["quarantined_ts_codes"] == codes
+    for kind in ("csv", "audit"):
+        with Path(paths[kind]).open(encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            assert "quarantined_instruments" in reader.fieldnames
+            assert "quarantined_instrument" not in reader.fieldnames
+            for row in reader:
+                assert row["n_quarantined"] == "2"
+                assert row["tradable_flag"] == ""
+                assert row["entry_tradability_status"] == "unconfirmed"
+
+
 @pytest.mark.parametrize("nan_affected", [False, True])
 def test_dynamic_disclosure_survives_zero_scored_exclusions(
     run_security_recommend, tmp_path, nan_affected,
@@ -186,7 +216,7 @@ def test_recognized_dynamic_selector_does_not_fabricate_quarantine_for_clean_bun
     paths = dr.write_outputs(result, str(tmp_path / "clean"))
     payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     assert "suspension_quarantine" not in payload["meta"]
-    assert "n_quarantined" not in payload
+    assert payload["n_quarantined"] == 0
 
 
 @pytest.mark.parametrize("corruption", [
@@ -279,7 +309,7 @@ def test_dynamic_audit_cannot_hide_exclusion_or_relabel_an_ordinary_security(
     frame = result.scored_frame.copy(deep=True)
     meta = copy.deepcopy(result.run_meta)
     if corruption == "tradable":
-        frame.loc[frame["stock_code"].eq("SZ300001"), "tradable_flag"] = True
+        frame.loc[frame["stock_code"].eq("SZ300001"), "eligible_as_of"] = True
     elif corruption == "reason":
         frame.loc[frame["stock_code"].eq("SH600036"), "unavailable_reason"] = "suspended"
     elif corruption == "other_security":
@@ -304,6 +334,9 @@ def test_dynamic_provider_still_requires_matching_authorization_before_model_wor
     # The fixture configures only local synthetic collaborators. No inference
     # call is needed to create the actual integrity-stamp input for refusal.
     legacy._stamp(tmp_path / "bundle")
+    write_calendar(tmp_path / "calendar.json",
+                   now=datetime(2026, 9, 22, 21, tzinfo=CN_TZ),
+                   start_date="2026-09-18", end_date="2026-09-30")
     model = Mock(side_effect=AssertionError("model must not load"))
     features = Mock(side_effect=AssertionError("features must not build"))
     monkeypatch.setattr(dr, "_load_model", model)
@@ -312,7 +345,7 @@ def test_dynamic_provider_still_requires_matching_authorization_before_model_wor
         tmp_path, suspension_quarantine=selected, allow_holey_recommend=broad,
     )
     with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
-        dr.recommend(config, now=date(2026, 9, 22))
+        dr.recommend(config, now=datetime(2026, 9, 22, 21, tzinfo=CN_TZ))
     model.assert_not_called()
     features.assert_not_called()
 

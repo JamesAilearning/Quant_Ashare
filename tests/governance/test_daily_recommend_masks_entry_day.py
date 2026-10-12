@@ -1,29 +1,10 @@
-"""Governance: ``daily_recommend.recommend`` MUST key the tradability mask
-on the ENTRY day, not the as-of day.
+"""Governance: candidates may inspect known T bars, never future entry bars.
 
-Codex P1 round 4 on PR #241 / audit A1 family.
-
-Why this guard exists
----------------------
-The live flow resolves ``(as_of_date=T, entry_date=T+1)`` and
-``resolve_dates`` requires the entry session to exist in the bundle
-calendar (the default as-of is the second-to-last day), so the entry day's
-bars are on disk at decision time. The canonical backtest (PR-C) drops a
-T-stamped signal whose EXECUTION day is suspended / one-price-locked; the
-live list must apply the same execution-day semantics or live and backtest
-diverge on unfillable next-day names — a name tradable on T but suspended
-on T+1 would be recommended live yet never filled (and never held in the
-backtest). A refactor that "simplifies" the call back to
-``(as_of_date, as_of_date)`` would silently restore that divergence while
-every existing unit test (which exercises the pure helpers with
-pre-computed sets) kept passing.
-
-Detection strategy
-------------------
-AST-walk ``recommend`` in ``src/inference/daily_recommend.py``, find the
-``compute_unavailable_mask`` call, and assert its start/end date arguments
-are the ``entry_date`` name. Mirrors
-``test_backtest_runner_applies_microstructure_mask.py``.
+The approved restore-next-session-candidates contract replaces retrospective
+execution confirmation with one unconfirmed candidate path. The backtest's
+execution-day mask is unchanged; recommendation must not claim equivalence
+to a future fill. Pin both the authoritative mask and the audit-reason query
+to the decision date so even already-recorded later bars cannot leak in.
 """
 
 from __future__ import annotations
@@ -47,8 +28,8 @@ def _find_function(tree: ast.AST, name: str) -> ast.FunctionDef | None:
     return None
 
 
-class DailyRecommendMaskEntryDayTests(unittest.TestCase):
-    def test_tradability_mask_keyed_on_entry_date(self) -> None:
+class DailyRecommendMaskAsOfDayTests(unittest.TestCase):
+    def test_known_eligibility_mask_keyed_on_as_of_date(self) -> None:
         tree = ast.parse(_TARGET.read_text(encoding="utf-8"))
         fn = _find_function(tree, "recommend")
         self.assertIsNotNone(fn, f"recommend() not found in {_TARGET}")
@@ -83,14 +64,17 @@ class DailyRecommendMaskEntryDayTests(unittest.TestCase):
                 "alongside the call.",
             )
             self.assertEqual(
-                arg.id, "entry_date",  # type: ignore[union-attr]
-                f"the tradability mask's {pos} date must be entry_date "
-                "(the day the recommendation fills — execution-day "
-                f"semantics, codex P1 round 4 on PR #241); got {arg.id!r}. "
-                "Keying it back to as_of_date silently diverges live "
-                "recommendations from the lag=1 backtest on names that are "
-                "tradable on T but suspended/locked on T+1.",
+                arg.id, "as_of_date",  # type: ignore[union-attr]
+                f"known eligibility {pos} must use as_of_date, not a "
+                f"future execution session; got {arg.id!r}",
             )
+
+        reasons = [node for node in ast.walk(fn) if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Name)
+                   and node.func.id == "_per_regime_sets"]
+        self.assertEqual(len(reasons), 1)
+        self.assertIsInstance(reasons[0].args[2], ast.Name)
+        self.assertEqual(reasons[0].args[2].id, "as_of_date")
 
 
 if __name__ == "__main__":

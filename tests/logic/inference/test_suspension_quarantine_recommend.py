@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from src.inference import daily_recommend as dr
+from tests.logic.inference.candidate_test_helpers import CN_TZ, write_calendar
 
 _POLICY = "suspend-688766-20251127-20251209"
 _INSTRUMENT = "SH688766"
@@ -46,7 +47,7 @@ def test_conflict_policy_excludes_only_688005_and_discloses_matching_evidence(
     audit = result.scored_frame.set_index("stock_code")
     assert audit["predicted_score"].to_dict() == scores
     assert audit.loc["SH688005", "unavailable_reason"] == "data_quarantine"
-    assert audit.loc["SH688766", "tradable_flag"]
+    assert audit.loc["SH688766", "eligible_as_of"]
     assert result.run_meta["instruments"] == "csi300"
     assert result.run_meta["suspension_quarantine"]["instrument"] == "SH688005"
     projection = dr._quarantine_output_context(result)
@@ -111,6 +112,7 @@ def _config(tmp_path: Path, **updates):
         "fit_start": "2020-01-01", "fit_end": "2025-01-01",
         "instruments": "csi300", "as_of_date": _AS_OF, "topk": 1,
         "name_source_parquet": str(tmp_path / "names.parquet"),
+        "trading_calendar_path": str(tmp_path / "calendar.json"),
     }
     values.update(updates)
     return dr.RecommendationConfig(**values)
@@ -214,16 +216,26 @@ def run_recommend(tmp_path, monkeypatch):
         calendar=lambda: pd.date_range("2026-09-18", "2026-09-22", freq="B"),
     ))
     monkeypatch.setattr(dr, "_build_pit_provider", lambda _config: object())
-
     def run(*, scores=None, clean=False, policy=_POLICY, overlap=False, topk=1,
-            missing_quarantine_name=False):
+            missing_quarantine_name=False, as_of=_AS_OF, now=None,
+            price_calendar=None, calendar_source=None, cadence=1):
+        now = now or datetime(2026, 9, 22, 21, tzinfo=CN_TZ)
+        price_calendar = (list(pd.date_range("2026-09-18", "2026-09-22", freq="B"))
+                          if price_calendar is None else price_calendar)
+        monkeypatch.setattr(qlib.data, "D", SimpleNamespace(calendar=lambda: price_calendar))
+        expected_as_of = as_of or str(pd.Timestamp(price_calendar[-1]).date())
+        if calendar_source is None:
+            calendar_source = write_calendar(
+                tmp_path / "calendar.json", now=now,
+                start_date="2026-09-18", end_date="2026-10-09",
+            )
         _stamp(tmp_path / "bundle", clean=clean)
         names = pd.DataFrame({
             "ts_code": ["688766.SH", "600000.SH", "000001.SZ", "688005.SH",
                         "600036.SH", "300001.SZ"],
             "name": ["*ST隔离" if overlap else "隔离样本", "浦发银行", "平安银行", "冲突样本",
                      "普通样本一", "普通样本二"],
-            "snapshot_date": ["20260922"] * 6,
+            "snapshot_date": [now.strftime("%Y%m%d")] * 6,
         })
         if missing_quarantine_name:
             names = names[names["ts_code"] != "688766.SH"]
@@ -232,7 +244,7 @@ def run_recommend(tmp_path, monkeypatch):
         features = pd.DataFrame(
             {"feature": range(len(predictions))},
             index=pd.MultiIndex.from_product(
-                [[pd.Timestamp(_AS_OF)], list(predictions.index)],
+                [[pd.Timestamp(expected_as_of)], list(predictions.index)],
                 names=["datetime", "instrument"],
             ),
         )
@@ -240,19 +252,27 @@ def run_recommend(tmp_path, monkeypatch):
         build = Mock(return_value=(dataset, features))
         predict = Mock(return_value=predictions)
         mask = Mock(return_value=SimpleNamespace(
-            masked={(_ENTRY, _INSTRUMENT)} if overlap else set(),
+            masked={(expected_as_of, _INSTRUMENT)} if overlap else set(),
         ))
         monkeypatch.setattr(dr, "_build_asof_dataset", build)
-        monkeypatch.setattr(dr, "_load_model", lambda _path: (SimpleNamespace(predict=predict), "d" * 64))
+        load = Mock(return_value=(SimpleNamespace(predict=predict), "d" * 64))
+        monkeypatch.setattr(dr, "_load_model", load)
         monkeypatch.setattr(dr, "compute_unavailable_mask", mask)
         monkeypatch.setattr(dr, "_per_regime_sets", lambda *_args: (
             {_INSTRUMENT} if overlap else set(), set(),
         ))
-        config = _config(tmp_path, suspension_quarantine=policy, topk=topk)
-        result = dr.recommend(config, now=date(2026, 9, 22))
-        assert build.call_args.args == (config, _AS_OF)
+        config = _config(tmp_path, suspension_quarantine=policy, topk=topk,
+                         as_of_date=as_of, trading_calendar_path=calendar_source,
+                         rebalance_cadence_days=cadence)
+        run.calls = {"load": load, "build": build, "predict": predict, "mask": mask}
+        result = dr.recommend(config, now=now)
+        assert build.call_args.args == (config, expected_as_of)
         predict.assert_called_once_with(dataset, segment="infer")
         assert mask.call_args.args[0] == list(predictions.dropna().index)
+        assert mask.call_args.args[1:3] == (expected_as_of, expected_as_of)
+        assert result.scored_frame["tradable_flag"].map(lambda value: value is None).all()
+        assert all(pick.eligible_as_of is True and pick.tradable_flag is None
+                   for pick in result.picks)
         return result
 
     return run
@@ -266,7 +286,7 @@ def test_quarantine_preserves_scoring_universe_and_refills_topk(run_recommend, o
     assert list(audit.index) == list(_SCORES)
     assert audit["predicted_score"].to_dict() == _SCORES
     assert audit.loc[_INSTRUMENT, "unavailable_reason"] == "data_quarantine"
-    assert not audit.loc[_INSTRUMENT, "tradable_flag"]
+    assert not audit.loc[_INSTRUMENT, "eligible_as_of"]
     assert (result.n_scored, result.n_masked, result.n_st_excluded, result.n_quarantined) == (2, 0, 0, 1)
     assert result.run_meta["instruments"] == "csi300"
     assert result.run_meta["suspension_quarantine"] == {
@@ -329,7 +349,7 @@ def test_json_and_both_csvs_disclose_active_quarantine_without_mutating_scores(
     payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     assert payload["meta"]["suspension_quarantine"] == result.run_meta["suspension_quarantine"]
     assert payload["n_quarantined"] == int(scored_quarantine)
-    assert payload["artifact_schema_version"] == 2
+    assert payload["artifact_schema_version"] == 3
     assert all(row["stock_code"] != _INSTRUMENT for row in payload["picks"])
     for key in ("csv", "audit"):
         with Path(paths[key]).open(encoding="utf-8-sig", newline="") as stream:
@@ -350,7 +370,7 @@ def test_clean_output_omits_quarantine_context(run_recommend, tmp_path):
     paths = dr.write_outputs(result, str(tmp_path / "outputs"))
     payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
     assert "suspension_quarantine" not in payload["meta"]
-    assert "n_quarantined" not in payload
+    assert payload["n_quarantined"] == 0
     for key in ("csv", "audit"):
         header = Path(paths[key]).read_text(encoding="utf-8-sig").splitlines()[0]
         assert not any(column in header for column in _CONTEXT_COLUMNS)
@@ -408,7 +428,7 @@ def test_writer_refuses_quarantine_inconsistency_before_any_output(
     elif corruption == "leaked_pick":
         result = replace(result, picks=(replace(result.picks[0], stock_code=_INSTRUMENT),))
     elif corruption == "leaked_audit":
-        result.scored_frame.loc[0, "tradable_flag"] = True
+        result.scored_frame.loc[0, "eligible_as_of"] = True
     else:
         del meta["suspension_quarantine"]
     output = tmp_path / "not_created"
@@ -516,9 +536,9 @@ def test_combined_isolation_excludes_both_before_topk_without_rewriting_score_au
     assert audit["predicted_score"].to_dict() == scores
     for identity in identities:
         assert audit.loc[identity, "unavailable_reason"] == "data_quarantine"
-        assert not audit.loc[identity, "tradable_flag"]
-    assert audit.loc["SH600000", "tradable_flag"]
-    assert audit.loc["SZ000001", "tradable_flag"]
+        assert not audit.loc[identity, "eligible_as_of"]
+    assert audit.loc["SH600000", "eligible_as_of"]
+    assert audit.loc["SZ000001", "eligible_as_of"]
     assert (result.n_scored, result.n_masked, result.n_st_excluded, result.n_quarantined) == (2, 0, 0, 2)
     assert result.run_meta["instruments"] == "csi300"
     assert result.run_meta["suspension_quarantine"] == {
@@ -707,7 +727,7 @@ def test_combined_writer_refuses_either_quarantined_audit_row_becoming_tradable(
         "SH688005": 0.99, "SH688766": 0.98, "SH600000": 0.8,
     })
     frame = result.scored_frame.copy(deep=True)
-    frame.loc[frame["stock_code"].eq(identity), "tradable_flag"] = True
+    frame.loc[frame["stock_code"].eq(identity), "eligible_as_of"] = True
     forged = replace(result, scored_frame=frame)
     output = tmp_path / "combined_bad_audit"
     with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
@@ -721,13 +741,16 @@ def test_combined_bundle_refuses_absent_or_wrong_opt_in_before_model_work(
     run_combined_recommend, tmp_path, monkeypatch, selected, broad,
 ):
     _stamp(tmp_path / "bundle")
+    write_calendar(tmp_path / "calendar.json",
+                   now=datetime(2026, 9, 22, 21, tzinfo=CN_TZ),
+                   start_date="2026-09-18", end_date="2026-09-30")
     model = Mock(side_effect=AssertionError("model must not load"))
     features = Mock(side_effect=AssertionError("features must not build"))
     monkeypatch.setattr(dr, "_load_model", model)
     monkeypatch.setattr(dr, "_build_asof_dataset", features)
     config = _config(tmp_path, suspension_quarantine=selected, allow_holey_recommend=broad)
     with pytest.raises(dr.DailyRecommendationError, match="quarantine"):
-        dr.recommend(config, now=date(2026, 9, 22))
+        dr.recommend(config, now=datetime(2026, 9, 22, 21, tzinfo=CN_TZ))
     model.assert_not_called()
     features.assert_not_called()
 

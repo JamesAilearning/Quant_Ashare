@@ -39,11 +39,15 @@ from src.inference.daily_recommend import RecommendationConfig  # noqa: E402
 # class attribute. Both the dataclass factory and the CLI read it, which
 # is what makes them single-source — so that function is what a linkage
 # test has to move.
-_FACTORY_RESOLVERS = {"name_source_parquet": "default_name_source"}
+_FACTORY_RESOLVERS = {
+    "name_source_parquet": "default_name_source",
+    "trading_calendar_path": "default_trading_calendar",
+}
 
 _ALIASES = {
     "st_max_age_days": "st_snapshot_max_age_days",
     "name_source": "name_source_parquet",
+    "trading_calendar": "trading_calendar_path",
     # These two were MISSING, so `--as-of` / `--ensemble-manifest` were
     # dropped at the "is this a config field?" step and their entries in
     # _RESOLVED_ELSEWHERE below were never consulted — dead exemptions that

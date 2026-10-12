@@ -50,6 +50,7 @@ from src.inference.daily_recommend import (
     write_outputs,
 )
 from tests.e2e_guard import run_e2e_enabled
+from tests.logic.inference.candidate_test_helpers import CN_TZ, calendar_context, read_calendar
 
 # Single source of truth so every RUN_E2E gate accepts the same spellings
 # (previously this gate only accepted "1" — see tests/e2e_guard.py).
@@ -68,33 +69,47 @@ class ResolveDatesTests(unittest.TestCase):
 
     _CAL = ["2025-06-25", "2025-06-26", "2025-06-27", "2025-06-30", "2025-07-01"]
 
-    def test_default_as_of_is_latest_day_with_a_successor(self) -> None:
-        # Default picks the latest day that still has a following session
-        # (the bundle's last day cannot be a decision day — no T+1 in it).
-        t, entry = resolve_dates(None, calendar=self._CAL)
-        self.assertEqual(t, "2025-06-30")    # second-to-last
-        self.assertEqual(entry, "2025-07-01")  # last day = entry
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.now = datetime(2025, 7, 1, 18, tzinfo=CN_TZ)
+        self.schedule = read_calendar(
+            Path(directory.name) / "calendar.json", now=self.now,
+            start_date="2025-06-25", end_date="2025-07-10",
+        )
 
-    def test_default_rejects_single_day_calendar(self) -> None:
-        with self.assertRaisesRegex(DailyRecommendationError, "fewer than 2"):
-            resolve_dates(None, calendar=["2025-07-01"])
+    def _resolve(self, as_of=None, calendar=None):
+        return resolve_dates(as_of, calendar=self._CAL if calendar is None else calendar,
+                             schedule=self.schedule, now=self.now)
+
+    def test_default_as_of_is_latest_closed_price_tail(self) -> None:
+        t, entry = self._resolve()
+        self.assertEqual(t, "2025-07-01")
+        self.assertEqual(entry, "2025-07-02")  # no future price bar required
+
+    def test_single_closed_price_day_uses_independent_next_session(self) -> None:
+        self.assertEqual(self._resolve(calendar=["2025-07-01"]),
+                         ("2025-07-01", "2025-07-02"))
+
+    def test_empty_price_calendar_is_rejected(self) -> None:
+        with self.assertRaises(DailyRecommendationError):
+            self._resolve(calendar=[])
 
     def test_explicit_as_of_resolves_next_trading_day(self) -> None:
-        t, entry = resolve_dates("2025-06-27", calendar=self._CAL)
+        t, entry = self._resolve("2025-06-27")
         self.assertEqual(t, "2025-06-27")
         self.assertEqual(entry, "2025-06-30")  # skips the weekend gap
 
-    def test_last_day_has_no_entry_date_errors(self) -> None:
-        with self.assertRaisesRegex(DailyRecommendationError, "no next trading day"):
-            resolve_dates("2025-07-01", calendar=self._CAL)
+    def test_explicit_price_tail_can_target_a_future_arranged_session(self) -> None:
+        self.assertEqual(self._resolve("2025-07-01"), ("2025-07-01", "2025-07-02"))
 
     def test_non_trading_day_rejected(self) -> None:
-        with self.assertRaisesRegex(DailyRecommendationError, "not a trading day"):
-            resolve_dates("2025-06-28", calendar=self._CAL)  # Saturday, not in calendar
+        with self.assertRaises(DailyRecommendationError):
+            self._resolve("2025-06-28")  # Saturday, not in price/calendar sessions
 
     def test_unparseable_as_of_raises_domain_error(self) -> None:
-        with self.assertRaisesRegex(DailyRecommendationError, "not a parseable date"):
-            resolve_dates("not-a-date", calendar=self._CAL)
+        with self.assertRaises(DailyRecommendationError):
+            self._resolve("not-a-date")
 
 
 def _frame_for(dates_instruments: list[tuple[str, str]]) -> pd.DataFrame:
@@ -392,12 +407,14 @@ class ModelUniverseGuardTests(unittest.TestCase):
             delisted_registry_path="d", fit_start="2018-01-02",
             fit_end="2024-12-18", instruments="csi300")
         meta = _assemble_run_meta(
-            config, model_pkl_sha256="ab", bundle_tag=None,
+            config, trading_calendar=calendar_context("2025-06-30"),
+            latest_closed_session="2025-06-30", model_pkl_sha256="ab", bundle_tag=None,
             model_universe="csi300")
         self.assertEqual("csi300", meta["model_universe"])
         # Ensemble artifacts keep their shape (identity via manifest).
         meta = _assemble_run_meta(
-            config, model_pkl_sha256="ab", bundle_tag=None)
+            config, trading_calendar=calendar_context("2025-06-30"),
+            latest_closed_session="2025-06-30", model_pkl_sha256="ab", bundle_tag=None)
         self.assertNotIn("model_universe", meta)
 
 
@@ -534,7 +551,9 @@ class BuildRecommendationTests(unittest.TestCase):
         # audit frame carries precise reasons + both time columns
         self.assertEqual(set(frame.columns) >= {"as_of_date", "entry_date",
             "stock_code", "stock_name", "predicted_score", "tradable_flag",
-            "unavailable_reason"}, True)
+            "unavailable_reason", "eligible_as_of"}, True)
+        self.assertTrue(frame["tradable_flag"].map(lambda value: value is None).all())
+        self.assertTrue(all(p.eligible_as_of is True and p.tradable_flag is None for p in picks))
         reason = dict(zip(frame.stock_code, frame.unavailable_reason, strict=True))
         self.assertEqual(reason["SZ000001"], "suspended")
         self.assertEqual(reason["SZ300750"], "one_price_lock")
@@ -910,9 +929,9 @@ class _PicklableFakeModel:
 
 
 def _dummy_run_meta(**overrides: object) -> dict[str, object]:
-    """A representative artifact-v2 meta block for constructor tests."""
+    """A representative artifact-v3 meta block for constructor tests."""
     meta: dict[str, object] = {
-        "generated_at": "2025-06-30T18:00:00+08:00",
+        "generated_at": "2025-07-01T18:00:00+08:00",
         "model_path": "D:/models/m.pkl",
         "model_pkl_sha256": "ab" * 32,
         "fit_start_for_inference": "2018-01-02",
@@ -922,6 +941,8 @@ def _dummy_run_meta(**overrides: object) -> dict[str, object]:
         "bundle_built_at": "2025-06-30T20:10:00+08:00",
         "instruments": "csi300",
         "topk": 50,
+        "trading_calendar": calendar_context("2025-07-01"),
+        "latest_closed_session": "2025-07-01",
     }
     meta.update(overrides)
     return meta
@@ -952,10 +973,8 @@ class CadenceValueDomainTests(unittest.TestCase):
 
 class WriteOutputsTests(unittest.TestCase):
     def test_daily_config_artifact_omits_cadence_fields(self) -> None:
-        # PR-A (csi800-n5-production-promotion): a daily (cadence=1)
-        # artifact stays byte-compatible with the pre-cadence contract —
-        # the fields are ABSENT, not null (readers treat absence as
-        # daily semantics; backward compat is pinned on the UI side).
+        # Candidate-v3 retains the independent daily cadence contract:
+        # no cadence fields, not null fields implying an N5 HOLD verdict.
         result = DailyRecommendationResult(
             as_of_date="2025-06-30", entry_date="2025-07-01",
             picks=(), n_scored=0, n_masked=0, n_st_excluded=0,
@@ -1036,10 +1055,12 @@ class WriteOutputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_outputs(result, tmp)
             header = Path(paths["csv"]).read_text(encoding="utf-8-sig").splitlines()[0]
-            self.assertEqual(header.split(","), _BUY_LIST_COLUMNS)
+            self.assertEqual(header.split(","), _BUY_LIST_COLUMNS + [
+                "recommendation_mode", "entry_tradability_status",
+            ])
 
     def test_json_carries_schema_version_and_meta_block(self) -> None:
-        # Artifact contract v2: the JSON must be self-describing — version
+        # Artifact contract v3: the JSON must be self-describing — version
         # marker + verbatim meta block — so readers can bind "this file" to
         # "that model" instead of silently mismatching (A1 of
         # add-daily-decision-page).
@@ -1053,7 +1074,10 @@ class WriteOutputsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_outputs(result, tmp)
             payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
-        self.assertEqual(payload["artifact_schema_version"], 2)
+        self.assertEqual(payload["artifact_schema_version"], 3)
+        self.assertEqual(payload["recommendation_mode"], "next_session_candidate")
+        self.assertEqual(payload["entry_tradability_status"], "unconfirmed")
+        self.assertEqual(payload["n_quarantined"], 0)
         self.assertEqual(payload["meta"], meta)
 
     def test_a_run_meta_without_the_nonce_is_refused(self) -> None:
@@ -1124,7 +1148,8 @@ class AssembleRunMetaTests(unittest.TestCase):
 
     def test_fields_mirror_resolved_config(self) -> None:
         meta = _assemble_run_meta(
-            self._config(), model_pkl_sha256="ab" * 32,
+            self._config(), trading_calendar=calendar_context("2025-06-30"),
+            latest_closed_session="2025-06-30", model_pkl_sha256="ab" * 32,
             bundle_tag="2025-06-30@sha256:feed",
             generated_at="2025-06-30T18:00:00+08:00",
         )
@@ -1140,7 +1165,8 @@ class AssembleRunMetaTests(unittest.TestCase):
 
     def test_default_generated_at_is_cn_offset_iso(self) -> None:
         meta = _assemble_run_meta(
-            self._config(), model_pkl_sha256="ab" * 32, bundle_tag=None,
+            self._config(), trading_calendar=calendar_context("2025-06-30"),
+            latest_closed_session="2025-06-30", model_pkl_sha256="ab" * 32, bundle_tag=None,
         )
         # Fixed +08:00 (repo convention; Asia/Shanghai has no DST) and
         # parseable ISO8601 — never a naive local timestamp.
@@ -1151,7 +1177,8 @@ class AssembleRunMetaTests(unittest.TestCase):
 
     def test_missing_bundle_identity_is_null_not_fabricated(self) -> None:
         meta = _assemble_run_meta(
-            self._config(), model_pkl_sha256="ab" * 32, bundle_tag=None,
+            self._config(), trading_calendar=calendar_context("2025-06-30"),
+            latest_closed_session="2025-06-30", model_pkl_sha256="ab" * 32, bundle_tag=None,
         )
         self.assertIsNone(meta["bundle_tag"])
 

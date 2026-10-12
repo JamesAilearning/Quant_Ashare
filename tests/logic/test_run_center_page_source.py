@@ -100,6 +100,11 @@ class PageSourceTests(unittest.TestCase):
         # into the runnable expression.
         self.assertIn("and not _running_fresh", self.src)
 
+    def test_printed_and_executed_recommendation_share_explicit_calendar(self) -> None:
+        self.assertIn("_trading_calendar = resolve_trading_calendar()", self.src)
+        self.assertEqual(self.src.count("trading_calendar=_trading_calendar,"), 2)
+        self.assertIn("计划会话，交易资格未确认", self.src)
+
     def test_lock_refusal_is_rendered_as_the_authority(self) -> None:
         # codex #440 r2: the status gate above is advisory UX only; the
         # authoritative serialization is the runner holding the

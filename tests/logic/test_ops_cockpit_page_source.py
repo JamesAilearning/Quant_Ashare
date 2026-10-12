@@ -91,7 +91,7 @@ class IrreversibleCommandTests(unittest.TestCase):
             IncumbentIdentity(kind="ensemble", manifest_path="m.json",
                               manifest_sha256="a" * 64),
             model_path="x.pkl", provider_uri="P",
-            delisted_registry="R", name_source="N",
+            delisted_registry="R", name_source="N", trading_calendar="C",
             bundle_max_age_days=14).irreversible)
 
     def test_the_page_renders_the_irreversible_marker(self) -> None:
@@ -144,15 +144,15 @@ class ResolvedCommandTests(unittest.TestCase):
         commands = [
             morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14),  # type: ignore[arg-type]
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14),  # type: ignore[arg-type]
             morning_command(IncumbentIdentity(kind="single"),
                             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14),
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14),
             morning_command(IncumbentIdentity(kind="unresolvable", error="x"),
                             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14),
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14),
             data_update_command(provider_uri="/srv/bundle",
                                 delisted_registry="/srv/reg.parquet"),
             *rotation_commands("/srv/prod_manifest.json",
@@ -168,7 +168,7 @@ class ResolvedCommandTests(unittest.TestCase):
         from web.operator_ui.pages._ops_cockpit_helpers import morning_command
         cmd = morning_command(self._ensemble(), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14)  # type: ignore[arg-type]
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14)  # type: ignore[arg-type]
         toks = shlex.split(cmd.command)
         self.assertEqual("/srv/prod_manifest.json",
                          toks[toks.index("--ensemble-manifest") + 1])
@@ -181,7 +181,7 @@ class ResolvedCommandTests(unittest.TestCase):
         cmd = morning_command(
             IncumbentIdentity(kind="single"), model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14)
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14)
         toks = shlex.split(cmd.command)
         self.assertEqual("/srv/m.pkl", toks[toks.index("--model") + 1])
         self.assertNotIn("--ensemble-manifest", cmd.command)
@@ -197,7 +197,7 @@ class ResolvedCommandTests(unittest.TestCase):
                               manifest_path="/srv/broken.json", error="boom"),
             model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14)
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14)
         self.assertTrue(cmd.command.lstrip().startswith("#"))
         self.assertNotIn("/srv/broken.json", cmd.command)
         self.assertNotIn("daily_recommend.py --", cmd.command)
@@ -242,7 +242,7 @@ class ResolvedCommandTests(unittest.TestCase):
                 IncumbentIdentity(kind="ensemble", manifest_path="/m.json",
                                   manifest_sha256="a" * 64),
                 model_path="/x.pkl", provider_uri="/b",
-                delisted_registry="/r", name_source="/n",
+                delisted_registry="/r", name_source="/n", trading_calendar="/srv/calendar.json",
                 bundle_max_age_days=14),
             *rotation_commands("/m.json", provider_uri="/b",
                                namechange_path="/n"),
@@ -428,7 +428,7 @@ class ResolvedCommandTests(unittest.TestCase):
             for label, cmd in (
                 ("morning", morning_command(
                     ens, model_path="M", provider_uri=blank,
-                    delisted_registry="R", name_source="N",
+                    delisted_registry="R", name_source="N", trading_calendar="C",
                     bundle_max_age_days=14)),
                 ("data update", data_update_command(
                     provider_uri=blank, delisted_registry="R")),
@@ -511,10 +511,10 @@ class ResolvedCommandTests(unittest.TestCase):
                                   manifest_sha256="a" * 64),
                 model_path="/srv/m.pkl", provider_uri="/srv/bundle",
                             delisted_registry="/srv/reg.parquet",
-                            name_source="/srv/ns.parquet", bundle_max_age_days=14), "--ensemble-manifest", hostile_file),
+                            name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14), "--ensemble-manifest", hostile_file),
             (morning_command(IncumbentIdentity(kind="single"),
                              model_path=hostile_file, provider_uri="/p",
-                             delisted_registry="/r", name_source="/n",
+                             delisted_registry="/r", name_source="/n", trading_calendar="/srv/calendar.json",
                              bundle_max_age_days=14),
              "--model", hostile_file),
             (data_update_command(provider_uri=hostile_dir,
@@ -556,11 +556,12 @@ class ResolvedCommandTests(unittest.TestCase):
                     incumbent, model_path="/srv/x.pkl",
                     provider_uri="/srv/bundle",
                     delisted_registry="/srv/reg.parquet",
-                    name_source="/srv/ns.parquet", bundle_max_age_days=14)
+                    name_source="/srv/ns.parquet", trading_calendar="/srv/calendar.json", bundle_max_age_days=14)
                 toks = shlex.split(cmd.command)
                 for flag, want in (("--provider-uri", "/srv/bundle"),
                                    ("--delisted-registry", "/srv/reg.parquet"),
-                                   ("--name-source", "/srv/ns.parquet")):
+                                   ("--name-source", "/srv/ns.parquet"),
+                                   ("--trading-calendar", "/srv/calendar.json")):
                     self.assertEqual(want, toks[toks.index(flag) + 1], flag)
 
     def test_the_morning_command_carries_the_predicted_threshold(self) -> None:
@@ -575,7 +576,7 @@ class ResolvedCommandTests(unittest.TestCase):
             IncumbentIdentity(kind="ensemble", manifest_path="/m.json",
                               manifest_sha256="a" * 64),
             model_path="/x.pkl", provider_uri="/b",
-            delisted_registry="/r", name_source="/n",
+            delisted_registry="/r", name_source="/n", trading_calendar="/srv/calendar.json",
             bundle_max_age_days=21)
         toks = shlex.split(cmd.command)
         self.assertEqual("21",
@@ -591,6 +592,31 @@ class ResolvedCommandTests(unittest.TestCase):
                      page.index("st.subheader(\"② ")]
         self.assertIn("provider_uri=_provider,", block)
         self.assertIn("name_source=resolve_name_source()", block)
+        self.assertIn("trading_calendar=resolve_trading_calendar()", block)
+
+    def test_trading_calendar_resolver_uses_the_canonical_raw_environment(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        from src.inference.daily_recommend import default_trading_calendar
+        from web.operator_ui.pages._ops_cockpit_helpers import resolve_trading_calendar
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(default_trading_calendar(), resolve_trading_calendar())
+        for value in ("", "calendar.json", " literal spaces "):
+            with patch.dict(os.environ, {"QUANT_TRADING_CALENDAR": value}):
+                self.assertEqual(value, resolve_trading_calendar())
+
+    def test_morning_command_refuses_blank_calendar_instead_of_using_default(self) -> None:
+        from web.operator_ui.incumbent import IncumbentIdentity
+        from web.operator_ui.pages._ops_cockpit_helpers import morning_command
+
+        cmd = morning_command(
+            IncumbentIdentity(kind="single"), model_path="M", provider_uri="P",
+            delisted_registry="R", name_source="N", trading_calendar="", bundle_max_age_days=14,
+        )
+        self.assertTrue(cmd.command.lstrip().startswith("#"))
+        self.assertNotIn("python ", cmd.command)
 
     def test_name_source_resolver_matches_the_serving_config(self) -> None:
         # codex #431 r23: the page must not restate the serving default. It

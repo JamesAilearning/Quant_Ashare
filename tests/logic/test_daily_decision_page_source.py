@@ -181,7 +181,7 @@ class PageBoundaryTests(unittest.TestCase):
         #
         # 钉**条件整行**：钉分支里的字面量会被「条件熄火」变异逃走。
         self.assertIn(
-            "    if _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:\n",
+            "    elif _blocked.reason == BASELINE_BLOCK_HISTORY_GAP:\n",
             self.page,
         )
         # 缺口那一支说的是「那一天 vs 那一段」，不是「这一份回答不了自己」。
@@ -433,15 +433,16 @@ class HelpersRuntimeTests(unittest.TestCase):
             "stamp tax drifted from the canonical CN schedule",
         )
 
-    def test_entry_caption_does_not_negate_the_artifact_contract(self) -> None:
+    def test_entry_caption_distinguishes_history_from_unconfirmed_candidates(self) -> None:
         # codex #443 r1: spec 明写 rebalance_day=true 时「本列表是可执行的
         # T+1 入场清单」。页面纠正的应当只是**时点**误读（按明早开盘价
         # 买入），不能笼统否定可执行性——那会让该执行的清单被当成不该
         # 执行。可执行性由 rebalance_day / HOLD 横幅单独承载。
         src = _PAGE.read_text(encoding="utf-8")
-        self.assertIn("是已收盘会话", src)
-        self.assertIn("明早开盘按市价买入", src)
-        self.assertIn("是否构成入场指令", src)
+        self.assertIn("是历史已收盘会话", src)
+        self.assertIn("下一交易日候选，交易资格未确认", src)
+        self.assertIn("须在交易时人工核对", src)
+        self.assertIn("HOLD 日仍只监控", src)
         # 旧的笼统措辞不得残留。
         self.assertNotIn("不是\n    「明早买入」", src)
         self.assertNotIn("」——每次必读这一行", src)
@@ -453,7 +454,7 @@ class HelpersRuntimeTests(unittest.TestCase):
         self.assertIn("工件契约被违反", src)
         # 断言必须在 caption **之前**，否则先背书再校验等于没校验。
         guard_at = src.index("_entry_date = _payload.get(\"entry_date\")")
-        caption_at = src.index("是已收盘会话**")
+        caption_at = src.index("是历史已收盘会话")
         self.assertLess(guard_at, caption_at)
         # 且 caption 只能读已校验过的局部变量，不能再从 payload 里取。
         self.assertNotIn(
@@ -483,7 +484,7 @@ class HelpersRuntimeTests(unittest.TestCase):
         src = _PAGE.read_text(encoding="utf-8")
         self.assertIn("artifact_entry_timing_is_valid(_payload)", src)
         self.assertIn(
-            "_artifact_contract_valid = _entry_date_is_valid and _artifact_schema_supported",
+            "_artifact_contract_valid = _signal.kind in {\"rebalance\", \"daily\", \"hold\"}",
             src,
         )
 
@@ -918,14 +919,14 @@ class HelpersRuntimeTests(unittest.TestCase):
             members=({"fit_start": "2024-01-01", "fit_end": "2026-04-01"},))
         cmd = morning_command(
             ens, model_path="", provider_uri="P", delisted_registry="R",
-            name_source="N", bundle_max_age_days=14)
+            name_source="N", trading_calendar="C", bundle_max_age_days=14)
         self.assertNotIn("无法生成可粘贴命令", cmd.title)
         self.assertIn("--ensemble-manifest", cmd.command)
         self.assertNotIn("--model", cmd.command)
         # …while the single-model deployment, where it DOES matter, refuses
         single = morning_command(
             IncumbentIdentity(kind="single"), model_path="", provider_uri="P",
-            delisted_registry="R", name_source="N", bundle_max_age_days=14)
+            delisted_registry="R", name_source="N", trading_calendar="C", bundle_max_age_days=14)
         self.assertIn("无法生成可粘贴命令", single.title)
 
     def test_picks_shape_violation_raises_not_empty(self) -> None:
@@ -1544,7 +1545,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
             {"artifact_schema_version": False},
             {"artifact_schema_version": "2"},
             {"artifact_schema_version": 1},
-            {"artifact_schema_version": 3},
+            {"artifact_schema_version": 4},
         ):
             with self.subTest(payload=payload):
                 assert helpers.artifact_schema_is_supported(payload) is False
@@ -1553,6 +1554,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
                     artifact_contract_valid=helpers.artifact_schema_is_supported(payload),
                 ) is False
         assert helpers.artifact_schema_is_supported({"artifact_schema_version": 2})
+        assert helpers.artifact_schema_is_supported({"artifact_schema_version": 3})
         review_start = self.page.index("with _review_summary_slot:")
         review_section = self.page[
             review_start

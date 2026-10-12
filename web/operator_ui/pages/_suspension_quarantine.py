@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.contracts.recommendation_timing import SCHEMA_VERSION
 from src.contracts.suspension_quarantine import (
     SECURITY_POLICY_ID,
     incident_for_policy,
@@ -18,7 +19,11 @@ def quarantine_notice(payload: dict[str, Any]) -> str | None:
     meta = payload.get("meta")
     if not isinstance(meta, dict) or "suspension_quarantine" not in meta:
         if "n_quarantined" in payload:
-            raise ValueError("隔离计数缺少对应的隔离证据，需核查工件。")
+            if not (type(payload.get("artifact_schema_version")) is int
+                    and payload["artifact_schema_version"] == SCHEMA_VERSION
+                    and type(payload["n_quarantined"]) is int
+                    and payload["n_quarantined"] == 0):
+                raise ValueError("隔离计数缺少对应的隔离证据，需核查工件。")
         return None
     context = meta["suspension_quarantine"]
     try:

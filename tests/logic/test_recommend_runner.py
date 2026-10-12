@@ -42,6 +42,7 @@ _PARAMS = dict(
     provider_uri="D:/qlib_data/my_cn_data_pit",
     delisted_registry="D:/qlib_data/tushare_raw/delisted_registry.parquet",
     name_source="D:/qlib_data/tushare_raw/active_stocks.parquet",
+    trading_calendar="D:/qlib_data/recommendation_calendar.json",
     bundle_max_age_days=14,
 )
 
@@ -183,6 +184,8 @@ class CommandShapeTests(unittest.TestCase):
                     _PARAMS["delisted_registry"],
                     "--name-source",
                     _PARAMS["name_source"],
+                    "--trading-calendar",
+                    _PARAMS["trading_calendar"],
                     "--bundle-max-age-days",
                     "14",
                     "--out-dir",

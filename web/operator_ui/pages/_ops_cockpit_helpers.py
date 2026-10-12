@@ -903,6 +903,13 @@ def resolve_name_source() -> str:
     return str(factory())
 
 
+def resolve_trading_calendar() -> str:
+    """Use the serving producer's exact schedule default, with no UI fallback."""
+    from src.inference.daily_recommend import default_trading_calendar  # noqa: PLC0415
+
+    return default_trading_calendar()
+
+
 # The name-change history the gates mask ST/renamed instruments with.
 #
 # RE-EXPORTED from `config_forms` (see the import block at the top of this
@@ -1060,7 +1067,7 @@ def _arg(value: object) -> str:
 def morning_command(
     incumbent: IncumbentIdentity, *, model_path: str,
     provider_uri: str, delisted_registry: str, name_source: str,
-    bundle_max_age_days: int,
+    bundle_max_age_days: int, trading_calendar: str,
 ) -> OpsCommand:
     """The morning list command for THIS deployment's actual shape.
 
@@ -1080,10 +1087,11 @@ def morning_command(
     data_flags = (f" --provider-uri {_arg(provider_uri)}"
                   f" --delisted-registry {_arg(delisted_registry)}"
                   f" --name-source {_arg(name_source)}"
+                  f" --trading-calendar {_arg(trading_calendar)}"
                   f" --bundle-max-age-days {bundle_max_age_days}")
     if incumbent.kind == "single":
         return OpsCommand(
-            title="晨跑出单（每交易日早晨，手动）",
+            title="生成下一交易日候选（完整收盘数据后，手动）",
             command=(f"python scripts/daily_recommend.py --model {_arg(model_path)}"
                      + data_flags),
             note=("现任为单模型形态（QUANT_ENSEMBLE_MANIFEST 显式设为 `none`），"
@@ -1102,7 +1110,7 @@ def morning_command(
                   "请先修复 QUANT_ENSEMBLE_MANIFEST 指向的 manifest。"),
         )
     return OpsCommand(
-        title="晨跑出单（每交易日早晨，手动）",
+        title="生成下一交易日候选（完整收盘数据后，手动）",
         command=("python scripts/daily_recommend.py "
                  f"--ensemble-manifest {_arg(incumbent.manifest_path)}"
                  + data_flags),

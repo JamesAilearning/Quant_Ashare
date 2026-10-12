@@ -2,9 +2,9 @@
 
 ``recommend(config)`` loads a trained qlib model, builds the **as-of-T**
 Alpha158 feature cross-section (data ``<= T`` only), scores it, filters
-out untradable names (suspension / one-price-lock) via the existing
-microstructure mask, ranks by score, and returns the Top-K buy list for
-the next session (``T+1`` entry).
+known T-day exclusions via the canonical microstructure mask, and ranks
+Top-K candidates for the separately scheduled next session. Actual
+entry-day tradability is UNKNOWN and must be checked by a human at trade time.
 
 Look-ahead safety (the red line)
 --------------------------------
@@ -15,9 +15,9 @@ Look-ahead safety (the red line)
   window (``fit_start..fit_end``), not on ``T`` — no statistic learns
   from the decision date.
 * Only ``col_set="feature"`` with the INFER data key (``DK_I``) is
-  prepared. qlib puts ``DropnaLabel`` in the LEARN processors (``DK_L``)
-  only, so the NaN label on the latest day does NOT drop the row — the
-  list cannot come back empty for that reason. The label is never read.
+  prepared. Alpha158 loads all configured groups before preparation, so
+  its unused label group is explicitly current close, never its default
+  forward-return expression. No learning/label processor runs here.
 
 This module imports and reuses existing components; it modifies none of
 them.
@@ -27,17 +27,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Final
 
 import pandas as pd
 
+from src.contracts.recommendation_timing import (
+    CN_TZ,
+    ENTRY_STATUS,
+    MODE,
+    SCHEMA_VERSION,
+    aware_clock,
+    validate_candidate_context,
+)
 from src.contracts.suspension_quarantine import (
     SuspensionQuarantine,
     has_quarantine,
@@ -68,6 +77,12 @@ from src.data.pit.bundle_integrity import (
     BundleIntegrityError,
     read_bundle_integrity,
 )
+from src.data.recommendation_calendar import (
+    CalendarSnapshotError,
+    TradingCalendarSnapshot,
+    read_snapshot,
+    resolve_session_dates,
+)
 from src.data.st_status import current_st_codes
 from src.inference.rebalance_schedule import (
     is_rebalance_day,
@@ -79,12 +94,11 @@ _logger = get_logger(__name__)
 # Operator-facing timestamps use fixed +08:00, mirroring the repo convention
 # (web/operator_ui/formatting.py ``_CN_TZ``). Asia/Shanghai has no DST, so the
 # fixed offset is exact and avoids a zoneinfo/tzdata dependency on Windows.
-_CN_TZ = timezone(timedelta(hours=8))
+_CN_TZ = CN_TZ
 
 # Serialized contract for ``daily_recommendation_YYYY-MM-DD.json``. Read-side
-# UI helpers intentionally pin this value without importing this qlib-bound
-# module; ``test_today_workbench_helpers`` keeps the two copies aligned.
-DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+# UI helpers share the qlib-free contract without importing this module.
+DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION: Final[int] = SCHEMA_VERSION
 
 
 class DailyRecommendationError(RuntimeError):
@@ -103,6 +117,12 @@ def default_name_source() -> str:
     """
     return os.environ.get(
         "QUANT_NAME_SOURCE", "D:/qlib_data/tushare_raw/active_stocks.parquet")
+
+
+def default_trading_calendar() -> str:
+    """Explicit deployment schedule source, never the qlib price calendar."""
+    return os.environ.get(
+        "QUANT_TRADING_CALENDAR", "D:/qlib_data/recommendation_calendar.json")
 
 
 @dataclass(frozen=True)
@@ -124,7 +144,8 @@ class RecommendationConfig:
     fit_start: str
     fit_end: str
     instruments: str = "csi300"
-    as_of_date: str | None = None  # None -> latest PIT trading day
+    as_of_date: str | None = None  # None -> latest fully closed price session
+    trading_calendar_path: str = field(default_factory=lambda: default_trading_calendar())
     topk: int = 50
     region: str = "cn"
     # The PIT bins are POST-adjusted (close × adj_factor) — see
@@ -191,20 +212,21 @@ class RecommendationPick:
     stock_code: str
     stock_name: str
     predicted_score: float
-    tradable_flag: bool
-    unavailable_reason: str  # "" when tradable
+    eligible_as_of: bool
+    tradable_flag: None
+    unavailable_reason: str  # candidate exclusion, not future execution status
 
 
 @dataclass(frozen=True)
 class DailyRecommendationResult:
     as_of_date: str       # T — data cutoff
-    entry_date: str       # T+1 trading day — suggested entry
+    entry_date: str       # separately planned T+1, not confirmed executable
     picks: tuple[RecommendationPick, ...]
-    n_scored: int         # tradable + non-NaN-score candidates considered
-    n_masked: int         # dropped by the microstructure tradability mask
+    n_scored: int         # eligible non-NaN-score candidate pool
+    n_masked: int         # excluded by known T microstructure conditions
     n_st_excluded: int    # dropped because currently ST/*ST
     scored_frame: pd.DataFrame  # full audit frame (incl. masked names)
-    # Generation context (artifact contract v2 — add-daily-decision-page A1):
+    # Generation context (artifact contract v3 — next-session candidates):
     # who/when/what produced this list. REQUIRED (no default) so every
     # constructor supplies it explicitly — an artifact without provenance is
     # the suspended-guard failure class this exists to prevent. Assembled by
@@ -212,8 +234,7 @@ class DailyRecommendationResult:
     # ``meta`` block.
     run_meta: Mapping[str, Any]
     # Cadence-aware serving semantics (PR-A, DP-2): ``None`` = daily
-    # config (cadence 1) — the fields stay ABSENT from the artifact so
-    # legacy readers and current behaviour are untouched. Under
+    # config (cadence 1) — the cadence fields stay ABSENT. Under
     # cadence=5 both are populated; ``rebalance_day=False`` marks a
     # HOLD-day artifact (monitoring view, NOT an entry instruction —
     # the buy-list requirement's cadence-aware entry semantics).
@@ -231,68 +252,19 @@ class DailyRecommendationResult:
 def resolve_dates(
     as_of_date: str | None,
     calendar: list[Any] | None = None,
+    *,
+    schedule: TradingCalendarSnapshot,
+    now: datetime,
 ) -> tuple[str, str]:
-    """Resolve (as_of_date T, entry_date T+1) against the trading calendar.
-
-    * ``as_of_date is None`` -> T = the LATEST trading day that still has a
-      following session in the calendar (i.e. the second-to-last day when
-      the calendar ends at the data cutoff). This keeps the no-argument
-      CLI usable: the last calendar day cannot be a decision day because
-      no T+1 session exists for it in the bundle.
-    * Otherwise T must be a real trading day on/before the calendar end.
-    * Entry date is the first trading day strictly after T. If an explicit
-      T is the last calendar day, T+1 does not exist -> explicit error
-      (never silently falls back to T).
-
-    ``calendar`` may be supplied (list of dates) to keep this pure and
-    unit-testable; when ``None`` it is fetched from the qlib calendar.
-    """
+    """Resolve recorded T and separately scheduled T+1; never invent bars."""
     if calendar is None:
         from qlib.data import D
         calendar = list(D.calendar())
-    calendar = [pd.Timestamp(d) for d in calendar]
-    if not calendar:
-        raise DailyRecommendationError("qlib calendar is empty.")
-    last = calendar[-1]
-
-    if as_of_date is None:
-        if len(calendar) < 2:
-            raise DailyRecommendationError(
-                "calendar has fewer than 2 trading days; cannot form a "
-                "(decision T, entry T+1) pair for the default as-of."
-            )
-        # Latest day that still has a next session (= the bundle's last day
-        # cannot be a decision day; its entry T+1 is not in the bundle).
-        t = calendar[-2]
-    else:
-        try:
-            t = pd.Timestamp(as_of_date)
-        except (ValueError, TypeError) as exc:
-            raise DailyRecommendationError(
-                f"as-of date {as_of_date!r} is not a parseable date "
-                "(expected YYYY-MM-DD)."
-            ) from exc
-        if pd.isna(t):
-            raise DailyRecommendationError(
-                f"as-of date {as_of_date!r} is not a parseable date "
-                "(expected YYYY-MM-DD)."
-            )
-        if t not in set(calendar):
-            raise DailyRecommendationError(
-                f"as-of date {t.date()} is not a trading day in the PIT "
-                f"calendar (calendar span {calendar[0].date()} .. "
-                f"{last.date()}). Pass a real trading day."
-            )
-
-    later = [d for d in calendar if d > t]
-    if not later:
-        raise DailyRecommendationError(
-            f"as-of date {t.date()} is the last day in the PIT calendar "
-            f"({last.date()}); there is no next trading day (T+1) to enter "
-            f"on. Re-run with an earlier --as-of, or extend the bundle."
-        )
-    entry = later[0]
-    return t.strftime("%Y-%m-%d"), entry.strftime("%Y-%m-%d")
+    try:
+        resolved = resolve_session_dates(calendar, schedule, now=now, as_of_date=as_of_date)
+    except CalendarSnapshotError as exc:
+        raise DailyRecommendationError(f"recommendation timing refused: {exc}") from exc
+    return resolved.as_of_date, resolved.entry_date
 
 
 # --------------------------------------------------------------------------
@@ -308,11 +280,11 @@ def _build_asof_dataset(
     ``model.predict``) and :func:`prepare_asof_features` (which needs only
     the frame), so the (expensive) Alpha158 handler is built exactly once.
 
-    ``end_time=T`` -> qlib loads no bar dated ``> T``. ``fit_end_time``
-    pins normalization to the training window. The INFER data key
-    (``DK_I``) means ``DropnaLabel`` (a LEARN processor) is NOT applied,
-    so a NaN label on the latest day does NOT drop the row — only the
-    (unused) features matter.
+    ``end_time=T`` and no forward label expression bound all reads to T.
+    ``fit_end_time`` pins normalization to the training window. Qlib's
+    grouped loader requires a label group; current close supplies that
+    unused shape without forward prices. It is never prepared or scored
+    as a return. All 158 features and inference processors are unchanged.
     """
     from qlib.contrib.data.handler import Alpha158
     from qlib.data.dataset import DatasetH
@@ -324,6 +296,10 @@ def _build_asof_dataset(
         end_time=as_of_date,           # <-- end at T: qlib loads no bar > T
         fit_start_time=config.fit_start,
         fit_end_time=config.fit_end,   # <-- normalization fit = training window
+        # DK_I alone does not prevent default forward labels being loaded
+        # during Alpha158 initialization. Do not fetch them for inference.
+        label=(["$close"], ["UNUSED_CURRENT_CLOSE"]),
+        learn_processors=[],
     )
     dataset = DatasetH(handler=handler, segments={"infer": [as_of_date, as_of_date]})
     feature_frame = dataset.prepare(
@@ -351,7 +327,7 @@ def _validate_candidate_st_names(
     """Require unique, usable current names before any coercion or ST test.
 
     ``df`` is the same frame already schema/date-checked by
-    ``_validate_st_snapshot``. Only non-NaN-scored, entry-day-unmasked codes
+    ``_validate_st_snapshot``. Only non-NaN-scored, T-day-unmasked codes
     require name evidence: missing names cannot make masked rows tradable.
     """
     counts: Counter[str] = Counter()
@@ -816,12 +792,14 @@ def _assemble_run_meta(
     *,
     model_pkl_sha256: str | None,
     bundle_tag: str | None,
+    trading_calendar: Mapping[str, Any],
+    latest_closed_session: str,
     bundle_built_at: str | None = None,
     generated_at: str | None = None,
     ensemble: Mapping[str, Any] | None = None,
     model_universe: str | None = None,
 ) -> dict[str, Any]:
-    """Build the artifact-contract-v2 generation context (pure; unit-testable).
+    """Build the artifact-contract-v3 generation context (pure; unit-testable).
 
     ``generated_at`` is injectable for tests (value-injection, as elsewhere);
     production default is now() in fixed +08:00. ``bundle_tag`` is the
@@ -850,6 +828,8 @@ def _assemble_run_meta(
         "bundle_built_at": bundle_built_at,
         "instruments": config.instruments,
         "topk": config.topk,
+        "trading_calendar": dict(trading_calendar),
+        "latest_closed_session": latest_closed_session,
     }
     # Ensemble provenance (PR-A'): in manifest mode the logical model
     # IS the manifest — model_path points at it and the members are
@@ -885,7 +865,7 @@ def _assemble_run_meta(
 # Main entry
 # --------------------------------------------------------------------------
 def recommend(
-    config: RecommendationConfig, *, now: date | None = None,
+    config: RecommendationConfig, *, now: datetime | None = None,
 ) -> DailyRecommendationResult:
     try:
         validate_policy(config.suspension_quarantine)
@@ -905,6 +885,10 @@ def recommend(
             f"(certified N5 weekly); got {cadence!r} "
             f"({type(cadence).__name__})."
         )
+    try:
+        clock = aware_clock(datetime.now(tz=_CN_TZ) if now is None else now)
+    except ValueError as exc:
+        raise DailyRecommendationError(str(exc)) from exc
     # Ensemble manifest resolution (PR-A', pure precondition — file IO
     # only, no qlib): load + validate the manifest and pin the config's
     # fit window to the NEWEST member's (the walk-forward current-fold
@@ -939,6 +923,10 @@ def recommend(
     guard_message = provider_uri_guard_message(config.provider_uri)
     if guard_message is not None:
         raise DailyRecommendationError(guard_message)
+    try:
+        schedule = read_snapshot(config.trading_calendar_path, now=clock)
+    except (CalendarSnapshotError, OSError) as exc:
+        raise DailyRecommendationError(f"trading calendar refused: {exc}") from exc
     # Model↔universe consistency guard (single-model path; pure file
     # IO, no qlib). ``--instruments`` is a free parameter and the
     # single-model path had no check that the model was ever trained
@@ -962,7 +950,13 @@ def recommend(
     # ``D.calendar()`` materializations per recommend()).
     from qlib.data import D
     calendar = list(D.calendar())
-    as_of_date, entry_date = resolve_dates(config.as_of_date, calendar=calendar)
+    try:
+        session_dates = resolve_session_dates(
+            calendar, schedule, now=clock, as_of_date=config.as_of_date,
+        )
+    except CalendarSnapshotError as exc:
+        raise DailyRecommendationError(f"recommendation timing refused: {exc}") from exc
+    as_of_date, entry_date = session_dates.as_of_date, session_dates.entry_date
 
     # Cadence-aware serving fields (PR-A, DP-2) — the value-domain
     # guard already ran at the top of recommend().
@@ -982,7 +976,7 @@ def recommend(
     bundle_last_day = pd.Timestamp(calendar[-1]).date()
     _assert_bundle_fresh(
         bundle_last_day,
-        now if now is not None else date.today(),
+        clock.date(),
         config.bundle_max_age_days,
     )
     # P3-4c Layer 2: refuse a bundle built from a holey tushare fetch (or one
@@ -1030,6 +1024,9 @@ def recommend(
             model_pkl_sha256=None,
             bundle_tag=bundle_tag,
             bundle_built_at=bundle_built_at,
+            trading_calendar=schedule.context,
+            latest_closed_session=session_dates.latest_closed_date,
+            generated_at=clock.isoformat(),
             ensemble={
                 "schema_version": MANIFEST_SCHEMA_VERSION,
                 "manifest_path": str(config.ensemble_manifest_path),
@@ -1052,6 +1049,9 @@ def recommend(
             model_pkl_sha256=model_pkl_sha256,
             bundle_tag=bundle_tag,
             bundle_built_at=bundle_built_at,
+            trading_calendar=schedule.context,
+            latest_closed_session=session_dates.latest_closed_date,
+            generated_at=clock.isoformat(),
             model_universe=model_universe,
         )
 
@@ -1102,40 +1102,32 @@ def recommend(
     # on a multi-date index, a date other than T, or duplicate instruments
     # rather than letting dict(zip) silently drop a key (see
     # _scores_to_inst_map). Pinning the stamp == as_of_date (PR-C) makes the
-    # live timing contract explicit: this is a day-T signal for entry on the
-    # next trading session — the SAME semantics as the canonical backtest's
-    # lag=1 (signal stamped T, filled T+1 via qlib's built-in shift), so
-    # backtested and live behavior coincide by construction.
+    # signal timestamp explicit. Candidate scheduling is not a promise of
+    # execution, nor proof that a live portfolio reproduces backtest returns.
     score_by_inst = _scores_to_inst_map(scores, expected_date=as_of_date)
     quarantined_instruments = {
         inst for inst in score_by_inst
         if quarantine is not None and _is_quarantined_instrument(inst, quarantine)
     }
 
-    # 3. Tradability mask (suspension / one-price-lock) on the ENTRY day —
-    # the day the recommendation would actually fill (codex P1 round 4 on
-    # PR #241, matching the backtest's execution-day masking). This is NOT
-    # look-ahead: ``resolve_dates`` requires the entry session to exist in
-    # the bundle calendar (the default as-of is the second-to-last day), so
-    # the entry day's bars are already on disk at decision time. A name
-    # tradable on T but suspended/one-price-locked on T+1 must not be
-    # emitted — the lag=1 backtest drops the same T-stamped signal by
-    # execution day.
+    # 3. Known T-day exclusions only. T+1 bars do not exist at signal time;
+    # actual suspension/limit conditions remain UNKNOWN until trade time.
+    # This preserves the canonical filter, not retrospective entry screening.
     pit = _build_pit_provider(config)
     try:
         mask_result = compute_unavailable_mask(
-            list(score_by_inst.keys()), entry_date, entry_date, pit_provider=pit,
+            list(score_by_inst.keys()), as_of_date, as_of_date, pit_provider=pit,
         )
     except MicrostructureMaskError as exc:
         raise DailyRecommendationError(
-            f"tradability mask failed for entry day {entry_date}: {exc}"
+            f"candidate eligibility mask failed for signal day {as_of_date}: {exc}"
         ) from exc
     # compute_unavailable_mask is the AUTHORITATIVE untradable set (the
     # reused canonical filter). It returns aggregate per-regime counts but
     # not per-name regime membership, so _per_regime_sets supplies the
     # precise reason label for the audit column.
-    masked_pairs = {inst for (d, inst) in mask_result.masked if d == entry_date}
-    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), entry_date)
+    masked_pairs = {inst for (d, inst) in mask_result.masked if d == as_of_date}
+    suspended, one_price = _per_regime_sets(pit, list(score_by_inst.keys()), as_of_date)
 
     # 4. Names + current-ST exclusion set. The name source is REQUIRED here
     # (fail-loud if missing/stale): it supplies both display names AND the
@@ -1302,7 +1294,7 @@ def build_recommendation(
     st_excluded: frozenset[str] | set[str] = frozenset(),
     quarantined: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[tuple[RecommendationPick, ...], pd.DataFrame, int]:
-    """Pure ranking + tradability + Top-K assembly (no qlib, no IO).
+    """Pure ranking + known-as-of eligibility + Top-K (no qlib, no IO).
 
     ``masked_pairs`` is the AUTHORITATIVE untradable set (from the reused
     ``compute_unavailable_mask``); ``suspended`` / ``one_price`` only supply
@@ -1312,7 +1304,7 @@ def build_recommendation(
     frame. Microstructure masking takes precedence over the ST label when a
     name is both. An explicitly quarantined row takes precedence over both
     reasons without changing its score. Returns ``(picks, scored_frame, n_excluded)`` where
-    ``n_excluded`` counts every not-tradable row. Sorting is
+    ``n_excluded`` counts every ineligible row, not future tradability. Sorting is
     stable so equal scores keep input order.
     """
     if topk < 0:
@@ -1322,6 +1314,12 @@ def build_recommendation(
         )
     rows = []
     for inst, score in score_by_inst.items():
+        try:
+            finite = not isinstance(score, bool) and math.isfinite(score)
+        except (TypeError, OverflowError):
+            finite = False
+        if not finite:
+            raise DailyRecommendationError("candidate scores must be finite numbers")
         if inst in quarantined:
             tradable = False
             reason = "data_quarantine"
@@ -1341,32 +1339,34 @@ def build_recommendation(
             reason = ""
         rows.append({
             "stock_code": inst, "stock_name": name_fn(inst),
-            "predicted_score": score, "tradable_flag": tradable,
+            "predicted_score": float(score), "eligible_as_of": tradable,
+            "tradable_flag": None,
             "unavailable_reason": reason,
         })
     scored_frame = pd.DataFrame(
         rows,
         columns=["stock_code", "stock_name", "predicted_score",
-                 "tradable_flag", "unavailable_reason"],
+                 "eligible_as_of", "tradable_flag", "unavailable_reason"],
     ).sort_values(
         "predicted_score", ascending=False, kind="stable",
     ).reset_index(drop=True)
     scored_frame.insert(0, "as_of_date", as_of_date)
     scored_frame.insert(1, "entry_date", entry_date)
 
-    tradable = scored_frame[scored_frame["tradable_flag"]].head(topk)
+    tradable = scored_frame[scored_frame["eligible_as_of"]].head(topk)
     picks = tuple(
         RecommendationPick(
             rank=i + 1,
             stock_code=r.stock_code,
             stock_name=r.stock_name,
             predicted_score=float(r.predicted_score),
-            tradable_flag=True,
+            eligible_as_of=True,
+            tradable_flag=None,
             unavailable_reason="",
         )
         for i, r in enumerate(tradable.itertuples(index=False))
     )
-    n_excluded = int((~scored_frame["tradable_flag"]).sum())
+    n_excluded = int((~scored_frame["eligible_as_of"]).sum())
     return picks, scored_frame, n_excluded
 
 
@@ -1413,7 +1413,7 @@ def _per_regime_sets(
 
 _BUY_LIST_COLUMNS = [
     "as_of_date", "entry_date", "rank", "stock_code", "stock_name",
-    "predicted_score", "tradable_flag", "unavailable_reason",
+    "predicted_score", "eligible_as_of", "tradable_flag", "unavailable_reason",
 ]
 
 
@@ -1444,25 +1444,26 @@ def _quarantine_output_context(result: DailyRecommendationResult) -> dict[str, A
             raise DailyRecommendationError("quarantine picks contain a malformed security identity")
         if _is_quarantined_instrument(pick.stock_code, evidence):
             raise DailyRecommendationError("quarantine security cannot appear in recommendation picks")
-    columns = ["stock_code", "tradable_flag", "unavailable_reason"]
+    columns = ["stock_code", "eligible_as_of", "tradable_flag", "unavailable_reason"]
     if not set(columns).issubset(frame.columns):
         raise DailyRecommendationError("quarantine audit is missing required columns")
     expected = {"n_quarantined": 0, "n_scored": 0, "n_masked": 0, "n_st_excluded": 0}
-    for code, tradable, reason in frame[columns].itertuples(index=False, name=None):
+    for code, eligible, tradable, reason in frame[columns].itertuples(index=False, name=None):
         if (not isinstance(code, str) or not code or code != code.strip()
-                or not pd.api.types.is_bool(tradable) or not isinstance(reason, str)):
+                or not pd.api.types.is_bool(eligible) or tradable is not None
+                or not isinstance(reason, str)):
             raise DailyRecommendationError("quarantine audit contains malformed identity/status")
         if _is_quarantined_instrument(code, evidence):
-            if tradable or reason != "data_quarantine":
+            if eligible or reason != "data_quarantine":
                 raise DailyRecommendationError("quarantine security must remain excluded in the audit")
             expected["n_quarantined"] += 1
         elif reason == "data_quarantine":
             raise DailyRecommendationError("quarantine reason cannot identify another security")
-        elif tradable and reason == "":
+        elif eligible and reason == "":
             expected["n_scored"] += 1
-        elif not tradable and reason == "st":
+        elif not eligible and reason == "st":
             expected["n_st_excluded"] += 1
-        elif not tradable and reason in {"suspended", "one_price_lock", "unavailable"}:
+        elif not eligible and reason in {"suspended", "one_price_lock", "unavailable"}:
             expected["n_masked"] += 1
         else:
             raise DailyRecommendationError("quarantine audit has inconsistent tradability/reason")
@@ -1516,6 +1517,10 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
         raise DailyRecommendationError(
             "rebalance_day must be bool or None, "
             f"got {type(result.rebalance_day).__name__}")
+    if result.rebalance_day is None and result.next_rebalance_date is not None:
+        raise DailyRecommendationError(
+            "next_rebalance_date requires an explicit rebalance_day; "
+            "daily output must not silently discard cadence information")
     if (result.rebalance_day is True
             and result.next_rebalance_date != result.as_of_date):
         raise DailyRecommendationError(
@@ -1533,10 +1538,11 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
             "next_rebalance_date": result.next_rebalance_date,
         }
     quarantine_context = _quarantine_output_context(result)
-    csv_context = {**cadence_context, **quarantine_context}
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    stamp = result.as_of_date
+    candidate_context = {
+        "recommendation_mode": MODE,
+        "entry_tradability_status": ENTRY_STATUS,
+    }
+    csv_context = {**candidate_context, **cadence_context, **quarantine_context}
     buy_rows = [
         {
             "as_of_date": result.as_of_date,
@@ -1545,36 +1551,41 @@ def write_outputs(result: DailyRecommendationResult, out_dir: str) -> dict[str, 
             "stock_code": p.stock_code,
             "stock_name": p.stock_name,
             "predicted_score": p.predicted_score,
+            "eligible_as_of": p.eligible_as_of,
             "tradable_flag": p.tradable_flag,
             "unavailable_reason": p.unavailable_reason,
         }
         for p in result.picks
     ]
-    csv_path = out / f"daily_recommendation_{stamp}.csv"
-    json_path = out / f"daily_recommendation_{stamp}.json"
-    audit_path = out / f"daily_recommendation_{stamp}_scored_full.csv"
-
-    # Explicit columns so an empty buy list (e.g. --topk 0, or every
-    # candidate masked) still writes a header row downstream readers expect.
-    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).assign(**csv_context).to_csv(
-        csv_path, index=False, encoding="utf-8-sig",
-    )
     payload: dict[str, Any] = {
-        # Artifact contract v2 (add-daily-decision-page A1): the version marker
-        # + meta block let readers DISTINGUISH a legacy v1 file (both absent)
-        # from a self-describing one — readers warn on absence, never default.
+        # Explicit candidate schema; legacy history is not a fallback mode.
         "artifact_schema_version": DAILY_RECOMMENDATION_ARTIFACT_SCHEMA_VERSION,
         "as_of_date": result.as_of_date,
         "entry_date": result.entry_date,
         "n_scored": result.n_scored,
         "n_masked": result.n_masked,
         "n_st_excluded": result.n_st_excluded,
+        "n_quarantined": result.n_quarantined,
         "picks": buy_rows,
         "meta": dict(result.run_meta),
     }
+    payload.update(candidate_context)
     payload.update(cadence_context)
-    if quarantine_context:
-        payload["n_quarantined"] = result.n_quarantined
+    try:
+        validate_candidate_context(payload, audit_rows=result.scored_frame.to_dict("records"))
+    except ValueError as exc:
+        raise DailyRecommendationError(f"invalid candidate artifact: {exc}") from exc
+    # All semantic validation precedes every directory/file creation. The
+    # operator runner retains its existing atomic three-file publication.
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = result.as_of_date
+    csv_path = out / f"daily_recommendation_{stamp}.csv"
+    json_path = out / f"daily_recommendation_{stamp}.json"
+    audit_path = out / f"daily_recommendation_{stamp}_scored_full.csv"
+    pd.DataFrame(buy_rows, columns=_BUY_LIST_COLUMNS).assign(**csv_context).to_csv(
+        csv_path, index=False, encoding="utf-8-sig",
+    )
     json_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     result.scored_frame.assign(**csv_context).to_csv(

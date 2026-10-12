@@ -117,6 +117,13 @@ def test_journal_or_candidate_shape_problem_blocks_fake_zero_review_count() -> N
         summarise_daily_review_progress("2026-08-19", ("SH600000", "SH600000"), {})
 
 
+def test_historical_list_never_creates_candidate_review_work():
+    progress = summarise_daily_review_progress("2026-08-19", ("SH600000",), {})
+    items = _queue(signal=DailySignalSummary("historical", "旧 v2 只读"), review=progress)
+    assert any(item.source_key == "signal:historical" and item.kind == "attention" for item in items)
+    assert not any(item.kind == "review" or item.source_key.startswith("review:") for item in items)
+
+
 def test_malformed_job_catalog_blocks_a_partial_catalog_from_looking_healthy() -> None:
     items = _queue(jobs_error="作业目录含 1 行损坏的 CLI 索引记录。")
 
